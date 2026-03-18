@@ -9,6 +9,7 @@ Uniswap V3 uses concentrated liquidity with discrete fee tiers:
 from __future__ import annotations
 
 from decimal import Decimal
+from typing import NamedTuple
 
 from eth_contract import Contract
 from web3 import AsyncWeb3
@@ -16,6 +17,70 @@ from web3 import AsyncWeb3
 from pydifi.amm.base import BaseAMM
 from pydifi.exceptions import InsufficientLiquidityError
 from pydifi.types import SwapRoute, SwapStep, Token, TokenAmount
+
+# ---------------------------------------------------------------------------
+# ABI struct NamedTuples
+#
+# NamedTuple is a subclass of tuple, so eth_abi's TupleEncoder accepts these
+# directly while keeping fields readable by name.
+# ---------------------------------------------------------------------------
+
+
+class QuoteExactInputSingleParams(NamedTuple):
+    """Params struct for ``QuoterV2.quoteExactInputSingle``."""
+
+    tokenIn: str
+    tokenOut: str
+    amountIn: int
+    fee: int
+    sqrtPriceLimitX96: int
+
+
+class QuoteExactOutputSingleParams(NamedTuple):
+    """Params struct for ``QuoterV2.quoteExactOutputSingle``."""
+
+    tokenIn: str
+    tokenOut: str
+    amount: int
+    fee: int
+    sqrtPriceLimitX96: int
+
+
+class ExactInputSingleParams(NamedTuple):
+    """Params struct for ``SwapRouter.exactInputSingle``."""
+
+    tokenIn: str
+    tokenOut: str
+    fee: int
+    recipient: str
+    deadline: int
+    amountIn: int
+    amountOutMinimum: int
+    sqrtPriceLimitX96: int
+
+
+class ExactInputParams(NamedTuple):
+    """Params struct for ``SwapRouter.exactInput``."""
+
+    path: bytes
+    recipient: str
+    deadline: int
+    amountIn: int
+    amountOutMinimum: int
+
+
+class ExactOutputSingleParams(NamedTuple):
+    """Params struct for ``SwapRouter.exactOutputSingle``."""
+
+    tokenIn: str
+    tokenOut: str
+    fee: int
+    recipient: str
+    deadline: int
+    amountOut: int
+    amountInMaximum: int
+    sqrtPriceLimitX96: int
+
 
 # ---------------------------------------------------------------------------
 # ABI fragments
@@ -112,14 +177,12 @@ class UniswapV3(BaseAMM):
                 quoter reverts.
         """
         fee = fee if fee is not None else self.default_fee
-        # eth_abi TupleEncoder requires a list/tuple, not a dict.
-        # Field order matches the ABI struct: (tokenIn, tokenOut, amountIn, fee, sqrtPriceLimitX96)
-        params = (
-            amount_in.token.address,
-            token_out.address,
-            amount_in.amount,
-            fee,
-            0,  # sqrtPriceLimitX96
+        params = QuoteExactInputSingleParams(
+            tokenIn=amount_in.token.address,
+            tokenOut=token_out.address,
+            amountIn=amount_in.amount,
+            fee=fee,
+            sqrtPriceLimitX96=0,
         )
         try:
             result = await self._quoter.fns.quoteExactInputSingle(params).call(self.w3)
@@ -189,14 +252,12 @@ class UniswapV3(BaseAMM):
                 "for exact-output quoting"
             )
 
-        # eth_abi TupleEncoder requires a list/tuple, not a dict.
-        # Field order matches the ABI struct: (tokenIn, tokenOut, amount, fee, sqrtPriceLimitX96)
-        params = (
-            path[0].address,
-            amount_out.token.address,
-            amount_out.amount,
-            self.default_fee,
-            0,  # sqrtPriceLimitX96
+        params = QuoteExactOutputSingleParams(
+            tokenIn=path[0].address,
+            tokenOut=amount_out.token.address,
+            amount=amount_out.amount,
+            fee=self.default_fee,
+            sqrtPriceLimitX96=0,
         )
         try:
             result = await self._quoter.fns.quoteExactOutputSingle(params).call(self.w3)
