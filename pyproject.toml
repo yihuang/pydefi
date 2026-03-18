@@ -30,3 +30,6 @@ include = ["pydifi*"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "live: marks tests as live integration tests that require network access (run with '-m live')",
+]
