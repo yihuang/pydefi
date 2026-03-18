@@ -50,5 +50,5 @@ jobs:
       - name: Run live integration tests
         env:
           ETH_RPC_URL: https://eth.llamarpc.com
-        run: pytest -m live -v
+        run: pytest -m live -v --reruns 3 --reruns-delay 5
 

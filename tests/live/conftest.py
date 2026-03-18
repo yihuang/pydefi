@@ -12,6 +12,7 @@ the regular ``pytest`` run.  Run them explicitly with::
 """
 
 import os
+import time
 
 import pytest
 from web3 import AsyncWeb3
@@ -63,3 +64,10 @@ USDT = Token(
 def eth_w3() -> AsyncWeb3:
     """Return an :class:`~web3.AsyncWeb3` instance backed by a public RPC."""
     return AsyncWeb3(AsyncWeb3.AsyncHTTPProvider(ETH_RPC_URL))
+
+
+@pytest.fixture(autouse=True)
+def _throttle_live_requests(request: pytest.FixtureRequest) -> None:
+    """Insert a small delay before each live test to avoid rate-limiting on free RPCs."""
+    if request.node.get_closest_marker("live"):
+        time.sleep(1)

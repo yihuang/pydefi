@@ -112,13 +112,15 @@ class UniswapV3(BaseAMM):
                 quoter reverts.
         """
         fee = fee if fee is not None else self.default_fee
-        params = {
-            "tokenIn": amount_in.token.address,
-            "tokenOut": token_out.address,
-            "amountIn": amount_in.amount,
-            "fee": fee,
-            "sqrtPriceLimitX96": 0,
-        }
+        # eth_abi TupleEncoder requires a list/tuple, not a dict.
+        # Field order matches the ABI struct: (tokenIn, tokenOut, amountIn, fee, sqrtPriceLimitX96)
+        params = (
+            amount_in.token.address,
+            token_out.address,
+            amount_in.amount,
+            fee,
+            0,  # sqrtPriceLimitX96
+        )
         try:
             result = await self._quoter.fns.quoteExactInputSingle(params).call(self.w3)
             amount_out = result[0] if isinstance(result, (list, tuple)) else result
@@ -181,14 +183,21 @@ class UniswapV3(BaseAMM):
         """
         if len(path) < 2:
             raise ValueError("path must contain at least two tokens")
+        if len(path) != 2:
+            raise ValueError(
+                "get_amounts_in currently only supports single-hop (exactly 2 tokens) "
+                "for exact-output quoting"
+            )
 
-        params = {
-            "tokenIn": path[0].address,
-            "tokenOut": amount_out.token.address,
-            "amount": amount_out.amount,
-            "fee": self.default_fee,
-            "sqrtPriceLimitX96": 0,
-        }
+        # eth_abi TupleEncoder requires a list/tuple, not a dict.
+        # Field order matches the ABI struct: (tokenIn, tokenOut, amount, fee, sqrtPriceLimitX96)
+        params = (
+            path[0].address,
+            amount_out.token.address,
+            amount_out.amount,
+            self.default_fee,
+            0,  # sqrtPriceLimitX96
+        )
         try:
             result = await self._quoter.fns.quoteExactOutputSingle(params).call(self.w3)
             amount_in_raw = result[0] if isinstance(result, (list, tuple)) else result
