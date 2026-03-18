@@ -1,0 +1,235 @@
+"""
+Stargate Finance cross-chain bridge integration.
+
+Stargate is built on LayerZero and supports bridging native stablecoin
+liquidity across chains.  This module wraps the ``IStargate`` router
+interface via :class:`~eth_contract.Contract`.
+
+Docs: https://stargateprotocol.gitbook.io/stargate/
+"""
+
+from __future__ import annotations
+
+from typing import Any, Optional
+
+from eth_contract import Contract
+from web3 import AsyncWeb3
+
+from pydifi.bridge.base import BaseBridge
+from pydifi.exceptions import BridgeError
+from pydifi.types import BridgeQuote, Token, TokenAmount
+
+# ---------------------------------------------------------------------------
+# ABI fragments
+# ---------------------------------------------------------------------------
+
+_ROUTER_ABI = [
+    "function swap(uint16 _dstChainId, uint256 _srcPoolId, uint256 _dstPoolId, address payable _refundAddress, uint256 _amountLD, uint256 _minAmountLD, (uint256 dstGasForCall, uint256 dstNativeAmount, bytes dstNativeAddr) _lzTxParams, bytes calldata _to, bytes calldata _payload) external payable",
+    "function quoteLayerZeroFee(uint16 _dstChainId, uint8 _functionType, bytes calldata _toAddress, bytes calldata _transferAndCallPayload, (uint256 dstGasForCall, uint256 dstNativeAmount, bytes dstNativeAddr) _lzTxParams) external view returns (uint256, uint256)",
+]
+
+_POOL_ABI = [
+    "function amountLPtoLD(uint256 _amountLP) external view returns (uint256)",
+    "function totalLiquidity() external view returns (uint256)",
+    "function totalSupply() external view returns (uint256)",
+    "function deltaCredit() external view returns (uint256)",
+]
+
+_FACTORY_ABI = [
+    "function getPool(uint256 _poolId) external view returns (address)",
+]
+
+# LayerZero chain IDs differ from EVM chain IDs
+_LZ_CHAIN_ID: dict[int, int] = {
+    1: 101,       # Ethereum
+    56: 102,      # BSC
+    43114: 106,   # Avalanche
+    137: 109,     # Polygon
+    42161: 110,   # Arbitrum
+    10: 111,      # Optimism
+    250: 112,     # Fantom
+    8453: 184,    # Base
+}
+
+# Stargate pool IDs for common tokens
+_POOL_IDS: dict[str, int] = {
+    "USDC": 1,
+    "USDT": 2,
+    "DAI": 3,
+    "FRAX": 7,
+    "USDD": 11,
+    "ETH": 13,
+    "sUSD": 14,
+    "LUSD": 15,
+    "MAI": 16,
+    "METIS": 17,
+    "metisUSDT": 19,
+}
+
+
+class Stargate(BaseBridge):
+    """Stargate Finance cross-chain bridge integration.
+
+    Args:
+        w3: :class:`~web3.AsyncWeb3` instance for the *source* chain.
+        src_chain_id: Source chain EVM ID.
+        dst_chain_id: Destination chain EVM ID.
+        router_address: Address of the Stargate ``Router`` contract on the
+            source chain.
+    """
+
+    def __init__(
+        self,
+        w3: AsyncWeb3,
+        src_chain_id: int,
+        dst_chain_id: int,
+        router_address: str,
+    ) -> None:
+        super().__init__(src_chain_id, dst_chain_id)
+        self.w3 = w3
+        self.router_address = router_address
+        self._router = Contract.from_abi(_ROUTER_ABI, to=router_address)
+
+    @property
+    def protocol_name(self) -> str:
+        return "Stargate"
+
+    def _lz_chain_id(self, evm_chain_id: int) -> int:
+        """Map an EVM chain ID to a LayerZero chain ID."""
+        lz_id = _LZ_CHAIN_ID.get(evm_chain_id)
+        if lz_id is None:
+            raise BridgeError(
+                f"Stargate: unsupported chain ID {evm_chain_id}"
+            )
+        return lz_id
+
+    def _pool_id(self, token: Token) -> int:
+        """Return the Stargate pool ID for *token*."""
+        pool_id = _POOL_IDS.get(token.symbol)
+        if pool_id is None:
+            raise BridgeError(
+                f"Stargate: no pool ID for token {token.symbol}"
+            )
+        return pool_id
+
+    async def quote_lz_fee(
+        self,
+        dst_chain_id: int,
+        recipient: str,
+        dst_gas: int = 200_000,
+    ) -> int:
+        """Estimate the LayerZero messaging fee for a cross-chain transfer.
+
+        Args:
+            dst_chain_id: Destination EVM chain ID.
+            recipient: Recipient address on the destination chain.
+            dst_gas: Gas limit for the destination call.
+
+        Returns:
+            Estimated fee in native gas token wei.
+        """
+        lz_dst_chain = self._lz_chain_id(dst_chain_id)
+        lz_tx_params = (dst_gas, 0, b"")
+        to_bytes = bytes.fromhex(recipient[2:].lower().zfill(40))
+        try:
+            result = await self._router.fns.quoteLayerZeroFee(
+                lz_dst_chain,
+                1,  # TYPE_SWAP_REMOTE
+                to_bytes,
+                b"",
+                lz_tx_params,
+            ).call(self.w3)
+            fee: int = result[0] if isinstance(result, (list, tuple)) else result
+        except Exception as exc:
+            raise BridgeError(f"Stargate: quoteLayerZeroFee failed: {exc}") from exc
+        return fee
+
+    async def get_quote(
+        self,
+        token_in: Token,
+        token_out: Token,
+        amount_in: TokenAmount,
+        **kwargs: Any,
+    ) -> BridgeQuote:
+        """Get a Stargate bridge quote.
+
+        Args:
+            token_in: Source token (must be a Stargate-supported asset).
+            token_out: Destination token.
+            amount_in: Amount to bridge.
+            **kwargs: Optional ``dst_gas`` override.
+
+        Returns:
+            A :class:`~pydifi.types.BridgeQuote`.
+        """
+        dst_gas: int = kwargs.get("dst_gas", 200_000)
+        # For fee estimation, use a placeholder recipient
+        recipient: str = kwargs.get("recipient", "0x" + "00" * 20)
+        lz_fee = await self.quote_lz_fee(self.dst_chain_id, recipient, dst_gas)
+
+        # Stargate typically charges a 6-bp protocol fee
+        PROTOCOL_FEE_BPS = 6
+        fee_raw = amount_in.amount * PROTOCOL_FEE_BPS // 10_000
+        amount_out_raw = amount_in.amount - fee_raw
+
+        return BridgeQuote(
+            token_in=token_in,
+            token_out=token_out,
+            amount_in=amount_in,
+            amount_out=TokenAmount(token=token_out, amount=amount_out_raw),
+            bridge_fee=TokenAmount(token=token_in, amount=fee_raw),
+            estimated_time_seconds=180,  # ~3 min average
+            protocol=self.protocol_name,
+        )
+
+    async def build_bridge_tx(
+        self,
+        token_in: Token,
+        token_out: Token,
+        amount_in: TokenAmount,
+        recipient: str,
+        slippage_bps: int = 50,
+        dst_gas: int = 200_000,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """Build a Stargate bridge transaction.
+
+        Args:
+            token_in: Source token.
+            token_out: Destination token.
+            amount_in: Amount to send.
+            recipient: Receiver address on the destination chain.
+            slippage_bps: Slippage tolerance in basis points.
+            dst_gas: Gas limit for the destination-chain call.
+
+        Returns:
+            Transaction dict with ``to``, ``data``, ``value``, ``gas``.
+        """
+        src_pool_id = self._pool_id(token_in)
+        dst_pool_id = self._pool_id(token_out)
+        lz_dst_chain = self._lz_chain_id(self.dst_chain_id)
+        lz_fee = await self.quote_lz_fee(self.dst_chain_id, recipient, dst_gas)
+        min_amount = self._apply_slippage(amount_in.amount, slippage_bps)
+
+        lz_tx_params = (dst_gas, 0, b"")
+        to_bytes = bytes.fromhex(recipient[2:].lower().zfill(40))
+
+        # Build call data via the Contract ABI
+        call_data = self._router.fns.swap(
+            lz_dst_chain,
+            src_pool_id,
+            dst_pool_id,
+            recipient,
+            amount_in.amount,
+            min_amount,
+            lz_tx_params,
+            to_bytes,
+            b"",
+        ).encode()
+
+        return {
+            "to": self.router_address,
+            "data": "0x" + call_data.hex() if isinstance(call_data, bytes) else call_data,
+            "value": str(lz_fee),
+            "gas": str(500_000),
+        }

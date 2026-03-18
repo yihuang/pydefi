@@ -1,0 +1,216 @@
+"""
+Graph representation of the DEX liquidity landscape.
+
+Each node in the graph is a :class:`~pydifi.types.Token`.
+Each directed edge represents a liquidity pool that can swap *token_in* →
+*token_out* and carries the pool's reserve information for price estimation.
+"""
+
+from __future__ import annotations
+
+from collections import defaultdict
+from dataclasses import dataclass, field
+from decimal import Decimal
+from typing import Iterator
+
+from pydifi.types import Token
+
+
+@dataclass
+class PoolEdge:
+    """A directed edge in the liquidity pool graph.
+
+    Represents one *direction* of a swap through a single pool.  For a
+    bidirectional pool (A ↔ B), two ``PoolEdge`` objects are added to the
+    graph — one for A→B and one for B→A.
+
+    Attributes:
+        token_in: Input token for this direction.
+        token_out: Output token for this direction.
+        pool_address: On-chain pool / pair address.
+        protocol: Human-readable protocol name.
+        reserve_in: Reserve of token_in in the pool (raw units).
+        reserve_out: Reserve of token_out in the pool (raw units).
+        fee_bps: Swap fee in basis points (e.g. ``30`` = 0.3%).
+        extra: Optional extra data (e.g. pool type, tick spacing).
+    """
+
+    token_in: Token
+    token_out: Token
+    pool_address: str
+    protocol: str
+    reserve_in: int = 0
+    reserve_out: int = 0
+    fee_bps: int = 30
+    extra: dict = field(default_factory=dict)
+
+    @property
+    def spot_price(self) -> Decimal:
+        """Spot price of token_out denominated in token_in.
+
+        Returns:
+            ``Decimal(0)`` if reserve_in is zero.
+        """
+        if self.reserve_in == 0:
+            return Decimal(0)
+        adj_in = Decimal(self.reserve_in) / Decimal(10 ** self.token_in.decimals)
+        adj_out = Decimal(self.reserve_out) / Decimal(10 ** self.token_out.decimals)
+        return adj_out / adj_in
+
+    def amount_out(self, amount_in: int) -> int:
+        """Estimate the output amount for *amount_in* using the constant-product formula.
+
+        Args:
+            amount_in: Raw input amount.
+
+        Returns:
+            Estimated raw output amount (0 if reserves are unavailable).
+        """
+        if self.reserve_in == 0 or self.reserve_out == 0:
+            return 0
+        fee_factor = 10_000 - self.fee_bps
+        amount_in_with_fee = amount_in * fee_factor
+        numerator = amount_in_with_fee * self.reserve_out
+        denominator = self.reserve_in * 10_000 + amount_in_with_fee
+        if denominator == 0:
+            return 0
+        return numerator // denominator
+
+    def log_weight(self, amount_in: int = 1) -> float:
+        """Return a log-space weight suitable for shortest-path algorithms.
+
+        The weight is ``-log(amount_out / amount_in)`` so that maximising
+        output (best rate) is equivalent to finding the minimum weight path.
+
+        Args:
+            amount_in: Reference input amount (default 1 token in smallest
+                unit).
+
+        Returns:
+            Float weight; returns ``float('inf')`` if the pool has no
+            liquidity.
+        """
+        import math
+
+        out = self.amount_out(amount_in)
+        if out == 0:
+            return float("inf")
+        ratio = out / amount_in
+        if ratio <= 0:
+            return float("inf")
+        return -math.log(ratio)
+
+
+class PoolGraph:
+    """A directed multi-graph of token → token liquidity pools.
+
+    Use :meth:`add_pool` to register pools, then :meth:`edges_from` to
+    iterate over all pools that accept a given input token.
+
+    Example::
+
+        graph = PoolGraph()
+        graph.add_pool(edge_usdc_to_eth)
+        graph.add_pool(edge_eth_to_usdc)
+        for edge in graph.edges_from(usdc):
+            print(edge.token_out, edge.spot_price)
+    """
+
+    def __init__(self) -> None:
+        # adjacency list: token_in_address -> list[PoolEdge]
+        self._adj: defaultdict[str, list[PoolEdge]] = defaultdict(list)
+        self._tokens: dict[str, Token] = {}
+
+    def add_pool(self, edge: PoolEdge) -> None:
+        """Register a pool edge in the graph.
+
+        Args:
+            edge: The :class:`PoolEdge` to add.
+        """
+        key = edge.token_in.address.lower()
+        self._adj[key].append(edge)
+        self._tokens[edge.token_in.address.lower()] = edge.token_in
+        self._tokens[edge.token_out.address.lower()] = edge.token_out
+
+    def add_bidirectional_pool(
+        self,
+        token_a: Token,
+        token_b: Token,
+        pool_address: str,
+        protocol: str,
+        reserve_a: int = 0,
+        reserve_b: int = 0,
+        fee_bps: int = 30,
+        **extra,
+    ) -> None:
+        """Add both directions of a symmetric liquidity pool.
+
+        Args:
+            token_a: First token.
+            token_b: Second token.
+            pool_address: Pool contract address.
+            protocol: Protocol name.
+            reserve_a: Reserve of token_a.
+            reserve_b: Reserve of token_b.
+            fee_bps: Swap fee in basis points.
+            **extra: Extra metadata stored in ``PoolEdge.extra``.
+        """
+        self.add_pool(PoolEdge(
+            token_in=token_a,
+            token_out=token_b,
+            pool_address=pool_address,
+            protocol=protocol,
+            reserve_in=reserve_a,
+            reserve_out=reserve_b,
+            fee_bps=fee_bps,
+            extra=dict(extra),
+        ))
+        self.add_pool(PoolEdge(
+            token_in=token_b,
+            token_out=token_a,
+            pool_address=pool_address,
+            protocol=protocol,
+            reserve_in=reserve_b,
+            reserve_out=reserve_a,
+            fee_bps=fee_bps,
+            extra=dict(extra),
+        ))
+
+    def edges_from(self, token: Token) -> list[PoolEdge]:
+        """Return all edges that depart from *token*.
+
+        Args:
+            token: Source token.
+
+        Returns:
+            List of :class:`PoolEdge` objects.
+        """
+        return list(self._adj[token.address.lower()])
+
+    def edges_to(self, token: Token) -> list[PoolEdge]:
+        """Return all edges that arrive at *token*.
+
+        Args:
+            token: Destination token.
+
+        Returns:
+            List of :class:`PoolEdge` objects.
+        """
+        result: list[PoolEdge] = []
+        for edges in self._adj.values():
+            for e in edges:
+                if e.token_out.address.lower() == token.address.lower():
+                    result.append(e)
+        return result
+
+    @property
+    def tokens(self) -> list[Token]:
+        """All tokens present in the graph."""
+        return list(self._tokens.values())
+
+    def __len__(self) -> int:
+        return sum(len(edges) for edges in self._adj.values())
+
+    def __iter__(self) -> Iterator[PoolEdge]:
+        for edges in self._adj.values():
+            yield from edges
