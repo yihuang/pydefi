@@ -146,9 +146,21 @@ class V3PoolEdge(PoolEdge):
     def amount_out(self, amount_in: int) -> int:
         """Estimate output using the V3 concentrated liquidity formula.
 
-        This uses the exact Uniswap V3 ``sqrtPrice`` math for a single-tick
-        approximation (no tick crossing).  It is accurate for small-to-medium
-        swaps relative to pool liquidity and suitable for pathfinding.
+        This uses the exact Uniswap V3 ``sqrtPrice`` math for a **single-tick
+        approximation** — it assumes all liquidity ``L`` is available at the
+        current price and that no tick boundaries are crossed during the swap.
+
+        **Accuracy vs trade size:**  For swaps that are small relative to
+        ``L * sqrtP / Q96`` (roughly the depth of the current tick range), the
+        estimate is very close to the true on-chain result.  For large swaps
+        that would move the price across one or more tick boundaries, the
+        formula overestimates the output because it ignores the reduced
+        liquidity (and potentially zero liquidity) beyond the current tick.
+        In practice this is fine for **pathfinding** — the router is comparing
+        routes to pick the best one, not producing the definitive execution
+        quote.  For the precise execution quote, always call
+        :meth:`~pydifi.amm.uniswap_v3.UniswapV3.quote_exact_input_single`
+        (backed by the on-chain QuoterV2 which simulates full tick traversal).
 
         Args:
             amount_in: Raw input amount.
