@@ -195,7 +195,7 @@ class CurvePool(BaseAMM):
             token_out=token_out,
             pool_address=self.router_address,
             protocol=self.protocol_name,
-            fee=4,  # Curve base fee is typically 0.04% (4 bp)
+            fee=400,  # Curve base fee is 0.04% (4 bps = 400 hundredths of a bp)
         )
 
         return SwapRoute(

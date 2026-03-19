@@ -183,17 +183,10 @@ class UniswapV2(BaseAMM):
             fee=3000,
         )
 
-        # Rough price impact: compare quoted rate to first-hop spot rate
-        if amount_in.amount > 0:
-            price_impact = Decimal(0)
-        else:
-            price_impact = Decimal(0)
-
         return SwapRoute(
             steps=[step],
             amount_in=amount_in,
             amount_out=amount_out,
-            price_impact=price_impact,
         )
 
     # ------------------------------------------------------------------

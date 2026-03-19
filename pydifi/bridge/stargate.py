@@ -163,9 +163,6 @@ class Stargate(BaseBridge):
             A :class:`~pydifi.types.BridgeQuote`.
         """
         dst_gas: int = kwargs.get("dst_gas", 200_000)
-        # For fee estimation, use a placeholder recipient
-        recipient: str = kwargs.get("recipient", "0x" + "00" * 20)
-        lz_fee = await self.quote_lz_fee(self.dst_chain_id, recipient, dst_gas)
 
         # Stargate typically charges a 6-bp protocol fee
         PROTOCOL_FEE_BPS = 6
@@ -209,7 +206,12 @@ class Stargate(BaseBridge):
         dst_pool_id = self._pool_id(token_out)
         lz_dst_chain = self._lz_chain_id(self.dst_chain_id)
         lz_fee = await self.quote_lz_fee(self.dst_chain_id, recipient, dst_gas)
-        min_amount = self._apply_slippage(amount_in.amount, slippage_bps)
+
+        # Derive min_amount from post-fee output so it accounts for the protocol fee
+        PROTOCOL_FEE_BPS = 6
+        fee_raw = amount_in.amount * PROTOCOL_FEE_BPS // 10_000
+        amount_out_raw = amount_in.amount - fee_raw
+        min_amount = self._apply_slippage(amount_out_raw, slippage_bps)
 
         lz_tx_params = (dst_gas, 0, b"")
         to_bytes = bytes.fromhex(recipient[2:].lower().zfill(40))

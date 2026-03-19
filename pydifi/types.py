@@ -5,7 +5,7 @@ Common types used throughout pydifi.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from decimal import Decimal
+from decimal import ROUND_DOWN, Decimal
 from enum import IntEnum
 from typing import ClassVar, Optional
 
@@ -75,8 +75,13 @@ class TokenAmount:
 
     @classmethod
     def from_human(cls, token: Token, amount: Decimal | float | str) -> "TokenAmount":
-        """Create a :class:`TokenAmount` from a human-readable decimal value."""
-        raw = int(Decimal(str(amount)) * Decimal(10 ** token.decimals))
+        """Create a :class:`TokenAmount` from a human-readable decimal value.
+
+        The value is quantized to the token's precision using ``ROUND_DOWN``
+        (i.e. any sub-unit remainder is truncated, never rounded up).
+        """
+        raw_decimal = Decimal(str(amount)) * Decimal(10 ** token.decimals)
+        raw = int(raw_decimal.to_integral_value(rounding=ROUND_DOWN))
         return cls(token=token, amount=raw)
 
     def __repr__(self) -> str:
@@ -119,6 +124,10 @@ class SwapRoute:
     amount_in: TokenAmount
     amount_out: TokenAmount
     price_impact: Decimal = Decimal(0)
+
+    def __post_init__(self) -> None:
+        if not self.steps:
+            raise ValueError("SwapRoute must contain at least one SwapStep")
 
     @property
     def token_in(self) -> Token:

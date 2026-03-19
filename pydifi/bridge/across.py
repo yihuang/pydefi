@@ -164,7 +164,7 @@ class Across(BaseBridge):
 
         total_relay_fee_pct = int(fees_data.get("totalRelayFee", {}).get("pct", "0"))
         fee_raw = amount_in.amount * total_relay_fee_pct // (10 ** 18)
-        output_amount = self._apply_slippage(amount_in.amount - fee_raw, slippage_bps)
+        output_amount = self._apply_slippage(max(0, amount_in.amount - fee_raw), slippage_bps)
         quote_timestamp = int(fees_data.get("timestamp", 0))
         fill_deadline = quote_timestamp + 18_000  # 5 hours
 

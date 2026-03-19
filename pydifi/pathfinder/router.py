@@ -94,7 +94,7 @@ class Router:
                         token_out=edge.token_out,
                         pool_address=edge.pool_address,
                         protocol=edge.protocol,
-                        fee=edge.fee_bps,
+                        fee=edge.fee_bps * 100,
                     )
                     for edge in path
                 ]
@@ -164,6 +164,9 @@ class Router:
         dst_addr = token_out.address.lower()
         routes: list[SwapRoute] = []
 
+        if src.address.lower() == dst_addr:
+            raise ValueError("token_in and token_out must be different")
+
         def dfs(
             current_token: Token,
             current_amount: int,
@@ -177,7 +180,7 @@ class Router:
                         token_out=e.token_out,
                         pool_address=e.pool_address,
                         protocol=e.protocol,
-                        fee=e.fee_bps,
+                        fee=e.fee_bps * 100,
                     )
                     for e in path
                 ]
