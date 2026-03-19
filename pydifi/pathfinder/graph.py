@@ -11,7 +11,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import Iterator
+from typing import ClassVar, Iterator
 
 from pydifi.types import Token
 
@@ -99,6 +99,98 @@ class PoolEdge:
         if ratio <= 0:
             return float("inf")
         return -math.log(ratio)
+
+
+@dataclass
+class V3PoolEdge(PoolEdge):
+    """A directed edge representing a Uniswap V3 concentrated liquidity pool.
+
+    Uses the V3 concentrated liquidity formula (``sqrtPriceX96`` and
+    ``liquidity``) for price and amount estimation instead of the
+    constant-product reserve model used by :class:`PoolEdge`.
+
+    Attributes:
+        sqrt_price_x96: Current sqrt price of the pool (from ``slot0``),
+            in Q96 fixed-point format (i.e. ``sqrtPrice * 2^96``).
+        liquidity: Current active liquidity of the pool.
+        is_token0_in: ``True`` if ``token_in`` is ``token0`` of the V3 pool.
+    """
+
+    sqrt_price_x96: int = 0
+    liquidity: int = 0
+    is_token0_in: bool = True
+
+    _Q96: ClassVar[int] = 2 ** 96
+
+    @property
+    def spot_price(self) -> Decimal:
+        """Spot price of ``token_out`` denominated in ``token_in``, adjusted
+        for token decimals, derived from ``sqrtPriceX96``.
+        """
+        if self.sqrt_price_x96 == 0:
+            return Decimal(0)
+        Q96 = self._Q96
+        sqrtP = Decimal(self.sqrt_price_x96) / Decimal(Q96)
+        # price_raw = token1 per token0 in the pool's raw (smallest) units,
+        # without any decimal adjustment for token precision.
+        price_raw = sqrtP ** 2
+        # adj converts from raw units to human-readable units
+        adj = Decimal(10 ** self.token_in.decimals) / Decimal(10 ** self.token_out.decimals)
+        if self.is_token0_in:
+            return price_raw * adj
+        else:
+            if price_raw == 0:
+                return Decimal(0)
+            return (Decimal(1) / price_raw) * adj
+
+    def amount_out(self, amount_in: int) -> int:
+        """Estimate output using the V3 concentrated liquidity formula.
+
+        This uses the exact Uniswap V3 ``sqrtPrice`` math for a single-tick
+        approximation (no tick crossing).  It is accurate for small-to-medium
+        swaps relative to pool liquidity and suitable for pathfinding.
+
+        Args:
+            amount_in: Raw input amount.
+
+        Returns:
+            Estimated raw output amount (0 if pool state is unavailable).
+        """
+        if self.sqrt_price_x96 == 0 or self.liquidity == 0 or amount_in <= 0:
+            return 0
+
+        Q96 = self._Q96
+        sqrtP = self.sqrt_price_x96
+        L = self.liquidity
+
+        # Deduct fee from input (fee_bps is in basis points, e.g. 30 = 0.3%)
+        amount_in_net = amount_in * (10_000 - self.fee_bps) // 10_000
+        if amount_in_net <= 0:
+            return 0
+
+        if self.is_token0_in:
+            # Swapping token0 → token1 (price decreases):
+            # new_sqrtP = sqrtP * L * Q96 / (L * Q96 + amount_in_net * sqrtP)
+            denom = L * Q96 + amount_in_net * sqrtP
+            if denom <= 0:
+                return 0
+            new_sqrtP = sqrtP * L * Q96 // denom
+            # Δy = L * (sqrtP - new_sqrtP) / Q96
+            if sqrtP <= new_sqrtP:
+                return 0
+            return L * (sqrtP - new_sqrtP) // Q96
+        else:
+            # Swapping token1 → token0 (price increases):
+            # new_sqrtP = sqrtP + amount_in_net * Q96 / L
+            new_sqrtP = sqrtP + amount_in_net * Q96 // L
+            # Δx = L * Q96 * (new_sqrtP - sqrtP) / (sqrtP * new_sqrtP)
+            if new_sqrtP <= sqrtP:
+                return 0
+            numerator = L * Q96 * (new_sqrtP - sqrtP)
+            denominator = sqrtP * new_sqrtP
+            if denominator == 0:
+                return 0
+            return numerator // denominator
 
 
 class PoolGraph:

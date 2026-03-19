@@ -1,11 +1,12 @@
 """Tests for pydifi.pathfinder — graph and router."""
 
 from decimal import Decimal
+import math
 
 import pytest
 
 from pydifi.exceptions import NoRouteFoundError
-from pydifi.pathfinder.graph import PoolEdge, PoolGraph
+from pydifi.pathfinder.graph import PoolEdge, PoolGraph, V3PoolEdge
 from pydifi.pathfinder.router import Router
 from pydifi.types import ChainId, Token, TokenAmount
 
@@ -99,6 +100,102 @@ class TestPoolEdge:
             protocol="UniswapV2",
         )
         assert edge.log_weight(10 ** 18) == float("inf")
+
+
+# ---------------------------------------------------------------------------
+# V3PoolEdge tests
+# ---------------------------------------------------------------------------
+
+def _make_v3_edge(token_in, token_out, pool_address, is_token0_in: bool, price_usdc_per_weth: float = 2000.0, fee_bps: int = 30):
+    """Build a V3PoolEdge with a synthetic sqrtPriceX96 at the given USDC/WETH price."""
+    # P_raw = price_raw_token1_per_token0 (in smallest units)
+    if is_token0_in:
+        # token_in = WETH (token0), token_out = USDC (token1)
+        P_raw = price_usdc_per_weth * (10 ** token_out.decimals) / (10 ** token_in.decimals)
+    else:
+        # token_in = USDC (token1), token_out = WETH (token0)
+        # P_raw is still defined as token1/token0 for the underlying pool
+        P_raw = price_usdc_per_weth * (10 ** token_in.decimals) / (10 ** token_out.decimals)
+    sqrtP_real = math.sqrt(P_raw)
+    Q96 = 2 ** 96
+    sqrt_price_x96 = int(sqrtP_real * Q96)
+    liquidity = 5 * 10 ** 22  # large pool
+    return V3PoolEdge(
+        token_in=token_in,
+        token_out=token_out,
+        pool_address=pool_address,
+        protocol="UniswapV3",
+        fee_bps=fee_bps,
+        sqrt_price_x96=sqrt_price_x96,
+        liquidity=liquidity,
+        is_token0_in=is_token0_in,
+    )
+
+
+class TestV3PoolEdge:
+    def test_spot_price_token0_in(self):
+        """Spot price should be ~2000 USDC/WETH when WETH is token0."""
+        edge = _make_v3_edge(WETH, USDC, POOL_A, is_token0_in=True)
+        assert abs(edge.spot_price - Decimal("2000")) < Decimal("1")
+
+    def test_spot_price_token1_in(self):
+        """Spot price should be ~1/2000 WETH/USDC when USDC is token1 in."""
+        edge = _make_v3_edge(USDC, WETH, POOL_A, is_token0_in=False)
+        assert abs(edge.spot_price - Decimal("1") / Decimal("2000")) < Decimal("0.001")
+
+    def test_spot_price_zero_sqrt_price(self):
+        edge = V3PoolEdge(
+            token_in=WETH, token_out=USDC, pool_address=POOL_A,
+            protocol="UniswapV3", sqrt_price_x96=0, liquidity=10 ** 22,
+        )
+        assert edge.spot_price == Decimal(0)
+
+    def test_amount_out_token0_in(self):
+        """Swapping 1 WETH should yield ~1994 USDC (after 0.3% fee at $2000)."""
+        edge = _make_v3_edge(WETH, USDC, POOL_A, is_token0_in=True)
+        out = edge.amount_out(10 ** 18)
+        assert 1_990 * 10 ** 6 < out < 1_998 * 10 ** 6, f"Got {out / 10**6:.2f} USDC"
+
+    def test_amount_out_token1_in(self):
+        """Swapping 2000 USDC should yield ~0.997 WETH (after 0.3% fee)."""
+        edge = _make_v3_edge(USDC, WETH, POOL_A, is_token0_in=False)
+        out = edge.amount_out(2000 * 10 ** 6)
+        assert int(0.994 * 10 ** 18) < out < int(0.998 * 10 ** 18), (
+            f"Got {out / 10**18:.6f} WETH"
+        )
+
+    def test_amount_out_zero_liquidity(self):
+        edge = V3PoolEdge(
+            token_in=WETH, token_out=USDC, pool_address=POOL_A,
+            protocol="UniswapV3", sqrt_price_x96=10 ** 20, liquidity=0,
+        )
+        assert edge.amount_out(10 ** 18) == 0
+
+    def test_amount_out_zero_sqrt_price(self):
+        edge = V3PoolEdge(
+            token_in=WETH, token_out=USDC, pool_address=POOL_A,
+            protocol="UniswapV3", sqrt_price_x96=0, liquidity=10 ** 22,
+        )
+        assert edge.amount_out(10 ** 18) == 0
+
+    def test_log_weight_finite(self):
+        edge = _make_v3_edge(WETH, USDC, POOL_A, is_token0_in=True)
+        weight = edge.log_weight(10 ** 18)
+        assert weight < float("inf")
+        assert weight > 0  # fee causes loss
+
+    def test_v3_edge_in_router(self):
+        """Router should find a route through a V3 pool edge."""
+        g = PoolGraph()
+        edge_in = _make_v3_edge(WETH, USDC, POOL_A, is_token0_in=True)
+        edge_out = _make_v3_edge(USDC, WETH, POOL_A, is_token0_in=False)
+        g.add_pool(edge_in)
+        g.add_pool(edge_out)
+        router = Router(g)
+        route = router.find_best_route(TokenAmount(WETH, 10 ** 18), USDC)
+        assert route.token_in == WETH
+        assert route.token_out == USDC
+        assert route.amount_out.amount > 1_990 * 10 ** 6
 
 
 # ---------------------------------------------------------------------------

@@ -23,7 +23,7 @@ from pydifi.types import ChainId, Token
 # Public RPC
 # ---------------------------------------------------------------------------
 
-ETH_RPC_URL = os.environ.get("ETH_RPC_URL", "https://eth.llamarpc.com")
+ETH_RPC_URL = os.environ.get("ETH_RPC_URL", "https://eth.drpc.org")
 
 # ---------------------------------------------------------------------------
 # Well-known Ethereum mainnet tokens
