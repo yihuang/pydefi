@@ -101,6 +101,30 @@ class TestPoolEdge:
         )
         assert edge.log_weight(10 ** 18) == float("inf")
 
+    def test_estimate_price_impact_nonzero(self):
+        edge = PoolEdge(
+            token_in=WETH,
+            token_out=USDC,
+            pool_address=POOL_A,
+            protocol="UniswapV2",
+            reserve_in=1_000 * 10 ** 18,
+            reserve_out=2_000_000 * 10 ** 6,
+            fee_bps=30,
+        )
+        impact = edge.estimate_price_impact(10 ** 18)
+        assert Decimal(0) < impact < Decimal(1)
+
+    def test_estimate_price_impact_zero_reserve(self):
+        edge = PoolEdge(
+            token_in=WETH,
+            token_out=USDC,
+            pool_address=POOL_A,
+            protocol="UniswapV2",
+            reserve_in=0,
+            reserve_out=0,
+        )
+        assert edge.estimate_price_impact(10 ** 18).is_nan()
+
 
 # ---------------------------------------------------------------------------
 # V3PoolEdge tests
@@ -183,6 +207,34 @@ class TestV3PoolEdge:
         weight = edge.log_weight(10 ** 18)
         assert weight < float("inf")
         assert weight > 0  # fee causes loss
+
+    def test_estimate_price_impact_token0_in(self):
+        """V3 price impact should be a sensible positive fraction."""
+        edge = _make_v3_edge(WETH, USDC, POOL_A, is_token0_in=True)
+        impact = edge.estimate_price_impact(10 ** 18)  # 1 WETH
+        assert not impact.is_nan()
+        assert Decimal(0) < impact < Decimal(1)
+
+    def test_estimate_price_impact_token1_in(self):
+        """V3 price impact should be sensible for token1→token0 direction."""
+        edge = _make_v3_edge(USDC, WETH, POOL_A, is_token0_in=False)
+        impact = edge.estimate_price_impact(2000 * 10 ** 6)  # 2000 USDC
+        assert not impact.is_nan()
+        assert Decimal(0) < impact < Decimal(1)
+
+    def test_estimate_price_impact_zero_liquidity(self):
+        edge = V3PoolEdge(
+            token_in=WETH, token_out=USDC, pool_address=POOL_A,
+            protocol="UniswapV3", sqrt_price_x96=10 ** 20, liquidity=0,
+        )
+        assert edge.estimate_price_impact(10 ** 18).is_nan()
+
+    def test_estimate_price_impact_zero_sqrt_price(self):
+        edge = V3PoolEdge(
+            token_in=WETH, token_out=USDC, pool_address=POOL_A,
+            protocol="UniswapV3", sqrt_price_x96=0, liquidity=10 ** 22,
+        )
+        assert edge.estimate_price_impact(10 ** 18).is_nan()
 
     def test_v3_edge_in_router(self):
         """Router should find a route through a V3 pool edge."""

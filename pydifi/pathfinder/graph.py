@@ -76,6 +76,28 @@ class PoolEdge:
             return 0
         return numerator // denominator
 
+    def estimate_price_impact(self, amount_in: int) -> Decimal:
+        """Estimate the price impact of swapping *amount_in* through this pool.
+
+        For V2-style pools with known reserves, price impact is approximated as
+        ``amount_in / (reserve_in + amount_in)`` — the fraction of pool depth
+        consumed by the swap.
+
+        Subclasses should override this method to implement pool-type-specific
+        impact estimation (e.g. :class:`V3PoolEdge` uses virtual reserves
+        derived from ``sqrtPriceX96`` / ``liquidity``).
+
+        Args:
+            amount_in: Raw input amount (before fees).
+
+        Returns:
+            Estimated price impact in ``[0, 1]``, or ``Decimal('NaN')`` if the
+            pool does not expose enough information for an estimate.
+        """
+        if self.reserve_in > 0:
+            return Decimal(amount_in) / Decimal(self.reserve_in + amount_in)
+        return Decimal("NaN")
+
     def log_weight(self, amount_in: int = 1) -> float:
         """Return a log-space weight suitable for shortest-path algorithms.
 
@@ -203,6 +225,45 @@ class V3PoolEdge(PoolEdge):
             if denominator == 0:
                 return 0
             return numerator // denominator
+
+    def estimate_price_impact(self, amount_in: int) -> Decimal:
+        """Estimate price impact using V3 current-tick virtual reserves.
+
+        Computes the virtual reserve (liquidity depth) at the current tick as
+        a proxy for ``reserve_in`` in the impact formula
+        ``amount_in / (depth + amount_in)``:
+
+        * token0 → token1 (``is_token0_in=True``):  depth ≈ ``L × Q96 / sqrtP``
+        * token1 → token0 (``is_token0_in=False``): depth ≈ ``L × sqrtP / Q96``
+
+        These expressions correspond to the virtual reserves of the input token
+        in Uniswap V3's concentrated liquidity math at the current tick.
+        The pre-fee ``amount_in`` is used for the ratio (price impact measures
+        depth consumption before fees are applied).
+
+        Args:
+            amount_in: Raw input amount (before fees).
+
+        Returns:
+            Estimated price impact in ``[0, 1]``, or ``Decimal('NaN')`` if the
+            pool state is unavailable.
+        """
+        if amount_in < 0:
+            return Decimal("NaN")
+        if amount_in == 0:
+            return Decimal(0)
+        if self.sqrt_price_x96 == 0 or self.liquidity == 0:
+            return Decimal("NaN")
+        Q96 = self._Q96
+        if self.is_token0_in:
+            # Virtual depth of token0 at current tick ≈ L * Q96 / sqrtP
+            depth = self.liquidity * Q96 // self.sqrt_price_x96
+        else:
+            # Virtual depth of token1 at current tick ≈ L * sqrtP / Q96
+            depth = self.liquidity * self.sqrt_price_x96 // Q96
+        if depth <= 0:
+            return Decimal("NaN")
+        return Decimal(amount_in) / Decimal(depth + amount_in)
 
 
 class PoolGraph:

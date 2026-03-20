@@ -151,7 +151,19 @@ class Router:
     ) -> list[SwapRoute]:
         """Find the top-*k* routes by output amount.
 
-        Uses DFS with pruning to enumerate multi-hop routes.
+        Uses DFS with dominance pruning to enumerate multi-hop routes.
+        Pruning rule: when two paths reach the same ``(token, depth)`` state,
+        only the one with the larger intermediate amount is explored further.
+        Because ``edge.amount_out`` is monotonically increasing, any
+        continuation from the dominated state produces ≤ output compared to
+        the corresponding continuation from the better state.
+
+        .. note::
+            This method is designed for **small, curated graphs** (typically
+            fewer than ~20 tokens and ~50 edges).  Even with dominance pruning,
+            DFS can grow combinatorially on dense graphs.  For large graphs or
+            production routing, prefer :meth:`find_best_route`, which uses
+            bounded DP and scales more predictably.
 
         Args:
             amount_in: Exact input amount.
@@ -164,6 +176,7 @@ class Router:
 
         Raises:
             :class:`~pydifi.exceptions.NoRouteFoundError`: If no routes exist.
+            :class:`ValueError`: If ``token_in`` and ``token_out`` are the same.
         """
         src = amount_in.token
         dst_addr = token_out.address.lower()
@@ -172,13 +185,27 @@ class Router:
         if src.address.lower() == dst_addr:
             raise ValueError("token_in and token_out must be different")
 
+        # Dominance pruning: best raw output seen for each (token_addr, hop_depth).
+        # A path is pruned when it arrives at a state with a lower amount than
+        # one already explored — any onward route will be dominated.
+        best_at: dict[tuple[str, int], int] = {}
+
         def dfs(
             current_token: Token,
             current_amount: int,
             path: list[PoolEdge],
             visited_tokens: set[str],
         ) -> None:
-            if current_token.address.lower() == dst_addr:
+            depth = len(path)
+            tok_addr = current_token.address.lower()
+
+            # Prune dominated states.
+            existing = best_at.get((tok_addr, depth))
+            if existing is not None and current_amount <= existing:
+                return
+            best_at[(tok_addr, depth)] = current_amount
+
+            if tok_addr == dst_addr:
                 steps = [
                     SwapStep(
                         token_in=e.token_in,
@@ -197,7 +224,7 @@ class Router:
                 ))
                 return
 
-            if len(path) >= self.max_hops:
+            if depth >= self.max_hops:
                 return
 
             for edge in self.graph.edges_from(current_token):
@@ -228,37 +255,40 @@ class Router:
     def _estimate_price_impact(edges: list[PoolEdge], amount_in: int) -> Decimal:
         """Estimate cumulative price impact across a multi-hop path.
 
-        For hops where ``reserve_in > 0`` (V2-style pools), price impact is
-        approximated as ``amount_in / (reserve_in + amount_in)`` — the ratio
-        of the swap size to the total pool depth after the swap.
+        Delegates per-hop impact estimation to each edge's polymorphic
+        :meth:`~pydifi.pathfinder.graph.PoolEdge.estimate_price_impact` method,
+        allowing each pool type (V2, V3, Curve, …) to implement its own model:
 
-        For hops where ``reserve_in == 0`` (e.g. V3 pools that use
-        ``sqrt_price_x96`` / ``liquidity`` instead of reserves), impact cannot
-        be estimated from reserves and is marked as unestimated.
+        * :class:`~pydifi.pathfinder.graph.PoolEdge` (V2-style): uses
+          ``amount_in / (reserve_in + amount_in)``.
+        * :class:`~pydifi.pathfinder.graph.V3PoolEdge`: uses virtual reserves
+          derived from ``sqrtPriceX96`` / ``liquidity``.
+
+        If a hop returns ``Decimal('NaN')`` (impact unestimable) and no other
+        hop yields a positive estimate, the cumulative result is
+        ``Decimal('NaN')`` to signal "impact unknown" rather than "zero impact".
 
         Args:
             edges: Ordered pool edges in the route.
             amount_in: Input amount at the first hop.
 
         Returns:
-            Estimated price impact in ``[0, 1]``.  Returns ``Decimal('NaN')``
-            if *no* hop in the path exposes a positive ``reserve_in`` (i.e.
-            the entire path consists of pools where impact is not estimable
-            from reserves), so callers can distinguish "zero impact" from
-            "impact unknown".
+            Estimated cumulative price impact in ``[0, 1]``, or
+            ``Decimal('NaN')`` if the entire path consists of pools where
+            impact cannot be estimated.
         """
         total_impact = Decimal(0)
         current_amount = amount_in
-        has_zero_reserve_hop = False
+        has_unestimated_hop = False
         for edge in edges:
-            if edge.reserve_in > 0:
-                impact = Decimal(current_amount) / Decimal(edge.reserve_in + current_amount)
-                total_impact += impact
+            hop_impact = edge.estimate_price_impact(current_amount)
+            if hop_impact.is_nan():
+                has_unestimated_hop = True
             else:
-                has_zero_reserve_hop = True
+                total_impact += hop_impact
             # Always propagate the simulated amount forward so that later hops
-            # with reserves use the correct intermediate amount.
+            # use the correct intermediate amount.
             current_amount = edge.amount_out(current_amount)
-        if has_zero_reserve_hop and total_impact == Decimal(0):
+        if has_unestimated_hop and total_impact == Decimal(0):
             return Decimal("NaN")
         return min(total_impact, Decimal(1))
