@@ -24,6 +24,11 @@ dev = [
     "pytest-rerunfailures>=14.0",
 ]
 
+[project.urls]
+"Homepage" = "https://github.com/yihuang/pydifi"
+"Repository" = "https://github.com/yihuang/pydifi"
+"Bug Tracker" = "https://github.com/yihuang/pydifi/issues"
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["pydifi*"]
