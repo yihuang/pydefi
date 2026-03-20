@@ -12,6 +12,7 @@ from pydefi.amm.universal_router import (
     UNIVERSAL_ROUTER_ADDRESSES,
     RouterCommand,
     UniversalRouter,
+    V4Action,
 )
 from pydefi.exceptions import InsufficientLiquidityError
 from pydefi.types import ChainId, Token, TokenAmount, SwapTransaction
@@ -199,7 +200,7 @@ class TestUniswapV3Instance:
 # Universal Router tests (no network calls)
 # ---------------------------------------------------------------------------
 
-UNIVERSAL_ROUTER_ADDR = "0x3fC91A3afd70395Cd496C647d5a6CC9D4B2b7FAD"
+UNIVERSAL_ROUTER_ADDR = "0x66a9893cC07D91D95644AEDD05D03f95e1dBA8Af"  # UniversalRouterV2 on Ethereum mainnet
 RECIPIENT = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"
 
 
@@ -222,6 +223,18 @@ class TestRouterCommand:
     def test_unwrap_weth_value(self):
         assert RouterCommand.UNWRAP_WETH == 0x0C
 
+    def test_v4_swap_value(self):
+        assert RouterCommand.V4_SWAP == 0x10
+
+    def test_v4_initialize_pool_value(self):
+        assert RouterCommand.V4_INITIALIZE_POOL == 0x13
+
+    def test_execute_sub_plan_value(self):
+        assert RouterCommand.EXECUTE_SUB_PLAN == 0x21
+
+    def test_across_v4_deposit_value(self):
+        assert RouterCommand.ACROSS_V4_DEPOSIT_V3 == 0x40
+
     def test_allow_revert_flag(self):
         assert RouterCommand.ALLOW_REVERT_FLAG == 0x80
 
@@ -233,7 +246,8 @@ class TestRouterCommand:
 class TestUniversalRouterConstants:
     def test_known_addresses_contains_ethereum(self):
         assert 1 in UNIVERSAL_ROUTER_ADDRESSES
-        assert UNIVERSAL_ROUTER_ADDRESSES[1] == "0x3fC91A3afd70395Cd496C647d5a6CC9D4B2b7FAD"
+        # UniversalRouterV2 (supports Uniswap V4)
+        assert UNIVERSAL_ROUTER_ADDRESSES[1] == "0x66a9893cC07D91D95644AEDD05D03f95e1dBA8Af"
 
     def test_known_addresses_contains_arbitrum(self):
         assert 42161 in UNIVERSAL_ROUTER_ADDRESSES
@@ -462,3 +476,160 @@ class TestUniversalRouterTransactionBuilders:
 
     def test_router_address_stored(self):
         assert self.router.router_address == UNIVERSAL_ROUTER_ADDR
+
+
+class TestV4Action:
+    def test_swap_exact_in_single_value(self):
+        assert V4Action.SWAP_EXACT_IN_SINGLE == 0x06
+
+    def test_swap_exact_in_value(self):
+        assert V4Action.SWAP_EXACT_IN == 0x07
+
+    def test_swap_exact_out_single_value(self):
+        assert V4Action.SWAP_EXACT_OUT_SINGLE == 0x08
+
+    def test_swap_exact_out_value(self):
+        assert V4Action.SWAP_EXACT_OUT == 0x09
+
+    def test_settle_all_value(self):
+        assert V4Action.SETTLE_ALL == 0x0C
+
+    def test_take_all_value(self):
+        assert V4Action.TAKE_ALL == 0x0F
+
+
+class TestV4Encoding:
+    def test_sort_currencies_lower_first(self):
+        # USDC (0xA0...) < WETH (0xC0...) so USDC is currency0
+        c0, c1 = UniversalRouter._sort_v4_currencies(WETH.address, USDC.address)
+        assert c0.lower() < c1.lower()
+        assert c0.lower() == USDC.address.lower()
+
+    def test_sort_currencies_already_sorted(self):
+        c0, c1 = UniversalRouter._sort_v4_currencies(USDC.address, WETH.address)
+        assert c0.lower() == USDC.address.lower()
+        assert c1.lower() == WETH.address.lower()
+
+    def test_encode_v4_exact_in_single_params_length(self):
+        c0, c1 = UniversalRouter._sort_v4_currencies(WETH.address, USDC.address)
+        encoded = UniversalRouter.encode_v4_exact_in_single_params(
+            currency0=c0,
+            currency1=c1,
+            fee=500,
+            tick_spacing=10,
+            hooks="0x0000000000000000000000000000000000000000",
+            zero_for_one=False,
+            amount_in=10 ** 18,
+            amount_out_minimum=1_800 * 10 ** 6,
+        )
+        assert isinstance(encoded, bytes)
+        assert len(encoded) > 0
+
+    def test_encode_v4_settle_all_params_length(self):
+        encoded = UniversalRouter.encode_v4_settle_all_params(WETH.address, 10 ** 18)
+        assert isinstance(encoded, bytes)
+        assert len(encoded) == 64  # two 32-byte ABI words
+
+    def test_encode_v4_take_all_params_length(self):
+        encoded = UniversalRouter.encode_v4_take_all_params(USDC.address, 0)
+        assert isinstance(encoded, bytes)
+        assert len(encoded) == 64
+
+    def test_encode_v4_swap_actions_length_mismatch_raises(self):
+        with pytest.raises(ValueError, match="length"):
+            UniversalRouter.encode_v4_swap_actions(
+                [V4Action.SWAP_EXACT_IN_SINGLE],
+                [],
+            )
+
+    def test_encode_v4_swap_actions_output_is_bytes(self):
+        c0, c1 = UniversalRouter._sort_v4_currencies(WETH.address, USDC.address)
+        swap_p = UniversalRouter.encode_v4_exact_in_single_params(
+            c0, c1, 500, 10,
+            "0x0000000000000000000000000000000000000000",
+            False, 10 ** 18, 0,
+        )
+        settle_p = UniversalRouter.encode_v4_settle_all_params(WETH.address, 10 ** 18)
+        take_p = UniversalRouter.encode_v4_take_all_params(USDC.address, 0)
+        v4_input = UniversalRouter.encode_v4_swap_actions(
+            [V4Action.SWAP_EXACT_IN_SINGLE, V4Action.SETTLE_ALL, V4Action.TAKE_ALL],
+            [swap_p, settle_p, take_p],
+        )
+        assert isinstance(v4_input, bytes)
+        assert len(v4_input) > 0
+
+
+class TestV4TransactionBuilder:
+    def setup_method(self):
+        self.router = UniversalRouter(UNIVERSAL_ROUTER_ADDR)
+
+    def test_build_v4_exact_in_single_returns_swap_transaction(self):
+        amount_in = TokenAmount.from_human(WETH, "1")
+        tx = self.router.build_v4_exact_in_single_transaction(
+            amount_in=amount_in,
+            token_out=USDC,
+            fee=500,
+            tick_spacing=10,
+            recipient=RECIPIENT,
+            amount_out_minimum=1_800 * 10 ** 6,
+            deadline=1_700_000_000,
+        )
+        assert isinstance(tx, SwapTransaction)
+        assert tx.to == UNIVERSAL_ROUTER_ADDR
+        assert tx.value == 0
+
+    def test_build_v4_exact_in_single_with_deadline_selector(self):
+        amount_in = TokenAmount.from_human(WETH, "1")
+        tx = self.router.build_v4_exact_in_single_transaction(
+            amount_in=amount_in,
+            token_out=USDC,
+            fee=500,
+            tick_spacing=10,
+            recipient=RECIPIENT,
+            amount_out_minimum=0,
+            deadline=1_700_000_000,
+        )
+        assert tx.data[:4] == bytes.fromhex("3593564c")
+
+    def test_build_v4_exact_in_single_no_deadline_selector(self):
+        amount_in = TokenAmount.from_human(WETH, "1")
+        tx = self.router.build_v4_exact_in_single_transaction(
+            amount_in=amount_in,
+            token_out=USDC,
+            fee=500,
+            tick_spacing=10,
+            recipient=RECIPIENT,
+            amount_out_minimum=0,
+        )
+        assert tx.data[:4] == bytes.fromhex("24856bc3")
+
+    def test_build_v4_exact_in_single_with_hooks(self):
+        custom_hooks = "0x1234567890abcdef1234567890abcdef12345678"
+        amount_in = TokenAmount.from_human(WETH, "1")
+        tx = self.router.build_v4_exact_in_single_transaction(
+            amount_in=amount_in,
+            token_out=USDC,
+            fee=500,
+            tick_spacing=10,
+            recipient=RECIPIENT,
+            amount_out_minimum=0,
+            hooks=custom_hooks,
+            hook_data=b"\x01\x02\x03",
+        )
+        assert isinstance(tx, SwapTransaction)
+        assert len(tx.data) > 4
+
+    def test_v4_calldata_contains_v4_swap_command(self):
+        """The commands byte in the calldata must contain V4_SWAP (0x10)."""
+        amount_in = TokenAmount.from_human(WETH, "1")
+        tx = self.router.build_v4_exact_in_single_transaction(
+            amount_in=amount_in,
+            token_out=USDC,
+            fee=3000,
+            tick_spacing=60,
+            recipient=RECIPIENT,
+            amount_out_minimum=0,
+        )
+        # commands are ABI-encoded after the 4-byte selector.
+        # The commands bytes value 0x10 (V4_SWAP) must appear in the calldata.
+        assert bytes([RouterCommand.V4_SWAP]) in tx.data

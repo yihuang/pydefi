@@ -17,12 +17,17 @@ class ChainId(IntEnum):
     OPTIMISM = 10
     BSC = 56
     POLYGON = 137
+    UNICHAIN = 130
+    WORLDCHAIN = 480
+    BASE = 8453
     ARBITRUM = 42161
     AVALANCHE = 43114
-    BASE = 8453
     LINEA = 59144
+    BLAST = 81457
     SCROLL = 534352
     ZKSYNC = 324
+    ZORA = 7777777
+    SEPOLIA = 11155111
 
 
 @dataclass(frozen=True)
