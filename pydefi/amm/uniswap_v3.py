@@ -14,9 +14,9 @@ from typing import NamedTuple
 from eth_contract import Contract
 from web3 import AsyncWeb3
 
-from pydifi.amm.base import BaseAMM
-from pydifi.exceptions import InsufficientLiquidityError
-from pydifi.types import SwapRoute, SwapStep, Token, TokenAmount
+from pydefi.amm.base import BaseAMM
+from pydefi.exceptions import InsufficientLiquidityError
+from pydefi.types import SwapRoute, SwapStep, Token, TokenAmount
 
 # ---------------------------------------------------------------------------
 # ABI struct NamedTuples
@@ -170,10 +170,10 @@ class UniswapV3(BaseAMM):
             fee: Fee tier (defaults to ``self.default_fee``).
 
         Returns:
-            Expected output :class:`~pydifi.types.TokenAmount`.
+            Expected output :class:`~pydefi.types.TokenAmount`.
 
         Raises:
-            :class:`~pydifi.exceptions.InsufficientLiquidityError`: If the
+            :class:`~pydefi.exceptions.InsufficientLiquidityError`: If the
                 quoter reverts.
         """
         fee = fee if fee is not None else self.default_fee
@@ -213,7 +213,7 @@ class UniswapV3(BaseAMM):
                 Defaults to ``[self.default_fee] * (len(path) - 1)``.
 
         Returns:
-            List of :class:`~pydifi.types.TokenAmount` objects.
+            List of :class:`~pydefi.types.TokenAmount` objects.
         """
         if len(path) < 2:
             raise ValueError("path must contain at least two tokens")
@@ -254,7 +254,7 @@ class UniswapV3(BaseAMM):
             path: Swap path (must currently be exactly 2 tokens for exact-output).
 
         Returns:
-            List of :class:`~pydifi.types.TokenAmount` objects.
+            List of :class:`~pydefi.types.TokenAmount` objects.
         """
         if len(path) < 2:
             raise ValueError("path must contain at least two tokens")
@@ -299,7 +299,7 @@ class UniswapV3(BaseAMM):
             slippage_bps: Slippage tolerance in basis points.
 
         Returns:
-            A :class:`~pydifi.types.SwapRoute`.
+            A :class:`~pydefi.types.SwapRoute`.
         """
         amount_out = await self.quote_exact_input_single(amount_in, token_out)
 

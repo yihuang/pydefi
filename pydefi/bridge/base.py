@@ -7,7 +7,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any, Optional
 
-from pydifi.types import BridgeQuote, Token, TokenAmount
+from pydefi.types import BridgeQuote, Token, TokenAmount
 
 
 class BaseBridge(ABC):
@@ -44,10 +44,10 @@ class BaseBridge(ABC):
             **kwargs: Bridge-specific parameters.
 
         Returns:
-            A :class:`~pydifi.types.BridgeQuote`.
+            A :class:`~pydefi.types.BridgeQuote`.
 
         Raises:
-            :class:`~pydifi.exceptions.BridgeError`: On API / contract errors.
+            :class:`~pydefi.exceptions.BridgeError`: On API / contract errors.
         """
 
     @abstractmethod

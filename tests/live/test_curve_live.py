@@ -11,8 +11,8 @@ Curve 3pool address: 0xbEbc44782C7dB0a1A60Cb6fe97d0b483032FF1C7
 
 import pytest
 
-from pydifi.amm.curve import CurvePool
-from pydifi.types import TokenAmount
+from pydefi.amm.curve import CurvePool
+from pydefi.types import TokenAmount
 
 from .conftest import DAI, USDC, USDT
 

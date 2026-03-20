@@ -7,8 +7,8 @@ a structurally valid and numerically plausible response.
 
 import pytest
 
-from pydifi.aggregator.paraswap import ParaSwap
-from pydifi.types import TokenAmount
+from pydefi.aggregator.paraswap import ParaSwap
+from pydefi.types import TokenAmount
 
 from .conftest import USDC, WETH
 

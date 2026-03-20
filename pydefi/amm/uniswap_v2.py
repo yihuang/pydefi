@@ -13,9 +13,9 @@ from decimal import Decimal
 from eth_contract import Contract
 from web3 import AsyncWeb3
 
-from pydifi.amm.base import BaseAMM
-from pydifi.exceptions import InsufficientLiquidityError
-from pydifi.types import SwapRoute, SwapStep, Token, TokenAmount
+from pydefi.amm.base import BaseAMM
+from pydefi.exceptions import InsufficientLiquidityError
+from pydefi.types import SwapRoute, SwapStep, Token, TokenAmount
 
 # ---------------------------------------------------------------------------
 # ABI fragments (human-readable signatures)
@@ -97,11 +97,11 @@ class UniswapV2(BaseAMM):
             path: Swap path (token_in, [intermediate…], token_out).
 
         Returns:
-            A list of :class:`~pydifi.types.TokenAmount` objects, one per
+            A list of :class:`~pydefi.types.TokenAmount` objects, one per
             token in *path*.
 
         Raises:
-            :class:`~pydifi.exceptions.InsufficientLiquidityError`: If the
+            :class:`~pydefi.exceptions.InsufficientLiquidityError`: If the
                 router reverts due to insufficient liquidity.
             ValueError: If *path* has fewer than two elements.
         """
@@ -130,10 +130,10 @@ class UniswapV2(BaseAMM):
             path: Swap path.
 
         Returns:
-            A list of :class:`~pydifi.types.TokenAmount` objects.
+            A list of :class:`~pydefi.types.TokenAmount` objects.
 
         Raises:
-            :class:`~pydifi.exceptions.InsufficientLiquidityError`: If the
+            :class:`~pydefi.exceptions.InsufficientLiquidityError`: If the
                 router reverts.
         """
         if len(path) < 2:
@@ -169,7 +169,7 @@ class UniswapV2(BaseAMM):
             slippage_bps: Slippage tolerance in basis points.
 
         Returns:
-            A :class:`~pydifi.types.SwapRoute` for the requested swap.
+            A :class:`~pydefi.types.SwapRoute` for the requested swap.
         """
         path = [amount_in.token, token_out]
         amounts = await self.get_amounts_out(amount_in, path)

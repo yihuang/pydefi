@@ -11,9 +11,9 @@ from typing import Any, Optional
 
 import aiohttp
 
-from pydifi.aggregator.base import AggregatorQuote, BaseAggregator
-from pydifi.exceptions import AggregatorError
-from pydifi.types import SwapRoute, SwapStep, Token, TokenAmount
+from pydefi.aggregator.base import AggregatorQuote, BaseAggregator
+from pydefi.exceptions import AggregatorError
+from pydefi.types import SwapRoute, SwapStep, Token, TokenAmount
 
 
 class ParaSwap(BaseAggregator):
@@ -115,7 +115,7 @@ class ParaSwap(BaseAggregator):
             slippage_bps: Maximum slippage in basis points.
 
         Returns:
-            An :class:`~pydifi.aggregator.base.AggregatorQuote`.
+            An :class:`~pydefi.aggregator.base.AggregatorQuote`.
         """
         data = await self.get_price(amount_in, token_out, **kwargs)
         price_route = data.get("priceRoute", {})
@@ -156,7 +156,7 @@ class ParaSwap(BaseAggregator):
             slippage_bps: Maximum slippage in basis points.
 
         Returns:
-            An :class:`~pydifi.aggregator.base.AggregatorQuote` with
+            An :class:`~pydefi.aggregator.base.AggregatorQuote` with
             ``tx_data`` populated.
         """
         # First get the price route
@@ -200,7 +200,7 @@ class ParaSwap(BaseAggregator):
         slippage_bps: int = 50,
         **kwargs: Any,
     ) -> SwapRoute:
-        """Build a :class:`~pydifi.types.SwapRoute` from a ParaSwap quote.
+        """Build a :class:`~pydefi.types.SwapRoute` from a ParaSwap quote.
 
         Args:
             amount_in: Exact input amount.
@@ -208,7 +208,7 @@ class ParaSwap(BaseAggregator):
             slippage_bps: Maximum slippage in basis points.
 
         Returns:
-            A :class:`~pydifi.types.SwapRoute`.
+            A :class:`~pydefi.types.SwapRoute`.
         """
         quote = await self.get_quote(amount_in, token_out, slippage_bps, **kwargs)
 

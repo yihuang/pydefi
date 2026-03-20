@@ -1,23 +1,23 @@
 """
-Custom exceptions for pydifi.
+Custom exceptions for pydefi.
 """
 
 from __future__ import annotations
 
 
-class PydifiError(Exception):
-    """Base class for all pydifi errors."""
+class PydefiError(Exception):
+    """Base class for all pydefi errors."""
 
 
-class InsufficientLiquidityError(PydifiError):
+class InsufficientLiquidityError(PydefiError):
     """Raised when a pool does not have enough liquidity for the requested trade."""
 
 
-class NoRouteFoundError(PydifiError):
+class NoRouteFoundError(PydefiError):
     """Raised when the pathfinder cannot find a route between two tokens."""
 
 
-class AggregatorError(PydifiError):
+class AggregatorError(PydefiError):
     """Raised when a DEX aggregator API returns an error."""
 
     def __init__(self, message: str, status_code: int | None = None) -> None:
@@ -25,9 +25,9 @@ class AggregatorError(PydifiError):
         self.status_code = status_code
 
 
-class BridgeError(PydifiError):
+class BridgeError(PydefiError):
     """Raised when a cross-chain bridge operation fails."""
 
 
-class SlippageExceededError(PydifiError):
+class SlippageExceededError(PydefiError):
     """Raised when the actual output is below the minimum acceptable amount."""

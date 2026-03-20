@@ -6,8 +6,8 @@ verify that ``get_amounts_out`` and ``get_amounts_in`` return plausible values.
 
 import pytest
 
-from pydifi.amm.uniswap_v2 import UniswapV2
-from pydifi.types import TokenAmount
+from pydefi.amm.uniswap_v2 import UniswapV2
+from pydefi.types import TokenAmount
 
 from .conftest import DAI, USDC, WETH
 

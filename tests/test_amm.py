@@ -1,13 +1,13 @@
-"""Tests for pydifi.amm (no live node required)."""
+"""Tests for pydefi.amm (no live node required)."""
 
 from decimal import Decimal
 
 import pytest
 
-from pydifi.amm.uniswap_v2 import UniswapV2
-from pydifi.amm.uniswap_v3 import UniswapV3
-from pydifi.exceptions import InsufficientLiquidityError
-from pydifi.types import ChainId, Token, TokenAmount
+from pydefi.amm.uniswap_v2 import UniswapV2
+from pydefi.amm.uniswap_v3 import UniswapV3
+from pydefi.exceptions import InsufficientLiquidityError
+from pydefi.types import ChainId, Token, TokenAmount
 
 
 # ---------------------------------------------------------------------------
@@ -95,12 +95,12 @@ class TestUniswapV2Math:
         assert abs(amount_in_back - amount_in) < amount_in // 10_000
 
     def test_apply_slippage(self):
-        from pydifi.amm.base import BaseAMM
+        from pydefi.amm.base import BaseAMM
         result = BaseAMM._apply_slippage(1_000_000, 50)
         assert result == 995_000
 
     def test_apply_slippage_zero(self):
-        from pydifi.amm.base import BaseAMM
+        from pydefi.amm.base import BaseAMM
         result = BaseAMM._apply_slippage(1_000_000, 0)
         assert result == 1_000_000
 

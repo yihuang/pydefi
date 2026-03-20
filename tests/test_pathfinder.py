@@ -1,14 +1,14 @@
-"""Tests for pydifi.pathfinder — graph and router."""
+"""Tests for pydefi.pathfinder — graph and router."""
 
 from decimal import Decimal
 import math
 
 import pytest
 
-from pydifi.exceptions import NoRouteFoundError
-from pydifi.pathfinder.graph import PoolEdge, PoolGraph, V3PoolEdge
-from pydifi.pathfinder.router import Router
-from pydifi.types import ChainId, Token, TokenAmount
+from pydefi.exceptions import NoRouteFoundError
+from pydefi.pathfinder.graph import PoolEdge, PoolGraph, V3PoolEdge
+from pydefi.pathfinder.router import Router
+from pydefi.types import ChainId, Token, TokenAmount
 
 
 # ---------------------------------------------------------------------------

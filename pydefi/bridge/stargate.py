@@ -15,9 +15,9 @@ from typing import Any, Optional
 from eth_contract import Contract
 from web3 import AsyncWeb3
 
-from pydifi.bridge.base import BaseBridge
-from pydifi.exceptions import BridgeError
-from pydifi.types import BridgeQuote, Token, TokenAmount
+from pydefi.bridge.base import BaseBridge
+from pydefi.exceptions import BridgeError
+from pydefi.types import BridgeQuote, Token, TokenAmount
 
 # ---------------------------------------------------------------------------
 # ABI fragments
@@ -160,7 +160,7 @@ class Stargate(BaseBridge):
             **kwargs: Optional ``dst_gas`` override.
 
         Returns:
-            A :class:`~pydifi.types.BridgeQuote`.
+            A :class:`~pydefi.types.BridgeQuote`.
         """
         dst_gas: int = kwargs.get("dst_gas", 200_000)
 

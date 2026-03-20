@@ -2,7 +2,7 @@
 DEX pathfinding router.
 
 Implements hop-bounded dynamic programming over a
-:class:`~pydifi.pathfinder.graph.PoolGraph` to find the optimal swap route
+:class:`~pydefi.pathfinder.graph.PoolGraph` to find the optimal swap route
 between any two tokens.
 
 The algorithm maximises the output amount by tracking the best raw output at
@@ -17,13 +17,13 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Optional
 
-from pydifi.exceptions import NoRouteFoundError
-from pydifi.pathfinder.graph import PoolEdge, PoolGraph
-from pydifi.types import SwapRoute, SwapStep, Token, TokenAmount
+from pydefi.exceptions import NoRouteFoundError
+from pydefi.pathfinder.graph import PoolEdge, PoolGraph
+from pydefi.types import SwapRoute, SwapStep, Token, TokenAmount
 
 
 class Router:
-    """Optimal swap route finder over a :class:`~pydifi.pathfinder.graph.PoolGraph`.
+    """Optimal swap route finder over a :class:`~pydefi.pathfinder.graph.PoolGraph`.
 
     Uses hop-bounded dynamic programming to find the multi-hop route that
     maximises the output amount.
@@ -65,10 +65,10 @@ class Router:
             token_out: Desired output token.
 
         Returns:
-            The best :class:`~pydifi.types.SwapRoute` found.
+            The best :class:`~pydefi.types.SwapRoute` found.
 
         Raises:
-            :class:`~pydifi.exceptions.NoRouteFoundError`: If no path exists
+            :class:`~pydefi.exceptions.NoRouteFoundError`: If no path exists
                 between the two tokens within ``max_hops``.
         """
         src = amount_in.token
@@ -171,11 +171,11 @@ class Router:
             top_k: Maximum number of routes to return.
 
         Returns:
-            List of :class:`~pydifi.types.SwapRoute` objects, sorted by
+            List of :class:`~pydefi.types.SwapRoute` objects, sorted by
             output amount descending.
 
         Raises:
-            :class:`~pydifi.exceptions.NoRouteFoundError`: If no routes exist.
+            :class:`~pydefi.exceptions.NoRouteFoundError`: If no routes exist.
             :class:`ValueError`: If ``token_in`` and ``token_out`` are the same.
         """
         src = amount_in.token
@@ -256,12 +256,12 @@ class Router:
         """Estimate cumulative price impact across a multi-hop path.
 
         Delegates per-hop impact estimation to each edge's polymorphic
-        :meth:`~pydifi.pathfinder.graph.PoolEdge.estimate_price_impact` method,
+        :meth:`~pydefi.pathfinder.graph.PoolEdge.estimate_price_impact` method,
         allowing each pool type (V2, V3, Curve, …) to implement its own model:
 
-        * :class:`~pydifi.pathfinder.graph.PoolEdge` (V2-style): uses
+        * :class:`~pydefi.pathfinder.graph.PoolEdge` (V2-style): uses
           ``amount_in / (reserve_in + amount_in)``.
-        * :class:`~pydifi.pathfinder.graph.V3PoolEdge`: uses virtual reserves
+        * :class:`~pydefi.pathfinder.graph.V3PoolEdge`: uses virtual reserves
           derived from ``sqrtPriceX96`` / ``liquidity``.
 
         If a hop returns ``Decimal('NaN')`` (impact unestimable) and no other

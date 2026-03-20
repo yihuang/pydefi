@@ -17,7 +17,7 @@ import time
 import pytest
 from web3 import AsyncWeb3
 
-from pydifi.types import ChainId, Token
+from pydefi.types import ChainId, Token
 
 # ---------------------------------------------------------------------------
 # Public RPC

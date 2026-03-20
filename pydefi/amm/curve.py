@@ -14,9 +14,9 @@ from decimal import Decimal
 from eth_contract import Contract
 from web3 import AsyncWeb3
 
-from pydifi.amm.base import BaseAMM
-from pydifi.exceptions import InsufficientLiquidityError
-from pydifi.types import SwapRoute, SwapStep, Token, TokenAmount
+from pydefi.amm.base import BaseAMM
+from pydefi.exceptions import InsufficientLiquidityError
+from pydefi.types import SwapRoute, SwapStep, Token, TokenAmount
 
 # ---------------------------------------------------------------------------
 # ABI fragments
@@ -103,7 +103,7 @@ class CurvePool(BaseAMM):
             Expected raw output amount.
 
         Raises:
-            :class:`~pydifi.exceptions.InsufficientLiquidityError`: On revert.
+            :class:`~pydefi.exceptions.InsufficientLiquidityError`: On revert.
         """
         i = self._coin_index(token_in)
         j = self._coin_index(token_out)
@@ -185,7 +185,7 @@ class CurvePool(BaseAMM):
             slippage_bps: Slippage tolerance in basis points.
 
         Returns:
-            A :class:`~pydifi.types.SwapRoute`.
+            A :class:`~pydefi.types.SwapRoute`.
         """
         amount_out_raw = await self.get_dy(amount_in.token, token_out, amount_in.amount)
         amount_out = TokenAmount(token=token_out, amount=amount_out_raw)

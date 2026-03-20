@@ -1,15 +1,15 @@
-"""Tests for pydifi.bridge (no live calls)."""
+"""Tests for pydefi.bridge (no live calls)."""
 
 from decimal import Decimal
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from pydifi.bridge.across import Across
-from pydifi.bridge.base import BaseBridge
-from pydifi.bridge.stargate import Stargate, _LZ_CHAIN_ID, _POOL_IDS
-from pydifi.exceptions import BridgeError
-from pydifi.types import ChainId, Token, TokenAmount
+from pydefi.bridge.across import Across
+from pydefi.bridge.base import BaseBridge
+from pydefi.bridge.stargate import Stargate, _LZ_CHAIN_ID, _POOL_IDS
+from pydefi.exceptions import BridgeError
+from pydefi.types import ChainId, Token, TokenAmount
 
 
 # ---------------------------------------------------------------------------

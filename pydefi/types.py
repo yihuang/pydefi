@@ -1,5 +1,5 @@
 """
-Common types used throughout pydifi.
+Common types used throughout pydefi.
 """
 
 from __future__ import annotations

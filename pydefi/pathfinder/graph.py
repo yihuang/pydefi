@@ -1,7 +1,7 @@
 """
 Graph representation of the DEX liquidity landscape.
 
-Each node in the graph is a :class:`~pydifi.types.Token`.
+Each node in the graph is a :class:`~pydefi.types.Token`.
 Each directed edge represents a liquidity pool that can swap *token_in* →
 *token_out* and carries the pool's reserve information for price estimation.
 """
@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import ClassVar, Iterator
 
-from pydifi.types import Token
+from pydefi.types import Token
 
 
 @dataclass
@@ -181,7 +181,7 @@ class V3PoolEdge(PoolEdge):
         In practice this is fine for **pathfinding** — the router is comparing
         routes to pick the best one, not producing the definitive execution
         quote.  For the precise execution quote, always call
-        :meth:`~pydifi.amm.uniswap_v3.UniswapV3.quote_exact_input_single`
+        :meth:`~pydefi.amm.uniswap_v3.UniswapV3.quote_exact_input_single`
         (backed by the on-chain QuoterV2 which simulates full tick traversal).
 
         Args:

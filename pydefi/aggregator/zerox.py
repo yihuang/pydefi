@@ -11,9 +11,9 @@ from typing import Any, Optional
 
 import aiohttp
 
-from pydifi.aggregator.base import AggregatorQuote, BaseAggregator
-from pydifi.exceptions import AggregatorError
-from pydifi.types import SwapRoute, SwapStep, Token, TokenAmount
+from pydefi.aggregator.base import AggregatorQuote, BaseAggregator
+from pydefi.exceptions import AggregatorError
+from pydefi.types import SwapRoute, SwapStep, Token, TokenAmount
 
 # Mapping from chain IDs to 0x API subdomain / base URLs
 _CHAIN_URLS: dict[int, str] = {
@@ -109,7 +109,7 @@ class ZeroX(BaseAggregator):
             **kwargs: Additional query parameters (e.g. ``takerAddress``).
 
         Returns:
-            An :class:`~pydifi.aggregator.base.AggregatorQuote` with
+            An :class:`~pydefi.aggregator.base.AggregatorQuote` with
             ``tx_data`` ready to broadcast.
         """
         params: dict[str, Any] = {
@@ -155,7 +155,7 @@ class ZeroX(BaseAggregator):
         slippage_bps: int = 50,
         **kwargs: Any,
     ) -> SwapRoute:
-        """Build a :class:`~pydifi.types.SwapRoute` from a 0x quote.
+        """Build a :class:`~pydefi.types.SwapRoute` from a 0x quote.
 
         Args:
             amount_in: Exact input amount.
@@ -163,7 +163,7 @@ class ZeroX(BaseAggregator):
             slippage_bps: Maximum slippage in basis points.
 
         Returns:
-            A :class:`~pydifi.types.SwapRoute`.
+            A :class:`~pydefi.types.SwapRoute`.
         """
         quote = await self.get_quote(amount_in, token_out, slippage_bps, **kwargs)
 

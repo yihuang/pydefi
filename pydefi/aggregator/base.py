@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any, Optional
 
-from pydifi.types import Token, TokenAmount, SwapRoute
+from pydefi.types import Token, TokenAmount, SwapRoute
 
 
 @dataclass
@@ -83,7 +83,7 @@ class BaseAggregator(ABC):
             An :class:`AggregatorQuote`.
 
         Raises:
-            :class:`~pydifi.exceptions.AggregatorError`: On API errors.
+            :class:`~pydefi.exceptions.AggregatorError`: On API errors.
         """
 
     @abstractmethod
@@ -94,7 +94,7 @@ class BaseAggregator(ABC):
         slippage_bps: int = 50,
         **kwargs: Any,
     ) -> SwapRoute:
-        """Build a :class:`~pydifi.types.SwapRoute` from an aggregator quote.
+        """Build a :class:`~pydefi.types.SwapRoute` from an aggregator quote.
 
         Args:
             amount_in: Exact input amount.
@@ -102,7 +102,7 @@ class BaseAggregator(ABC):
             slippage_bps: Maximum acceptable slippage in basis points.
 
         Returns:
-            A :class:`~pydifi.types.SwapRoute`.
+            A :class:`~pydefi.types.SwapRoute`.
         """
 
     def _slippage_to_fraction(self, slippage_bps: int) -> float:

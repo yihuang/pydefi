@@ -2,17 +2,17 @@
 
 These tests fetch live pool state from well-known Uniswap V2 pairs and
 Uniswap V3 pools on Ethereum mainnet, populate a
-:class:`~pydifi.pathfinder.graph.PoolGraph`, and then verify that
-:class:`~pydifi.pathfinder.router.Router` returns plausible routes and amounts.
+:class:`~pydefi.pathfinder.graph.PoolGraph`, and then verify that
+:class:`~pydefi.pathfinder.router.Router` returns plausible routes and amounts.
 """
 
 import pytest
 
 from eth_contract import Contract
-from pydifi.exceptions import NoRouteFoundError
-from pydifi.pathfinder.graph import PoolEdge, PoolGraph, V3PoolEdge
-from pydifi.pathfinder.router import Router
-from pydifi.types import TokenAmount
+from pydefi.exceptions import NoRouteFoundError
+from pydefi.pathfinder.graph import PoolEdge, PoolGraph, V3PoolEdge
+from pydefi.pathfinder.router import Router
+from pydefi.types import TokenAmount
 
 from .conftest import DAI, USDC, USDT, WETH
 

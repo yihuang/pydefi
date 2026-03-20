@@ -1,5 +1,5 @@
 """
-pydifi — Modern Python library for DeFi.
+pydefi — Modern Python library for DeFi.
 
 Provides integrations with:
 - AMM DEXes (Uniswap V2/V3, Curve)
@@ -12,8 +12,8 @@ contracts.
 
 Quick-start example::
 
-    from pydifi.amm import UniswapV2
-    from pydifi.types import Token, TokenAmount, ChainId
+    from pydefi.amm import UniswapV2
+    from pydefi.types import Token, TokenAmount, ChainId
 
     # Define tokens
     ETH = Token(ChainId.ETHEREUM, "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2", "WETH")
@@ -29,7 +29,7 @@ Quick-start example::
     )
 """
 
-from pydifi.types import (
+from pydefi.types import (
     ChainId,
     Token,
     TokenAmount,
@@ -37,8 +37,8 @@ from pydifi.types import (
     SwapRoute,
     BridgeQuote,
 )
-from pydifi.exceptions import (
-    PydifiError,
+from pydefi.exceptions import (
+    PydefiError,
     InsufficientLiquidityError,
     NoRouteFoundError,
     AggregatorError,
@@ -57,7 +57,7 @@ __all__ = [
     "SwapRoute",
     "BridgeQuote",
     # Exceptions
-    "PydifiError",
+    "PydefiError",
     "InsufficientLiquidityError",
     "NoRouteFoundError",
     "AggregatorError",

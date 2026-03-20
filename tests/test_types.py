@@ -1,10 +1,10 @@
-"""Tests for pydifi.types"""
+"""Tests for pydefi.types"""
 
 from decimal import Decimal
 
 import pytest
 
-from pydifi.types import (
+from pydefi.types import (
     BridgeQuote,
     ChainId,
     SwapRoute,

@@ -1,16 +1,16 @@
-"""Tests for pydifi.aggregator (no live HTTP calls)."""
+"""Tests for pydefi.aggregator (no live HTTP calls)."""
 
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from pydifi.aggregator.base import AggregatorQuote, BaseAggregator
-from pydifi.aggregator.oneinch import OneInch
-from pydifi.aggregator.paraswap import ParaSwap
-from pydifi.aggregator.zerox import ZeroX
-from pydifi.exceptions import AggregatorError
-from pydifi.types import ChainId, Token, TokenAmount
+from pydefi.aggregator.base import AggregatorQuote, BaseAggregator
+from pydefi.aggregator.oneinch import OneInch
+from pydefi.aggregator.paraswap import ParaSwap
+from pydefi.aggregator.zerox import ZeroX
+from pydefi.exceptions import AggregatorError
+from pydefi.types import ChainId, Token, TokenAmount
 
 
 # ---------------------------------------------------------------------------

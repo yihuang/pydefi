@@ -6,8 +6,8 @@ verify that ``quote_exact_input_single`` returns plausible values.
 
 import pytest
 
-from pydifi.amm.uniswap_v3 import UniswapV3
-from pydifi.types import TokenAmount
+from pydefi.amm.uniswap_v3 import UniswapV3
+from pydefi.types import TokenAmount
 
 from .conftest import DAI, USDC, WETH
 

@@ -10,7 +10,7 @@ from decimal import Decimal
 from eth_contract import Contract
 from web3 import AsyncWeb3
 
-from pydifi.types import Token, TokenAmount, SwapRoute
+from pydefi.types import Token, TokenAmount, SwapRoute
 
 
 class BaseAMM(ABC):
@@ -45,12 +45,12 @@ class BaseAMM(ABC):
                   Must have at least two elements (token_in and token_out).
 
         Returns:
-            A list of :class:`~pydifi.types.TokenAmount` objects — one per
+            A list of :class:`~pydefi.types.TokenAmount` objects — one per
             token in *path* — where the last element is the final output
             amount.
 
         Raises:
-            :class:`~pydifi.exceptions.InsufficientLiquidityError`: If a pool
+            :class:`~pydefi.exceptions.InsufficientLiquidityError`: If a pool
                 along the path has insufficient liquidity.
         """
 
@@ -65,7 +65,7 @@ class BaseAMM(ABC):
             path: Ordered list of tokens representing the swap path.
 
         Returns:
-            A list of :class:`~pydifi.types.TokenAmount` objects where the
+            A list of :class:`~pydefi.types.TokenAmount` objects where the
             first element is the required input amount.
         """
 
@@ -76,7 +76,7 @@ class BaseAMM(ABC):
         token_out: Token,
         slippage_bps: int = 50,
     ) -> SwapRoute:
-        """Build a :class:`~pydifi.types.SwapRoute` for the given swap.
+        """Build a :class:`~pydefi.types.SwapRoute` for the given swap.
 
         Args:
             amount_in: Exact input amount.
@@ -85,7 +85,7 @@ class BaseAMM(ABC):
                 (1 bp = 0.01 %).  Defaults to 50 bp (0.5 %).
 
         Returns:
-            A fully described :class:`~pydifi.types.SwapRoute`.
+            A fully described :class:`~pydefi.types.SwapRoute`.
         """
 
     @staticmethod

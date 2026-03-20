@@ -17,9 +17,9 @@ import aiohttp
 from eth_contract import Contract
 from web3 import AsyncWeb3
 
-from pydifi.bridge.base import BaseBridge
-from pydifi.exceptions import BridgeError
-from pydifi.types import BridgeQuote, Token, TokenAmount
+from pydefi.bridge.base import BaseBridge
+from pydefi.exceptions import BridgeError
+from pydefi.types import BridgeQuote, Token, TokenAmount
 
 # ---------------------------------------------------------------------------
 # ABI fragments
@@ -80,7 +80,7 @@ class Across(BaseBridge):
             Raw API response dictionary.
 
         Raises:
-            :class:`~pydifi.exceptions.BridgeError`: On API error.
+            :class:`~pydefi.exceptions.BridgeError`: On API error.
         """
         params: dict[str, Any] = {
             "token": token.address,
@@ -115,7 +115,7 @@ class Across(BaseBridge):
             **kwargs: Forwarded to :meth:`get_suggested_fees`.
 
         Returns:
-            A :class:`~pydifi.types.BridgeQuote`.
+            A :class:`~pydefi.types.BridgeQuote`.
         """
         fees_data = await self.get_suggested_fees(token_in, amount_in.amount, **kwargs)
 
