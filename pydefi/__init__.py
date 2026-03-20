@@ -35,6 +35,7 @@ from pydefi.types import (
     TokenAmount,
     SwapStep,
     SwapRoute,
+    SwapTransaction,
     BridgeQuote,
 )
 from pydefi.exceptions import (
@@ -55,6 +56,7 @@ __all__ = [
     "TokenAmount",
     "SwapStep",
     "SwapRoute",
+    "SwapTransaction",
     "BridgeQuote",
     # Exceptions
     "PydefiError",

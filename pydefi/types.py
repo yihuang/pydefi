@@ -146,6 +146,22 @@ class SwapRoute:
 
 
 @dataclass
+class SwapTransaction:
+    """An encoded transaction ready to submit to the Uniswap Universal Router.
+
+    Attributes:
+        to: Target contract address (the Universal Router).
+        data: ABI-encoded calldata for the ``execute`` call.
+        value: Amount of native ETH (in wei) to attach to the transaction.
+            Typically non-zero only when wrapping ETH as part of the swap.
+    """
+
+    to: str
+    data: bytes
+    value: int = 0
+
+
+@dataclass
 class BridgeQuote:
     """A quote for bridging tokens across chains.
 
