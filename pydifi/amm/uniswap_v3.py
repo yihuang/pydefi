@@ -195,16 +195,22 @@ class UniswapV3(BaseAMM):
         return TokenAmount(token=token_out, amount=amount_out)
 
     async def get_amounts_out(
-        self, amount_in: TokenAmount, path: list[Token]
+        self,
+        amount_in: TokenAmount,
+        path: list[Token],
+        fees: list[int] | None = None,
     ) -> list[TokenAmount]:
         """Simulate a single-hop or multi-hop swap.
 
-        For multi-hop swaps this uses the default fee tier for every hop.
-        Use :meth:`quote_exact_input_single` for fine-grained control.
+        For multi-hop swaps, ``fees`` specifies the fee tier for each hop.
+        When omitted, ``self.default_fee`` is used for every hop.
+        Use :meth:`quote_exact_input_single` for fine-grained single-hop control.
 
         Args:
             amount_in: Exact input amount.
-            path: Swap path.
+            path: Swap path (at least two tokens).
+            fees: Per-hop fee tiers (length must equal ``len(path) - 1``).
+                Defaults to ``[self.default_fee] * (len(path) - 1)``.
 
         Returns:
             List of :class:`~pydifi.types.TokenAmount` objects.
@@ -212,12 +218,18 @@ class UniswapV3(BaseAMM):
         if len(path) < 2:
             raise ValueError("path must contain at least two tokens")
 
+        hop_fees = fees if fees is not None else [self.default_fee] * (len(path) - 1)
+        if len(hop_fees) != len(path) - 1:
+            raise ValueError(
+                f"fees length ({len(hop_fees)}) must equal len(path) - 1 ({len(path) - 1})"
+            )
+
         if len(path) == 2:
-            out = await self.quote_exact_input_single(amount_in, path[1])
+            out = await self.quote_exact_input_single(amount_in, path[1], fee=hop_fees[0])
             return [amount_in, out]
 
         # Multi-hop: encode path as bytes (tokenA + fee + tokenB + fee + tokenC …)
-        encoded_path = self._encode_path(path, [self.default_fee] * (len(path) - 1))
+        encoded_path = self._encode_path(path, hop_fees)
         try:
             result = await self._quoter.fns.quoteExactInput(
                 encoded_path, amount_in.amount

@@ -66,7 +66,8 @@ class TestUniswapV3Live:
             default_fee=3000,
         )
         amount_in = TokenAmount.from_human(WETH, "1")
-        amounts = await quoter.get_amounts_out(amount_in, [WETH, USDC, DAI])
+        # Use liquid fee tiers: WETH/USDC 0.05% (500) and USDC/DAI 0.01% (100)
+        amounts = await quoter.get_amounts_out(amount_in, [WETH, USDC, DAI], fees=[500, 100])
 
         assert len(amounts) == 2  # start and end only for multi-hop
         assert amounts[-1].token == DAI
