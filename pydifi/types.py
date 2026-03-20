@@ -50,7 +50,7 @@ class Token:
 
     def is_native(self) -> bool:
         """Return ``True`` if this token represents the native gas currency."""
-        return self.address.lower() == "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+        return self.address.lower() == self.NATIVE_ADDRESS.lower()
 
     def __str__(self) -> str:
         return f"{self.symbol}({self.chain_id})"
