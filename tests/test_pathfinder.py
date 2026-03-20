@@ -401,12 +401,12 @@ class TestRouter:
             router.find_all_routes(TokenAmount(WETH, 10 ** 18), USDC)
 
     def test_price_impact_zero_reserves(self):
-        """Routes through zero-reserve pools should have zero impact."""
+        """Routes through zero-reserve pools (e.g. V3) should return NaN (unestimated)."""
         edges = [
             PoolEdge(WETH, USDC, POOL_A, "UniswapV2", reserve_in=0, reserve_out=0)
         ]
         impact = Router._estimate_price_impact(edges, 10 ** 18)
-        assert impact == Decimal(0)
+        assert impact.is_nan()
 
     def test_price_impact_nonzero(self):
         edges = [

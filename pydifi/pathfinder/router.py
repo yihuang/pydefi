@@ -1,19 +1,19 @@
 """
 DEX pathfinding router.
 
-Implements a modified Dijkstra / Bellman-Ford algorithm over a
+Implements hop-bounded dynamic programming over a
 :class:`~pydifi.pathfinder.graph.PoolGraph` to find the optimal swap route
 between any two tokens.
 
-The algorithm maximises the output amount by working in log-space (minimising
-``-log(output/input)`` along each hop), which converts the multiplicative
-product of exchange rates into an additive sum.
+The algorithm maximises the output amount by tracking the best raw output at
+each ``(token, hop_depth)`` state.  Because ``edge.amount_out`` is
+monotonically increasing, the state with the largest raw output at any
+intermediate token always propagates to the largest output at subsequent hops,
+making simple DP relaxation both correct and safe.
 """
 
 from __future__ import annotations
 
-import heapq
-import math
 from decimal import Decimal
 from typing import Optional
 
@@ -25,8 +25,8 @@ from pydifi.types import SwapRoute, SwapStep, Token, TokenAmount
 class Router:
     """Optimal swap route finder over a :class:`~pydifi.pathfinder.graph.PoolGraph`.
 
-    Uses a Dijkstra-style shortest-path algorithm in log-exchange-rate space
-    to find the multi-hop route that maximises the output amount.
+    Uses hop-bounded dynamic programming to find the multi-hop route that
+    maximises the output amount.
 
     Args:
         graph: The pool graph to search.
@@ -44,12 +44,21 @@ class Router:
     ) -> SwapRoute:
         """Find the route that maximises the output amount.
 
-        Uses a modified Dijkstra algorithm:
+        Uses hop-bounded DP relaxation:
 
-        * Node state: ``(cumulative_log_weight, token, hops, path_so_far)``
-        * Edge weight: ``-log(edge.amount_out(amount) / amount)``
-        * We forward-simulate the actual amount at each hop so that price
-          impact is included naturally.
+        * State: ``(token_address, hop_count)``
+        * Value: maximum raw output amount of *token_address* reachable in
+          exactly *hop_count* hops from the source token.
+        * At each depth, every reachable state is expanded once; if two paths
+          reach the same ``(token, hop)`` state, only the one with the larger
+          raw output is kept.  This is correct because ``edge.amount_out`` is
+          monotonically increasing: a higher intermediate amount always yields
+          at least as much from any onward edge.
+
+        This approach avoids the instability of Dijkstra-style log-weight
+        pruning when edge weights span different token decimal scales (e.g.
+        WETH 18 dec → USDC 6 dec produces a large negative log-ratio that can
+        misguide Dijkstra's early-termination heuristic).
 
         Args:
             amount_in: Exact input token and amount.
@@ -68,75 +77,71 @@ class Router:
         if src.address.lower() == dst_addr:
             raise ValueError("token_in and token_out must be different")
 
-        # Priority queue: (neg_log_output, current_amount, token, hops, steps)
-        # We minimise neg_log_output, which maximises the total output.
-        heap: list[tuple[float, int, Token, int, list[PoolEdge]]] = [
-            (0.0, amount_in.amount, src, 0, [])
-        ]
-        # best neg_log_output seen for each (token_address, hops) state
-        visited: dict[tuple[str, int], float] = {}
+        # DP table: best[(token_addr, hops)] = (max_raw_output, path_of_edges)
+        # Seed with the source state at hop depth 0.
+        best: dict[tuple[str, int], tuple[int, list[PoolEdge]]] = {
+            (src.address.lower(), 0): (amount_in.amount, [])
+        }
 
-        best_route: Optional[SwapRoute] = None
+        for hop in range(self.max_hops):
+            # Snapshot all states at the current depth to avoid processing
+            # states we add during this iteration.
+            current_states = [(k, v) for k, v in best.items() if k[1] == hop]
 
-        while heap:
-            neg_log_out, current_amount, current_token, hops, path = heapq.heappop(heap)
+            for (token_addr, _), (current_amount, path) in current_states:
+                # Tokens already on this path (cycle prevention).
+                visited_tokens: set[str] = {e.token_in.address.lower() for e in path}
+                visited_tokens.add(token_addr)
 
-            state_key = (current_token.address.lower(), hops)
-            if state_key in visited and visited[state_key] <= neg_log_out:
-                continue
-            visited[state_key] = neg_log_out
+                # Retrieve the Token object: use the last edge's output token,
+                # or the source token for the initial state.
+                token: Token = path[-1].token_out if path else src
 
-            # Check if we've reached the destination
-            if current_token.address.lower() == dst_addr:
-                steps = [
-                    SwapStep(
-                        token_in=edge.token_in,
-                        token_out=edge.token_out,
-                        pool_address=edge.pool_address,
-                        protocol=edge.protocol,
-                        fee=edge.fee_bps * 100,
-                    )
-                    for edge in path
-                ]
-                route = SwapRoute(
-                    steps=steps,
-                    amount_in=amount_in,
-                    amount_out=TokenAmount(token=token_out, amount=current_amount),
-                    price_impact=self._estimate_price_impact(path, amount_in.amount),
-                )
-                if best_route is None or current_amount > best_route.amount_out.amount:
-                    best_route = route
-                continue
+                for edge in self.graph.edges_from(token):
+                    next_addr = edge.token_out.address.lower()
+                    if next_addr in visited_tokens:
+                        continue
 
-            if hops >= self.max_hops:
-                continue
+                    next_amount = edge.amount_out(current_amount)
+                    if next_amount <= 0:
+                        continue
 
-            for edge in self.graph.edges_from(current_token):
-                next_amount = edge.amount_out(current_amount)
-                if next_amount <= 0:
-                    continue
-                # Avoid cycles
-                visited_tokens = {e.token_in.address.lower() for e in path}
-                if edge.token_out.address.lower() in visited_tokens:
-                    continue
+                    next_key = (next_addr, hop + 1)
+                    existing = best.get(next_key)
+                    if existing is None or next_amount > existing[0]:
+                        best[next_key] = (next_amount, path + [edge])
 
-                step_weight = -math.log(next_amount / current_amount) if current_amount > 0 else math.inf
-                new_weight = neg_log_out + step_weight
-                new_state = (edge.token_out.address.lower(), hops + 1)
-                if new_state in visited and visited[new_state] <= new_weight:
-                    continue
+        # Collect the best path to the destination across all hop depths.
+        best_result: Optional[tuple[int, list[PoolEdge]]] = None
+        for h in range(1, self.max_hops + 1):
+            entry = best.get((dst_addr, h))
+            if entry is not None:
+                if best_result is None or entry[0] > best_result[0]:
+                    best_result = entry
 
-                heapq.heappush(
-                    heap,
-                    (new_weight, next_amount, edge.token_out, hops + 1, path + [edge]),
-                )
-
-        if best_route is None:
+        if best_result is None:
             raise NoRouteFoundError(
                 f"No route found from {amount_in.token.symbol} to {token_out.symbol} "
                 f"within {self.max_hops} hops"
             )
-        return best_route
+
+        final_amount, final_path = best_result
+        steps = [
+            SwapStep(
+                token_in=edge.token_in,
+                token_out=edge.token_out,
+                pool_address=edge.pool_address,
+                protocol=edge.protocol,
+                fee=edge.fee_bps * 100,
+            )
+            for edge in final_path
+        ]
+        return SwapRoute(
+            steps=steps,
+            amount_in=amount_in,
+            amount_out=TokenAmount(token=token_out, amount=final_amount),
+            price_impact=self._estimate_price_impact(final_path, amount_in.amount),
+        )
 
     def find_all_routes(
         self,
@@ -223,22 +228,37 @@ class Router:
     def _estimate_price_impact(edges: list[PoolEdge], amount_in: int) -> Decimal:
         """Estimate cumulative price impact across a multi-hop path.
 
-        Price impact for a single hop = ``(reserve_in * reserve_out)`` before
-        vs after the swap.  We compute a simple approximation based on the
-        ratio of amount_in to reserve_in.
+        For hops where ``reserve_in > 0`` (V2-style pools), price impact is
+        approximated as ``amount_in / (reserve_in + amount_in)`` — the ratio
+        of the swap size to the total pool depth after the swap.
+
+        For hops where ``reserve_in == 0`` (e.g. V3 pools that use
+        ``sqrt_price_x96`` / ``liquidity`` instead of reserves), impact cannot
+        be estimated from reserves and is marked as unestimated.
 
         Args:
             edges: Ordered pool edges in the route.
             amount_in: Input amount at the first hop.
 
         Returns:
-            Estimated price impact in [0, 1].
+            Estimated price impact in ``[0, 1]``.  Returns ``Decimal('NaN')``
+            if *no* hop in the path exposes a positive ``reserve_in`` (i.e.
+            the entire path consists of pools where impact is not estimable
+            from reserves), so callers can distinguish "zero impact" from
+            "impact unknown".
         """
         total_impact = Decimal(0)
         current_amount = amount_in
+        has_zero_reserve_hop = False
         for edge in edges:
             if edge.reserve_in > 0:
                 impact = Decimal(current_amount) / Decimal(edge.reserve_in + current_amount)
                 total_impact += impact
-                current_amount = edge.amount_out(current_amount)
+            else:
+                has_zero_reserve_hop = True
+            # Always propagate the simulated amount forward so that later hops
+            # with reserves use the correct intermediate amount.
+            current_amount = edge.amount_out(current_amount)
+        if has_zero_reserve_hop and total_impact == Decimal(0):
+            return Decimal("NaN")
         return min(total_impact, Decimal(1))
