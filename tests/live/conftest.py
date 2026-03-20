@@ -1,7 +1,7 @@
 """Shared fixtures for live integration tests.
 
 Live tests require network access to:
-- A public Ethereum JSON-RPC endpoint (default: https://eth.llamarpc.com)
+- A public Ethereum JSON-RPC endpoint (default: https://eth.drpc.org)
 - Public APIs that do not require an API key (e.g. ParaSwap /prices)
 
 Set the ``ETH_RPC_URL`` environment variable to override the default RPC.
