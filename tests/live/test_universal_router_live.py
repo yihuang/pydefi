@@ -1,16 +1,25 @@
 """Live integration tests for the Uniswap Universal Router.
 
-These tests verify that:
+These tests:
 
-1. The UniversalRouterV2 contract (which supports Uniswap V4) is deployed at
-   the expected Ethereum mainnet address by checking that ``eth_getCode``
-   returns non-empty bytecode.
-2. The V3 and V4 calldata builders produce correctly structured calldata.
-   We use the Uniswap V3 QuoterV2 to get a live quote and embed it as the
-   ``amount_out_minimum`` so the encoding is tied to a real on-chain state.
+1. Verify that the UniversalRouterV2 contract (which supports Uniswap V4) is
+   deployed at the expected Ethereum mainnet address using ``eth_getCode``.
+2. Execute simulated swaps via ``eth_call`` to confirm that the calldata
+   produced by :class:`~pydefi.amm.universal_router.UniversalRouter` is
+   accepted by the live contract without reverting.
+
+Both swap tests use a WRAP_ETH-first pattern so that no Permit2 approvals
+are required:
+
+* **V3**: ``WRAP_ETH`` + ``V3_SWAP_EXACT_IN`` (router-funded, payer_is_user=False)
+* **V4**: ``WRAP_ETH`` + ``V4_SWAP`` (SETTLE with payerIsUser=False)
+
+A V3 QuoterV2 quote is fetched first to set a realistic ``amount_out_minimum``
+with 0.5 % slippage.
 """
 
 import pytest
+from web3 import Web3
 
 from pydefi.amm.universal_router import UNIVERSAL_ROUTER_ADDRESSES, UniversalRouter
 from pydefi.amm.uniswap_v3 import UniswapV3
@@ -28,12 +37,38 @@ UNIVERSAL_ROUTER_V2 = UNIVERSAL_ROUTER_ADDRESSES[1]
 UNISWAP_V3_ROUTER = "0xE592427A0AEce92De3Edee1F18E0157C05861564"
 UNISWAP_V3_QUOTER = "0x61fFE014bA17989E743c5F6cB21bF9697530B21e"
 
-# A well-known EOA used as "recipient" in calldata tests.
-DUMMY_RECIPIENT = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"
-
 # Plausible price bounds for 1 WETH in USDC
 MIN_USDC = 500 * 10 ** 6
 MAX_USDC = 10_000 * 10 ** 6
+
+# A well-known ETH whale used as the transaction sender in eth_call simulations.
+# Using eth_call, no actual ETH is spent.
+ETH_WHALE = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"  # vitalik.eth
+
+# Swap amount: 0.01 ETH to keep the simulated swap within any single-block
+# gas limits while still being realistic.
+ETH_SWAP_AMOUNT = 10 ** 16  # 0.01 ETH in wei
+
+
+async def _get_v3_quote(eth_w3, eth_amount: int) -> int:
+    """Return a live V3 quote (WETH→USDC) with 0.5 % slippage already applied."""
+    quoter = UniswapV3(
+        w3=eth_w3,
+        router_address=UNISWAP_V3_ROUTER,
+        quoter_address=UNISWAP_V3_QUOTER,
+        default_fee=500,
+    )
+    weth_amount = TokenAmount(WETH, eth_amount)
+    amount_out = await quoter.quote_exact_input_single(weth_amount, USDC, fee=500)
+    # Scale the per-ETH bounds down to the actual swap amount
+    min_expected = MIN_USDC * ETH_SWAP_AMOUNT // 10 ** 18
+    max_expected = MAX_USDC * ETH_SWAP_AMOUNT // 10 ** 18
+    assert min_expected < amount_out.amount < max_expected, (
+        f"V3 quote out of expected range: {amount_out.amount / 10**6:.4f} USDC "
+        f"for {eth_amount / 10**18} WETH (expected {min_expected / 10**6:.2f}–{max_expected / 10**6:.2f} USDC)"
+    )
+    # Apply 0.5 % slippage tolerance
+    return int(amount_out.amount * 9950 // 10000)
 
 
 @pytest.mark.live
@@ -42,8 +77,6 @@ class TestUniversalRouterV2Live:
 
     async def test_contract_deployed_at_expected_address(self, eth_w3):
         """UniversalRouterV2 must be deployed at the address stored in UNIVERSAL_ROUTER_ADDRESSES."""
-        from web3 import Web3
-
         checksum_addr = Web3.to_checksum_address(UNIVERSAL_ROUTER_V2)
         code = await eth_w3.eth.get_code(checksum_addr)
         assert len(code) > 0, (
@@ -51,72 +84,75 @@ class TestUniversalRouterV2Live:
             "Update UNIVERSAL_ROUTER_ADDRESSES with the correct address."
         )
 
-    async def test_v3_exact_in_calldata_structure(self, eth_w3):
-        """Build V3 exact-in calldata using a live V3 quote and verify its selector."""
-        quoter = UniswapV3(
-            w3=eth_w3,
-            router_address=UNISWAP_V3_ROUTER,
-            quoter_address=UNISWAP_V3_QUOTER,
-            default_fee=500,
-        )
-        amount_in = TokenAmount.from_human(WETH, "1")
-        amount_out = await quoter.quote_exact_input_single(amount_in, USDC, fee=500)
+    async def test_v3_wrap_and_swap_via_eth_call(self, eth_w3):
+        """Simulate WRAP_ETH + V3 exact-in swap via eth_call.
 
-        assert MIN_USDC < amount_out.amount < MAX_USDC, (
-            f"Live V3 quote out of expected range: {amount_out.amount / 10**6:.2f} USDC"
-        )
-
-        # Apply 0.5% slippage
-        amount_out_min = int(amount_out.amount * 9950 // 10000)
+        Builds a ``WRAP_ETH + V3_SWAP_EXACT_IN`` transaction (no Permit2 needed)
+        and executes it as an ``eth_call`` against the live UniversalRouterV2
+        contract.  A successful call (no revert) confirms that the calldata
+        produced by the builder is structurally and semantically valid.
+        """
+        amount_out_min = await _get_v3_quote(eth_w3, ETH_SWAP_AMOUNT)
 
         router = UniversalRouter(UNIVERSAL_ROUTER_V2)
-        tx = router.build_v3_exact_in_transaction(
-            amount_in=amount_in,
+        tx = router.build_wrap_and_v3_swap_transaction(
+            eth_amount=ETH_SWAP_AMOUNT,
+            weth_token=WETH,
             token_out=USDC,
-            recipient=DUMMY_RECIPIENT,
+            recipient=ETH_WHALE,
             amount_out_minimum=amount_out_min,
             fee=500,
-            deadline=2_000_000_000,
         )
 
         assert tx.to == UNIVERSAL_ROUTER_V2
-        assert tx.data[:4] == bytes.fromhex("3593564c"), "Expected execute(bytes,bytes[],uint256) selector"
-        assert tx.value == 0
-        assert len(tx.data) > 4
+        assert tx.value == ETH_SWAP_AMOUNT
 
-    async def test_v4_exact_in_single_calldata_structure(self, eth_w3):
-        """Build V4 exact-in-single calldata using a live V3 quote as price reference."""
-        quoter = UniswapV3(
-            w3=eth_w3,
-            router_address=UNISWAP_V3_ROUTER,
-            quoter_address=UNISWAP_V3_QUOTER,
-            default_fee=500,
+        # Execute via eth_call – raises ContractLogicError / ValueError on revert
+        result = await eth_w3.eth.call(
+            {
+                "to": Web3.to_checksum_address(tx.to),
+                "from": Web3.to_checksum_address(ETH_WHALE),
+                "value": tx.value,
+                "data": tx.data,
+            }
         )
-        amount_in = TokenAmount.from_human(WETH, "1")
-        amount_out = await quoter.quote_exact_input_single(amount_in, USDC, fee=500)
+        # execute() returns no value; an empty-bytes result means success
+        assert result == b"", f"Unexpected non-empty return data: {result.hex()}"
 
-        assert MIN_USDC < amount_out.amount < MAX_USDC, (
-            f"Live V3 quote out of expected range for V4 test: {amount_out.amount / 10**6:.2f} USDC"
-        )
+    async def test_v4_wrap_and_swap_via_eth_call(self, eth_w3):
+        """Simulate WRAP_ETH + V4 exact-in swap via eth_call.
 
-        # Apply 0.5% slippage for V4 swap
-        amount_out_min = int(amount_out.amount * 9950 // 10000)
+        Builds a ``WRAP_ETH + V4_SWAP`` transaction where the router settles
+        WETH from its own balance (no Permit2 needed) and executes it as an
+        ``eth_call`` against the live UniversalRouterV2 contract.
+
+        Pool parameters: WETH/USDC, fee=500 (0.05 %), tickSpacing=10.
+        These are the expected parameters for the most-liquid V4 WETH/USDC pool.
+        """
+        amount_out_min = await _get_v3_quote(eth_w3, ETH_SWAP_AMOUNT)
 
         router = UniversalRouter(UNIVERSAL_ROUTER_V2)
-        tx = router.build_v4_exact_in_single_transaction(
-            amount_in=amount_in,
+        tx = router.build_wrap_and_v4_swap_transaction(
+            eth_amount=ETH_SWAP_AMOUNT,
+            weth_token=WETH,
             token_out=USDC,
             fee=500,
             tick_spacing=10,
-            recipient=DUMMY_RECIPIENT,
+            recipient=ETH_WHALE,
             amount_out_minimum=amount_out_min,
-            deadline=2_000_000_000,
         )
 
         assert tx.to == UNIVERSAL_ROUTER_V2
-        assert tx.data[:4] == bytes.fromhex("3593564c"), "Expected execute(bytes,bytes[],uint256) selector"
-        assert tx.value == 0
-        assert len(tx.data) > 4
-        # Verify the V4_SWAP command byte (0x10) is present in the encoded calldata
-        from pydefi.amm.universal_router import RouterCommand
-        assert bytes([RouterCommand.V4_SWAP]) in tx.data
+        assert tx.value == ETH_SWAP_AMOUNT
+
+        # Execute via eth_call – raises ContractLogicError / ValueError on revert
+        result = await eth_w3.eth.call(
+            {
+                "to": Web3.to_checksum_address(tx.to),
+                "from": Web3.to_checksum_address(ETH_WHALE),
+                "value": tx.value,
+                "data": tx.data,
+            }
+        )
+        assert result == b"", f"Unexpected non-empty return data: {result.hex()}"
+

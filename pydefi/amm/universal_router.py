@@ -766,8 +766,9 @@ class UniversalRouter:
     def encode_v4_settle_all_params(currency: str, max_amount: int) -> bytes:
         """Encode ABI params for a ``SETTLE_ALL`` V4 action.
 
-        ``SETTLE_ALL`` pays the full owed balance for *currency* from the
-        payer (msg.sender or the router itself).
+        ``SETTLE_ALL`` pays the full owed balance for *currency* from
+        ``msgSender()`` via Permit2 (for ERC-20) or native ETH (for
+        ``address(0)``).
 
         Args:
             currency: Token address, or ``address(0)`` for native ETH.
@@ -780,11 +781,36 @@ class UniversalRouter:
         return abi_encode(["address", "uint256"], [currency, max_amount])
 
     @staticmethod
+    def encode_v4_settle_params(
+        currency: str, amount: int, payer_is_user: bool
+    ) -> bytes:
+        """Encode ABI params for a ``SETTLE`` V4 action.
+
+        ``SETTLE`` pays *amount* of *currency* from either ``msgSender()``
+        (when *payer_is_user* is ``True``, via Permit2) or from the router's
+        own balance (when *payer_is_user* is ``False``).
+
+        Pass *payer_is_user* = ``False`` when the router already holds the
+        input tokens (e.g. after a preceding ``WRAP_ETH`` command).
+
+        Args:
+            currency: Token address, or ``address(0)`` for native ETH.
+            amount: Amount to settle.  Use ``0`` (``ActionConstants.OPEN_DELTA``)
+                to settle the full outstanding debt automatically.
+            payer_is_user: ``True`` → pull from caller via Permit2;
+                ``False`` → use the router's own token balance.
+
+        Returns:
+            ABI-encoded bytes.
+        """
+        return abi_encode(["address", "uint256", "bool"], [currency, amount, payer_is_user])
+
+    @staticmethod
     def encode_v4_take_all_params(currency: str, min_amount: int) -> bytes:
         """Encode ABI params for a ``TAKE_ALL`` V4 action.
 
         ``TAKE_ALL`` transfers the entire positive delta for *currency* to
-        the recipient specified elsewhere in the swap sequence.
+        ``msgSender()`` (the caller of the ``execute`` function).
 
         Args:
             currency: Token address, or ``address(0)`` for native ETH.
@@ -794,6 +820,28 @@ class UniversalRouter:
             ABI-encoded bytes.
         """
         return abi_encode(["address", "uint256"], [currency, min_amount])
+
+    @staticmethod
+    def encode_v4_take_params(
+        currency: str, recipient: str, amount: int
+    ) -> bytes:
+        """Encode ABI params for a ``TAKE`` V4 action.
+
+        ``TAKE`` transfers *amount* of *currency* to an explicit *recipient*.
+        Use ``amount = 0`` (``ActionConstants.OPEN_DELTA``) to take the full
+        available credit automatically.
+
+        Args:
+            currency: Token address, or ``address(0)`` for native ETH.
+            recipient: Address that receives the tokens.  Use
+                :data:`MSG_SENDER` or :data:`ADDRESS_THIS` sentinels where
+                appropriate.
+            amount: Exact amount to take, or ``0`` to take all available credit.
+
+        Returns:
+            ABI-encoded bytes.
+        """
+        return abi_encode(["address", "address", "uint256"], [currency, recipient, amount])
 
     # ------------------------------------------------------------------
     # V4 high-level transaction builders
@@ -813,9 +861,15 @@ class UniversalRouter:
     ) -> SwapTransaction:
         """Build a single-hop Uniswap V4 exact-input swap transaction.
 
-        Encodes three V4 actions: ``SWAP_EXACT_IN_SINGLE``, ``SETTLE_ALL``,
-        and ``TAKE_ALL``, then wraps them in a ``V4_SWAP`` Universal Router
-        command.
+        Encodes three V4 actions: ``SWAP_EXACT_IN_SINGLE``, ``SETTLE_ALL``
+        (pulls input tokens from the caller via Permit2), and ``TAKE``
+        (sends output tokens to *recipient*), then wraps them in a
+        ``V4_SWAP`` Universal Router command.
+
+        The caller must have approved Permit2 for the input token and
+        granted the UniversalRouter an allowance via ``permit2.approve()``
+        before calling this transaction.  For a flow that avoids Permit2,
+        see :meth:`build_wrap_and_v4_swap_transaction`.
 
         Args:
             amount_in: Exact input token and amount.
@@ -856,13 +910,96 @@ class UniversalRouter:
             hook_data=hook_data,
         )
         settle_params = self.encode_v4_settle_all_params(addr_in, amount_in.amount)
-        take_params = self.encode_v4_take_all_params(addr_out, amount_out_minimum)
+        # TAKE with amount=0 (OPEN_DELTA) takes all available credit
+        take_params = self.encode_v4_take_params(addr_out, recipient, 0)
 
         v4_input = self.encode_v4_swap_actions(
-            [V4Action.SWAP_EXACT_IN_SINGLE, V4Action.SETTLE_ALL, V4Action.TAKE_ALL],
+            [V4Action.SWAP_EXACT_IN_SINGLE, V4Action.SETTLE_ALL, V4Action.TAKE],
             [swap_params, settle_params, take_params],
         )
         calldata = self.build_execute_calldata(
             [RouterCommand.V4_SWAP], [v4_input], deadline
         )
         return SwapTransaction(to=self.router_address, data=calldata)
+
+    def build_wrap_and_v4_swap_transaction(
+        self,
+        eth_amount: int,
+        weth_token: Token,
+        token_out: Token,
+        fee: int,
+        tick_spacing: int,
+        recipient: str,
+        amount_out_minimum: int,
+        hooks: str = "0x0000000000000000000000000000000000000000",
+        hook_data: bytes = b"",
+        deadline: int | None = None,
+    ) -> SwapTransaction:
+        """Build a two-command transaction: ``WRAP_ETH`` then ``V4_SWAP``.
+
+        Wraps native ETH into WETH inside the router, then performs a
+        single-hop V4 exact-input swap using the router's own WETH balance
+        (``SETTLE`` with *payer_is_user* = ``False``).  This avoids the need
+        for any Permit2 approval, making it suitable for ETH → ERC-20 swaps.
+
+        Args:
+            eth_amount: Amount of native ETH to wrap and swap (in wei).
+            weth_token: The WETH token on the target chain.
+            token_out: Desired output ERC-20 token.
+            fee: V4 pool fee tier in hundredths of a basis point
+                (e.g. ``500`` = 0.05 %, ``3000`` = 0.3 %).
+            tick_spacing: Tick spacing that matches the pool's fee tier.
+            recipient: Address that receives the output tokens.
+                Use :data:`MSG_SENDER` to send to the transaction sender.
+            amount_out_minimum: Minimum acceptable output amount (raw units).
+            hooks: Address of the hooks contract.
+                Defaults to ``address(0)`` (no hooks).
+            hook_data: Arbitrary bytes forwarded to the hooks contract.
+                Defaults to empty.
+            deadline: Unix timestamp after which the transaction reverts.
+
+        Returns:
+            A :class:`~pydefi.types.SwapTransaction` with ``value`` set to
+            *eth_amount* so the caller knows how much ETH to attach.
+        """
+        addr_in = weth_token.address
+        addr_out = token_out.address
+
+        currency0, currency1 = self._sort_v4_currencies(addr_in, addr_out)
+        zero_for_one = addr_in.lower() == currency0.lower()
+
+        # Command 1: wrap ETH → WETH inside the router
+        wrap_input = self.encode_wrap_eth(ADDRESS_THIS, eth_amount)
+
+        # Command 2: V4_SWAP — three sub-actions:
+        #   a) SWAP_EXACT_IN_SINGLE: execute the pool swap
+        #   b) SETTLE(payerIsUser=False): router pays WETH from its own balance
+        #   c) TAKE(amount=0): take all USDC credit and send to recipient
+        swap_params = self.encode_v4_exact_in_single_params(
+            currency0=currency0,
+            currency1=currency1,
+            fee=fee,
+            tick_spacing=tick_spacing,
+            hooks=hooks,
+            zero_for_one=zero_for_one,
+            amount_in=eth_amount,
+            amount_out_minimum=amount_out_minimum,
+            hook_data=hook_data,
+        )
+        # SETTLE with payerIsUser=False: pay WETH from the router's own balance
+        settle_params = self.encode_v4_settle_params(
+            addr_in, eth_amount, payer_is_user=False
+        )
+        # TAKE with amount=0 (ActionConstants.OPEN_DELTA): take all credit
+        take_params = self.encode_v4_take_params(addr_out, recipient, 0)
+
+        v4_input = self.encode_v4_swap_actions(
+            [V4Action.SWAP_EXACT_IN_SINGLE, V4Action.SETTLE, V4Action.TAKE],
+            [swap_params, settle_params, take_params],
+        )
+        calldata = self.build_execute_calldata(
+            [RouterCommand.WRAP_ETH, RouterCommand.V4_SWAP],
+            [wrap_input, v4_input],
+            deadline,
+        )
+        return SwapTransaction(to=self.router_address, data=calldata, value=eth_amount)

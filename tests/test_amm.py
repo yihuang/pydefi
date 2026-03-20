@@ -633,3 +633,110 @@ class TestV4TransactionBuilder:
         # commands are ABI-encoded after the 4-byte selector.
         # The commands bytes value 0x10 (V4_SWAP) must appear in the calldata.
         assert bytes([RouterCommand.V4_SWAP]) in tx.data
+
+
+class TestV4NewEncoders:
+    def test_encode_v4_settle_params_length(self):
+        encoded = UniversalRouter.encode_v4_settle_params(WETH.address, 10 ** 18, False)
+        assert isinstance(encoded, bytes)
+        # 3 x 32-byte ABI words: address (padded), uint256, bool (padded)
+        assert len(encoded) == 96
+
+    def test_encode_v4_settle_params_payer_is_user_true(self):
+        encoded = UniversalRouter.encode_v4_settle_params(WETH.address, 10 ** 18, True)
+        assert isinstance(encoded, bytes)
+        assert len(encoded) == 96
+
+    def test_encode_v4_take_params_length(self):
+        encoded = UniversalRouter.encode_v4_take_params(USDC.address, RECIPIENT, 0)
+        assert isinstance(encoded, bytes)
+        # 3 x 32-byte ABI words: address, address, uint256
+        assert len(encoded) == 96
+
+    def test_encode_v4_take_params_open_delta_amount(self):
+        # amount=0 means OPEN_DELTA (take all available credit)
+        encoded = UniversalRouter.encode_v4_take_params(USDC.address, RECIPIENT, 0)
+        # Last 32 bytes should be all zeros (amount=0)
+        assert encoded[-32:] == b"\x00" * 32
+
+
+class TestBuildWrapAndV4Swap:
+    def setup_method(self):
+        self.router = UniversalRouter(UNIVERSAL_ROUTER_ADDR)
+
+    def test_returns_swap_transaction(self):
+        tx = self.router.build_wrap_and_v4_swap_transaction(
+            eth_amount=10 ** 17,
+            weth_token=WETH,
+            token_out=USDC,
+            fee=500,
+            tick_spacing=10,
+            recipient=RECIPIENT,
+            amount_out_minimum=0,
+        )
+        assert isinstance(tx, SwapTransaction)
+
+    def test_value_equals_eth_amount(self):
+        eth_amount = 5 * 10 ** 17
+        tx = self.router.build_wrap_and_v4_swap_transaction(
+            eth_amount=eth_amount,
+            weth_token=WETH,
+            token_out=USDC,
+            fee=500,
+            tick_spacing=10,
+            recipient=RECIPIENT,
+            amount_out_minimum=0,
+        )
+        assert tx.value == eth_amount
+
+    def test_router_address_stored(self):
+        tx = self.router.build_wrap_and_v4_swap_transaction(
+            eth_amount=10 ** 17,
+            weth_token=WETH,
+            token_out=USDC,
+            fee=500,
+            tick_spacing=10,
+            recipient=RECIPIENT,
+            amount_out_minimum=0,
+        )
+        assert tx.to == UNIVERSAL_ROUTER_ADDR
+
+    def test_with_deadline_selector(self):
+        tx = self.router.build_wrap_and_v4_swap_transaction(
+            eth_amount=10 ** 17,
+            weth_token=WETH,
+            token_out=USDC,
+            fee=500,
+            tick_spacing=10,
+            recipient=RECIPIENT,
+            amount_out_minimum=0,
+            deadline=2_000_000_000,
+        )
+        assert tx.data[:4] == bytes.fromhex("3593564c")
+
+    def test_no_deadline_selector(self):
+        tx = self.router.build_wrap_and_v4_swap_transaction(
+            eth_amount=10 ** 17,
+            weth_token=WETH,
+            token_out=USDC,
+            fee=500,
+            tick_spacing=10,
+            recipient=RECIPIENT,
+            amount_out_minimum=0,
+        )
+        assert tx.data[:4] == bytes.fromhex("24856bc3")
+
+    def test_wrap_eth_and_v4_swap_commands_present(self):
+        """The calldata must contain both WRAP_ETH (0x0B) and V4_SWAP (0x10) command bytes."""
+        from pydefi.amm.universal_router import RouterCommand
+        tx = self.router.build_wrap_and_v4_swap_transaction(
+            eth_amount=10 ** 17,
+            weth_token=WETH,
+            token_out=USDC,
+            fee=500,
+            tick_spacing=10,
+            recipient=RECIPIENT,
+            amount_out_minimum=0,
+        )
+        assert bytes([RouterCommand.WRAP_ETH]) in tx.data
+        assert bytes([RouterCommand.V4_SWAP]) in tx.data
