@@ -35,9 +35,7 @@ class TestCurveLive:
         dy = await pool.get_dy(DAI, USDC, amount_in)
 
         # Expect ~999–1001 USDC (6 decimals)
-        assert 990 * 10**6 < dy < 1_010 * 10**6, (
-            f"DAI→USDC rate out of range: {dy / 10**6:.4f} USDC per 1000 DAI"
-        )
+        assert 990 * 10**6 < dy < 1_010 * 10**6, f"DAI→USDC rate out of range: {dy / 10**6:.4f} USDC per 1000 DAI"
 
     async def test_get_dy_usdc_to_dai(self, eth_w3):
         """1 000 USDC → DAI should return approximately 1 000 DAI (±1%)."""
@@ -50,9 +48,7 @@ class TestCurveLive:
         dy = await pool.get_dy(USDC, DAI, amount_in)
 
         # Expect ~999–1001 DAI (18 decimals)
-        assert 990 * 10**18 < dy < 1_010 * 10**18, (
-            f"USDC→DAI rate out of range: {dy / 10**18:.4f} DAI per 1000 USDC"
-        )
+        assert 990 * 10**18 < dy < 1_010 * 10**18, f"USDC→DAI rate out of range: {dy / 10**18:.4f} DAI per 1000 USDC"
 
     async def test_get_dy_usdc_to_usdt(self, eth_w3):
         """1 000 USDC → USDT should return approximately 1 000 USDT (±1%)."""
@@ -64,9 +60,7 @@ class TestCurveLive:
         amount_in = 1_000 * 10**6  # 1 000 USDC
         dy = await pool.get_dy(USDC, USDT, amount_in)
 
-        assert 990 * 10**6 < dy < 1_010 * 10**6, (
-            f"USDC→USDT rate out of range: {dy / 10**6:.4f} USDT per 1000 USDC"
-        )
+        assert 990 * 10**6 < dy < 1_010 * 10**6, f"USDC→USDT rate out of range: {dy / 10**6:.4f} USDT per 1000 USDC"
 
     async def test_get_amounts_out(self, eth_w3):
         """get_amounts_out wrapper returns a two-element list."""

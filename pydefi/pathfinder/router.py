@@ -16,7 +16,6 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-
 from pydefi.exceptions import NoRouteFoundError
 from pydefi.pathfinder.graph import PoolEdge, PoolGraph
 from pydefi.types import SwapRoute, SwapStep, Token, TokenAmount
@@ -79,9 +78,7 @@ class Router:
 
         # DP table: best[(token_addr, hops)] = (max_raw_output, path_of_edges)
         # Seed with the source state at hop depth 0.
-        best: dict[tuple[str, int], tuple[int, list[PoolEdge]]] = {
-            (src.address.lower(), 0): (amount_in.amount, [])
-        }
+        best: dict[tuple[str, int], tuple[int, list[PoolEdge]]] = {(src.address.lower(), 0): (amount_in.amount, [])}
 
         for hop in range(self.max_hops):
             # Snapshot all states at the current depth to avoid processing
@@ -121,8 +118,7 @@ class Router:
 
         if best_result is None:
             raise NoRouteFoundError(
-                f"No route found from {amount_in.token.symbol} to {token_out.symbol} "
-                f"within {self.max_hops} hops"
+                f"No route found from {amount_in.token.symbol} to {token_out.symbol} within {self.max_hops} hops"
             )
 
         final_amount, final_path = best_result
@@ -216,12 +212,14 @@ class Router:
                     )
                     for e in path
                 ]
-                routes.append(SwapRoute(
-                    steps=steps,
-                    amount_in=amount_in,
-                    amount_out=TokenAmount(token=token_out, amount=current_amount),
-                    price_impact=self._estimate_price_impact(path, amount_in.amount),
-                ))
+                routes.append(
+                    SwapRoute(
+                        steps=steps,
+                        amount_in=amount_in,
+                        amount_out=TokenAmount(token=token_out, amount=current_amount),
+                        price_impact=self._estimate_price_impact(path, amount_in.amount),
+                    )
+                )
                 return
 
             if depth >= self.max_hops:
@@ -244,9 +242,7 @@ class Router:
         dfs(src, amount_in.amount, [], {src.address.lower()})
 
         if not routes:
-            raise NoRouteFoundError(
-                f"No route found from {amount_in.token.symbol} to {token_out.symbol}"
-            )
+            raise NoRouteFoundError(f"No route found from {amount_in.token.symbol} to {token_out.symbol}")
 
         routes.sort(key=lambda r: r.amount_out.amount, reverse=True)
         return routes[:top_k]

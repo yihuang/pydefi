@@ -2,8 +2,6 @@
 
 from decimal import Decimal
 
-import pytest
-
 from pydefi.types import (
     BridgeQuote,
     ChainId,
@@ -13,10 +11,10 @@ from pydefi.types import (
     TokenAmount,
 )
 
-
 # ---------------------------------------------------------------------------
 # Token tests
 # ---------------------------------------------------------------------------
+
 
 class TestToken:
     def setup_method(self):
@@ -88,6 +86,7 @@ class TestToken:
 # TokenAmount tests
 # ---------------------------------------------------------------------------
 
+
 class TestTokenAmount:
     def setup_method(self):
         self.usdc = Token(
@@ -108,7 +107,7 @@ class TestTokenAmount:
         assert amount.human_amount == Decimal("1")
 
     def test_human_amount_weth(self):
-        amount = TokenAmount(token=self.weth, amount=10 ** 18)
+        amount = TokenAmount(token=self.weth, amount=10**18)
         assert amount.human_amount == Decimal("1")
 
     def test_from_human_usdc(self):
@@ -117,7 +116,7 @@ class TestTokenAmount:
 
     def test_from_human_weth(self):
         amount = TokenAmount.from_human(self.weth, "0.5")
-        assert amount.amount == 5 * 10 ** 17
+        assert amount.amount == 5 * 10**17
 
     def test_from_human_integer(self):
         amount = TokenAmount.from_human(self.usdc, 50)
@@ -134,12 +133,13 @@ class TestTokenAmount:
 
     def test_large_amount(self):
         amount = TokenAmount.from_human(self.weth, "1000000")
-        assert amount.amount == 1_000_000 * 10 ** 18
+        assert amount.amount == 1_000_000 * 10**18
 
 
 # ---------------------------------------------------------------------------
 # SwapRoute tests
 # ---------------------------------------------------------------------------
+
 
 class TestSwapRoute:
     def setup_method(self):
@@ -207,6 +207,7 @@ class TestSwapRoute:
 # ---------------------------------------------------------------------------
 # BridgeQuote tests
 # ---------------------------------------------------------------------------
+
 
 class TestBridgeQuote:
     def setup_method(self):

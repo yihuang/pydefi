@@ -89,9 +89,7 @@ class CurvePool(BaseAMM):
     # Price queries
     # ------------------------------------------------------------------
 
-    async def get_dy(
-        self, token_in: Token, token_out: Token, amount_in: int
-    ) -> int:
+    async def get_dy(self, token_in: Token, token_out: Token, amount_in: int) -> int:
         """Call ``get_dy`` to simulate a swap.
 
         Args:
@@ -114,9 +112,7 @@ class CurvePool(BaseAMM):
             raise InsufficientLiquidityError(f"get_dy failed: {exc}") from exc
         return amount_out
 
-    async def get_amounts_out(
-        self, amount_in: TokenAmount, path: list[Token]
-    ) -> list[TokenAmount]:
+    async def get_amounts_out(self, amount_in: TokenAmount, path: list[Token]) -> list[TokenAmount]:
         """Simulate a swap along *path* through this pool.
 
         Curve pools typically contain 2-4 tokens.  Multi-hop routes require
@@ -134,9 +130,7 @@ class CurvePool(BaseAMM):
         amount_out_raw = await self.get_dy(path[0], path[1], amount_in.amount)
         return [amount_in, TokenAmount(token=path[1], amount=amount_out_raw)]
 
-    async def get_amounts_in(
-        self, amount_out: TokenAmount, path: list[Token]
-    ) -> list[TokenAmount]:
+    async def get_amounts_in(self, amount_out: TokenAmount, path: list[Token]) -> list[TokenAmount]:
         """Estimate required input to obtain *amount_out* (approximation).
 
         Curve does not expose a native ``get_dx`` on-chain, so this uses a

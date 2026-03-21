@@ -13,7 +13,6 @@ from __future__ import annotations
 from typing import Any
 
 import aiohttp
-
 from eth_contract import Contract
 from web3 import AsyncWeb3
 
@@ -94,9 +93,7 @@ class Across(BaseBridge):
             async with session.get(url, params=params) as resp:
                 data = await resp.json(content_type=None)
                 if resp.status != 200:
-                    raise BridgeError(
-                        f"Across API error ({resp.status}): {data}"
-                    )
+                    raise BridgeError(f"Across API error ({resp.status}): {data}")
                 return data  # type: ignore[return-value]
 
     async def get_quote(
@@ -121,7 +118,7 @@ class Across(BaseBridge):
 
         total_relay_fee_pct = int(fees_data.get("totalRelayFee", {}).get("pct", "0"))
         # Fee pct is in units of 1e18 (1e18 = 100%)
-        fee_raw = amount_in.amount * total_relay_fee_pct // (10 ** 18)
+        fee_raw = amount_in.amount * total_relay_fee_pct // (10**18)
         amount_out_raw = max(0, amount_in.amount - fee_raw)
         estimated_fill_time = int(fees_data.get("estimatedFillTimeSec", 120))
 
@@ -163,7 +160,7 @@ class Across(BaseBridge):
         fees_data = await self.get_suggested_fees(token_in, amount_in.amount, **kwargs)
 
         total_relay_fee_pct = int(fees_data.get("totalRelayFee", {}).get("pct", "0"))
-        fee_raw = amount_in.amount * total_relay_fee_pct // (10 ** 18)
+        fee_raw = amount_in.amount * total_relay_fee_pct // (10**18)
         output_amount = self._apply_slippage(max(0, amount_in.amount - fee_raw), slippage_bps)
         quote_timestamp = int(fees_data.get("timestamp", 0))
         fill_deadline = quote_timestamp + 18_000  # 5 hours

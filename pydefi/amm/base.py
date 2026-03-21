@@ -10,7 +10,7 @@ from decimal import Decimal
 from eth_contract import Contract
 from web3 import AsyncWeb3
 
-from pydefi.types import Token, TokenAmount, SwapRoute
+from pydefi.types import SwapRoute, Token, TokenAmount
 
 
 class BaseAMM(ABC):
@@ -34,9 +34,7 @@ class BaseAMM(ABC):
         """Human-readable name of this AMM protocol."""
 
     @abstractmethod
-    async def get_amounts_out(
-        self, amount_in: TokenAmount, path: list[Token]
-    ) -> list[TokenAmount]:
+    async def get_amounts_out(self, amount_in: TokenAmount, path: list[Token]) -> list[TokenAmount]:
         """Simulate a swap and return the output amounts at each hop.
 
         Args:
@@ -55,9 +53,7 @@ class BaseAMM(ABC):
         """
 
     @abstractmethod
-    async def get_amounts_in(
-        self, amount_out: TokenAmount, path: list[Token]
-    ) -> list[TokenAmount]:
+    async def get_amounts_in(self, amount_out: TokenAmount, path: list[Token]) -> list[TokenAmount]:
         """Calculate the required input amounts to obtain *amount_out*.
 
         Args:
@@ -94,9 +90,7 @@ class BaseAMM(ABC):
         return int(amount * (10_000 - slippage_bps) // 10_000)
 
     @staticmethod
-    def _calculate_price_impact(
-        amount_in_usd: Decimal, amount_out_usd: Decimal
-    ) -> Decimal:
+    def _calculate_price_impact(amount_in_usd: Decimal, amount_out_usd: Decimal) -> Decimal:
         """Estimate price impact as a fraction in [0, 1]."""
         if amount_in_usd == 0:
             return Decimal(0)
