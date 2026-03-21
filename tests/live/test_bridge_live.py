@@ -1,0 +1,172 @@
+"""Live integration tests for Mayan, GasZip, and Relay bridge APIs.
+
+These tests make real HTTP requests to public bridge APIs and verify that
+responses are structurally valid and numerically plausible.  No on-chain
+transaction is submitted; only quote endpoints are exercised.
+
+Run with::
+
+    pytest -m live tests/live/test_bridge_live.py
+"""
+
+import pytest
+
+from pydefi.bridge.gaszip import GasZip
+from pydefi.bridge.mayan import Mayan
+from pydefi.bridge.relay import Relay
+from pydefi.types import ChainId, Token, TokenAmount
+
+from .conftest import USDC
+
+# ---------------------------------------------------------------------------
+# Cross-chain token definitions
+# ---------------------------------------------------------------------------
+
+# USDC on Arbitrum (used as destination token for ETH → ARB quotes)
+USDC_ARB = Token(
+    chain_id=ChainId.ARBITRUM,
+    address="0xFF970A61A04b1cA14834A43f5dE4533eBDDB5CC8",
+    symbol="USDC",
+    decimals=6,
+)
+
+# Native ETH sentinel used by bridges
+ETH_NATIVE = Token(
+    chain_id=ChainId.ETHEREUM,
+    address="0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",
+    symbol="ETH",
+    decimals=18,
+)
+ETH_NATIVE_ARB = Token(
+    chain_id=ChainId.ARBITRUM,
+    address="0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",
+    symbol="ETH",
+    decimals=18,
+)
+
+# GasZip deposit contract on Ethereum mainnet
+GASZIP_CONTRACT_ETH = "0x391E7C679d29bD940d63be94AD22A25d25b5A604"
+
+# Sanity bounds for USDC bridge quotes (1 000 USDC in, expect 900–1 100 USDC out)
+BRIDGE_AMOUNT_USDC = 1_000 * 10**6
+MIN_USDC_OUT = 900 * 10**6
+MAX_USDC_OUT = 1_100 * 10**6
+
+# Sanity bounds for ETH gas bridge (0.1 ETH in, expect > 0 ETH out)
+BRIDGE_AMOUNT_ETH = 10**17  # 0.1 ETH
+
+
+# ---------------------------------------------------------------------------
+# Mayan live tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.live
+class TestMayanLive:
+    """Live tests against the public Mayan Price API."""
+
+    async def test_get_quote_usdc_eth_to_arb(self):
+        """Mayan: 1 000 USDC on Ethereum → USDC on Arbitrum."""
+        client = Mayan(src_chain_id=ChainId.ETHEREUM, dst_chain_id=ChainId.ARBITRUM)
+        amount_in = TokenAmount(token=USDC, amount=BRIDGE_AMOUNT_USDC)
+        quote = await client.get_quote(USDC, USDC_ARB, amount_in)
+
+        assert quote.protocol == "Mayan"
+        assert quote.token_in == USDC
+        assert quote.token_out == USDC_ARB
+        assert MIN_USDC_OUT < quote.amount_out.amount < MAX_USDC_OUT, (
+            f"Mayan USDC→USDC amount_out out of range: "
+            f"{quote.amount_out.human_amount} USDC"
+        )
+        assert quote.estimated_time_seconds > 0
+
+    async def test_get_quote_returns_bridge_fee(self):
+        """Mayan quote should include a non-negative bridge_fee."""
+        client = Mayan(src_chain_id=ChainId.ETHEREUM, dst_chain_id=ChainId.ARBITRUM)
+        amount_in = TokenAmount(token=USDC, amount=BRIDGE_AMOUNT_USDC)
+        quote = await client.get_quote(USDC, USDC_ARB, amount_in)
+
+        assert quote.bridge_fee.amount >= 0
+
+
+# ---------------------------------------------------------------------------
+# GasZip live tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.live
+class TestGasZipLive:
+    """Live tests against the public GasZip backend API."""
+
+    async def test_get_quote_eth_to_arb(self):
+        """GasZip: 0.1 ETH on Ethereum → ETH on Arbitrum."""
+        client = GasZip(
+            src_chain_id=ChainId.ETHEREUM,
+            dst_chain_id=ChainId.ARBITRUM,
+            contract_address=GASZIP_CONTRACT_ETH,
+        )
+        amount_in = TokenAmount(token=ETH_NATIVE, amount=BRIDGE_AMOUNT_ETH)
+        quote = await client.get_quote(ETH_NATIVE, ETH_NATIVE_ARB, amount_in)
+
+        assert quote.protocol == "GasZip"
+        assert quote.token_in == ETH_NATIVE
+        assert quote.token_out == ETH_NATIVE_ARB
+        assert quote.amount_out.amount > 0, "GasZip amount_out should be positive"
+        assert quote.amount_out.amount <= BRIDGE_AMOUNT_ETH, (
+            "GasZip amount_out should not exceed amount_in"
+        )
+        assert quote.estimated_time_seconds > 0
+
+    async def test_get_quote_returns_bridge_fee(self):
+        """GasZip quote should report a non-negative bridge fee."""
+        client = GasZip(
+            src_chain_id=ChainId.ETHEREUM,
+            dst_chain_id=ChainId.ARBITRUM,
+            contract_address=GASZIP_CONTRACT_ETH,
+        )
+        amount_in = TokenAmount(token=ETH_NATIVE, amount=BRIDGE_AMOUNT_ETH)
+        quote = await client.get_quote(ETH_NATIVE, ETH_NATIVE_ARB, amount_in)
+
+        assert quote.bridge_fee.amount >= 0
+
+
+# ---------------------------------------------------------------------------
+# Relay live tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.live
+class TestRelayLive:
+    """Live tests against the public Relay API."""
+
+    async def test_get_quote_usdc_eth_to_arb(self):
+        """Relay: 1 000 USDC on Ethereum → USDC on Arbitrum."""
+        client = Relay(src_chain_id=ChainId.ETHEREUM, dst_chain_id=ChainId.ARBITRUM)
+        amount_in = TokenAmount(token=USDC, amount=BRIDGE_AMOUNT_USDC)
+        quote = await client.get_quote(USDC, USDC_ARB, amount_in)
+
+        assert quote.protocol == "Relay"
+        assert quote.token_in == USDC
+        assert quote.token_out == USDC_ARB
+        assert MIN_USDC_OUT < quote.amount_out.amount < MAX_USDC_OUT, (
+            f"Relay USDC→USDC amount_out out of range: "
+            f"{quote.amount_out.human_amount} USDC"
+        )
+        assert quote.estimated_time_seconds > 0
+
+    async def test_get_quote_returns_bridge_fee(self):
+        """Relay quote should include a non-negative bridge_fee."""
+        client = Relay(src_chain_id=ChainId.ETHEREUM, dst_chain_id=ChainId.ARBITRUM)
+        amount_in = TokenAmount(token=USDC, amount=BRIDGE_AMOUNT_USDC)
+        quote = await client.get_quote(USDC, USDC_ARB, amount_in)
+
+        assert quote.bridge_fee.amount >= 0
+
+    async def test_get_quote_eth_to_arb(self):
+        """Relay: 0.1 ETH on Ethereum → ETH on Arbitrum."""
+        client = Relay(src_chain_id=ChainId.ETHEREUM, dst_chain_id=ChainId.ARBITRUM)
+        amount_in = TokenAmount(token=ETH_NATIVE, amount=BRIDGE_AMOUNT_ETH)
+        quote = await client.get_quote(ETH_NATIVE, ETH_NATIVE_ARB, amount_in)
+
+        assert quote.protocol == "Relay"
+        assert quote.amount_out.amount > 0
