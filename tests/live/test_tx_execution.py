@@ -32,6 +32,7 @@ Run with::
 import pytest
 from eth_abi import decode as abi_decode
 from eth_abi import encode as abi_encode
+from eth_contract.erc20 import ERC20
 from web3 import AsyncWeb3, Web3
 
 from pydefi.amm.universal_router import UNIVERSAL_ROUTER_ADDRESSES, UniversalRouter, V4Hop
@@ -64,9 +65,6 @@ MIN_USDC_OUT = 5 * 10 ** 6
 # Standard V4 hookless fee tiers tried in order of popularity
 _V4_FEE_TIERS = [(500, 10), (3000, 60), (100, 1), (10_000, 200)]
 
-# Minimal ERC-20 ABI fragment to query token balances
-_ERC20_BALANCE_ABI = ["function balanceOf(address owner) external view returns (uint256)"]
-
 # keccak256("getSlot0(bytes32)")[:4]
 _GET_SLOT0_SELECTOR: bytes = Web3.keccak(text="getSlot0(bytes32)")[:4]
 
@@ -79,14 +77,6 @@ _GET_SLOT0_SELECTOR: bytes = Web3.keccak(text="getSlot0(bytes32)")[:4]
 async def _impersonate(w3: AsyncWeb3, address: str) -> None:
     """Ask Anvil to impersonate *address* so we can send transactions as it."""
     await w3.provider.make_request("anvil_impersonateAccount", [address])
-
-
-async def _erc20_balance(w3: AsyncWeb3, token_address: str, owner: str) -> int:
-    """Return the ERC-20 token balance of *owner* (raw integer)."""
-    from eth_contract import Contract
-
-    contract = Contract.from_abi(_ERC20_BALANCE_ABI, to=token_address)
-    return await contract.fns.balanceOf(Web3.to_checksum_address(owner)).call(w3)
 
 
 async def _get_v3_quote(w3: AsyncWeb3, eth_amount: int) -> int:
@@ -194,7 +184,7 @@ class TestTxExecutionFork:
         )
 
         await _impersonate(fork_w3, ETH_WHALE)
-        usdc_before = await _erc20_balance(fork_w3, USDC.address, ETH_WHALE)
+        usdc_before = await ERC20.fns.balanceOf(ETH_WHALE).call(fork_w3, to=USDC.address)
 
         receipt = await _send_and_mine(
             fork_w3,
@@ -210,7 +200,7 @@ class TestTxExecutionFork:
             f"Transaction reverted: {receipt['transactionHash'].hex()}"
         )
 
-        usdc_after = await _erc20_balance(fork_w3, USDC.address, ETH_WHALE)
+        usdc_after = await ERC20.fns.balanceOf(ETH_WHALE).call(fork_w3, to=USDC.address)
         usdc_received = usdc_after - usdc_before
 
         assert usdc_received >= amount_out_min, (
@@ -232,11 +222,8 @@ class TestTxExecutionFork:
         and verifies that:
 
         - The transaction was not reverted.
-        - The recipient's USDC balance increased by at least
-          ``amount_out_minimum``.
+        - The recipient's USDC balance increased by at least ``MIN_USDC_OUT``.
         """
-        amount_out_min = await _get_v3_quote(fork_w3, ETH_SWAP_AMOUNT)
-
         currency0, currency1 = UniversalRouter._sort_v4_currencies(WETH.address, USDC.address)
         pool_params = await _find_v4_pool(fork_w3, currency0, currency1)
         if pool_params is None:
@@ -254,11 +241,11 @@ class TestTxExecutionFork:
             fee=fee,
             tick_spacing=tick_spacing,
             recipient=ETH_WHALE,
-            amount_out_minimum=amount_out_min,
+            amount_out_minimum=MIN_USDC_OUT,
         )
 
         await _impersonate(fork_w3, ETH_WHALE)
-        usdc_before = await _erc20_balance(fork_w3, USDC.address, ETH_WHALE)
+        usdc_before = await ERC20.fns.balanceOf(ETH_WHALE).call(fork_w3, to=USDC.address)
 
         receipt = await _send_and_mine(
             fork_w3,
@@ -274,13 +261,9 @@ class TestTxExecutionFork:
             f"Transaction reverted: {receipt['transactionHash'].hex()}"
         )
 
-        usdc_after = await _erc20_balance(fork_w3, USDC.address, ETH_WHALE)
+        usdc_after = await ERC20.fns.balanceOf(ETH_WHALE).call(fork_w3, to=USDC.address)
         usdc_received = usdc_after - usdc_before
 
-        assert usdc_received >= amount_out_min, (
-            f"USDC received ({usdc_received / 10**6:.4f}) is less than the quoted "
-            f"minimum ({amount_out_min / 10**6:.4f})"
-        )
         assert usdc_received >= MIN_USDC_OUT, (
             f"USDC received ({usdc_received / 10**6:.4f}) is implausibly low for "
             f"{ETH_SWAP_AMOUNT / 10**18} ETH"
@@ -295,8 +278,6 @@ class TestTxExecutionFork:
         The transaction is submitted as a real ``eth_sendTransaction`` against
         the local Anvil fork and the test verifies on-chain state changes.
         """
-        amount_out_min = await _get_v3_quote(fork_w3, ETH_SWAP_AMOUNT)
-
         currency0, currency1 = UniversalRouter._sort_v4_currencies(WETH.address, USDC.address)
         pool_params = await _find_v4_pool(fork_w3, currency0, currency1)
         if pool_params is None:
@@ -312,11 +293,11 @@ class TestTxExecutionFork:
             weth_token=WETH,
             hops=[V4Hop(token_in=WETH, token_out=USDC, fee=fee, tick_spacing=tick_spacing)],
             recipient=ETH_WHALE,
-            amount_out_minimum=amount_out_min,
+            amount_out_minimum=MIN_USDC_OUT,
         )
 
         await _impersonate(fork_w3, ETH_WHALE)
-        usdc_before = await _erc20_balance(fork_w3, USDC.address, ETH_WHALE)
+        usdc_before = await ERC20.fns.balanceOf(ETH_WHALE).call(fork_w3, to=USDC.address)
 
         receipt = await _send_and_mine(
             fork_w3,
@@ -332,13 +313,9 @@ class TestTxExecutionFork:
             f"Transaction reverted: {receipt['transactionHash'].hex()}"
         )
 
-        usdc_after = await _erc20_balance(fork_w3, USDC.address, ETH_WHALE)
+        usdc_after = await ERC20.fns.balanceOf(ETH_WHALE).call(fork_w3, to=USDC.address)
         usdc_received = usdc_after - usdc_before
 
-        assert usdc_received >= amount_out_min, (
-            f"USDC received ({usdc_received / 10**6:.4f}) is less than the quoted "
-            f"minimum ({amount_out_min / 10**6:.4f})"
-        )
         assert usdc_received >= MIN_USDC_OUT, (
             f"USDC received ({usdc_received / 10**6:.4f}) is implausibly low for "
             f"{ETH_SWAP_AMOUNT / 10**18} ETH"
