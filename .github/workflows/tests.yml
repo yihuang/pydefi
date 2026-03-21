@@ -27,7 +27,7 @@ jobs:
           pip install ".[dev]"
 
       - name: Run unit tests
-        run: pytest -m "not live"
+        run: pytest -m "not live and not fork"
 
   live-test:
     runs-on: ubuntu-latest
@@ -51,4 +51,32 @@ jobs:
         env:
           ETH_RPC_URL: https://eth.drpc.org
         run: pytest -m live -v --reruns 3 --reruns-delay 5
+
+  fork-test:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 15
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install ".[dev]"
+
+      - name: Install Foundry (Anvil)
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Run fork transaction execution tests
+        env:
+          ETH_RPC_URL: https://eth.drpc.org
+        run: pytest -m fork -v --reruns 2 --reruns-delay 5
 

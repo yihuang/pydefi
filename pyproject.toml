@@ -38,4 +38,5 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 markers = [
     "live: marks tests as live integration tests that require network access (run with '-m live')",
+    "fork: marks tests that require a local Anvil fork of mainnet (run with '-m fork')",
 ]
