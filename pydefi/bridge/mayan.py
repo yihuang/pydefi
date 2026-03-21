@@ -3,16 +3,20 @@ Mayan Finance cross-chain bridge integration.
 
 Mayan is a cross-chain swap protocol built on Wormhole that enables fast
 bridging between EVM chains and Solana.  This module wraps the Mayan
-Price API and Swift contract for on-chain execution.
+Price API and the Mayan Forwarder / MayanSwift contracts for on-chain
+execution.
 
 Docs: https://docs.mayan.finance/
 """
 
 from __future__ import annotations
 
+import os
 from typing import Any, Optional
 
 import aiohttp
+
+from eth_contract import Contract
 
 from pydefi.bridge.base import BaseBridge
 from pydefi.exceptions import BridgeError
@@ -35,6 +39,66 @@ _CHAIN_NAMES: dict[int, str] = {
     324: "zksync",
     7777777: "zora",
 }
+
+# Wormhole chain IDs for EVM chains (source: Mayan Finance SDK)
+_WORMHOLE_CHAIN_IDS: dict[int, int] = {
+    1: 2,       # Ethereum
+    56: 4,      # BSC
+    137: 5,     # Polygon
+    43114: 6,   # Avalanche
+    42161: 23,  # Arbitrum
+    10: 24,     # Optimism
+    8453: 30,   # Base
+    130: 44,    # Unichain
+    59144: 38,  # Linea
+}
+
+# Mayan Forwarder contract (routes ETH/ERC-20 into the appropriate Mayan
+# bridge contract).  Address is the same on all supported EVM chains.
+_MAYAN_FORWARDER = "0x337685fdaB40D39bd02028545a4FfA7D287cC3E2"
+
+# SWIFT normalize factor: SWIFT amounts are capped at 8 decimals.
+_SWIFT_NORMALIZE_DECIMALS = 8
+
+# Native ETH sentinel addresses (both the burn address and EeeE... form)
+_NATIVE_SENTINELS = frozenset({
+    "0x0000000000000000000000000000000000000000",
+    "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+})
+
+# ABI fragment for MayanForwarder.forwardEth
+_FORWARDER_ABI = [
+    "function forwardEth(address mayanProtocol, bytes protocolData) external payable",
+]
+
+# ABI fragment for MayanSwift (V1) createOrderWithEth
+_SWIFT_ABI = [
+    "function createOrderWithEth("
+    "(bytes32 trader, bytes32 tokenOut, uint64 minAmountOut, uint64 gasDrop,"
+    " uint64 cancelFee, uint64 refundFee, uint64 deadline, bytes32 destAddr,"
+    " uint16 destChainId, bytes32 referrerAddr, uint8 referrerBps,"
+    " uint8 auctionMode, bytes32 random) params"
+    ") external payable returns (bytes32 orderHash)",
+]
+
+
+def _addr_to_bytes32(addr: str) -> bytes:
+    """Left-pad an EVM address into a 32-byte Wormhole representation."""
+    hex_addr = addr[2:] if addr.startswith("0x") else addr
+    # EVM addresses are 40 hex chars; zero-pad to 64 chars (32 bytes)
+    return bytes.fromhex(hex_addr.lower().zfill(64))
+
+
+def _token_to_bytes32(token_address: str) -> bytes:
+    """Convert a token address to its SWIFT bytes32 tokenOut representation.
+
+    Native ETH (both zero-address and EeeE... sentinel) maps to 32 zero bytes
+    (the Solana system program ID in the Wormhole encoding used by SWIFT).
+    ERC-20 tokens are left-padded as a normal Wormhole EVM address.
+    """
+    if token_address.lower() in _NATIVE_SENTINELS:
+        return bytes(32)
+    return _addr_to_bytes32(token_address)
 
 
 class Mayan(BaseBridge):
@@ -80,7 +144,7 @@ class Mayan(BaseBridge):
             token_out: Destination chain token.
             amount_in: Amount to bridge.
             **kwargs: Additional query parameters forwarded to the API
-                (e.g. ``slippage_bps``, ``swift``).
+                (e.g. ``slippageBps``, ``swift``).
 
         Returns:
             A :class:`~pydefi.types.BridgeQuote`.
@@ -93,11 +157,12 @@ class Mayan(BaseBridge):
         human_amount = str(amount_in.human_amount)
 
         params: dict[str, Any] = {
-            "amount": human_amount,
+            "amountIn": human_amount,
             "fromToken": token_in.address,
             "toToken": token_out.address,
             "fromChain": from_chain,
             "toChain": to_chain,
+            "slippageBps": "auto",
             **kwargs,
         }
 
@@ -156,54 +221,127 @@ class Mayan(BaseBridge):
         referrer: Optional[str] = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
-        """Build a Mayan bridge transaction via the swap API.
+        """Build a Mayan SWIFT bridge transaction via the Mayan Forwarder contract.
+
+        This method:
+
+        1. Fetches a SWIFT quote from the Mayan Price API.
+        2. Encodes a ``createOrderWithEth`` call for the MayanSwift contract.
+        3. Wraps it in a ``forwardEth`` call on the Mayan Forwarder contract.
+
+        Only native-ETH input is currently supported.
 
         Args:
-            token_in: Source token.
+            token_in: Source token (must be native ETH).
             token_out: Destination token.
             amount_in: Amount to send.
             recipient: Receiver address on the destination chain.
             slippage_bps: Slippage tolerance in basis points.
             referrer: Optional referrer address for fee sharing.
-            **kwargs: Additional parameters forwarded to the API.
+            **kwargs: Extra query parameters forwarded to the quote API.
 
         Returns:
             Transaction dict with ``to``, ``data``, ``value``, ``gas``.
 
         Raises:
-            :class:`~pydefi.exceptions.BridgeError`: On API error.
+            :class:`~pydefi.exceptions.BridgeError`: On API error or
+                unsupported route type.
         """
         from_chain = self._chain_name(self.src_chain_id)
         to_chain = self._chain_name(self.dst_chain_id)
-        slippage_pct = slippage_bps / 100.0
         human_amount = str(amount_in.human_amount)
 
-        payload: dict[str, Any] = {
+        # Step 1 — fetch a SWIFT quote
+        params: dict[str, Any] = {
             "amountIn": human_amount,
             "fromToken": token_in.address,
             "toToken": token_out.address,
             "fromChain": from_chain,
             "toChain": to_chain,
-            "toAddress": recipient,
-            "slippage": slippage_pct,
+            "slippageBps": slippage_bps,
+            "swift": True,
             **kwargs,
         }
-        if referrer is not None:
-            payload["referrer"] = referrer
 
-        url = f"{self._api_base}/swap"
+        url = f"{self._api_base}/quote"
         async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=payload) as resp:
+            async with session.get(url, params=params) as resp:
                 data = await resp.json(content_type=None)
                 if resp.status != 200:
                     raise BridgeError(
-                        f"Mayan swap API error ({resp.status}): {data}"
+                        f"Mayan API error ({resp.status}): {data}"
                     )
 
-        tx = data.get("tx", data)
+        routes = data if isinstance(data, list) else data.get("routes", [data])
+        if not routes:
+            raise BridgeError("Mayan: no routes returned from API")
+
+        # Find first SWIFT route
+        swift_route = next(
+            (r for r in routes if str(r.get("type", "")).upper() == "SWIFT"),
+            None,
+        )
+        if swift_route is None:
+            raise BridgeError("Mayan: no SWIFT route available for build_bridge_tx")
+
+        swift_contract = swift_route.get("swiftMayanContract")
+        if not swift_contract:
+            raise BridgeError("Mayan: swiftMayanContract missing in quote response")
+
+        # Resolve Wormhole chain ID for the destination chain
+        dest_wh_chain = _WORMHOLE_CHAIN_IDS.get(self.dst_chain_id)
+        if dest_wh_chain is None:
+            raise BridgeError(
+                f"Mayan: no Wormhole chain ID mapping for EVM chain {self.dst_chain_id}"
+            )
+
+        # Step 2 — decode SWIFT order parameters from the quote
+        # SWIFT amounts are scaled to at most 8 decimal places.
+        swift_decimals = min(token_out.decimals, _SWIFT_NORMALIZE_DECIMALS)
+        min_amount_out = int(float(swift_route.get("minAmountOut", 0)) * 10**swift_decimals)
+        # gasDrop on EVM chains uses the same 8-decimal SWIFT normalization
+        gas_drop = int(float(swift_route.get("gasDrop", 0)) * 10**_SWIFT_NORMALIZE_DECIMALS)
+        cancel_fee = int(swift_route.get("cancelRelayerFee64") or "0")
+        refund_fee = int(swift_route.get("refundRelayerFee64") or "0")
+        deadline = int(swift_route.get("deadline64") or "0")
+        auction_mode = int(swift_route.get("swiftAuctionMode") or 0)
+
+        # Use os.urandom for the order's random field to ensure uniqueness
+        random_b32 = os.urandom(32)
+
+        trader_b32 = _addr_to_bytes32(recipient)
+        token_out_b32 = _token_to_bytes32(token_out.address)
+        dest_addr_b32 = _addr_to_bytes32(recipient)
+        referrer_b32 = _addr_to_bytes32(referrer) if referrer else bytes(32)
+
+        order_tuple = (
+            trader_b32,      # bytes32 trader
+            token_out_b32,   # bytes32 tokenOut
+            min_amount_out,  # uint64 minAmountOut
+            gas_drop,        # uint64 gasDrop
+            cancel_fee,      # uint64 cancelFee
+            refund_fee,      # uint64 refundFee
+            deadline,        # uint64 deadline
+            dest_addr_b32,   # bytes32 destAddr
+            dest_wh_chain,   # uint16 destChainId
+            referrer_b32,    # bytes32 referrerAddr
+            0,               # uint8 referrerBps
+            auction_mode,    # uint8 auctionMode
+            random_b32,      # bytes32 random
+        )
+
+        # Step 3 — ABI-encode the SWIFT and Forwarder calls
+        swift_c = Contract.from_abi(_SWIFT_ABI, to=swift_contract)
+        swift_calldata: bytes = swift_c.fns.createOrderWithEth(order_tuple).data
+
+        forwarder = Contract.from_abi(_FORWARDER_ABI, to=_MAYAN_FORWARDER)
+        forward_calldata: bytes = forwarder.fns.forwardEth(
+            swift_contract, swift_calldata
+        ).data
+
         return {
-            "to": tx.get("to", ""),
-            "data": tx.get("data", "0x"),
-            "value": str(tx.get("value", "0")),
-            "gas": str(tx.get("gas", 500_000)),
+            "to": _MAYAN_FORWARDER,
+            "data": "0x" + forward_calldata.hex(),
+            "value": str(amount_in.amount),
+            "gas": str(500_000),
         }

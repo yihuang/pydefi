@@ -173,7 +173,7 @@ class GasZip(BaseBridge):
         call_data: bytes = self._contract.fns.deposit(
             to_uint256,
             [self.dst_chain_id],
-        ).encode()
+        ).data
 
         return {
             "to": self.contract_address,

@@ -19,6 +19,23 @@ from pydefi.types import BridgeQuote, Token, TokenAmount
 
 _RELAY_API_BASE = "https://api.relay.link"
 
+# Relay uses the zero address for native ETH; the common EeeE... sentinel
+# must be normalized before being sent to the API.
+_RELAY_NATIVE = "0x0000000000000000000000000000000000000000"
+_EEEEE_SENTINEL = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+
+
+def _relay_currency(token_address: str) -> str:
+    """Return the currency address that Relay's API expects.
+
+    The Relay API uses the zero address for native ETH.  Convert the
+    common ``0xEeEe...EEeE`` sentinel to the zero address so the API
+    does not reject it with ``INVALID_INPUT_CURRENCY``.
+    """
+    if token_address.lower() == _EEEEE_SENTINEL:
+        return _RELAY_NATIVE
+    return token_address
+
 
 class Relay(BaseBridge):
     """Relay cross-chain bridge integration.
@@ -69,8 +86,8 @@ class Relay(BaseBridge):
             "user": recipient,
             "originChainId": self.src_chain_id,
             "destinationChainId": self.dst_chain_id,
-            "originCurrency": token_in.address,
-            "destinationCurrency": token_out.address,
+            "originCurrency": _relay_currency(token_in.address),
+            "destinationCurrency": _relay_currency(token_out.address),
             "amount": str(amount_in.amount),
             "tradeType": "EXACT_INPUT",
             **kwargs,
