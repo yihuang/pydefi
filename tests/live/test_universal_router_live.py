@@ -8,11 +8,13 @@ These tests:
    produced by :class:`~pydefi.amm.universal_router.UniversalRouter` is
    accepted by the live contract without reverting.
 
-Both swap tests use a WRAP_ETH-first pattern so that no Permit2 approvals
+All swap tests use a WRAP_ETH-first pattern so that no Permit2 approvals
 are required:
 
 * **V3**: ``WRAP_ETH`` + ``V3_SWAP_EXACT_IN`` (router-funded, payer_is_user=False)
-* **V4**: ``WRAP_ETH`` + ``V4_SWAP`` (SETTLE with payerIsUser=False)
+* **V4 single-hop**: ``WRAP_ETH`` + ``V4_SWAP`` (SETTLE with payerIsUser=False)
+* **V4 multi-hop**: ``WRAP_ETH`` + ``V4_SWAP`` (SWAP_EXACT_IN action, router-funded)
+* **Cross-type V3→V4**: ``WRAP_ETH`` + ``V3_SWAP_EXACT_IN`` + ``V4_SWAP``
 
 A V3 QuoterV2 quote is fetched first to set a realistic ``amount_out_minimum``
 with 0.5 % slippage.
@@ -25,7 +27,7 @@ from eth_abi import decode as abi_decode
 from eth_abi import encode as abi_encode
 from web3 import Web3
 
-from pydefi.amm.universal_router import UNIVERSAL_ROUTER_ADDRESSES, UniversalRouter
+from pydefi.amm.universal_router import UNIVERSAL_ROUTER_ADDRESSES, UniversalRouter, V3Hop, V4Hop
 from pydefi.amm.uniswap_v3 import UniswapV3
 from pydefi.types import TokenAmount
 
@@ -279,3 +281,121 @@ class TestUniversalRouterV2Live:
             raise
         assert result == b"", f"Unexpected non-empty return data: {result.hex()}"
 
+
+    async def test_v4_multihop_single_hop_wrap_and_swap_via_eth_call(self, eth_w3):
+        """Simulate WRAP_ETH + V4 multi-hop (SWAP_EXACT_IN, single-hop) via eth_call.
+
+        Uses :meth:`~pydefi.amm.universal_router.UniversalRouter.build_wrap_and_v4_multihop_swap_transaction`
+        which exercises the ``SWAP_EXACT_IN`` action and
+        :meth:`~pydefi.amm.universal_router.UniversalRouter.encode_v4_exact_in_params`.
+
+        The test auto-discovers an initialized hookless WETH/USDC V4 pool and
+        skips if none is found.
+        """
+        amount_out_min = await _get_v3_quote(eth_w3, ETH_SWAP_AMOUNT)
+
+        currency0, currency1 = UniversalRouter._sort_v4_currencies(
+            WETH.address, USDC.address
+        )
+        pool_params = await _find_v4_pool(eth_w3, currency0, currency1)
+        if pool_params is None:
+            pytest.skip(
+                f"No initialized V4 WETH/USDC hookless pool found on mainnet "
+                f"(tried fee tiers: {_V4_FEE_TIERS})"
+            )
+        fee, tick_spacing = pool_params
+
+        router = UniversalRouter(UNIVERSAL_ROUTER_V2)
+        tx = router.build_wrap_and_v4_multihop_swap_transaction(
+            eth_amount=ETH_SWAP_AMOUNT,
+            weth_token=WETH,
+            hops=[V4Hop(token_in=WETH, token_out=USDC, fee=fee, tick_spacing=tick_spacing)],
+            recipient=ETH_WHALE,
+            amount_out_minimum=amount_out_min,
+        )
+
+        assert tx.to == UNIVERSAL_ROUTER_V2
+        assert tx.value == ETH_SWAP_AMOUNT
+
+        tx_params = {
+            "to": Web3.to_checksum_address(tx.to),
+            "from": Web3.to_checksum_address(ETH_WHALE),
+            "value": tx.value,
+            "data": tx.data,
+        }
+        try:
+            result = await eth_w3.eth.call(tx_params)
+        except Exception:
+            await _debug_trace_call(
+                eth_w3,
+                tx_params,
+                f"V4 multi-hop WETH->USDC swap revert (fee={fee}, tickSpacing={tick_spacing})",
+            )
+            raise
+        assert result == b"", f"Unexpected non-empty return data: {result.hex()}"
+
+    async def test_cross_type_v3_v4_wrap_and_swap_via_eth_call(self, eth_w3):
+        """Simulate WRAP_ETH + V3(WETH→USDC) + V4(USDC→WETH) via eth_call.
+
+        Uses :meth:`~pydefi.amm.universal_router.UniversalRouter.build_wrap_and_multihop_exact_in_transaction`
+        with a two-hop cross-type path: a V3 hop for the first leg and a V4
+        hop for the second leg.
+
+        The V4 leg reuses the same WETH/USDC pool in the reverse direction
+        (USDC→WETH) so no additional pool discovery is required.  The test
+        skips if no V4 WETH/USDC pool is found.
+
+        ``amount_out_minimum`` is set to 1 (wei) since the round-trip incurs
+        fees from both pools and is not intended to be profitable.
+        """
+        currency0, currency1 = UniversalRouter._sort_v4_currencies(
+            WETH.address, USDC.address
+        )
+        pool_params = await _find_v4_pool(eth_w3, currency0, currency1)
+        if pool_params is None:
+            pytest.skip(
+                f"No initialized V4 WETH/USDC hookless pool found on mainnet "
+                f"(tried fee tiers: {_V4_FEE_TIERS})"
+            )
+        v4_fee, v4_tick_spacing = pool_params
+
+        router = UniversalRouter(UNIVERSAL_ROUTER_V2)
+        tx = router.build_wrap_and_multihop_exact_in_transaction(
+            eth_amount=ETH_SWAP_AMOUNT,
+            weth_token=WETH,
+            hops=[
+                # Leg 1: WETH → USDC via V3 (fee=500)
+                V3Hop(token_in=WETH, token_out=USDC, fee=500),
+                # Leg 2: USDC → WETH via V4 (reverse direction on the same pool)
+                V4Hop(
+                    token_in=USDC,
+                    token_out=WETH,
+                    fee=v4_fee,
+                    tick_spacing=v4_tick_spacing,
+                ),
+            ],
+            recipient=ETH_WHALE,
+            # Accept any amount back: this is a round-trip with fees.
+            amount_out_minimum=1,
+        )
+
+        assert tx.to == UNIVERSAL_ROUTER_V2
+        assert tx.value == ETH_SWAP_AMOUNT
+
+        tx_params = {
+            "to": Web3.to_checksum_address(tx.to),
+            "from": Web3.to_checksum_address(ETH_WHALE),
+            "value": tx.value,
+            "data": tx.data,
+        }
+        try:
+            result = await eth_w3.eth.call(tx_params)
+        except Exception:
+            await _debug_trace_call(
+                eth_w3,
+                tx_params,
+                f"Cross-type V3→V4 WETH->USDC->WETH swap revert "
+                f"(v4_fee={v4_fee}, v4_tickSpacing={v4_tick_spacing})",
+            )
+            raise
+        assert result == b"", f"Unexpected non-empty return data: {result.hex()}"

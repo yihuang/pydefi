@@ -7,7 +7,7 @@ Docs: https://docs.1inch.io/docs/aggregation-protocol/api/swagger/
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import Any, Optional
+from typing import Any
 
 import aiohttp
 
@@ -30,8 +30,8 @@ class OneInch(BaseAggregator):
     def __init__(
         self,
         chain_id: int,
-        api_key: Optional[str] = None,
-        base_url: Optional[str] = None,
+        api_key: str | None = None,
+        base_url: str | None = None,
     ) -> None:
         super().__init__(chain_id, api_key)
         self._base_url = base_url or self._DEFAULT_BASE_URL

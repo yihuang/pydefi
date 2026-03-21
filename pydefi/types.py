@@ -7,7 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from decimal import ROUND_DOWN, Decimal
 from enum import IntEnum
-from typing import ClassVar, Optional
+from typing import ClassVar
 
 
 class ChainId(IntEnum):
@@ -48,7 +48,7 @@ class Token:
     address: str
     symbol: str
     decimals: int = 18
-    name: Optional[str] = None
+    name: str | None = None
 
     # Sentinel for native currency (class variable, not an instance field)
     NATIVE_ADDRESS: ClassVar[str] = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"

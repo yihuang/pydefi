@@ -15,7 +15,7 @@ making simple DP relaxation both correct and safe.
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import Optional
+
 
 from pydefi.exceptions import NoRouteFoundError
 from pydefi.pathfinder.graph import PoolEdge, PoolGraph
@@ -112,7 +112,7 @@ class Router:
                         best[next_key] = (next_amount, path + [edge])
 
         # Collect the best path to the destination across all hop depths.
-        best_result: Optional[tuple[int, list[PoolEdge]]] = None
+        best_result: tuple[int, list[PoolEdge]] | None = None
         for h in range(1, self.max_hops + 1):
             entry = best.get((dst_addr, h))
             if entry is not None:

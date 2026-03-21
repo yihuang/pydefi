@@ -10,7 +10,7 @@ Docs: https://docs.across.to/
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 import aiohttp
 
@@ -142,7 +142,7 @@ class Across(BaseBridge):
         amount_in: TokenAmount,
         recipient: str,
         slippage_bps: int = 50,
-        depositor: Optional[str] = None,
+        depositor: str | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
         """Build an Across ``depositV3`` transaction.

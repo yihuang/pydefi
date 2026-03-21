@@ -26,6 +26,7 @@ arguments for each action.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from enum import IntEnum
 
 from eth_abi import encode as abi_encode
@@ -66,6 +67,77 @@ MSG_SENDER: str = "0x0000000000000000000000000000000000000001"
 #: Use as ``recipient`` to keep output tokens inside the router
 #: (useful as an intermediate step in multi-command transactions).
 ADDRESS_THIS: str = "0x0000000000000000000000000000000000000002"
+
+# ---------------------------------------------------------------------------
+# Intermediate-hop sentinel amounts
+# ---------------------------------------------------------------------------
+
+#: Pass as ``amount_in`` for a V2 or V3 intermediate hop to instruct the router
+#: to spend its entire ERC-20 balance of the input token (``type(uint256).max``).
+CONTRACT_BALANCE_V3: int = (1 << 256) - 1
+
+#: Pass as ``amount_in`` for a V4 intermediate hop (``type(uint128).max``).
+#: The V4 router replaces this with the router's full currency balance.
+CONTRACT_BALANCE_V4: int = (1 << 128) - 1
+
+# ---------------------------------------------------------------------------
+# Pool hop descriptors
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class V2Hop:
+    """Descriptor for a single Uniswap V2 pool hop.
+
+    Args:
+        token_in: Token spent in this hop.
+        token_out: Token received from this hop.
+    """
+
+    token_in: Token
+    token_out: Token
+
+
+@dataclass
+class V3Hop:
+    """Descriptor for a single Uniswap V3 pool hop.
+
+    Args:
+        token_in: Token spent in this hop.
+        token_out: Token received from this hop.
+        fee: V3 pool fee tier in hundredths of a basis point
+            (e.g. ``500`` = 0.05 %, ``3000`` = 0.3 %).
+    """
+
+    token_in: Token
+    token_out: Token
+    fee: int
+
+
+@dataclass
+class V4Hop:
+    """Descriptor for a single Uniswap V4 pool hop.
+
+    Args:
+        token_in: Token spent in this hop.
+        token_out: Token received from this hop.
+        fee: V4 pool fee tier in hundredths of a basis point.
+        tick_spacing: Tick spacing that matches the pool's fee tier.
+        hooks: Address of the hooks contract.
+            Defaults to ``address(0)`` (no hooks).
+        hook_data: Arbitrary bytes forwarded to the hooks contract.
+    """
+
+    token_in: Token
+    token_out: Token
+    fee: int
+    tick_spacing: int
+    hooks: str = "0x0000000000000000000000000000000000000000"
+    hook_data: bytes = field(default_factory=bytes)
+
+
+#: Union type for any pool hop descriptor accepted by the multi-hop builders.
+PoolHop = V2Hop | V3Hop | V4Hop
 
 # ---------------------------------------------------------------------------
 # Function selectors
@@ -841,6 +913,57 @@ class UniversalRouter:
         """
         return abi_encode(["address", "address", "uint256"], [currency, recipient, amount])
 
+    @staticmethod
+    def encode_v4_exact_in_params(
+        currency_in: str,
+        path: list[tuple[str, int, int, str, bytes]],
+        amount_in: int,
+        amount_out_minimum: int,
+    ) -> bytes:
+        """Encode ABI params for a ``SWAP_EXACT_IN`` V4 action (multi-hop).
+
+        The V4 ``ExactInputParams`` struct is::
+
+            struct ExactInputParams {
+                Currency currencyIn;
+                PathKey[] path;        // one entry per hop
+                uint128 amountIn;
+                uint128 amountOutMinimum;
+            }
+
+            struct PathKey {
+                Currency intermediateCurrency;  // output currency of this hop
+                uint24 fee;
+                int24 tickSpacing;
+                IHooks hooks;
+                bytes hookData;
+            }
+
+        Each ``PathKey``'s *intermediateCurrency* is the **output** token for
+        that hop (and therefore the *input* token for the next hop).  The V4
+        router derives ``zeroForOne`` automatically from the sorted pool key.
+
+        Args:
+            currency_in: Input currency address for the first hop.
+            path: Ordered list of ``(intermediateCurrency, fee, tickSpacing,
+                hooks, hookData)`` tuples — one per hop.  The last entry's
+                *intermediateCurrency* is the final output token.
+            amount_in: Exact input amount (raw units).  Pass
+                :data:`CONTRACT_BALANCE_V4` for intermediate segments where
+                the router should spend its entire balance.
+            amount_out_minimum: Minimum acceptable output amount (raw units).
+
+        Returns:
+            ABI-encoded bytes for this action's ``params`` slot.
+        """
+        # ExactInputParams is decoded by CalldataDecoder as an outer tuple,
+        # so we must encode with an outer tuple wrapper (same pattern as
+        # encode_v4_exact_in_single_params).
+        return abi_encode(
+            ["(address,(address,uint24,int24,address,bytes)[],uint128,uint128)"],
+            [(currency_in, list(path), amount_in, amount_out_minimum)],
+        )
+
     # ------------------------------------------------------------------
     # V4 high-level transaction builders
     # ------------------------------------------------------------------
@@ -1001,3 +1124,377 @@ class UniversalRouter:
             deadline,
         )
         return SwapTransaction(to=self.router_address, data=calldata, value=eth_amount)
+
+    def build_v4_multihop_exact_in_transaction(
+        self,
+        amount_in: TokenAmount,
+        hops: list[V4Hop],
+        recipient: str,
+        amount_out_minimum: int,
+        payer_is_user: bool = True,
+        deadline: int | None = None,
+    ) -> SwapTransaction:
+        """Build a multi-hop Uniswap V4 exact-input swap transaction.
+
+        Uses the ``SWAP_EXACT_IN`` action which executes all hops within a
+        single pool-manager lock, making it more efficient than chaining
+        multiple ``SWAP_EXACT_IN_SINGLE`` actions.
+
+        Args:
+            amount_in: Exact input token and amount.
+            hops: Ordered list of :class:`V4Hop` descriptors.  The first
+                hop's ``token_in`` must match ``amount_in.token``; each
+                subsequent hop's ``token_in`` must match the previous hop's
+                ``token_out``.
+            recipient: Address that receives the output tokens.
+                Use :data:`MSG_SENDER` to send to the transaction sender.
+            amount_out_minimum: Minimum acceptable output amount (raw units).
+            payer_is_user: If ``True`` (default), input tokens are pulled from
+                the caller via Permit2.  If ``False``, the router uses tokens
+                it already holds (e.g. after a preceding ``WRAP_ETH`` command).
+            deadline: Unix timestamp after which the transaction reverts.
+
+        Returns:
+            A :class:`~pydefi.types.SwapTransaction`.
+
+        Raises:
+            ValueError: If *hops* is empty.
+        """
+        if not hops:
+            raise ValueError("hops must not be empty")
+
+        currency_in = amount_in.token.address
+        path_keys = [
+            (hop.token_out.address, hop.fee, hop.tick_spacing, hop.hooks, hop.hook_data)
+            for hop in hops
+        ]
+        addr_out = hops[-1].token_out.address
+
+        swap_params = self.encode_v4_exact_in_params(
+            currency_in=currency_in,
+            path=path_keys,
+            amount_in=amount_in.amount,
+            amount_out_minimum=amount_out_minimum,
+        )
+        if payer_is_user:
+            settle_action = V4Action.SETTLE_ALL
+            settle_params = self.encode_v4_settle_all_params(currency_in, amount_in.amount)
+        else:
+            settle_action = V4Action.SETTLE
+            settle_params = self.encode_v4_settle_params(currency_in, 0, payer_is_user=False)
+        take_params = self.encode_v4_take_params(addr_out, recipient, 0)
+
+        v4_input = self.encode_v4_swap_actions(
+            [V4Action.SWAP_EXACT_IN, settle_action, V4Action.TAKE],
+            [swap_params, settle_params, take_params],
+        )
+        calldata = self.build_execute_calldata([RouterCommand.V4_SWAP], [v4_input], deadline)
+        return SwapTransaction(to=self.router_address, data=calldata)
+
+    def build_wrap_and_v4_multihop_swap_transaction(
+        self,
+        eth_amount: int,
+        weth_token: Token,
+        hops: list[V4Hop],
+        recipient: str,
+        amount_out_minimum: int,
+        deadline: int | None = None,
+    ) -> SwapTransaction:
+        """Build a two-command transaction: ``WRAP_ETH`` then a V4 multi-hop ``V4_SWAP``.
+
+        Wraps native ETH into WETH inside the router, then performs a multi-hop
+        V4 exact-input swap using the router's own WETH balance (``SETTLE`` with
+        *payer_is_user* = ``False``).  This avoids the need for any Permit2
+        approval, making it suitable for ETH → ERC-20 swaps.
+
+        The swap uses the ``SWAP_EXACT_IN`` action with a ``PathKey[]`` array,
+        allowing the path to traverse multiple V4 pools in a single
+        pool-manager lock.
+
+        Args:
+            eth_amount: Amount of native ETH to wrap and swap (in wei).
+            weth_token: The WETH token on the target chain.
+            hops: Ordered list of :class:`V4Hop` descriptors starting from
+                *weth_token*.  Must have at least one element.
+            recipient: Address that receives the output tokens.
+                Use :data:`MSG_SENDER` to send to the transaction sender.
+            amount_out_minimum: Minimum acceptable output amount (raw units).
+            deadline: Unix timestamp after which the transaction reverts.
+
+        Returns:
+            A :class:`~pydefi.types.SwapTransaction` with ``value`` set to
+            *eth_amount* so the caller knows how much ETH to attach.
+
+        Raises:
+            ValueError: If *hops* is empty.
+        """
+        if not hops:
+            raise ValueError("hops must not be empty")
+
+        # Command 1: wrap ETH → WETH inside the router
+        wrap_input = self.encode_wrap_eth(ADDRESS_THIS, eth_amount)
+
+        # Command 2: V4_SWAP (multi-hop SWAP_EXACT_IN, router-funded)
+        currency_in = weth_token.address
+        path_keys = [
+            (hop.token_out.address, hop.fee, hop.tick_spacing, hop.hooks, hop.hook_data)
+            for hop in hops
+        ]
+        addr_out = hops[-1].token_out.address
+
+        swap_params = self.encode_v4_exact_in_params(
+            currency_in=currency_in,
+            path=path_keys,
+            amount_in=eth_amount,
+            amount_out_minimum=amount_out_minimum,
+        )
+        # SETTLE with payerIsUser=False: pay WETH from the router's own balance
+        settle_params = self.encode_v4_settle_params(currency_in, 0, payer_is_user=False)
+        take_params = self.encode_v4_take_params(addr_out, recipient, 0)
+
+        v4_input = self.encode_v4_swap_actions(
+            [V4Action.SWAP_EXACT_IN, V4Action.SETTLE, V4Action.TAKE],
+            [swap_params, settle_params, take_params],
+        )
+        calldata = self.build_execute_calldata(
+            [RouterCommand.WRAP_ETH, RouterCommand.V4_SWAP],
+            [wrap_input, v4_input],
+            deadline,
+        )
+        return SwapTransaction(to=self.router_address, data=calldata, value=eth_amount)
+
+    def _build_multihop_commands(
+        self,
+        amount_in: TokenAmount,
+        hops: list[PoolHop],
+        recipient: str,
+        amount_out_minimum: int,
+        payer_is_user: bool = True,
+    ) -> tuple[list[RouterCommand | int], list[bytes]]:
+        """Build and return ``(commands, inputs)`` for a multi-hop exact-input swap.
+
+        Internal helper shared by :meth:`build_multihop_exact_in_transaction`
+        and :meth:`build_wrap_and_multihop_exact_in_transaction`.
+
+        Args:
+            amount_in: Exact input token and amount.
+            hops: Ordered list of pool hop descriptors.
+            recipient: Final output recipient.
+            amount_out_minimum: Minimum acceptable final output amount.
+            payer_is_user: If ``True`` (default), the first segment pulls
+                input tokens from the caller via Permit2.  If ``False``,
+                the first segment uses tokens the router already holds
+                (e.g. after a preceding ``WRAP_ETH`` command).
+
+        Returns:
+            A ``(commands, inputs)`` tuple ready to pass to
+            :meth:`build_execute_calldata`.
+
+        Raises:
+            ValueError: If *hops* is empty.
+        """
+        if not hops:
+            raise ValueError("hops must not be empty")
+
+        # Group consecutive hops of the same pool type into segments.
+        segments: list[list[PoolHop]] = []
+        current: list[PoolHop] = [hops[0]]
+        for hop in hops[1:]:
+            if type(hop) is type(current[-1]):
+                current.append(hop)
+            else:
+                segments.append(current)
+                current = [hop]
+        segments.append(current)
+
+        commands: list[RouterCommand | int] = []
+        inputs: list[bytes] = []
+
+        for seg_idx, segment in enumerate(segments):
+            is_first = seg_idx == 0
+            is_last = seg_idx == len(segments) - 1
+            seg_recipient = recipient if is_last else ADDRESS_THIS
+            seg_amount_out_min = amount_out_minimum if is_last else 0
+            # The first segment honours the caller-supplied payer_is_user flag;
+            # all subsequent segments always draw from the router's own balance.
+            seg_payer_is_user = payer_is_user if is_first else False
+
+            first_hop = segment[0]
+
+            if isinstance(first_hop, V2Hop):
+                v2_segment: list[V2Hop] = [h for h in segment if isinstance(h, V2Hop)]
+                seg_path = [v2_segment[0].token_in] + [h.token_out for h in v2_segment]
+                seg_amount_in = amount_in.amount if is_first else CONTRACT_BALANCE_V3
+                input_data = self.encode_v2_swap_exact_in(
+                    seg_recipient,
+                    seg_amount_in,
+                    seg_amount_out_min,
+                    [t.address for t in seg_path],
+                    seg_payer_is_user,
+                )
+                commands.append(RouterCommand.V2_SWAP_EXACT_IN)
+                inputs.append(input_data)
+
+            elif isinstance(first_hop, V3Hop):
+                v3_segment: list[V3Hop] = [h for h in segment if isinstance(h, V3Hop)]
+                seg_tokens = [v3_segment[0].token_in] + [h.token_out for h in v3_segment]
+                seg_fees = [h.fee for h in v3_segment]
+                seg_amount_in = amount_in.amount if is_first else CONTRACT_BALANCE_V3
+                encoded_path = UniswapV3._encode_path(seg_tokens, seg_fees)
+                input_data = self.encode_v3_swap_exact_in(
+                    seg_recipient,
+                    seg_amount_in,
+                    seg_amount_out_min,
+                    encoded_path,
+                    seg_payer_is_user,
+                )
+                commands.append(RouterCommand.V3_SWAP_EXACT_IN)
+                inputs.append(input_data)
+
+            elif isinstance(first_hop, V4Hop):
+                v4_segment: list[V4Hop] = [h for h in segment if isinstance(h, V4Hop)]
+                seg_currency_in = v4_segment[0].token_in.address
+                path_keys = [
+                    (h.token_out.address, h.fee, h.tick_spacing, h.hooks, h.hook_data)
+                    for h in v4_segment
+                ]
+                seg_amount_in = amount_in.amount if is_first else CONTRACT_BALANCE_V4
+                seg_addr_out = v4_segment[-1].token_out.address
+
+                swap_params = self.encode_v4_exact_in_params(
+                    currency_in=seg_currency_in,
+                    path=path_keys,
+                    amount_in=seg_amount_in,
+                    amount_out_minimum=seg_amount_out_min,
+                )
+                if seg_payer_is_user:
+                    settle_action = V4Action.SETTLE_ALL
+                    settle_params = self.encode_v4_settle_all_params(
+                        seg_currency_in, amount_in.amount
+                    )
+                else:
+                    settle_action = V4Action.SETTLE
+                    settle_params = self.encode_v4_settle_params(
+                        seg_currency_in, 0, payer_is_user=False
+                    )
+                take_params = self.encode_v4_take_params(seg_addr_out, seg_recipient, 0)
+
+                v4_input = self.encode_v4_swap_actions(
+                    [V4Action.SWAP_EXACT_IN, settle_action, V4Action.TAKE],
+                    [swap_params, settle_params, take_params],
+                )
+                commands.append(RouterCommand.V4_SWAP)
+                inputs.append(v4_input)
+
+        return commands, inputs
+
+    def build_multihop_exact_in_transaction(
+        self,
+        amount_in: TokenAmount,
+        hops: list[PoolHop],
+        recipient: str,
+        amount_out_minimum: int,
+        deadline: int | None = None,
+    ) -> SwapTransaction:
+        """Build a multi-hop exact-input swap transaction across different pool types.
+
+        Supports swap paths that mix Uniswap V2, V3, and V4 pools in any
+        combination.  Consecutive hops of the same pool type are automatically
+        merged into a single router command for efficiency:
+
+        * Consecutive :class:`V2Hop` objects → single ``V2_SWAP_EXACT_IN``
+          command with a merged token path.
+        * Consecutive :class:`V3Hop` objects → single ``V3_SWAP_EXACT_IN``
+          command with a merged encoded path.
+        * Consecutive :class:`V4Hop` objects → single ``V4_SWAP`` command
+          using the ``SWAP_EXACT_IN`` action with a ``PathKey`` array.
+
+        Intermediate outputs are routed through :data:`ADDRESS_THIS` so the
+        router can forward them to the next command.
+
+        The caller must have approved Permit2 for the input token and
+        granted the UniversalRouter an allowance via ``permit2.approve()``
+        before calling this transaction.  For a flow that avoids Permit2,
+        see :meth:`build_wrap_and_multihop_exact_in_transaction`.
+
+        Args:
+            amount_in: Exact input token and amount.  The first hop's
+                ``token_in`` must match ``amount_in.token``.
+            hops: Ordered list of :class:`V2Hop`, :class:`V3Hop`, or
+                :class:`V4Hop` descriptors.  Each hop's ``token_in`` must
+                match the previous hop's ``token_out``.
+            recipient: Address that receives the final output tokens.
+                Use :data:`MSG_SENDER` to send to the transaction sender.
+            amount_out_minimum: Minimum acceptable final output amount
+                (raw units).
+            deadline: Unix timestamp after which the transaction reverts.
+
+        Returns:
+            A :class:`~pydefi.types.SwapTransaction`.
+
+        Raises:
+            ValueError: If *hops* is empty.
+        """
+        commands, inputs = self._build_multihop_commands(
+            amount_in, hops, recipient, amount_out_minimum, payer_is_user=True
+        )
+        calldata = self.build_execute_calldata(commands, inputs, deadline)
+        return SwapTransaction(to=self.router_address, data=calldata)
+
+    def build_wrap_and_multihop_exact_in_transaction(
+        self,
+        eth_amount: int,
+        weth_token: Token,
+        hops: list[PoolHop],
+        recipient: str,
+        amount_out_minimum: int,
+        deadline: int | None = None,
+    ) -> SwapTransaction:
+        """Build a ``WRAP_ETH`` + multi-hop exact-input swap transaction.
+
+        Wraps native ETH into WETH inside the router and then performs a
+        multi-hop swap across any mix of V2, V3, and V4 pools using the
+        router's own WETH balance (no Permit2 approval required).
+
+        This is the Permit2-free variant of
+        :meth:`build_multihop_exact_in_transaction`.
+
+        Args:
+            eth_amount: Amount of native ETH to wrap and swap (in wei).
+            weth_token: The WETH token on the target chain.  The first hop's
+                ``token_in`` must equal *weth_token*.
+            hops: Ordered list of :class:`V2Hop`, :class:`V3Hop`, or
+                :class:`V4Hop` descriptors.  Must have at least one element.
+            recipient: Address that receives the final output tokens.
+                Use :data:`MSG_SENDER` to send to the transaction sender.
+            amount_out_minimum: Minimum acceptable final output amount
+                (raw units).
+            deadline: Unix timestamp after which the transaction reverts.
+
+        Returns:
+            A :class:`~pydefi.types.SwapTransaction` with ``value`` set to
+            *eth_amount* so the caller knows how much ETH to attach.
+
+        Raises:
+            ValueError: If *hops* is empty.
+        """
+        # Command 1: wrap ETH → WETH inside the router
+        wrap_commands: list[RouterCommand | int] = [RouterCommand.WRAP_ETH]
+        wrap_inputs: list[bytes] = [self.encode_wrap_eth(ADDRESS_THIS, eth_amount)]
+
+        # Remaining commands: multi-hop swap with router-funded first segment
+        swap_commands, swap_inputs = self._build_multihop_commands(
+            TokenAmount(weth_token, eth_amount),
+            hops,
+            recipient,
+            amount_out_minimum,
+            payer_is_user=False,
+        )
+        calldata = self.build_execute_calldata(
+            wrap_commands + swap_commands,
+            wrap_inputs + swap_inputs,
+            deadline,
+        )
+        return SwapTransaction(to=self.router_address, data=calldata, value=eth_amount)
+
+

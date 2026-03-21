@@ -7,7 +7,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import Any, Optional
+from typing import Any
 
 from pydefi.types import Token, TokenAmount, SwapRoute
 
@@ -49,7 +49,7 @@ class BaseAggregator(ABC):
         api_key: Optional API key for authenticated endpoints.
     """
 
-    def __init__(self, chain_id: int, api_key: Optional[str] = None) -> None:
+    def __init__(self, chain_id: int, api_key: str | None = None) -> None:
         self.chain_id = chain_id
         self.api_key = api_key
 

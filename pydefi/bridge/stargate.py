@@ -10,7 +10,7 @@ Docs: https://stargateprotocol.gitbook.io/stargate/
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 from eth_contract import Contract
 from web3 import AsyncWeb3

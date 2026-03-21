@@ -8,11 +8,16 @@ from pydefi.amm.uniswap_v2 import UniswapV2
 from pydefi.amm.uniswap_v3 import UniswapV3
 from pydefi.amm.universal_router import (
     ADDRESS_THIS,
+    CONTRACT_BALANCE_V3,
+    CONTRACT_BALANCE_V4,
     MSG_SENDER,
     UNIVERSAL_ROUTER_ADDRESSES,
     RouterCommand,
     UniversalRouter,
+    V2Hop,
+    V3Hop,
     V4Action,
+    V4Hop,
 )
 from pydefi.exceptions import InsufficientLiquidityError
 from pydefi.types import ChainId, Token, TokenAmount, SwapTransaction
@@ -740,3 +745,552 @@ class TestBuildWrapAndV4Swap:
         )
         assert bytes([RouterCommand.WRAP_ETH]) in tx.data
         assert bytes([RouterCommand.V4_SWAP]) in tx.data
+
+
+# ---------------------------------------------------------------------------
+# Multi-hop tests (no network calls)
+# ---------------------------------------------------------------------------
+
+
+class TestContractBalanceSentinels:
+    def test_contract_balance_v3_is_uint256_max(self):
+        assert CONTRACT_BALANCE_V3 == (1 << 256) - 1
+
+    def test_contract_balance_v4_is_uint128_max(self):
+        assert CONTRACT_BALANCE_V4 == (1 << 128) - 1
+
+
+class TestHopDataclasses:
+    def test_v2_hop_fields(self):
+        hop = V2Hop(token_in=WETH, token_out=USDC)
+        assert hop.token_in is WETH
+        assert hop.token_out is USDC
+
+    def test_v3_hop_fields(self):
+        hop = V3Hop(token_in=WETH, token_out=USDC, fee=500)
+        assert hop.fee == 500
+
+    def test_v4_hop_defaults(self):
+        hop = V4Hop(token_in=WETH, token_out=USDC, fee=500, tick_spacing=10)
+        assert hop.hooks == "0x0000000000000000000000000000000000000000"
+        assert hop.hook_data == b""
+
+    def test_v4_hop_custom_hooks(self):
+        hooks = "0x1234567890abcdef1234567890abcdef12345678"
+        hop = V4Hop(token_in=WETH, token_out=USDC, fee=500, tick_spacing=10, hooks=hooks)
+        assert hop.hooks == hooks
+
+
+class TestEncodeV4ExactInParams:
+    def test_returns_bytes(self):
+        path = [(USDC.address, 500, 10, "0x0000000000000000000000000000000000000000", b"")]
+        encoded = UniversalRouter.encode_v4_exact_in_params(
+            currency_in=WETH.address,
+            path=path,
+            amount_in=10 ** 18,
+            amount_out_minimum=0,
+        )
+        assert isinstance(encoded, bytes)
+
+    def test_nonempty(self):
+        path = [(USDC.address, 500, 10, "0x0000000000000000000000000000000000000000", b"")]
+        encoded = UniversalRouter.encode_v4_exact_in_params(
+            currency_in=WETH.address,
+            path=path,
+            amount_in=10 ** 18,
+            amount_out_minimum=1800 * 10 ** 6,
+        )
+        assert len(encoded) > 0
+
+    def test_two_hop_path(self):
+        # Two hops: WETH → USDC → DAI
+        path = [
+            (USDC.address, 500, 10, "0x0000000000000000000000000000000000000000", b""),
+            (DAI.address, 100, 1, "0x0000000000000000000000000000000000000000", b""),
+        ]
+        encoded = UniversalRouter.encode_v4_exact_in_params(
+            currency_in=WETH.address,
+            path=path,
+            amount_in=10 ** 18,
+            amount_out_minimum=0,
+        )
+        assert isinstance(encoded, bytes)
+        assert len(encoded) > 0
+
+    def test_encoded_length_is_multiple_of_32(self):
+        # ABI-encoded output is always a multiple of 32 bytes.
+        path = [(USDC.address, 500, 10, "0x0000000000000000000000000000000000000000", b"")]
+        encoded = UniversalRouter.encode_v4_exact_in_params(
+            currency_in=WETH.address,
+            path=path,
+            amount_in=10 ** 18,
+            amount_out_minimum=0,
+        )
+        assert len(encoded) % 32 == 0
+
+
+class TestBuildV4MultihopExactIn:
+    def setup_method(self):
+        self.router = UniversalRouter(UNIVERSAL_ROUTER_ADDR)
+
+    def test_returns_swap_transaction(self):
+        amount_in = TokenAmount.from_human(WETH, "1")
+        hops = [
+            V4Hop(token_in=WETH, token_out=USDC, fee=500, tick_spacing=10),
+            V4Hop(token_in=USDC, token_out=DAI, fee=100, tick_spacing=1),
+        ]
+        tx = self.router.build_v4_multihop_exact_in_transaction(
+            amount_in=amount_in,
+            hops=hops,
+            recipient=RECIPIENT,
+            amount_out_minimum=0,
+        )
+        assert isinstance(tx, SwapTransaction)
+        assert tx.to == UNIVERSAL_ROUTER_ADDR
+        assert tx.value == 0
+
+    def test_contains_v4_swap_command(self):
+        amount_in = TokenAmount.from_human(WETH, "1")
+        hops = [V4Hop(token_in=WETH, token_out=USDC, fee=500, tick_spacing=10)]
+        tx = self.router.build_v4_multihop_exact_in_transaction(
+            amount_in=amount_in,
+            hops=hops,
+            recipient=RECIPIENT,
+            amount_out_minimum=0,
+        )
+        assert bytes([RouterCommand.V4_SWAP]) in tx.data
+
+    def test_with_deadline_selector(self):
+        amount_in = TokenAmount.from_human(WETH, "1")
+        hops = [V4Hop(token_in=WETH, token_out=USDC, fee=500, tick_spacing=10)]
+        tx = self.router.build_v4_multihop_exact_in_transaction(
+            amount_in=amount_in,
+            hops=hops,
+            recipient=RECIPIENT,
+            amount_out_minimum=0,
+            deadline=1_700_000_000,
+        )
+        assert tx.data[:4] == bytes.fromhex("3593564c")
+
+    def test_no_deadline_selector(self):
+        amount_in = TokenAmount.from_human(WETH, "1")
+        hops = [V4Hop(token_in=WETH, token_out=USDC, fee=500, tick_spacing=10)]
+        tx = self.router.build_v4_multihop_exact_in_transaction(
+            amount_in=amount_in,
+            hops=hops,
+            recipient=RECIPIENT,
+            amount_out_minimum=0,
+        )
+        assert tx.data[:4] == bytes.fromhex("24856bc3")
+
+    def test_payer_is_user_false(self):
+        # payer_is_user=False: router uses its own balance (e.g. after WRAP_ETH)
+        amount_in = TokenAmount.from_human(WETH, "1")
+        hops = [V4Hop(token_in=WETH, token_out=USDC, fee=500, tick_spacing=10)]
+        tx = self.router.build_v4_multihop_exact_in_transaction(
+            amount_in=amount_in,
+            hops=hops,
+            recipient=RECIPIENT,
+            amount_out_minimum=0,
+            payer_is_user=False,
+        )
+        assert isinstance(tx, SwapTransaction)
+
+    def test_raises_on_empty_hops(self):
+        amount_in = TokenAmount.from_human(WETH, "1")
+        with pytest.raises(ValueError, match="empty"):
+            self.router.build_v4_multihop_exact_in_transaction(
+                amount_in=amount_in,
+                hops=[],
+                recipient=RECIPIENT,
+                amount_out_minimum=0,
+            )
+
+    def test_single_hop_uses_swap_exact_in_action(self):
+        """Single-hop V4 multi-hop transaction uses SWAP_EXACT_IN action."""
+        amount_in = TokenAmount.from_human(WETH, "1")
+        hops = [V4Hop(token_in=WETH, token_out=USDC, fee=500, tick_spacing=10)]
+        tx = self.router.build_v4_multihop_exact_in_transaction(
+            amount_in=amount_in,
+            hops=hops,
+            recipient=RECIPIENT,
+            amount_out_minimum=0,
+        )
+        # V4Action.SWAP_EXACT_IN == 0x07 must be present in the data
+        assert bytes([V4Action.SWAP_EXACT_IN]) in tx.data
+
+
+class TestBuildMultihopExactIn:
+    def setup_method(self):
+        self.router = UniversalRouter(UNIVERSAL_ROUTER_ADDR)
+
+    def test_raises_on_empty_hops(self):
+        amount_in = TokenAmount.from_human(WETH, "1")
+        with pytest.raises(ValueError, match="empty"):
+            self.router.build_multihop_exact_in_transaction(
+                amount_in=amount_in,
+                hops=[],
+                recipient=RECIPIENT,
+                amount_out_minimum=0,
+            )
+
+    # ------------------------------------------------------------------
+    # Single-segment (same type throughout) — basic sanity checks
+    # ------------------------------------------------------------------
+
+    def test_single_v2_hop(self):
+        amount_in = TokenAmount.from_human(WETH, "1")
+        tx = self.router.build_multihop_exact_in_transaction(
+            amount_in=amount_in,
+            hops=[V2Hop(token_in=WETH, token_out=USDC)],
+            recipient=RECIPIENT,
+            amount_out_minimum=0,
+        )
+        assert isinstance(tx, SwapTransaction)
+        assert bytes([RouterCommand.V2_SWAP_EXACT_IN]) in tx.data
+
+    def test_single_v3_hop(self):
+        amount_in = TokenAmount.from_human(WETH, "1")
+        tx = self.router.build_multihop_exact_in_transaction(
+            amount_in=amount_in,
+            hops=[V3Hop(token_in=WETH, token_out=USDC, fee=500)],
+            recipient=RECIPIENT,
+            amount_out_minimum=0,
+        )
+        assert isinstance(tx, SwapTransaction)
+        assert bytes([RouterCommand.V3_SWAP_EXACT_IN]) in tx.data
+
+    def test_single_v4_hop(self):
+        amount_in = TokenAmount.from_human(WETH, "1")
+        tx = self.router.build_multihop_exact_in_transaction(
+            amount_in=amount_in,
+            hops=[V4Hop(token_in=WETH, token_out=USDC, fee=500, tick_spacing=10)],
+            recipient=RECIPIENT,
+            amount_out_minimum=0,
+        )
+        assert isinstance(tx, SwapTransaction)
+        assert bytes([RouterCommand.V4_SWAP]) in tx.data
+
+    def test_consecutive_v3_hops_merged(self):
+        """Two consecutive V3 hops must produce exactly one V3_SWAP_EXACT_IN command."""
+        amount_in = TokenAmount.from_human(WETH, "1")
+        tx = self.router.build_multihop_exact_in_transaction(
+            amount_in=amount_in,
+            hops=[
+                V3Hop(token_in=WETH, token_out=USDC, fee=500),
+                V3Hop(token_in=USDC, token_out=DAI, fee=100),
+            ],
+            recipient=RECIPIENT,
+            amount_out_minimum=0,
+        )
+        # One V3 command byte (0x00) must appear exactly once in the commands
+        # portion of the calldata.
+        assert bytes([RouterCommand.V3_SWAP_EXACT_IN]) in tx.data
+
+    def test_consecutive_v2_hops_merged(self):
+        """Two consecutive V2 hops must produce exactly one V2_SWAP_EXACT_IN command."""
+        amount_in = TokenAmount.from_human(WETH, "1")
+        tx = self.router.build_multihop_exact_in_transaction(
+            amount_in=amount_in,
+            hops=[
+                V2Hop(token_in=WETH, token_out=USDC),
+                V2Hop(token_in=USDC, token_out=DAI),
+            ],
+            recipient=RECIPIENT,
+            amount_out_minimum=0,
+        )
+        assert bytes([RouterCommand.V2_SWAP_EXACT_IN]) in tx.data
+
+    def test_consecutive_v4_hops_merged(self):
+        """Two consecutive V4 hops must produce exactly one V4_SWAP command."""
+        amount_in = TokenAmount.from_human(WETH, "1")
+        tx = self.router.build_multihop_exact_in_transaction(
+            amount_in=amount_in,
+            hops=[
+                V4Hop(token_in=WETH, token_out=USDC, fee=500, tick_spacing=10),
+                V4Hop(token_in=USDC, token_out=DAI, fee=100, tick_spacing=1),
+            ],
+            recipient=RECIPIENT,
+            amount_out_minimum=0,
+        )
+        assert bytes([RouterCommand.V4_SWAP]) in tx.data
+
+    # ------------------------------------------------------------------
+    # Cross-pool-type paths
+    # ------------------------------------------------------------------
+
+    def test_v2_then_v3(self):
+        """V2 → V3 cross-type path produces two separate commands."""
+        amount_in = TokenAmount.from_human(WETH, "1")
+        tx = self.router.build_multihop_exact_in_transaction(
+            amount_in=amount_in,
+            hops=[
+                V2Hop(token_in=WETH, token_out=USDC),
+                V3Hop(token_in=USDC, token_out=DAI, fee=100),
+            ],
+            recipient=RECIPIENT,
+            amount_out_minimum=0,
+        )
+        assert bytes([RouterCommand.V2_SWAP_EXACT_IN]) in tx.data
+        assert bytes([RouterCommand.V3_SWAP_EXACT_IN]) in tx.data
+
+    def test_v3_then_v4(self):
+        """V3 → V4 cross-type path produces both a V3 command and a V4 command."""
+        amount_in = TokenAmount.from_human(WETH, "1")
+        tx = self.router.build_multihop_exact_in_transaction(
+            amount_in=amount_in,
+            hops=[
+                V3Hop(token_in=WETH, token_out=USDC, fee=500),
+                V4Hop(token_in=USDC, token_out=DAI, fee=100, tick_spacing=1),
+            ],
+            recipient=RECIPIENT,
+            amount_out_minimum=0,
+        )
+        assert bytes([RouterCommand.V3_SWAP_EXACT_IN]) in tx.data
+        assert bytes([RouterCommand.V4_SWAP]) in tx.data
+
+    def test_v2_then_v4(self):
+        """V2 → V4 cross-type path."""
+        amount_in = TokenAmount.from_human(WETH, "1")
+        tx = self.router.build_multihop_exact_in_transaction(
+            amount_in=amount_in,
+            hops=[
+                V2Hop(token_in=WETH, token_out=USDC),
+                V4Hop(token_in=USDC, token_out=DAI, fee=100, tick_spacing=1),
+            ],
+            recipient=RECIPIENT,
+            amount_out_minimum=0,
+        )
+        assert bytes([RouterCommand.V2_SWAP_EXACT_IN]) in tx.data
+        assert bytes([RouterCommand.V4_SWAP]) in tx.data
+
+    def test_v4_then_v3(self):
+        """V4 → V3 cross-type path."""
+        amount_in = TokenAmount.from_human(WETH, "1")
+        tx = self.router.build_multihop_exact_in_transaction(
+            amount_in=amount_in,
+            hops=[
+                V4Hop(token_in=WETH, token_out=USDC, fee=500, tick_spacing=10),
+                V3Hop(token_in=USDC, token_out=DAI, fee=100),
+            ],
+            recipient=RECIPIENT,
+            amount_out_minimum=0,
+        )
+        assert bytes([RouterCommand.V4_SWAP]) in tx.data
+        assert bytes([RouterCommand.V3_SWAP_EXACT_IN]) in tx.data
+
+    def test_three_segment_path(self):
+        """V2 → V3 → V4 three-segment path produces three commands."""
+        amount_in = TokenAmount.from_human(WETH, "1")
+        tx = self.router.build_multihop_exact_in_transaction(
+            amount_in=amount_in,
+            hops=[
+                V2Hop(token_in=WETH, token_out=USDC),
+                V3Hop(token_in=USDC, token_out=DAI, fee=100),
+                V4Hop(token_in=DAI, token_out=WETH, fee=500, tick_spacing=10),
+            ],
+            recipient=RECIPIENT,
+            amount_out_minimum=0,
+        )
+        assert bytes([RouterCommand.V2_SWAP_EXACT_IN]) in tx.data
+        assert bytes([RouterCommand.V3_SWAP_EXACT_IN]) in tx.data
+        assert bytes([RouterCommand.V4_SWAP]) in tx.data
+
+    def test_returns_swap_transaction_type(self):
+        amount_in = TokenAmount.from_human(WETH, "1")
+        tx = self.router.build_multihop_exact_in_transaction(
+            amount_in=amount_in,
+            hops=[
+                V3Hop(token_in=WETH, token_out=USDC, fee=500),
+                V4Hop(token_in=USDC, token_out=DAI, fee=100, tick_spacing=1),
+            ],
+            recipient=RECIPIENT,
+            amount_out_minimum=0,
+        )
+        assert isinstance(tx, SwapTransaction)
+        assert tx.to == UNIVERSAL_ROUTER_ADDR
+        assert tx.value == 0
+
+    def test_deadline_selector_applied(self):
+        amount_in = TokenAmount.from_human(WETH, "1")
+        tx = self.router.build_multihop_exact_in_transaction(
+            amount_in=amount_in,
+            hops=[V3Hop(token_in=WETH, token_out=USDC, fee=500)],
+            recipient=RECIPIENT,
+            amount_out_minimum=0,
+            deadline=1_700_000_000,
+        )
+        assert tx.data[:4] == bytes.fromhex("3593564c")
+
+    def test_no_deadline_selector(self):
+        amount_in = TokenAmount.from_human(WETH, "1")
+        tx = self.router.build_multihop_exact_in_transaction(
+            amount_in=amount_in,
+            hops=[V3Hop(token_in=WETH, token_out=USDC, fee=500)],
+            recipient=RECIPIENT,
+            amount_out_minimum=0,
+        )
+        assert tx.data[:4] == bytes.fromhex("24856bc3")
+
+
+class TestBuildWrapAndV4MultihopSwap:
+    def setup_method(self):
+        self.router = UniversalRouter(UNIVERSAL_ROUTER_ADDR)
+
+    def test_returns_swap_transaction(self):
+        tx = self.router.build_wrap_and_v4_multihop_swap_transaction(
+            eth_amount=10 ** 17,
+            weth_token=WETH,
+            hops=[V4Hop(token_in=WETH, token_out=USDC, fee=500, tick_spacing=10)],
+            recipient=RECIPIENT,
+            amount_out_minimum=0,
+        )
+        assert isinstance(tx, SwapTransaction)
+        assert tx.to == UNIVERSAL_ROUTER_ADDR
+
+    def test_value_equals_eth_amount(self):
+        eth_amount = 5 * 10 ** 17
+        tx = self.router.build_wrap_and_v4_multihop_swap_transaction(
+            eth_amount=eth_amount,
+            weth_token=WETH,
+            hops=[V4Hop(token_in=WETH, token_out=USDC, fee=500, tick_spacing=10)],
+            recipient=RECIPIENT,
+            amount_out_minimum=0,
+        )
+        assert tx.value == eth_amount
+
+    def test_contains_wrap_eth_and_v4_swap_commands(self):
+        tx = self.router.build_wrap_and_v4_multihop_swap_transaction(
+            eth_amount=10 ** 17,
+            weth_token=WETH,
+            hops=[V4Hop(token_in=WETH, token_out=USDC, fee=500, tick_spacing=10)],
+            recipient=RECIPIENT,
+            amount_out_minimum=0,
+        )
+        assert bytes([RouterCommand.WRAP_ETH]) in tx.data
+        assert bytes([RouterCommand.V4_SWAP]) in tx.data
+
+    def test_uses_swap_exact_in_action(self):
+        tx = self.router.build_wrap_and_v4_multihop_swap_transaction(
+            eth_amount=10 ** 17,
+            weth_token=WETH,
+            hops=[V4Hop(token_in=WETH, token_out=USDC, fee=500, tick_spacing=10)],
+            recipient=RECIPIENT,
+            amount_out_minimum=0,
+        )
+        assert bytes([V4Action.SWAP_EXACT_IN]) in tx.data
+
+    def test_with_deadline_selector(self):
+        tx = self.router.build_wrap_and_v4_multihop_swap_transaction(
+            eth_amount=10 ** 17,
+            weth_token=WETH,
+            hops=[V4Hop(token_in=WETH, token_out=USDC, fee=500, tick_spacing=10)],
+            recipient=RECIPIENT,
+            amount_out_minimum=0,
+            deadline=1_700_000_000,
+        )
+        assert tx.data[:4] == bytes.fromhex("3593564c")
+
+    def test_no_deadline_selector(self):
+        tx = self.router.build_wrap_and_v4_multihop_swap_transaction(
+            eth_amount=10 ** 17,
+            weth_token=WETH,
+            hops=[V4Hop(token_in=WETH, token_out=USDC, fee=500, tick_spacing=10)],
+            recipient=RECIPIENT,
+            amount_out_minimum=0,
+        )
+        assert tx.data[:4] == bytes.fromhex("24856bc3")
+
+    def test_raises_on_empty_hops(self):
+        with pytest.raises(ValueError, match="empty"):
+            self.router.build_wrap_and_v4_multihop_swap_transaction(
+                eth_amount=10 ** 17,
+                weth_token=WETH,
+                hops=[],
+                recipient=RECIPIENT,
+                amount_out_minimum=0,
+            )
+
+
+class TestBuildWrapAndMultihopExactIn:
+    def setup_method(self):
+        self.router = UniversalRouter(UNIVERSAL_ROUTER_ADDR)
+
+    def test_returns_swap_transaction(self):
+        tx = self.router.build_wrap_and_multihop_exact_in_transaction(
+            eth_amount=10 ** 17,
+            weth_token=WETH,
+            hops=[V3Hop(token_in=WETH, token_out=USDC, fee=500)],
+            recipient=RECIPIENT,
+            amount_out_minimum=0,
+        )
+        assert isinstance(tx, SwapTransaction)
+        assert tx.to == UNIVERSAL_ROUTER_ADDR
+
+    def test_value_equals_eth_amount(self):
+        eth_amount = 5 * 10 ** 17
+        tx = self.router.build_wrap_and_multihop_exact_in_transaction(
+            eth_amount=eth_amount,
+            weth_token=WETH,
+            hops=[V3Hop(token_in=WETH, token_out=USDC, fee=500)],
+            recipient=RECIPIENT,
+            amount_out_minimum=0,
+        )
+        assert tx.value == eth_amount
+
+    def test_contains_wrap_eth_command(self):
+        tx = self.router.build_wrap_and_multihop_exact_in_transaction(
+            eth_amount=10 ** 17,
+            weth_token=WETH,
+            hops=[V3Hop(token_in=WETH, token_out=USDC, fee=500)],
+            recipient=RECIPIENT,
+            amount_out_minimum=0,
+        )
+        assert bytes([RouterCommand.WRAP_ETH]) in tx.data
+        assert bytes([RouterCommand.V3_SWAP_EXACT_IN]) in tx.data
+
+    def test_v3_v4_cross_type(self):
+        tx = self.router.build_wrap_and_multihop_exact_in_transaction(
+            eth_amount=10 ** 17,
+            weth_token=WETH,
+            hops=[
+                V3Hop(token_in=WETH, token_out=USDC, fee=500),
+                V4Hop(token_in=USDC, token_out=WETH, fee=500, tick_spacing=10),
+            ],
+            recipient=RECIPIENT,
+            amount_out_minimum=0,
+        )
+        assert bytes([RouterCommand.WRAP_ETH]) in tx.data
+        assert bytes([RouterCommand.V3_SWAP_EXACT_IN]) in tx.data
+        assert bytes([RouterCommand.V4_SWAP]) in tx.data
+
+    def test_with_deadline_selector(self):
+        tx = self.router.build_wrap_and_multihop_exact_in_transaction(
+            eth_amount=10 ** 17,
+            weth_token=WETH,
+            hops=[V3Hop(token_in=WETH, token_out=USDC, fee=500)],
+            recipient=RECIPIENT,
+            amount_out_minimum=0,
+            deadline=1_700_000_000,
+        )
+        assert tx.data[:4] == bytes.fromhex("3593564c")
+
+    def test_no_deadline_selector(self):
+        tx = self.router.build_wrap_and_multihop_exact_in_transaction(
+            eth_amount=10 ** 17,
+            weth_token=WETH,
+            hops=[V3Hop(token_in=WETH, token_out=USDC, fee=500)],
+            recipient=RECIPIENT,
+            amount_out_minimum=0,
+        )
+        assert tx.data[:4] == bytes.fromhex("24856bc3")
+
+    def test_raises_on_empty_hops(self):
+        with pytest.raises(ValueError, match="empty"):
+            self.router.build_wrap_and_multihop_exact_in_transaction(
+                eth_amount=10 ** 17,
+                weth_token=WETH,
+                hops=[],
+                recipient=RECIPIENT,
+                amount_out_minimum=0,
+            )
