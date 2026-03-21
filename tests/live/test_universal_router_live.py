@@ -18,7 +18,11 @@ A V3 QuoterV2 quote is fetched first to set a realistic ``amount_out_minimum``
 with 0.5 % slippage.
 """
 
+import json
+
 import pytest
+from eth_abi import decode as abi_decode
+from eth_abi import encode as abi_encode
 from web3 import Web3
 
 from pydefi.amm.universal_router import UNIVERSAL_ROUTER_ADDRESSES, UniversalRouter
@@ -37,6 +41,9 @@ UNIVERSAL_ROUTER_V2 = UNIVERSAL_ROUTER_ADDRESSES[1]
 UNISWAP_V3_ROUTER = "0xE592427A0AEce92De3Edee1F18E0157C05861564"
 UNISWAP_V3_QUOTER = "0x61fFE014bA17989E743c5F6cB21bF9697530B21e"
 
+# Uniswap V4 PoolManager on Ethereum mainnet
+V4_POOL_MANAGER = "0x000000000004444c5dc75cB358380D2e3dE08A90"
+
 # Plausible price bounds for 1 WETH in USDC
 MIN_USDC = 500 * 10 ** 6
 MAX_USDC = 10_000 * 10 ** 6
@@ -48,6 +55,13 @@ ETH_WHALE = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"  # vitalik.eth
 # Swap amount: 0.01 ETH to keep the simulated swap within any single-block
 # gas limits while still being realistic.
 ETH_SWAP_AMOUNT = 10 ** 16  # 0.01 ETH in wei
+
+# Standard V4 hookless fee tiers tried in order of popularity when auto-discovering
+# an initialized WETH/USDC pool.
+_V4_FEE_TIERS = [(500, 10), (3000, 60), (100, 1), (10000, 200)]
+
+# keccak256("getSlot0(bytes32)")[:4]
+_GET_SLOT0_SELECTOR: bytes = Web3.keccak(text="getSlot0(bytes32)")[:4]
 
 
 async def _get_v3_quote(eth_w3, eth_amount: int) -> int:
@@ -69,6 +83,93 @@ async def _get_v3_quote(eth_w3, eth_amount: int) -> int:
     )
     # Apply 0.5 % slippage tolerance
     return int(amount_out.amount * 9950 // 10000)
+
+
+def _compute_v4_pool_id(
+    currency0: str,
+    currency1: str,
+    fee: int,
+    tick_spacing: int,
+    hooks: str = "0x0000000000000000000000000000000000000000",
+) -> bytes:
+    """Return the 32-byte PoolId = keccak256(abi.encode(PoolKey))."""
+    return Web3.keccak(
+        abi_encode(
+            ["address", "address", "uint24", "int24", "address"],
+            [
+                Web3.to_checksum_address(currency0),
+                Web3.to_checksum_address(currency1),
+                fee,
+                tick_spacing,
+                Web3.to_checksum_address(hooks),
+            ],
+        )
+    )
+
+
+async def _v4_pool_sqrt_price(
+    eth_w3,
+    currency0: str,
+    currency1: str,
+    fee: int,
+    tick_spacing: int,
+) -> int:
+    """Return sqrtPriceX96 for a V4 pool, or 0 if the pool is uninitialized."""
+    pool_id = _compute_v4_pool_id(currency0, currency1, fee, tick_spacing)
+    call_data = _GET_SLOT0_SELECTOR + pool_id
+    try:
+        result = await eth_w3.eth.call(
+            {
+                "to": Web3.to_checksum_address(V4_POOL_MANAGER),
+                "data": "0x" + call_data.hex(),
+            }
+        )
+        if len(result) >= 32:
+            # getSlot0 returns (uint160 sqrtPriceX96, int24 tick, uint24, uint24)
+            # sqrtPriceX96 is the first uint160, stored right-aligned in 32 bytes
+            (sqrt_price,) = abi_decode(["uint160"], result[:32])
+            return sqrt_price
+    except Exception:
+        pass
+    return 0
+
+
+async def _find_v4_pool(eth_w3, currency0: str, currency1: str) -> tuple[int, int] | None:
+    """Return (fee, tick_spacing) for the first initialized hookless pool, or None."""
+    for fee, tick_spacing in _V4_FEE_TIERS:
+        sqrt_price = await _v4_pool_sqrt_price(eth_w3, currency0, currency1, fee, tick_spacing)
+        if sqrt_price > 0:
+            return fee, tick_spacing
+    return None
+
+
+async def _debug_trace_call(eth_w3, tx_params: dict, label: str = "") -> None:
+    """Call ``debug_traceCall`` and print the full trace to help diagnose reverts.
+
+    This is a best-effort helper — if the RPC node does not support the
+    ``debug`` namespace it logs a short error instead of raising.
+
+    Args:
+        eth_w3: Async Web3 instance.
+        tx_params: Transaction dict (``to``, ``from``, ``value``, ``data``).
+        label: Short description printed in the header line.
+    """
+    try:
+        response = await eth_w3.provider.make_request(
+            "debug_traceCall",
+            [
+                tx_params,
+                "latest",
+                {"tracer": "callTracer"},
+            ],
+        )
+        print(
+            f"\n=== debug_traceCall [{label}] ===\n"
+            f"{json.dumps(response, indent=2, default=str)}\n"
+            f"=== end trace ==="
+        )
+    except Exception as exc:
+        print(f"\n=== debug_traceCall [{label}] unavailable: {exc} ===")
 
 
 @pytest.mark.live
@@ -107,15 +208,17 @@ class TestUniversalRouterV2Live:
         assert tx.to == UNIVERSAL_ROUTER_V2
         assert tx.value == ETH_SWAP_AMOUNT
 
-        # Execute via eth_call – raises ContractLogicError / ValueError on revert
-        result = await eth_w3.eth.call(
-            {
-                "to": Web3.to_checksum_address(tx.to),
-                "from": Web3.to_checksum_address(ETH_WHALE),
-                "value": tx.value,
-                "data": tx.data,
-            }
-        )
+        tx_params = {
+            "to": Web3.to_checksum_address(tx.to),
+            "from": Web3.to_checksum_address(ETH_WHALE),
+            "value": tx.value,
+            "data": tx.data,
+        }
+        try:
+            result = await eth_w3.eth.call(tx_params)
+        except Exception as exc:
+            await _debug_trace_call(eth_w3, tx_params, "V3 WETH->USDC swap revert")
+            raise
         # execute() returns no value; an empty-bytes result means success
         assert result == b"", f"Unexpected non-empty return data: {result.hex()}"
 
@@ -126,18 +229,32 @@ class TestUniversalRouterV2Live:
         WETH from its own balance (no Permit2 needed) and executes it as an
         ``eth_call`` against the live UniversalRouterV2 contract.
 
-        Pool parameters: WETH/USDC, fee=500 (0.05 %), tickSpacing=10.
-        These are the expected parameters for the most-liquid V4 WETH/USDC pool.
+        The test auto-discovers the first initialized hookless WETH/USDC V4 pool
+        by probing ``getSlot0`` for the standard fee tiers in order of
+        popularity: 0.05 % (500/10), 0.3 % (3000/60), 0.01 % (100/1),
+        1 % (10000/200).  If no pool is found the test is skipped.
         """
         amount_out_min = await _get_v3_quote(eth_w3, ETH_SWAP_AMOUNT)
+
+        currency0, currency1 = UniversalRouter._sort_v4_currencies(
+            WETH.address, USDC.address
+        )
+
+        pool_params = await _find_v4_pool(eth_w3, currency0, currency1)
+        if pool_params is None:
+            pytest.skip(
+                f"No initialized V4 WETH/USDC hookless pool found on mainnet "
+                f"(tried fee tiers: {_V4_FEE_TIERS})"
+            )
+        fee, tick_spacing = pool_params
 
         router = UniversalRouter(UNIVERSAL_ROUTER_V2)
         tx = router.build_wrap_and_v4_swap_transaction(
             eth_amount=ETH_SWAP_AMOUNT,
             weth_token=WETH,
             token_out=USDC,
-            fee=500,
-            tick_spacing=10,
+            fee=fee,
+            tick_spacing=tick_spacing,
             recipient=ETH_WHALE,
             amount_out_minimum=amount_out_min,
         )
@@ -145,14 +262,20 @@ class TestUniversalRouterV2Live:
         assert tx.to == UNIVERSAL_ROUTER_V2
         assert tx.value == ETH_SWAP_AMOUNT
 
-        # Execute via eth_call – raises ContractLogicError / ValueError on revert
-        result = await eth_w3.eth.call(
-            {
-                "to": Web3.to_checksum_address(tx.to),
-                "from": Web3.to_checksum_address(ETH_WHALE),
-                "value": tx.value,
-                "data": tx.data,
-            }
-        )
+        tx_params = {
+            "to": Web3.to_checksum_address(tx.to),
+            "from": Web3.to_checksum_address(ETH_WHALE),
+            "value": tx.value,
+            "data": tx.data,
+        }
+        try:
+            result = await eth_w3.eth.call(tx_params)
+        except Exception as exc:
+            await _debug_trace_call(
+                eth_w3,
+                tx_params,
+                f"V4 WETH->USDC swap revert (fee={fee}, tickSpacing={tick_spacing})",
+            )
+            raise
         assert result == b"", f"Unexpected non-empty return data: {result.hex()}"
 
