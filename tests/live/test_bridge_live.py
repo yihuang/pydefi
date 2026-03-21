@@ -80,33 +80,38 @@ BRIDGE_AMOUNT_ETH = 10**17  # 0.1 ETH
 class TestMayanLive:
     """Live tests against the public Mayan Price API."""
 
-    async def test_get_quote_eth_to_arb(self):
-        """Mayan: 0.1 ETH on Ethereum → ETH on Arbitrum."""
+    async def test_get_quote_usdc_to_arb(self):
+        """Mayan: 1000 USDC on Ethereum → USDC on Arbitrum."""
         client = Mayan(src_chain_id=ChainId.ETHEREUM, dst_chain_id=ChainId.ARBITRUM)
-        amount_in = TokenAmount(token=ETH_NATIVE, amount=BRIDGE_AMOUNT_ETH)
-        quote = await client.get_quote(ETH_NATIVE, ETH_NATIVE_ARB, amount_in)
+        amount_in = TokenAmount(token=USDC, amount=BRIDGE_AMOUNT_USDC)
+        quote = await client.get_quote(USDC, USDC_ARB, amount_in)
 
         assert quote.protocol == "Mayan"
-        assert quote.token_in == ETH_NATIVE
-        assert quote.token_out == ETH_NATIVE_ARB
-        assert 0 < quote.amount_out.amount < BRIDGE_AMOUNT_ETH * 2, (
-            f"Mayan ETH→ETH amount_out out of range: {quote.amount_out.human_amount} ETH"
+        assert quote.token_in == USDC
+        assert quote.token_out == USDC_ARB
+        assert MIN_USDC_OUT < quote.amount_out.amount < MAX_USDC_OUT, (
+            f"Mayan USDC→USDC amount_out out of range: {quote.amount_out.human_amount}"
         )
         assert quote.estimated_time_seconds > 0
 
     async def test_get_quote_returns_bridge_fee(self):
         """Mayan quote should include a non-negative bridge_fee."""
         client = Mayan(src_chain_id=ChainId.ETHEREUM, dst_chain_id=ChainId.ARBITRUM)
-        amount_in = TokenAmount(token=ETH_NATIVE, amount=BRIDGE_AMOUNT_ETH)
-        quote = await client.get_quote(ETH_NATIVE, ETH_NATIVE_ARB, amount_in)
+        amount_in = TokenAmount(token=USDC, amount=BRIDGE_AMOUNT_USDC)
+        quote = await client.get_quote(USDC, USDC_ARB, amount_in)
 
         assert quote.bridge_fee.amount >= 0
 
     async def test_build_tx_eth_call(self, eth_w3):
-        """Mayan: build ETH→WETH bridge tx and verify it doesn't revert via eth_call."""
+        """Mayan: build ETH→WETH bridge tx and verify it doesn't revert via eth_call.
+
+        Uses the SWIFT V2 swapAndForwardEth flow:
+        ETH → WETH (via DEX swap in Forwarder) → SWIFT V2 createOrderWithToken
+        No ERC-20 approval needed since ETH is sent as msg.value.
+        """
         client = Mayan(src_chain_id=ChainId.ETHEREUM, dst_chain_id=ChainId.ARBITRUM)
         amount_in = TokenAmount(token=ETH_NATIVE, amount=BRIDGE_AMOUNT_ETH)
-        # Bridge ETH → WETH_ARB: SWIFT V1 supports this with createOrderWithEth
+        # Bridge ETH → WETH_ARB via SWIFT V2 swapAndForwardEth
         tx = await client.build_bridge_tx(
             ETH_NATIVE, WETH_ARB, amount_in, ETH_WHALE
         )
