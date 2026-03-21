@@ -314,8 +314,13 @@ class TestGasZip:
         amount_in = TokenAmount(token=ETH_NATIVE, amount=10 ** 17)  # 0.1 ETH
 
         mock_api_response = {
-            "amountOut": str(int(0.0998 * 10 ** 18)),
-            "estimatedTime": 30,
+            "quotes": [
+                {
+                    "chain": 42161,
+                    "expected": str(int(0.0998 * 10 ** 18)),
+                    "speed": 30,
+                }
+            ]
         }
 
         with patch("aiohttp.ClientSession", return_value=_make_aiohttp_mock(200, mock_api_response)):

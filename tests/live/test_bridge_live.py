@@ -24,10 +24,10 @@ from .conftest import USDC
 # Cross-chain token definitions
 # ---------------------------------------------------------------------------
 
-# USDC on Arbitrum (used as destination token for ETH → ARB quotes)
+# USDC on Arbitrum (native USDC, not the deprecated bridged USDC.e)
 USDC_ARB = Token(
     chain_id=ChainId.ARBITRUM,
-    address="0xFF970A61A04b1cA14834A43f5dE4533eBDDB5CC8",
+    address="0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
     symbol="USDC",
     decimals=6,
 )
@@ -95,11 +95,12 @@ class TestMayanLive:
         assert quote.bridge_fee.amount >= 0
 
     async def test_build_tx_eth_call(self, eth_w3):
-        """Mayan: build ETH→ETH bridge tx and verify it doesn't revert via eth_call."""
+        """Mayan: build ETH→USDC bridge tx and verify it doesn't revert via eth_call."""
         client = Mayan(src_chain_id=ChainId.ETHEREUM, dst_chain_id=ChainId.ARBITRUM)
         amount_in = TokenAmount(token=ETH_NATIVE, amount=BRIDGE_AMOUNT_ETH)
+        # Bridge ETH → USDC_ARB: SWIFT supports cross-token bridging with native ETH input
         tx = await client.build_bridge_tx(
-            ETH_NATIVE, ETH_NATIVE_ARB, amount_in, ETH_WHALE
+            ETH_NATIVE, USDC_ARB, amount_in, ETH_WHALE
         )
 
         assert tx.get("to"), "Mayan tx must have a 'to' address"

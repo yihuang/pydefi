@@ -164,8 +164,9 @@ class Mayan(BaseBridge):
             "fromChain": from_chain,
             "toChain": to_chain,
             "slippageBps": "auto",
-            # Required by the Mayan v3 API to avoid 500 errors
-            "solanaProgram": "FC4eXxkyrMPTjiYUpp4EAnkmwMbQyZ6NDCh1kfLn6vsf",
+            # Required by the Mayan v3 API (naProgram = Solana program ID,
+            # forwarderAddress = EVM Forwarder used to look up swift contracts)
+            "naProgram": "FC4eXxkyrMPTjiYUpp4EAnkmwMbQyZ6NDCh1kfLn6vsf",
             "forwarderAddress": _MAYAN_FORWARDER,
             **kwargs,
         }
