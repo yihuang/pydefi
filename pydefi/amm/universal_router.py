@@ -750,16 +750,14 @@ class UniversalRouter:
             ABI-encoded bytes for this action's ``params`` slot.
         """
         pool_key = (currency0, currency1, fee, tick_spacing, hooks)
+        # v4-periphery CalldataDecoder.decodeSwapExactInSingleParams reads the
+        # first word as an ABI offset pointer (abi.decode-style), so the params
+        # must be encoded as a *struct* (outer tuple) — not as flat fields.
+        # abi_encode(["((T1,...),T2,...,Tn)"], [(v1,...,vn)]) produces the
+        # outer 0x20 offset that the decoder expects.
         return abi_encode(
-            [
-                "(address,address,uint24,int24,address)",
-                "bool",
-                "uint128",
-                "uint128",
-                "uint256",
-                "bytes",
-            ],
-            [pool_key, zero_for_one, amount_in, amount_out_minimum, 0, hook_data],
+            ["((address,address,uint24,int24,address),bool,uint128,uint128,uint256,bytes)"],
+            [(pool_key, zero_for_one, amount_in, amount_out_minimum, 0, hook_data)],
         )
 
     @staticmethod
