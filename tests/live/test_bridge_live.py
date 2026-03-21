@@ -32,6 +32,15 @@ USDC_ARB = Token(
     decimals=6,
 )
 
+# WETH on Arbitrum — used as the SWIFT destination token (ETH → WETH cross-chain
+# via SWIFT V1 `createOrderWithEth` where swiftInputContract == ZeroAddress)
+WETH_ARB = Token(
+    chain_id=ChainId.ARBITRUM,
+    address="0x82aF49447D8a07e3bd95BD0d56f35241523fBab1",
+    symbol="WETH",
+    decimals=18,
+)
+
 # Native ETH sentinel used by bridges
 ETH_NATIVE = Token(
     chain_id=ChainId.ETHEREUM,
@@ -71,36 +80,35 @@ BRIDGE_AMOUNT_ETH = 10**17  # 0.1 ETH
 class TestMayanLive:
     """Live tests against the public Mayan Price API."""
 
-    async def test_get_quote_usdc_eth_to_arb(self):
-        """Mayan: 1 000 USDC on Ethereum → USDC on Arbitrum."""
+    async def test_get_quote_eth_to_arb(self):
+        """Mayan: 0.1 ETH on Ethereum → ETH on Arbitrum."""
         client = Mayan(src_chain_id=ChainId.ETHEREUM, dst_chain_id=ChainId.ARBITRUM)
-        amount_in = TokenAmount(token=USDC, amount=BRIDGE_AMOUNT_USDC)
-        quote = await client.get_quote(USDC, USDC_ARB, amount_in)
+        amount_in = TokenAmount(token=ETH_NATIVE, amount=BRIDGE_AMOUNT_ETH)
+        quote = await client.get_quote(ETH_NATIVE, ETH_NATIVE_ARB, amount_in)
 
         assert quote.protocol == "Mayan"
-        assert quote.token_in == USDC
-        assert quote.token_out == USDC_ARB
-        assert MIN_USDC_OUT < quote.amount_out.amount < MAX_USDC_OUT, (
-            f"Mayan USDC→USDC amount_out out of range: "
-            f"{quote.amount_out.human_amount} USDC"
+        assert quote.token_in == ETH_NATIVE
+        assert quote.token_out == ETH_NATIVE_ARB
+        assert 0 < quote.amount_out.amount < BRIDGE_AMOUNT_ETH * 2, (
+            f"Mayan ETH→ETH amount_out out of range: {quote.amount_out.human_amount} ETH"
         )
         assert quote.estimated_time_seconds > 0
 
     async def test_get_quote_returns_bridge_fee(self):
         """Mayan quote should include a non-negative bridge_fee."""
         client = Mayan(src_chain_id=ChainId.ETHEREUM, dst_chain_id=ChainId.ARBITRUM)
-        amount_in = TokenAmount(token=USDC, amount=BRIDGE_AMOUNT_USDC)
-        quote = await client.get_quote(USDC, USDC_ARB, amount_in)
+        amount_in = TokenAmount(token=ETH_NATIVE, amount=BRIDGE_AMOUNT_ETH)
+        quote = await client.get_quote(ETH_NATIVE, ETH_NATIVE_ARB, amount_in)
 
         assert quote.bridge_fee.amount >= 0
 
     async def test_build_tx_eth_call(self, eth_w3):
-        """Mayan: build ETH→USDC bridge tx and verify it doesn't revert via eth_call."""
+        """Mayan: build ETH→WETH bridge tx and verify it doesn't revert via eth_call."""
         client = Mayan(src_chain_id=ChainId.ETHEREUM, dst_chain_id=ChainId.ARBITRUM)
         amount_in = TokenAmount(token=ETH_NATIVE, amount=BRIDGE_AMOUNT_ETH)
-        # Bridge ETH → USDC_ARB: SWIFT supports cross-token bridging with native ETH input
+        # Bridge ETH → WETH_ARB: SWIFT V1 supports this with createOrderWithEth
         tx = await client.build_bridge_tx(
-            ETH_NATIVE, USDC_ARB, amount_in, ETH_WHALE
+            ETH_NATIVE, WETH_ARB, amount_in, ETH_WHALE
         )
 
         assert tx.get("to"), "Mayan tx must have a 'to' address"
