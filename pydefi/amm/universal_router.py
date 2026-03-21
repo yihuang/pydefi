@@ -28,7 +28,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import Union
 
 from eth_abi import encode as abi_encode
 
@@ -138,7 +137,7 @@ class V4Hop:
 
 
 #: Union type for any pool hop descriptor accepted by the multi-hop builders.
-PoolHop = Union[V2Hop, V3Hop, V4Hop]
+PoolHop = V2Hop | V3Hop | V4Hop
 
 # ---------------------------------------------------------------------------
 # Function selectors
