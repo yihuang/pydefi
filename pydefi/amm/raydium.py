@@ -50,9 +50,7 @@ class Raydium(BaseSolanaAMM):
                 data = await resp.json(content_type=None)
                 if resp.status != 200 or not data.get("success", True):
                     msg = data.get("msg") or data.get("error") or str(data)
-                    raise InsufficientLiquidityError(
-                        f"Raydium API error ({resp.status}): {msg}"
-                    )
+                    raise InsufficientLiquidityError(f"Raydium API error ({resp.status}): {msg}")
                 return data  # type: ignore[return-value]
 
     async def get_quote(
