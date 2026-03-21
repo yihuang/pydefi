@@ -88,6 +88,8 @@ class BaseAMM(ABC):
     @staticmethod
     def _apply_slippage(amount: int, slippage_bps: int) -> int:
         """Return the minimum acceptable amount after applying slippage."""
+        if not 0 <= slippage_bps <= 10_000:
+            raise ValueError("slippage_bps must be between 0 and 10_000 (inclusive)")
         return int(amount * (10_000 - slippage_bps) // 10_000)
 
     @staticmethod
@@ -165,4 +167,6 @@ class BaseSolanaAMM(ABC):
     @staticmethod
     def _apply_slippage(amount: int, slippage_bps: int) -> int:
         """Return the minimum acceptable amount after applying slippage."""
+        if not 0 <= slippage_bps <= 10_000:
+            raise ValueError("slippage_bps must be between 0 and 10_000 (inclusive)")
         return int(amount * (10_000 - slippage_bps) // 10_000)

@@ -60,6 +60,13 @@ class TestBaseSolanaAMM:
         assert raydium._apply_slippage(1_000_000, 0) == 1_000_000
         assert raydium._apply_slippage(1_000_000, 10_000) == 0
 
+    def test_apply_slippage_invalid(self):
+        raydium = Raydium()
+        with pytest.raises(ValueError):
+            raydium._apply_slippage(1_000_000, -1)
+        with pytest.raises(ValueError):
+            raydium._apply_slippage(1_000_000, 10_001)
+
 
 # ---------------------------------------------------------------------------
 # Raydium tests
@@ -143,7 +150,7 @@ class TestRaydium:
         assert route.steps[0].protocol == "Raydium"
         assert route.steps[0].pool_address == "58oQChx4yWmvKnami8n1LnxS7vQp5YCGLGjrQCZFdcxm"
         assert route.amount_out.amount == 150_000_000
-        assert route.price_impact == Decimal("0.0005")  # 0.05 / 100
+        assert route.price_impact == Decimal("0.0005")  # 0.05% / 100
 
     @pytest.mark.asyncio
     async def test_build_swap_route_no_pool_id(self):
@@ -194,6 +201,83 @@ class TestRaydium:
         assert captured["slippageBps"] == 100
         assert captured["inputMint"] == SOL_MINT
         assert captured["outputMint"] == USDC_MINT
+
+    @pytest.mark.asyncio
+    async def test_build_transaction(self):
+        """build_transaction should call compute, then POST to /transaction endpoint."""
+        raydium = Raydium()
+        amount_in = TokenAmount.from_human(SOL, "1")
+        wallet = "4wPBNzaFLPcBitNjNmJP8FtEHRFYQW4eMeFE6HB5Xekr"
+
+        mock_compute_response = {
+            "success": True,
+            "data": {
+                "inputAmount": "1000000000",
+                "outputAmount": "150000000",
+                "minimumAmountOut": "149250000",
+                "priceImpactPct": "0.02",
+                "routePlan": [{"poolId": "pool123"}],
+            },
+        }
+        mock_tx_response = {
+            "success": True,
+            "data": [{"transaction": "AQAAAA=="}, {"transaction": "BQAAAA=="}],
+        }
+
+        from unittest.mock import MagicMock
+
+        mock_post_resp = MagicMock()
+        mock_post_resp.status = 200
+        mock_post_resp.json = AsyncMock(return_value=mock_tx_response)
+        mock_post_resp.__aenter__ = AsyncMock(return_value=mock_post_resp)
+        mock_post_resp.__aexit__ = AsyncMock(return_value=False)
+
+        mock_session = MagicMock()
+        mock_session.post = MagicMock(return_value=mock_post_resp)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        with patch.object(raydium, "_get", new=AsyncMock(return_value=mock_compute_response)):
+            with patch("pydefi.amm.raydium.aiohttp.ClientSession", return_value=mock_session):
+                txs = await raydium.build_transaction(amount_in, USDC, wallet=wallet)
+
+        assert txs == ["AQAAAA==", "BQAAAA=="]
+
+    @pytest.mark.asyncio
+    async def test_build_transaction_api_error(self):
+        """build_transaction should raise InsufficientLiquidityError on failure."""
+        raydium = Raydium()
+        amount_in = TokenAmount.from_human(SOL, "1")
+        wallet = "4wPBNzaFLPcBitNjNmJP8FtEHRFYQW4eMeFE6HB5Xekr"
+
+        mock_compute_response = {
+            "success": True,
+            "data": {
+                "inputAmount": "1000000000",
+                "outputAmount": "150000000",
+                "minimumAmountOut": "149250000",
+                "priceImpactPct": "0",
+                "routePlan": [],
+            },
+        }
+
+        from unittest.mock import MagicMock
+
+        mock_post_resp = MagicMock()
+        mock_post_resp.status = 400
+        mock_post_resp.json = AsyncMock(return_value={"success": False, "msg": "invalid wallet"})
+        mock_post_resp.__aenter__ = AsyncMock(return_value=mock_post_resp)
+        mock_post_resp.__aexit__ = AsyncMock(return_value=False)
+
+        mock_session = MagicMock()
+        mock_session.post = MagicMock(return_value=mock_post_resp)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        with patch.object(raydium, "_get", new=AsyncMock(return_value=mock_compute_response)):
+            with patch("pydefi.amm.raydium.aiohttp.ClientSession", return_value=mock_session):
+                with pytest.raises(InsufficientLiquidityError):
+                    await raydium.build_transaction(amount_in, USDC, wallet=wallet)
 
 
 # ---------------------------------------------------------------------------
@@ -258,7 +342,7 @@ class TestJupiter:
         assert quote.amount_out.amount == 150_000_000
         assert quote.min_amount_out.amount == 149_250_000
         assert quote.gas_estimate == 0  # Solana uses compute units
-        assert quote.price_impact == Decimal("0.03")
+        assert quote.price_impact == Decimal("0.0003")  # 0.03% / 100
         assert quote.token_in == SOL
         assert quote.token_out == USDC
 

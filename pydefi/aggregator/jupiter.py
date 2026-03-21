@@ -103,7 +103,8 @@ class Jupiter(BaseAggregator):
         out_amount = int(data["outAmount"])
         # Jupiter returns otherAmountThreshold as the minimum out after slippage
         min_out_amount = int(data.get("otherAmountThreshold", out_amount))
-        price_impact = Decimal(str(data.get("priceImpactPct", "0")))
+        # priceImpactPct is a percentage (e.g. "0.03" = 0.03%); convert to fraction
+        price_impact = Decimal(str(data.get("priceImpactPct", "0"))) / Decimal(100)
 
         return AggregatorQuote(
             token_in=amount_in.token,

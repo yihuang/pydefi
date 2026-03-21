@@ -139,3 +139,64 @@ class Raydium(BaseSolanaAMM):
             amount_out=TokenAmount(token=token_out, amount=out_amount),
             price_impact=price_impact,
         )
+
+    async def build_transaction(
+        self,
+        amount_in: TokenAmount,
+        token_out: Token,
+        wallet: str,
+        slippage_bps: int = 50,
+        compute_unit_price_micro_lamports: int | None = None,
+        **kwargs: Any,
+    ) -> list[str]:
+        """Build a Solana transaction for the swap via the Raydium API.
+
+        Calls ``/compute/swap-base-in`` for the quote, then POSTs to
+        ``/transaction/swap-base-in`` to obtain one or more base-64 encoded
+        versioned Solana transactions ready for signing and broadcasting.
+
+        Args:
+            amount_in: Exact input amount.
+            token_out: Desired output token (Solana mint address).
+            wallet: Signer's Solana wallet address (base-58 encoded).
+            slippage_bps: Maximum acceptable slippage in basis points.
+            compute_unit_price_micro_lamports: Priority fee in micro-lamports
+                per compute unit.  ``None`` uses Raydium's default.
+            **kwargs: Extra body parameters forwarded to the transaction
+                endpoint (e.g. ``wrapSol``, ``unwrapSol``).
+
+        Returns:
+            List of base-64 encoded transactions to sign and broadcast.
+
+        Raises:
+            :class:`~pydefi.exceptions.InsufficientLiquidityError`: On API
+                errors or when no route is found.
+        """
+        # Step 1: get compute quote (includes the full route plan Raydium needs)
+        compute_params: dict[str, Any] = {
+            "inputMint": amount_in.token.address,
+            "outputMint": token_out.address,
+            "amount": str(amount_in.amount),
+            "slippageBps": slippage_bps,
+            "txVersion": "V0",
+        }
+        compute_response = await self._get("compute/swap-base-in", compute_params)
+
+        # Step 2: build the transaction
+        url = f"{self.api_url.rstrip('/')}/transaction/swap-base-in"
+        payload: dict[str, Any] = {
+            "swapResponse": compute_response["data"],
+            "txVersion": "V0",
+            "wallet": wallet,
+            **kwargs,
+        }
+        if compute_unit_price_micro_lamports is not None:
+            payload["computeBudgetConfig"] = {"microLamports": compute_unit_price_micro_lamports}
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload) as resp:
+                data = await resp.json(content_type=None)
+                if resp.status != 200 or not data.get("success", True):
+                    msg = data.get("msg") or data.get("error") or str(data)
+                    raise InsufficientLiquidityError(f"Raydium transaction API error ({resp.status}): {msg}")
+                return [item["transaction"] for item in data.get("data", [])]
