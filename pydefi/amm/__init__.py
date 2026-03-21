@@ -1,7 +1,8 @@
 """AMM (Automated Market Maker) integrations."""
 
-from pydefi.amm.base import BaseAMM
+from pydefi.amm.base import BaseAMM, BaseSolanaAMM
 from pydefi.amm.curve import CurvePool
+from pydefi.amm.raydium import Raydium
 from pydefi.amm.uniswap_v2 import UniswapV2
 from pydefi.amm.uniswap_v3 import UniswapV3
 from pydefi.amm.universal_router import (
@@ -15,9 +16,11 @@ from pydefi.amm.universal_router import (
 
 __all__ = [
     "BaseAMM",
+    "BaseSolanaAMM",
     "UniswapV2",
     "UniswapV3",
     "CurvePool",
+    "Raydium",
     "RouterCommand",
     "UniversalRouter",
     "V2Hop",

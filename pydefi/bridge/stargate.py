@@ -5,6 +5,10 @@ Stargate is built on LayerZero and supports bridging native stablecoin
 liquidity across chains.  This module wraps the ``IStargate`` router
 interface via :class:`~eth_contract.Contract`.
 
+Solana is supported as a *destination* chain via the LayerZero V2 endpoint
+(endpoint ID ``30168``).  Bridging *from* Solana to EVM requires the
+Stargate Solana program and is outside the scope of this module.
+
 Docs: https://stargateprotocol.gitbook.io/stargate/
 """
 
@@ -39,7 +43,8 @@ _FACTORY_ABI = [
     "function getPool(uint256 _poolId) external view returns (address)",
 ]
 
-# LayerZero chain IDs differ from EVM chain IDs
+# LayerZero chain IDs differ from EVM chain IDs.
+# Solana uses the LayerZero V2 endpoint ID (30168).
 _LZ_CHAIN_ID: dict[int, int] = {
     1: 101,  # Ethereum
     56: 102,  # BSC
@@ -49,6 +54,7 @@ _LZ_CHAIN_ID: dict[int, int] = {
     10: 111,  # Optimism
     250: 112,  # Fantom
     8453: 184,  # Base
+    1399811149: 30168,  # Solana (LayerZero V2 endpoint ID)
 }
 
 # Stargate pool IDs for common tokens

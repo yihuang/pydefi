@@ -5,6 +5,13 @@ Across uses UMA's optimistic oracle for fast (2-4 minute) bridging with
 competitive fees.  This module wraps the ``SpokePool`` on-chain contract
 and the Across Suggested Fees API.
 
+Solana is supported as a *destination* chain (chain ID ``1399811149``).
+When bridging to Solana the caller must supply the recipient as a 32-byte
+hex-encoded Solana address (left-padded), and the ``outputToken`` should
+be the corresponding Solana mint address encoded as bytes32.  Bridging
+*from* Solana requires the Solana SpokePool program and is outside the
+scope of this module.
+
 Docs: https://docs.across.to/
 """
 
