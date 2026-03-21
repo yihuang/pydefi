@@ -35,6 +35,14 @@ MAX_USDC = 10_000 * 10**6  # 10 000 USDC per ETH maximum
 # ---------------------------------------------------------------------------
 
 _API_KEY: str | None = os.environ.get("UNISWAP_API_KEY")
+# Optional: origin header value for API keys registered for a specific domain.
+# Defaults to the main Uniswap app origin, which works with most developer keys.
+_ORIGIN: str = os.environ.get("UNISWAP_ORIGIN", "https://app.uniswap.org")
+
+
+def _make_client(chain_id: int = 1) -> UniswapAPI:
+    """Return a UniswapAPI client configured from environment variables."""
+    return UniswapAPI(chain_id=chain_id, api_key=_API_KEY, origin=_ORIGIN)
 
 
 @pytest.mark.live
@@ -49,7 +57,7 @@ class TestUniswapAPILive:
 
     async def test_get_quote_weth_usdc(self):
         """GET /v2/quote should return a non-zero output amount for 1 WETH → USDC."""
-        client = UniswapAPI(chain_id=1, api_key=_API_KEY)
+        client = _make_client()
         amount_in = TokenAmount.from_human(WETH, "1")
         quote = await client.get_quote(amount_in, USDC, slippage_bps=50)
 
@@ -65,7 +73,7 @@ class TestUniswapAPILive:
 
     async def test_get_quote_small_amount(self):
         """GET /v2/quote should return a non-zero output for 0.01 WETH → USDC."""
-        client = UniswapAPI(chain_id=1, api_key=_API_KEY)
+        client = _make_client()
         amount_in = TokenAmount.from_human(WETH, "0.01")
         quote = await client.get_quote(amount_in, USDC, slippage_bps=50)
 
@@ -74,7 +82,7 @@ class TestUniswapAPILive:
 
     async def test_get_quote_weth_dai(self):
         """GET /v2/quote should also work for WETH → DAI (18-decimal stablecoin)."""
-        client = UniswapAPI(chain_id=1, api_key=_API_KEY)
+        client = _make_client()
         amount_in = TokenAmount.from_human(WETH, "1")
         quote = await client.get_quote(amount_in, DAI, slippage_bps=50)
 
@@ -90,7 +98,7 @@ class TestUniswapAPILive:
 
     async def test_build_swap_route(self):
         """build_swap_route should return a well-formed SwapRoute."""
-        client = UniswapAPI(chain_id=1, api_key=_API_KEY)
+        client = _make_client()
         amount_in = TokenAmount.from_human(WETH, "1")
         route = await client.build_swap_route(amount_in, USDC, slippage_bps=50)
 
@@ -108,7 +116,7 @@ class TestUniswapAPILive:
         """
         # Use a well-known address as the simulated wallet
         wallet = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"  # vitalik.eth
-        client = UniswapAPI(chain_id=1, api_key=_API_KEY)
+        client = _make_client()
         amount_in = TokenAmount.from_human(WETH, "0.01")
 
         quote = await client.get_swap(

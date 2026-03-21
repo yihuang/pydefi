@@ -25,8 +25,13 @@ class UniswapAPI(BaseAggregator):
 
     Args:
         chain_id: EVM chain ID (e.g. ``1`` for Ethereum mainnet).
-        api_key: Uniswap Trading API key (sent as ``x-api-key`` header).
+        api_key: Uniswap Trading API key.  Sent as both ``x-api-key`` and
+            ``Authorization: Bearer <key>`` headers so it works regardless of
+            which auth scheme a particular API gateway deployment expects.
         base_url: Override the default API base URL.
+        origin: Value for the ``Origin`` request header.  Some Uniswap API
+            deployments validate the origin of server-side callers; pass the
+            origin that was registered with your API key if needed.
     """
 
     _DEFAULT_BASE_URL = "https://api.uniswap.org"
@@ -36,9 +41,11 @@ class UniswapAPI(BaseAggregator):
         chain_id: int,
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
+        origin: Optional[str] = None,
     ) -> None:
         super().__init__(chain_id, api_key)
         self._base_url = (base_url or self._DEFAULT_BASE_URL).rstrip("/")
+        self._origin = origin
 
     @property
     def base_url(self) -> str:
@@ -54,8 +61,19 @@ class UniswapAPI(BaseAggregator):
             "Accept": "application/json",
         }
         if self.api_key:
+            # Send the key in both formats: some API gateway deployments use
+            # the AWS-style x-api-key header while others use Bearer tokens.
             headers["x-api-key"] = self.api_key
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        if self._origin:
+            headers["Origin"] = self._origin
         return headers
+
+    def _api_error_msg(self, data: dict[str, Any], status: int) -> str:
+        detail = data.get("detail") or data.get("errorCode") or data.get("message")
+        if detail is None:
+            detail = data
+        return f"Uniswap API error {status}: {detail}"
 
     async def _get(self, endpoint: str, params: dict[str, Any]) -> dict[str, Any]:
         url = f"{self._base_url}/{endpoint.lstrip('/')}"
@@ -66,7 +84,7 @@ class UniswapAPI(BaseAggregator):
                 data = await resp.json(content_type=None)
                 if resp.status != 200:
                     raise AggregatorError(
-                        f"Uniswap API error: {data.get('detail', data.get('errorCode', data))}",
+                        self._api_error_msg(data, resp.status),
                         status_code=resp.status,
                     )
                 return data  # type: ignore[return-value]
@@ -80,7 +98,7 @@ class UniswapAPI(BaseAggregator):
                 data = await resp.json(content_type=None)
                 if resp.status != 200:
                     raise AggregatorError(
-                        f"Uniswap API error: {data.get('detail', data.get('errorCode', data))}",
+                        self._api_error_msg(data, resp.status),
                         status_code=resp.status,
                     )
                 return data  # type: ignore[return-value]

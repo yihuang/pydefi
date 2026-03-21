@@ -249,11 +249,19 @@ class TestUniswapAPI:
         headers = client._headers()
         assert "Content-Type" in headers
         assert "x-api-key" not in headers
+        assert "Authorization" not in headers
+        assert "Origin" not in headers
 
     def test_headers_with_api_key(self):
         client = UniswapAPI(chain_id=1, api_key="mykey")
         headers = client._headers()
         assert headers["x-api-key"] == "mykey"
+        assert headers["Authorization"] == "Bearer mykey"
+
+    def test_headers_with_origin(self):
+        client = UniswapAPI(chain_id=1, api_key="mykey", origin="https://app.uniswap.org")
+        headers = client._headers()
+        assert headers["Origin"] == "https://app.uniswap.org"
 
     def test_slippage_to_percent(self):
         client = UniswapAPI(chain_id=1)
