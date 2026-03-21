@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any
 
-from pydefi.types import Token, TokenAmount, SwapRoute
+from pydefi.types import SwapRoute, Token, TokenAmount
 
 
 @dataclass

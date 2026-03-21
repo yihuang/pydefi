@@ -4,7 +4,7 @@ Common types used throughout pydefi.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from decimal import ROUND_DOWN, Decimal
 from enum import IntEnum
 from typing import ClassVar
@@ -76,7 +76,7 @@ class TokenAmount:
     @property
     def human_amount(self) -> Decimal:
         """Return the amount expressed in whole tokens."""
-        return Decimal(self.amount) / Decimal(10 ** self.token.decimals)
+        return Decimal(self.amount) / Decimal(10**self.token.decimals)
 
     @classmethod
     def from_human(cls, token: Token, amount: Decimal | float | str) -> "TokenAmount":
@@ -85,7 +85,7 @@ class TokenAmount:
         The value is quantized to the token's precision using ``ROUND_DOWN``
         (i.e. any sub-unit remainder is truncated, never rounded up).
         """
-        raw_decimal = Decimal(str(amount)) * Decimal(10 ** token.decimals)
+        raw_decimal = Decimal(str(amount)) * Decimal(10**token.decimals)
         raw = int(raw_decimal.to_integral_value(rounding=ROUND_DOWN))
         return cls(token=token, amount=raw)
 
@@ -143,10 +143,7 @@ class SwapRoute:
         return self.steps[-1].token_out
 
     def __repr__(self) -> str:
-        path = " -> ".join(
-            [self.steps[0].token_in.symbol]
-            + [s.token_out.symbol for s in self.steps]
-        )
+        path = " -> ".join([self.steps[0].token_in.symbol] + [s.token_out.symbol for s in self.steps])
         return f"SwapRoute({path}, in={self.amount_in.human_amount}, out={self.amount_out.human_amount})"
 
 

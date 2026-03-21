@@ -118,8 +118,10 @@ async def fork_w3(request: pytest.FixtureRequest):
     proc = subprocess.Popen(
         [
             "anvil",
-            "--fork-url", ETH_RPC_URL,
-            "--port", str(port),
+            "--fork-url",
+            ETH_RPC_URL,
+            "--port",
+            str(port),
             "--silent",
         ],
         stdout=subprocess.DEVNULL,

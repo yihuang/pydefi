@@ -43,18 +43,18 @@ from pydefi.types import SwapTransaction, Token, TokenAmount
 
 #: Mapping from chain ID to the canonical UniversalRouterV2 deployment address.
 UNIVERSAL_ROUTER_ADDRESSES: dict[int, str] = {
-    1: "0x66a9893cC07D91D95644AEDD05D03f95e1dBA8Af",        # Ethereum mainnet
-    10: "0x851116D9223fabED8E56C0E6b8Ad0c31d98B3507",       # Optimism
-    56: "0x1906c1d672b88cD1B9aC7593301cA990F94Eae07",        # BNB Chain
-    130: "0xEf740bf23aCaE26f6492B10de645D6B98dC8Eaf3",       # Unichain
-    137: "0x1095692A6237d83C6a72F3F5eFEdb9A670C49223",       # Polygon
-    480: "0x8ac7bEE993bb44dAb564Ea4bc9EA67Bf9Eb5e743",       # WorldChain
-    8453: "0x6fF5693b99212Da76ad316178A184AB56D299b43",      # Base
-    42161: "0xA51afAFe0263b40EdaEf0Df8781eA9aa03E381a3",    # Arbitrum One
-    43114: "0x4Dae2f939ACf50408e13d58534Ff8c2776d45265",    # Avalanche C-Chain (V1_2)
-    81457: "0xeAbBcB3E8E415306207ef514f660A3F820025BE3",     # Blast
+    1: "0x66a9893cC07D91D95644AEDD05D03f95e1dBA8Af",  # Ethereum mainnet
+    10: "0x851116D9223fabED8E56C0E6b8Ad0c31d98B3507",  # Optimism
+    56: "0x1906c1d672b88cD1B9aC7593301cA990F94Eae07",  # BNB Chain
+    130: "0xEf740bf23aCaE26f6492B10de645D6B98dC8Eaf3",  # Unichain
+    137: "0x1095692A6237d83C6a72F3F5eFEdb9A670C49223",  # Polygon
+    480: "0x8ac7bEE993bb44dAb564Ea4bc9EA67Bf9Eb5e743",  # WorldChain
+    8453: "0x6fF5693b99212Da76ad316178A184AB56D299b43",  # Base
+    42161: "0xA51afAFe0263b40EdaEf0Df8781eA9aa03E381a3",  # Arbitrum One
+    43114: "0x4Dae2f939ACf50408e13d58534Ff8c2776d45265",  # Avalanche C-Chain (V1_2)
+    81457: "0xeAbBcB3E8E415306207ef514f660A3F820025BE3",  # Blast
     7777777: "0x3315ef7cA28dB74aBADC6c44570efDF06b04B020",  # Zora
-    11155111: "0x3A9D48AB9751398BbFa63ad67599Bb04e4BdF98b", # Sepolia (testnet)
+    11155111: "0x3A9D48AB9751398BbFa63ad67599Bb04e4BdF98b",  # Sepolia (testnet)
 }
 
 # ---------------------------------------------------------------------------
@@ -488,9 +488,7 @@ class UniversalRouter:
             ValueError: If *commands* and *inputs* have different lengths.
         """
         if len(commands) != len(inputs):
-            raise ValueError(
-                f"commands length ({len(commands)}) must equal inputs length ({len(inputs)})"
-            )
+            raise ValueError(f"commands length ({len(commands)}) must equal inputs length ({len(inputs)})")
 
         commands_bytes = bytes([int(c) for c in commands])
 
@@ -541,12 +539,8 @@ class UniversalRouter:
             and ``value`` set.
         """
         path = UniswapV3._encode_path([amount_in.token, token_out], [fee])
-        input_data = self.encode_v3_swap_exact_in(
-            recipient, amount_in.amount, amount_out_minimum, path, payer_is_user
-        )
-        calldata = self.build_execute_calldata(
-            [RouterCommand.V3_SWAP_EXACT_IN], [input_data], deadline
-        )
+        input_data = self.encode_v3_swap_exact_in(recipient, amount_in.amount, amount_out_minimum, path, payer_is_user)
+        calldata = self.build_execute_calldata([RouterCommand.V3_SWAP_EXACT_IN], [input_data], deadline)
         return SwapTransaction(to=self.router_address, data=calldata)
 
     def build_v3_multihop_exact_in_transaction(
@@ -578,9 +572,7 @@ class UniversalRouter:
         input_data = self.encode_v3_swap_exact_in(
             recipient, amount_in.amount, amount_out_minimum, encoded_path, payer_is_user
         )
-        calldata = self.build_execute_calldata(
-            [RouterCommand.V3_SWAP_EXACT_IN], [input_data], deadline
-        )
+        calldata = self.build_execute_calldata([RouterCommand.V3_SWAP_EXACT_IN], [input_data], deadline)
         return SwapTransaction(to=self.router_address, data=calldata)
 
     def build_v3_exact_out_transaction(
@@ -613,12 +605,8 @@ class UniversalRouter:
         """
         # Exact-output paths are reversed: output token first, input token last
         path = UniswapV3._encode_path([amount_out.token, token_in], [fee])
-        input_data = self.encode_v3_swap_exact_out(
-            recipient, amount_out.amount, amount_in_maximum, path, payer_is_user
-        )
-        calldata = self.build_execute_calldata(
-            [RouterCommand.V3_SWAP_EXACT_OUT], [input_data], deadline
-        )
+        input_data = self.encode_v3_swap_exact_out(recipient, amount_out.amount, amount_in_maximum, path, payer_is_user)
+        calldata = self.build_execute_calldata([RouterCommand.V3_SWAP_EXACT_OUT], [input_data], deadline)
         return SwapTransaction(to=self.router_address, data=calldata)
 
     def build_v2_exact_in_transaction(
@@ -648,9 +636,7 @@ class UniversalRouter:
         input_data = self.encode_v2_swap_exact_in(
             recipient, amount_in.amount, amount_out_minimum, addresses, payer_is_user
         )
-        calldata = self.build_execute_calldata(
-            [RouterCommand.V2_SWAP_EXACT_IN], [input_data], deadline
-        )
+        calldata = self.build_execute_calldata([RouterCommand.V2_SWAP_EXACT_IN], [input_data], deadline)
         return SwapTransaction(to=self.router_address, data=calldata)
 
     def build_v2_exact_out_transaction(
@@ -679,9 +665,7 @@ class UniversalRouter:
         input_data = self.encode_v2_swap_exact_out(
             recipient, amount_out.amount, amount_in_maximum, addresses, payer_is_user
         )
-        calldata = self.build_execute_calldata(
-            [RouterCommand.V2_SWAP_EXACT_OUT], [input_data], deadline
-        )
+        calldata = self.build_execute_calldata([RouterCommand.V2_SWAP_EXACT_OUT], [input_data], deadline)
         return SwapTransaction(to=self.router_address, data=calldata)
 
     def build_wrap_and_v3_swap_transaction(
@@ -718,9 +702,7 @@ class UniversalRouter:
         """
         wrap_input = self.encode_wrap_eth(ADDRESS_THIS, eth_amount)
         path = UniswapV3._encode_path([weth_token, token_out], [fee])
-        swap_input = self.encode_v3_swap_exact_in(
-            recipient, eth_amount, amount_out_minimum, path, payer_is_user=False
-        )
+        swap_input = self.encode_v3_swap_exact_in(recipient, eth_amount, amount_out_minimum, path, payer_is_user=False)
         calldata = self.build_execute_calldata(
             [RouterCommand.WRAP_ETH, RouterCommand.V3_SWAP_EXACT_IN],
             [wrap_input, swap_input],
@@ -774,9 +756,7 @@ class UniversalRouter:
             ValueError: If *actions* and *params* have different lengths.
         """
         if len(actions) != len(params):
-            raise ValueError(
-                f"actions length ({len(actions)}) must equal params length ({len(params)})"
-            )
+            raise ValueError(f"actions length ({len(actions)}) must equal params length ({len(params)})")
         actions_bytes = bytes([int(a) for a in actions])
         return abi_encode(["bytes", "bytes[]"], [actions_bytes, list(params)])
 
@@ -851,9 +831,7 @@ class UniversalRouter:
         return abi_encode(["address", "uint256"], [currency, max_amount])
 
     @staticmethod
-    def encode_v4_settle_params(
-        currency: str, amount: int, payer_is_user: bool
-    ) -> bytes:
+    def encode_v4_settle_params(currency: str, amount: int, payer_is_user: bool) -> bytes:
         """Encode ABI params for a ``SETTLE`` V4 action.
 
         ``SETTLE`` pays *amount* of *currency* from either ``msgSender()``
@@ -892,9 +870,7 @@ class UniversalRouter:
         return abi_encode(["address", "uint256"], [currency, min_amount])
 
     @staticmethod
-    def encode_v4_take_params(
-        currency: str, recipient: str, amount: int
-    ) -> bytes:
+    def encode_v4_take_params(currency: str, recipient: str, amount: int) -> bytes:
         """Encode ABI params for a ``TAKE`` V4 action.
 
         ``TAKE`` transfers *amount* of *currency* to an explicit *recipient*.
@@ -1038,9 +1014,7 @@ class UniversalRouter:
             [V4Action.SWAP_EXACT_IN_SINGLE, V4Action.SETTLE_ALL, V4Action.TAKE],
             [swap_params, settle_params, take_params],
         )
-        calldata = self.build_execute_calldata(
-            [RouterCommand.V4_SWAP], [v4_input], deadline
-        )
+        calldata = self.build_execute_calldata([RouterCommand.V4_SWAP], [v4_input], deadline)
         return SwapTransaction(to=self.router_address, data=calldata)
 
     def build_wrap_and_v4_swap_transaction(
@@ -1108,9 +1082,7 @@ class UniversalRouter:
             hook_data=hook_data,
         )
         # SETTLE with payerIsUser=False: pay WETH from the router's own balance
-        settle_params = self.encode_v4_settle_params(
-            addr_in, eth_amount, payer_is_user=False
-        )
+        settle_params = self.encode_v4_settle_params(addr_in, eth_amount, payer_is_user=False)
         # TAKE with amount=0 (ActionConstants.OPEN_DELTA): take all credit
         take_params = self.encode_v4_take_params(addr_out, recipient, 0)
 
@@ -1164,10 +1136,7 @@ class UniversalRouter:
             raise ValueError("hops must not be empty")
 
         currency_in = amount_in.token.address
-        path_keys = [
-            (hop.token_out.address, hop.fee, hop.tick_spacing, hop.hooks, hop.hook_data)
-            for hop in hops
-        ]
+        path_keys = [(hop.token_out.address, hop.fee, hop.tick_spacing, hop.hooks, hop.hook_data) for hop in hops]
         addr_out = hops[-1].token_out.address
 
         swap_params = self.encode_v4_exact_in_params(
@@ -1236,10 +1205,7 @@ class UniversalRouter:
 
         # Command 2: V4_SWAP (multi-hop SWAP_EXACT_IN, router-funded)
         currency_in = weth_token.address
-        path_keys = [
-            (hop.token_out.address, hop.fee, hop.tick_spacing, hop.hooks, hop.hook_data)
-            for hop in hops
-        ]
+        path_keys = [(hop.token_out.address, hop.fee, hop.tick_spacing, hop.hooks, hop.hook_data) for hop in hops]
         addr_out = hops[-1].token_out.address
 
         swap_params = self.encode_v4_exact_in_params(
@@ -1354,10 +1320,7 @@ class UniversalRouter:
             elif isinstance(first_hop, V4Hop):
                 v4_segment: list[V4Hop] = [h for h in segment if isinstance(h, V4Hop)]
                 seg_currency_in = v4_segment[0].token_in.address
-                path_keys = [
-                    (h.token_out.address, h.fee, h.tick_spacing, h.hooks, h.hook_data)
-                    for h in v4_segment
-                ]
+                path_keys = [(h.token_out.address, h.fee, h.tick_spacing, h.hooks, h.hook_data) for h in v4_segment]
                 seg_amount_in = amount_in.amount if is_first else CONTRACT_BALANCE_V4
                 seg_addr_out = v4_segment[-1].token_out.address
 
@@ -1369,14 +1332,10 @@ class UniversalRouter:
                 )
                 if seg_payer_is_user:
                     settle_action = V4Action.SETTLE_ALL
-                    settle_params = self.encode_v4_settle_all_params(
-                        seg_currency_in, amount_in.amount
-                    )
+                    settle_params = self.encode_v4_settle_all_params(seg_currency_in, amount_in.amount)
                 else:
                     settle_action = V4Action.SETTLE
-                    settle_params = self.encode_v4_settle_params(
-                        seg_currency_in, 0, payer_is_user=False
-                    )
+                    settle_params = self.encode_v4_settle_params(seg_currency_in, 0, payer_is_user=False)
                 take_params = self.encode_v4_take_params(seg_addr_out, seg_recipient, 0)
 
                 v4_input = self.encode_v4_swap_actions(
@@ -1496,5 +1455,3 @@ class UniversalRouter:
             deadline,
         )
         return SwapTransaction(to=self.router_address, data=calldata, value=eth_amount)
-
-

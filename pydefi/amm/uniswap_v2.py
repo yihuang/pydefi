@@ -87,9 +87,7 @@ class UniswapV2(BaseAMM):
     # Price queries
     # ------------------------------------------------------------------
 
-    async def get_amounts_out(
-        self, amount_in: TokenAmount, path: list[Token]
-    ) -> list[TokenAmount]:
+    async def get_amounts_out(self, amount_in: TokenAmount, path: list[Token]) -> list[TokenAmount]:
         """Query the router for output amounts along *path*.
 
         Args:
@@ -110,19 +108,13 @@ class UniswapV2(BaseAMM):
 
         addresses = [t.address for t in path]
         try:
-            raw_amounts: list[int] = await self._router.fns.getAmountsOut(
-                amount_in.amount, addresses
-            ).call(self.w3)
+            raw_amounts: list[int] = await self._router.fns.getAmountsOut(amount_in.amount, addresses).call(self.w3)
         except Exception as exc:
-            raise InsufficientLiquidityError(
-                f"getAmountsOut failed: {exc}"
-            ) from exc
+            raise InsufficientLiquidityError(f"getAmountsOut failed: {exc}") from exc
 
         return [TokenAmount(token=path[i], amount=raw_amounts[i]) for i in range(len(path))]
 
-    async def get_amounts_in(
-        self, amount_out: TokenAmount, path: list[Token]
-    ) -> list[TokenAmount]:
+    async def get_amounts_in(self, amount_out: TokenAmount, path: list[Token]) -> list[TokenAmount]:
         """Query the router for required input amounts to obtain *amount_out*.
 
         Args:
@@ -141,13 +133,9 @@ class UniswapV2(BaseAMM):
 
         addresses = [t.address for t in path]
         try:
-            raw_amounts: list[int] = await self._router.fns.getAmountsIn(
-                amount_out.amount, addresses
-            ).call(self.w3)
+            raw_amounts: list[int] = await self._router.fns.getAmountsIn(amount_out.amount, addresses).call(self.w3)
         except Exception as exc:
-            raise InsufficientLiquidityError(
-                f"getAmountsIn failed: {exc}"
-            ) from exc
+            raise InsufficientLiquidityError(f"getAmountsIn failed: {exc}") from exc
 
         return [TokenAmount(token=path[i], amount=raw_amounts[i]) for i in range(len(path))]
 
@@ -194,9 +182,7 @@ class UniswapV2(BaseAMM):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def get_amount_out(
-        amount_in: int, reserve_in: int, reserve_out: int, fee_bps: int = 30
-    ) -> int:
+    def get_amount_out(amount_in: int, reserve_in: int, reserve_out: int, fee_bps: int = 30) -> int:
         """Calculate output amount using the constant-product formula.
 
         Args:
@@ -220,9 +206,7 @@ class UniswapV2(BaseAMM):
         return numerator // denominator
 
     @staticmethod
-    def get_amount_in(
-        amount_out: int, reserve_in: int, reserve_out: int, fee_bps: int = 30
-    ) -> int:
+    def get_amount_in(amount_out: int, reserve_in: int, reserve_out: int, fee_bps: int = 30) -> int:
         """Calculate required input amount to receive *amount_out*.
 
         Args:
@@ -261,6 +245,6 @@ class UniswapV2(BaseAMM):
         """
         if reserve_in == 0:
             return Decimal(0)
-        adj_in = Decimal(reserve_in) / Decimal(10 ** decimals_in)
-        adj_out = Decimal(reserve_out) / Decimal(10 ** decimals_out)
+        adj_in = Decimal(reserve_in) / Decimal(10**decimals_in)
+        adj_out = Decimal(reserve_out) / Decimal(10**decimals_out)
         return adj_out / adj_in

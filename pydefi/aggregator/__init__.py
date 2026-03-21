@@ -1,6 +1,6 @@
 """DEX aggregator API integrations."""
 
-from pydefi.aggregator.base import BaseAggregator, AggregatorQuote
+from pydefi.aggregator.base import AggregatorQuote, BaseAggregator
 from pydefi.aggregator.oneinch import OneInch
 from pydefi.aggregator.paraswap import ParaSwap
 from pydefi.aggregator.zerox import ZeroX

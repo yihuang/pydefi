@@ -41,14 +41,14 @@ _FACTORY_ABI = [
 
 # LayerZero chain IDs differ from EVM chain IDs
 _LZ_CHAIN_ID: dict[int, int] = {
-    1: 101,       # Ethereum
-    56: 102,      # BSC
-    43114: 106,   # Avalanche
-    137: 109,     # Polygon
-    42161: 110,   # Arbitrum
-    10: 111,      # Optimism
-    250: 112,     # Fantom
-    8453: 184,    # Base
+    1: 101,  # Ethereum
+    56: 102,  # BSC
+    43114: 106,  # Avalanche
+    137: 109,  # Polygon
+    42161: 110,  # Arbitrum
+    10: 111,  # Optimism
+    250: 112,  # Fantom
+    8453: 184,  # Base
 }
 
 # Stargate pool IDs for common tokens
@@ -98,18 +98,14 @@ class Stargate(BaseBridge):
         """Map an EVM chain ID to a LayerZero chain ID."""
         lz_id = _LZ_CHAIN_ID.get(evm_chain_id)
         if lz_id is None:
-            raise BridgeError(
-                f"Stargate: unsupported chain ID {evm_chain_id}"
-            )
+            raise BridgeError(f"Stargate: unsupported chain ID {evm_chain_id}")
         return lz_id
 
     def _pool_id(self, token: Token) -> int:
         """Return the Stargate pool ID for *token*."""
         pool_id = _POOL_IDS.get(token.symbol)
         if pool_id is None:
-            raise BridgeError(
-                f"Stargate: no pool ID for token {token.symbol}"
-            )
+            raise BridgeError(f"Stargate: no pool ID for token {token.symbol}")
         return pool_id
 
     async def quote_lz_fee(
@@ -149,7 +145,6 @@ class Stargate(BaseBridge):
         token_in: Token,
         token_out: Token,
         amount_in: TokenAmount,
-        **kwargs: Any,
     ) -> BridgeQuote:
         """Get a Stargate bridge quote.
 
@@ -157,13 +152,10 @@ class Stargate(BaseBridge):
             token_in: Source token (must be a Stargate-supported asset).
             token_out: Destination token.
             amount_in: Amount to bridge.
-            **kwargs: Optional ``dst_gas`` override.
 
         Returns:
             A :class:`~pydefi.types.BridgeQuote`.
         """
-        dst_gas: int = kwargs.get("dst_gas", 200_000)
-
         # Stargate typically charges a 6-bp protocol fee
         PROTOCOL_FEE_BPS = 6
         fee_raw = amount_in.amount * PROTOCOL_FEE_BPS // 10_000

@@ -35,8 +35,8 @@ from eth_abi import encode as abi_encode
 from eth_contract.erc20 import ERC20
 from web3 import AsyncWeb3, Web3
 
-from pydefi.amm.universal_router import UNIVERSAL_ROUTER_ADDRESSES, UniversalRouter, V4Hop
 from pydefi.amm.uniswap_v3 import UniswapV3
+from pydefi.amm.universal_router import UNIVERSAL_ROUTER_ADDRESSES, UniversalRouter, V4Hop
 from pydefi.types import TokenAmount
 
 from .conftest import USDC, WETH
@@ -57,10 +57,10 @@ V4_POOL_MANAGER = "0x000000000004444c5dc75cB358380D2e3dE08A90"
 ETH_WHALE = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"  # vitalik.eth
 
 # 0.01 ETH in wei
-ETH_SWAP_AMOUNT = 10 ** 16
+ETH_SWAP_AMOUNT = 10**16
 
 # Minimum plausible USDC output for 0.01 ETH (at worst $500/ETH = $5)
-MIN_USDC_OUT = 5 * 10 ** 6
+MIN_USDC_OUT = 5 * 10**6
 
 # Standard V4 hookless fee tiers tried in order of popularity
 _V4_FEE_TIERS = [(500, 10), (3000, 60), (100, 1), (10_000, 200)]
@@ -113,9 +113,7 @@ def _compute_v4_pool_id(
     )
 
 
-async def _v4_pool_sqrt_price(
-    w3: AsyncWeb3, currency0: str, currency1: str, fee: int, tick_spacing: int
-) -> int:
+async def _v4_pool_sqrt_price(w3: AsyncWeb3, currency0: str, currency1: str, fee: int, tick_spacing: int) -> int:
     pool_id = _compute_v4_pool_id(currency0, currency1, fee, tick_spacing)
     call_data = _GET_SLOT0_SELECTOR + pool_id
     try:
@@ -196,9 +194,7 @@ class TestTxExecutionFork:
             },
         )
 
-        assert receipt["status"] == 1, (
-            f"Transaction reverted: {receipt['transactionHash'].hex()}"
-        )
+        assert receipt["status"] == 1, f"Transaction reverted: {receipt['transactionHash'].hex()}"
 
         usdc_after = await ERC20.fns.balanceOf(ETH_WHALE).call(fork_w3, to=USDC.address)
         usdc_received = usdc_after - usdc_before
@@ -208,8 +204,7 @@ class TestTxExecutionFork:
             f"minimum ({amount_out_min / 10**6:.4f})"
         )
         assert usdc_received >= MIN_USDC_OUT, (
-            f"USDC received ({usdc_received / 10**6:.4f}) is implausibly low for "
-            f"{ETH_SWAP_AMOUNT / 10**18} ETH"
+            f"USDC received ({usdc_received / 10**6:.4f}) is implausibly low for {ETH_SWAP_AMOUNT / 10**18} ETH"
         )
 
     async def test_v4_wrap_and_swap_tx_execution(self, fork_w3):
@@ -228,8 +223,7 @@ class TestTxExecutionFork:
         pool_params = await _find_v4_pool(fork_w3, currency0, currency1)
         if pool_params is None:
             pytest.skip(
-                f"No initialized V4 WETH/USDC hookless pool found on the fork "
-                f"(tried fee tiers: {_V4_FEE_TIERS})"
+                f"No initialized V4 WETH/USDC hookless pool found on the fork (tried fee tiers: {_V4_FEE_TIERS})"
             )
         fee, tick_spacing = pool_params
 
@@ -257,16 +251,13 @@ class TestTxExecutionFork:
             },
         )
 
-        assert receipt["status"] == 1, (
-            f"Transaction reverted: {receipt['transactionHash'].hex()}"
-        )
+        assert receipt["status"] == 1, f"Transaction reverted: {receipt['transactionHash'].hex()}"
 
         usdc_after = await ERC20.fns.balanceOf(ETH_WHALE).call(fork_w3, to=USDC.address)
         usdc_received = usdc_after - usdc_before
 
         assert usdc_received >= MIN_USDC_OUT, (
-            f"USDC received ({usdc_received / 10**6:.4f}) is implausibly low for "
-            f"{ETH_SWAP_AMOUNT / 10**18} ETH"
+            f"USDC received ({usdc_received / 10**6:.4f}) is implausibly low for {ETH_SWAP_AMOUNT / 10**18} ETH"
         )
 
     async def test_v4_multihop_wrap_and_swap_tx_execution(self, fork_w3):
@@ -282,8 +273,7 @@ class TestTxExecutionFork:
         pool_params = await _find_v4_pool(fork_w3, currency0, currency1)
         if pool_params is None:
             pytest.skip(
-                f"No initialized V4 WETH/USDC hookless pool found on the fork "
-                f"(tried fee tiers: {_V4_FEE_TIERS})"
+                f"No initialized V4 WETH/USDC hookless pool found on the fork (tried fee tiers: {_V4_FEE_TIERS})"
             )
         fee, tick_spacing = pool_params
 
@@ -309,14 +299,11 @@ class TestTxExecutionFork:
             },
         )
 
-        assert receipt["status"] == 1, (
-            f"Transaction reverted: {receipt['transactionHash'].hex()}"
-        )
+        assert receipt["status"] == 1, f"Transaction reverted: {receipt['transactionHash'].hex()}"
 
         usdc_after = await ERC20.fns.balanceOf(ETH_WHALE).call(fork_w3, to=USDC.address)
         usdc_received = usdc_after - usdc_before
 
         assert usdc_received >= MIN_USDC_OUT, (
-            f"USDC received ({usdc_received / 10**6:.4f}) is implausibly low for "
-            f"{ETH_SWAP_AMOUNT / 10**18} ETH"
+            f"USDC received ({usdc_received / 10**6:.4f}) is implausibly low for {ETH_SWAP_AMOUNT / 10**18} ETH"
         )
