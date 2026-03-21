@@ -145,7 +145,6 @@ class Stargate(BaseBridge):
         token_in: Token,
         token_out: Token,
         amount_in: TokenAmount,
-        **kwargs: Any,
     ) -> BridgeQuote:
         """Get a Stargate bridge quote.
 
@@ -153,7 +152,6 @@ class Stargate(BaseBridge):
             token_in: Source token (must be a Stargate-supported asset).
             token_out: Destination token.
             amount_in: Amount to bridge.
-            **kwargs: Optional ``dst_gas`` override.
 
         Returns:
             A :class:`~pydefi.types.BridgeQuote`.
