@@ -12,6 +12,7 @@ Docs: https://docs.mayan.finance/
 from __future__ import annotations
 
 import os
+from decimal import Decimal
 from typing import Any, Optional
 
 import aiohttp
@@ -163,43 +164,51 @@ class Mayan(BaseBridge):
             "fromChain": from_chain,
             "toChain": to_chain,
             "slippageBps": "auto",
+            # Required by the Mayan v3 API to avoid 500 errors
+            "solanaProgram": "FC4eXxkyrMPTjiYUpp4EAnkmwMbQyZ6NDCh1kfLn6vsf",
+            "forwarderAddress": _MAYAN_FORWARDER,
             **kwargs,
         }
 
         url = f"{self._api_base}/quote"
         async with aiohttp.ClientSession() as session:
             async with session.get(url, params=params) as resp:
-                data = await resp.json(content_type=None)
                 if resp.status != 200:
+                    try:
+                        err = await resp.json(content_type=None)
+                    except Exception:
+                        err = await resp.text()
                     raise BridgeError(
-                        f"Mayan API error ({resp.status}): {data}"
+                        f"Mayan API error ({resp.status}): {err}"
                     )
+                data = await resp.json(content_type=None)
 
-        # The API returns a list of routes; pick the best (first) one
-        routes = data if isinstance(data, list) else data.get("routes", [data])
+        # The Mayan v3 API wraps routes in a "quotes" key
+        routes = data.get("quotes") if isinstance(data, dict) else data
         if not routes:
             raise BridgeError("Mayan: no routes returned from API")
 
         best = routes[0]
         expected_amount_out = best.get("expectedAmountOut", 0)
 
-        # Convert human-readable output to raw units
-        amount_out_raw = int(float(expected_amount_out) * (10 ** token_out.decimals))
+        # Use Decimal for exact base-10 scaling (no floating-point drift)
+        amount_out_raw = int(
+            Decimal(str(expected_amount_out)) * Decimal(10 ** token_out.decimals)
+        )
 
         # Compute fee as (amount_in - effectiveAmountIn) expressed in token_in units
         effective_amount_in_str = best.get("effectiveAmountIn")
         if effective_amount_in_str is not None:
             effective_amount_in_raw = int(
-                float(effective_amount_in_str) * (10 ** token_in.decimals)
+                Decimal(str(effective_amount_in_str)) * Decimal(10 ** token_in.decimals)
             )
             fee_raw = max(0, amount_in.amount - effective_amount_in_raw)
         else:
             fee_raw = 0
 
         # Estimate time based on route type
-        swift_routes = {"SWIFT", "swift"}
         route_type = best.get("type", "")
-        estimated_time = 10 if route_type in swift_routes else 60
+        estimated_time = 10 if route_type.upper() == "SWIFT" else 60
 
         return BridgeQuote(
             token_in=token_in,
@@ -247,11 +256,17 @@ class Mayan(BaseBridge):
             :class:`~pydefi.exceptions.BridgeError`: On API error or
                 unsupported route type.
         """
+        if not token_in.is_native():
+            raise BridgeError(
+                "Mayan build_bridge_tx currently only supports native ETH input"
+            )
+
         from_chain = self._chain_name(self.src_chain_id)
         to_chain = self._chain_name(self.dst_chain_id)
         human_amount = str(amount_in.human_amount)
 
-        # Step 1 — fetch a SWIFT quote
+        # Step 1 — fetch a SWIFT quote.
+        # Note: booleans must be "true"/"false" strings for aiohttp query params.
         params: dict[str, Any] = {
             "amountIn": human_amount,
             "fromToken": token_in.address,
@@ -259,20 +274,27 @@ class Mayan(BaseBridge):
             "fromChain": from_chain,
             "toChain": to_chain,
             "slippageBps": slippage_bps,
-            "swift": True,
+            "swift": "true",
+            # Required by the Mayan v3 API
+            "solanaProgram": "FC4eXxkyrMPTjiYUpp4EAnkmwMbQyZ6NDCh1kfLn6vsf",
+            "forwarderAddress": _MAYAN_FORWARDER,
             **kwargs,
         }
 
         url = f"{self._api_base}/quote"
         async with aiohttp.ClientSession() as session:
             async with session.get(url, params=params) as resp:
-                data = await resp.json(content_type=None)
                 if resp.status != 200:
+                    try:
+                        err = await resp.json(content_type=None)
+                    except Exception:
+                        err = await resp.text()
                     raise BridgeError(
-                        f"Mayan API error ({resp.status}): {data}"
+                        f"Mayan API error ({resp.status}): {err}"
                     )
+                data = await resp.json(content_type=None)
 
-        routes = data if isinstance(data, list) else data.get("routes", [data])
+        routes = data.get("quotes") if isinstance(data, dict) else data
         if not routes:
             raise BridgeError("Mayan: no routes returned from API")
 
@@ -295,12 +317,19 @@ class Mayan(BaseBridge):
                 f"Mayan: no Wormhole chain ID mapping for EVM chain {self.dst_chain_id}"
             )
 
-        # Step 2 — decode SWIFT order parameters from the quote
+        # Step 2 — decode SWIFT order parameters from the quote.
         # SWIFT amounts are scaled to at most 8 decimal places.
+        # Use Decimal for exact base-10 arithmetic (no floating-point drift).
         swift_decimals = min(token_out.decimals, _SWIFT_NORMALIZE_DECIMALS)
-        min_amount_out = int(float(swift_route.get("minAmountOut", 0)) * 10**swift_decimals)
+        min_amount_out = int(
+            Decimal(str(swift_route.get("minAmountOut") or "0"))
+            * Decimal(10 ** swift_decimals)
+        )
         # gasDrop on EVM chains uses the same 8-decimal SWIFT normalization
-        gas_drop = int(float(swift_route.get("gasDrop", 0)) * 10**_SWIFT_NORMALIZE_DECIMALS)
+        gas_drop = int(
+            Decimal(str(swift_route.get("gasDrop") or "0"))
+            * Decimal(10 ** _SWIFT_NORMALIZE_DECIMALS)
+        )
         cancel_fee = int(swift_route.get("cancelRelayerFee64") or "0")
         refund_fee = int(swift_route.get("refundRelayerFee64") or "0")
         deadline = int(swift_route.get("deadline64") or "0")

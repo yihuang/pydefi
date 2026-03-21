@@ -109,24 +109,28 @@ class GasZip(BaseBridge):
         self._check_chain(self.src_chain_id)
         self._check_chain(self.dst_chain_id)
 
-        params: dict[str, Any] = {
-            "src": self.src_chain_id,
-            "dst": self.dst_chain_id,
-            "amount": str(amount_in.amount),
-            **kwargs,
-        }
-        url = f"{self._api_base}/quote"
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, params=params) as resp:
-                data = await resp.json(content_type=None)
-                if resp.status != 200:
-                    raise BridgeError(
-                        f"GasZip API error ({resp.status}): {data}"
-                    )
+        if not token_in.is_native() or not token_out.is_native():
+            raise BridgeError("GasZip only supports native gas tokens for bridging")
 
-        amount_out_raw = int(data.get("amountOut", 0))
+        # GasZip quote endpoint: GET /v2/quotes/{srcChainId}/{amount}/{dstChainId}
+        url = f"{self._api_base}/quotes/{self.src_chain_id}/{amount_in.amount}/{self.dst_chain_id}"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as resp:
+                if resp.status != 200:
+                    text = await resp.text()
+                    raise BridgeError(
+                        f"GasZip API error ({resp.status}): {text[:200]}"
+                    )
+                data = await resp.json(content_type=None)
+
+        # Response: {"quotes": [{"chain": int, "expected": str, "speed": int, ...}]}
+        quotes_list = data.get("quotes", [])
+        if not quotes_list or not quotes_list[0].get("expected"):
+            raise BridgeError("GasZip: no quotes returned from API")
+
+        amount_out_raw = int(quotes_list[0]["expected"])
         fee_raw = max(0, amount_in.amount - amount_out_raw)
-        estimated_time = int(data.get("estimatedTime", 30))
+        estimated_time = int(quotes_list[0].get("speed", 30))
 
         return BridgeQuote(
             token_in=token_in,
@@ -167,8 +171,17 @@ class GasZip(BaseBridge):
         self._check_chain(self.src_chain_id)
         self._check_chain(self.dst_chain_id)
 
-        # Encode recipient as uint256
-        to_uint256 = int(recipient, 16)
+        if not token_in.is_native() or not token_out.is_native():
+            raise BridgeError("GasZip only supports native gas tokens for bridging")
+
+        # Validate and encode recipient address as uint256
+        try:
+            normalized = recipient[2:] if recipient.startswith(("0x", "0X")) else recipient
+            if len(normalized) != 40:
+                raise ValueError("recipient must be 20 bytes (40 hex characters)")
+            to_uint256 = int(normalized, 16)
+        except ValueError as exc:
+            raise BridgeError(f"Invalid recipient address '{recipient}': {exc}") from exc
 
         call_data: bytes = self._contract.fns.deposit(
             to_uint256,

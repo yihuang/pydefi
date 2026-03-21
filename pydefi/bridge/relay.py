@@ -204,9 +204,15 @@ class Relay(BaseBridge):
             raise BridgeError("Relay: no items in first transaction step")
 
         tx_data = items[0].get("data", {})
+        to_addr = tx_data.get("to")
+        call_data = tx_data.get("data")
+        if not to_addr:
+            raise BridgeError("Relay: missing 'to' field in transaction data")
+        if not call_data:
+            raise BridgeError("Relay: missing 'data' field in transaction data")
         return {
-            "to": tx_data.get("to", ""),
-            "data": tx_data.get("data", "0x"),
+            "to": to_addr,
+            "data": call_data,
             "value": str(tx_data.get("value", "0")),
             "gas": str(tx_data.get("gas", 300_000)),
         }
