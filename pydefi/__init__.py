@@ -6,6 +6,7 @@ Provides integrations with:
 - DEX aggregator APIs (1inch, ParaSwap, 0x)
 - Cross-chain bridges (Stargate, Across)
 - DEX pathfinding algorithm
+- Pool data providers (GeckoTerminal, Uniswap V2/V3 subgraphs)
 
 Built on top of ``eth-contract`` for modern interaction with on-chain smart
 contracts.
@@ -45,7 +46,9 @@ from pydefi.exceptions import (
     AggregatorError,
     BridgeError,
     SlippageExceededError,
+    PoolDataError,
 )
+from pydefi.pool_data.base import BasePoolDataProvider, PoolData
 
 __version__ = "0.1.0"
 
@@ -58,6 +61,9 @@ __all__ = [
     "SwapRoute",
     "SwapTransaction",
     "BridgeQuote",
+    # Pool data
+    "PoolData",
+    "BasePoolDataProvider",
     # Exceptions
     "PydefiError",
     "InsufficientLiquidityError",
@@ -65,4 +71,5 @@ __all__ = [
     "AggregatorError",
     "BridgeError",
     "SlippageExceededError",
+    "PoolDataError",
 ]
