@@ -25,6 +25,9 @@ dev = [
     "ruff>=0.4.0",
 ]
 
+[project.scripts]
+pydefi = "pydefi.cli:main"
+
 [project.urls]
 "Homepage" = "https://github.com/yihuang/pydefi"
 "Repository" = "https://github.com/yihuang/pydefi"
