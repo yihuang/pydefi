@@ -375,6 +375,65 @@ class TestGeckoTerminal:
 
         assert len(pools) == 1
 
+    @pytest.mark.asyncio
+    async def test_get_pools_for_tokens_single_token(self):
+        """Batch method with one token returns same results as single-token method."""
+        client = GeckoTerminal(chain_id=ChainId.ETHEREUM)
+        with patch.object(
+            client, "_get", new=AsyncMock(return_value=_MOCK_LIST_RESPONSE)
+        ):
+            pools = await client.get_pools_for_tokens([WETH.address], limit=5)
+
+        assert len(pools) == 1
+        assert pools[0].protocol == "UniswapV2"
+
+    @pytest.mark.asyncio
+    async def test_get_pools_for_tokens_multiple_tokens(self):
+        """Batch method passes comma-joined addresses to the API."""
+        client = GeckoTerminal(chain_id=ChainId.ETHEREUM)
+        mock_get = AsyncMock(return_value=_MOCK_LIST_RESPONSE)
+        with patch.object(client, "_get", new=mock_get):
+            await client.get_pools_for_tokens([WETH.address, USDC.address], limit=5)
+
+        # The endpoint path should contain both addresses comma-separated
+        call_path = mock_get.call_args[0][0]
+        assert WETH.address.lower() in call_path
+        assert USDC.address.lower() in call_path
+        assert "multi" in call_path
+
+    @pytest.mark.asyncio
+    async def test_get_pools_for_tokens_empty_list(self):
+        """Empty address list returns immediately with no API calls."""
+        client = GeckoTerminal(chain_id=ChainId.ETHEREUM)
+        mock_get = AsyncMock(return_value=_MOCK_LIST_RESPONSE)
+        with patch.object(client, "_get", new=mock_get):
+            pools = await client.get_pools_for_tokens([], limit=5)
+
+        assert pools == []
+        mock_get.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_get_pools_for_tokens_deduplication(self):
+        """Pools returned for overlapping tokens should be deduplicated."""
+        # Same pool appearing twice in response data
+        duplicate_response = {
+            "data": [
+                _MOCK_POOL_RESPONSE["data"],
+                _MOCK_POOL_RESPONSE["data"],
+            ],
+            "included": _MOCK_POOL_RESPONSE["included"],
+        }
+        client = GeckoTerminal(chain_id=ChainId.ETHEREUM)
+        with patch.object(
+            client, "_get", new=AsyncMock(return_value=duplicate_response)
+        ):
+            pools = await client.get_pools_for_tokens(
+                [WETH.address, USDC.address], limit=10
+            )
+
+        # Should deduplicate to 1 unique pool
+        assert len(pools) == 1
+
     def test_build_graph_from_get_top_pools(self):
         """build_graph should produce a navigable PoolGraph."""
         pool = PoolData(

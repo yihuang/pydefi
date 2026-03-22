@@ -303,6 +303,67 @@ class GeckoTerminal(BasePoolDataProvider):
             page += 1
         return pools
 
+    async def get_pools_for_tokens(
+        self, token_addresses: list[str], limit: int = 100
+    ) -> list[PoolData]:
+        """Fetch pools that contain any of the given tokens (batch query).
+
+        Uses the GeckoTerminal ``/tokens/multi/{addresses}/pools`` endpoint to
+        retrieve pools for multiple tokens in a single request per page.  This
+        is more efficient than calling :meth:`get_pools_for_token` once per
+        token and is particularly useful for building a
+        :class:`~pydefi.pathfinder.graph.PoolGraph` that covers a set of
+        *from/to* tokens plus well-known intermediate "hub" tokens (e.g. WETH,
+        USDC) to enable multi-hop pathfinding.
+
+        Args:
+            token_addresses: List of ERC-20 token addresses to query.  The API
+                accepts up to 10 addresses per request (they are concatenated
+                into the URL path as a comma-separated list).
+            limit: Maximum total number of pools to return.
+
+        Returns:
+            A deduplicated list of up to *limit* :class:`PoolData` objects,
+            sorted by descending liquidity as returned by the API.
+        """
+        if not token_addresses:
+            return []
+
+        addresses_param = ",".join(a.lower() for a in token_addresses)
+        pools: list[PoolData] = []
+        seen_addresses: set[str] = set()
+        page = 1
+        while len(pools) < limit:
+            data = await self._get(
+                f"networks/{self._network}/tokens/multi/{addresses_param}/pools",
+                params={
+                    "include": "base_token,quote_token,dex",
+                    "page": page,
+                },
+            )
+            items = data.get("data", [])
+            if not items:
+                break
+            included = data.get("included", [])
+            for item in items:
+                if len(pools) >= limit:
+                    break
+                try:
+                    pool = self._parse_pool(item, included)
+                except Exception as exc:
+                    pool_addr = item.get("attributes", {}).get("address", "?")
+                    logger.warning("Failed to parse pool %s: %s", pool_addr, exc)
+                    continue
+                # Deduplicate by pool address (API may return duplicates when
+                # multiple queried tokens appear in the same pool)
+                if pool.pool_address not in seen_addresses:
+                    seen_addresses.add(pool.pool_address)
+                    pools.append(pool)
+            if len(items) < _PAGE_SIZE:
+                break
+            page += 1
+        return pools
+
     async def get_pools_for_token(
         self, token_address: str, limit: int = 100
     ) -> list[PoolData]:
