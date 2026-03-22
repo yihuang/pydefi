@@ -11,23 +11,23 @@ pip install pydefi
 
 ## CLI
 
-After installation a `pydefi` command is available.  It lets you compose DeFi actions and chain them into **execution plans** that can be reviewed, saved as JSON, and executed step-by-step.
+After installation a `defi` command is available.  It lets you compose DeFi actions and chain them into **execution plans** that can be reviewed, saved as JSON, and executed step-by-step.
 
 ### Commands
 
 | Command | Description |
 |---------|-------------|
-| `pydefi plan` | Generate a cross-chain execution plan |
-| `pydefi swap` | Create a single-chain swap plan |
-| `pydefi bridge` | Create a cross-chain bridge plan |
-| `pydefi execute` | Execute a previously generated plan |
+| `defi plan` | Generate a cross-chain execution plan |
+| `defi swap` | Create a single-chain swap plan |
+| `defi bridge` | Create a cross-chain bridge plan |
+| `defi execute` | Execute a previously generated plan |
 
-### `pydefi plan` – Cross-chain execution plan
+### `defi plan` – Cross-chain execution plan
 
 Generate a step-by-step plan to convert a token on one chain to a token on another chain.  The planner selects a bridgeable intermediate token (e.g. USDC or ETH) and produces the minimal sequence of swaps and bridge steps required.
 
 ```bash
-pydefi plan \
+defi plan \
   --src-chain ethereum \
   --src-token DAI \
   --dst-chain base \
@@ -52,17 +52,17 @@ JSON representation:
 
 Save the plan to a file for later execution:
 ```bash
-pydefi plan \
+defi plan \
   --src-chain ethereum --src-token DAI \
   --dst-chain base --dst-token WETH \
   --amount 1000 \
   --output plan.json
 ```
 
-### `pydefi swap` – Single-chain swap plan
+### `defi swap` – Single-chain swap plan
 
 ```bash
-pydefi swap \
+defi swap \
   --chain ethereum \
   --token-in USDC \
   --token-out WETH \
@@ -70,10 +70,10 @@ pydefi swap \
   --output swap_plan.json
 ```
 
-### `pydefi bridge` – Cross-chain bridge plan
+### `defi bridge` – Cross-chain bridge plan
 
 ```bash
-pydefi bridge \
+defi bridge \
   --src-chain ethereum \
   --dst-chain arbitrum \
   --token USDC \
@@ -81,16 +81,16 @@ pydefi bridge \
   --output bridge_plan.json
 ```
 
-### `pydefi execute` – Execute a plan
+### `defi execute` – Execute a plan
 
 Review and execute a plan that was saved to JSON.  Use `--dry-run` to print the steps without submitting any transactions.
 
 ```bash
 # Dry-run: inspect steps without executing
-pydefi execute --plan plan.json --dry-run
+defi execute --plan plan.json --dry-run
 
 # Live execution (requires an RPC endpoint)
-pydefi execute --plan plan.json --rpc https://eth.drpc.org --wallet 0xYourAddress
+defi execute --plan plan.json --rpc https://eth.drpc.org --wallet 0xYourAddress
 ```
 
 ### Recognised chain names

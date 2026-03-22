@@ -156,46 +156,65 @@ class TestBuildPlan:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# CLI tests
+# ---------------------------------------------------------------------------
+
+
 class TestCLI:
-    def _run(self, argv: list[str]):
-        from pydefi.cli import _build_parser
+    def test_plan_executes(self):
+        from click.testing import CliRunner
 
-        parser = _build_parser()
-        return parser.parse_args(argv)
+        from pydefi.cli import cli
 
-    def test_plan_args_parsed(self):
-        args = self._run(
-            ["plan", "--src-chain", "ethereum", "--src-token", "USDC",
-             "--dst-chain", "base", "--dst-token", "WETH", "--amount", "100"]
-        )
-        assert args.src_chain == ChainId.ETHEREUM
-        assert args.dst_chain == ChainId.BASE
-        assert args.src_token == "USDC"
-        assert args.amount == "100"
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "plan", "--src-chain", "ethereum", "--src-token", "USDC",
+            "--dst-chain", "base", "--dst-token", "WETH", "--amount", "100",
+        ])
+        assert result.exit_code == 0
+        assert "Ethereum" in result.output
+        assert "Base" in result.output
+        assert "USDC" in result.output
 
-    def test_swap_args_parsed(self):
-        args = self._run(
-            ["swap", "--chain", "1", "--token-in", "DAI",
-             "--token-out", "USDC", "--amount", "50"]
-        )
-        assert args.chain == ChainId.ETHEREUM
-        assert args.token_in == "DAI"
+    def test_swap_executes(self):
+        from click.testing import CliRunner
 
-    def test_bridge_args_parsed(self):
-        args = self._run(
-            ["bridge", "--src-chain", "eth", "--dst-chain", "arbitrum",
-             "--token", "USDC", "--amount", "200"]
-        )
-        assert args.src_chain == ChainId.ETHEREUM
-        assert args.dst_chain == ChainId.ARBITRUM
+        from pydefi.cli import cli
 
-    def test_unknown_chain_raises(self):
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "swap", "--chain", "1", "--token-in", "DAI",
+            "--token-out", "USDC", "--amount", "50",
+        ])
+        assert result.exit_code == 0
+        assert "DAI" in result.output
+        assert "USDC" in result.output
 
-        with pytest.raises(SystemExit):
-            self._run(
-                ["plan", "--src-chain", "notachain", "--src-token", "USDC",
-                 "--dst-chain", "base", "--dst-token", "WETH", "--amount", "100"]
-            )
+    def test_bridge_executes(self):
+        from click.testing import CliRunner
+
+        from pydefi.cli import cli
+
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "bridge", "--src-chain", "eth", "--dst-chain", "arbitrum",
+            "--token", "USDC", "--amount", "200",
+        ])
+        assert result.exit_code == 0
+        assert "USDC" in result.output
+
+    def test_unknown_chain_fails(self):
+        from click.testing import CliRunner
+
+        from pydefi.cli import cli
+
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "plan", "--src-chain", "notachain", "--src-token", "USDC",
+            "--dst-chain", "base", "--dst-token", "WETH", "--amount", "100",
+        ])
+        assert result.exit_code != 0
 
     def test_numeric_chain_id(self):
         from pydefi.cli import _resolve_chain
@@ -207,40 +226,57 @@ class TestCLI:
 
         assert _resolve_chain("eth") == ChainId.ETHEREUM
 
-    def test_cmd_plan_output(self, tmp_path, capsys):
-        import argparse
+    def test_cmd_plan_output(self, tmp_path):
+        from click.testing import CliRunner
 
-        from pydefi.cli import _cmd_plan
+        from pydefi.cli import cli
 
-        args = argparse.Namespace(
-            src_chain=ChainId.ETHEREUM,
-            src_token="DAI",
-            dst_chain=ChainId.BASE,
-            dst_token="WETH",
-            amount="1000",
-            bridge_protocol="auto",
-            swap_protocol="auto",
-            output=None,
-        )
-        ret = _cmd_plan(args)
-        assert ret == 0
-        captured = capsys.readouterr()
-        assert "Ethereum" in captured.out
-        assert "Base" in captured.out
-        assert "swap" in captured.out  # action_type in JSON
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "plan",
+            "--src-chain", "ethereum",
+            "--src-token", "DAI",
+            "--dst-chain", "base",
+            "--dst-token", "WETH",
+            "--amount", "1000",
+        ])
+        assert result.exit_code == 0
+        assert "Ethereum" in result.output
+        assert "Base" in result.output
+        assert "swap" in result.output  # action_type in JSON
 
-    def test_cmd_execute_dry_run(self, tmp_path, capsys):
-        import argparse
+    def test_cmd_execute_dry_run(self, tmp_path):
+        from click.testing import CliRunner
 
-        from pydefi.cli import _cmd_execute
+        from pydefi.cli import cli
         from pydefi.planner import build_plan
 
         plan = build_plan(ChainId.ETHEREUM, "DAI", ChainId.BASE, "WETH", "100")
         plan_file = tmp_path / "plan.json"
         plan_file.write_text(plan.to_json())
 
-        args = argparse.Namespace(plan=str(plan_file), dry_run=True)
-        ret = _cmd_execute(args)
-        assert ret == 0
-        captured = capsys.readouterr()
-        assert "dry-run" in captured.out
+        runner = CliRunner()
+        result = runner.invoke(cli, ["execute", "--plan", str(plan_file), "--dry-run"])
+        assert result.exit_code == 0
+        assert "dry-run" in result.output
+
+    def test_plan_output_saved_to_file(self, tmp_path):
+        from click.testing import CliRunner
+
+        from pydefi.cli import cli
+
+        out_file = tmp_path / "plan.json"
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "plan",
+            "--src-chain", "ethereum", "--src-token", "DAI",
+            "--dst-chain", "base", "--dst-token", "WETH",
+            "--amount", "100", "--output", str(out_file),
+        ])
+        assert result.exit_code == 0
+        assert out_file.exists()
+        import json
+        data = json.loads(out_file.read_text())
+        assert data["description"]
+        assert len(data["actions"]) > 0
+
