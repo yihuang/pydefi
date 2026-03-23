@@ -16,7 +16,7 @@ from decimal import Decimal
 import pytest
 
 from pydefi.aggregator.base import AggregatorQuote
-from pydefi.aggregator.jupiter import Jupiter
+from pydefi.aggregator.jupiter import Jupiter, JupiterSwapV2
 from pydefi.amm.raydium import Raydium
 from pydefi.types import ChainId, SwapRoute, Token, TokenAmount
 
@@ -44,6 +44,8 @@ MAX_USDC = 1_000 * 10**6
 # Optional wallet address used only for transaction-building tests.
 # Set SOLANA_WALLET env var to a real (or dummy) base-58 public key to enable.
 SOLANA_WALLET = os.environ.get("SOLANA_WALLET", "")
+# Jupiter Swap V2 API key from portal.jup.ag (required for JupiterSwapV2 tests).
+JUPITER_API_KEY = os.environ.get("JUPITER_API_KEY", "")
 
 
 # ---------------------------------------------------------------------------
@@ -189,3 +191,86 @@ class TestJupiterLive:
         assert isinstance(result["swapTransaction"], str)
         assert len(result["swapTransaction"]) > 0
         assert "lastValidBlockHeight" in result
+
+
+# ---------------------------------------------------------------------------
+# JupiterSwapV2 live tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.live
+@pytest.mark.skipif(not JUPITER_API_KEY, reason="JUPITER_API_KEY env var not set")
+class TestJupiterSwapV2Live:
+    """Live tests against the Jupiter Swap V2 API (requires API key)."""
+
+    async def test_get_order_without_taker_sol_usdc(self):
+        """GET /order without taker should return a plausible quote for 1 SOL."""
+        j = JupiterSwapV2(api_key=JUPITER_API_KEY)
+        amount_in = TokenAmount.from_human(SOL, "1")
+
+        order = await j.get_order(amount_in, USDC)
+
+        assert "outAmount" in order
+        out_amount = int(order["outAmount"])
+        assert MIN_USDC < out_amount < MAX_USDC, (
+            f"JupiterSwapV2 /order SOL→USDC out of expected range: {out_amount / 10**6:.2f} USDC"
+        )
+        # Without a taker there should be no transaction or requestId
+        assert "transaction" not in order or order.get("transaction") is None
+
+    async def test_get_order_with_taker_sol_usdc(self):
+        """GET /order with taker should include a transaction and requestId."""
+        if not SOLANA_WALLET:
+            pytest.skip("SOLANA_WALLET env var not set")
+
+        j = JupiterSwapV2(api_key=JUPITER_API_KEY)
+        amount_in = TokenAmount.from_human(SOL, "0.01")
+
+        order = await j.get_order(amount_in, USDC, taker=SOLANA_WALLET, slippage_bps=100)
+
+        assert "transaction" in order and order["transaction"]
+        assert "requestId" in order and order["requestId"]
+        out_amount = int(order["outAmount"])
+        assert out_amount > 0
+
+    async def test_get_quote_sol_usdc(self):
+        """get_quote should return a valid AggregatorQuote for 1 SOL → USDC."""
+        j = JupiterSwapV2(api_key=JUPITER_API_KEY)
+        amount_in = TokenAmount.from_human(SOL, "1")
+
+        quote = await j.get_quote(amount_in, USDC, slippage_bps=50)
+
+        assert isinstance(quote, AggregatorQuote)
+        assert quote.protocol == "Jupiter"
+        assert quote.token_in == SOL
+        assert quote.token_out == USDC
+        assert MIN_USDC < quote.amount_out.amount < MAX_USDC, (
+            f"JupiterSwapV2 quote out of expected range: {quote.amount_out.amount / 10**6:.2f} USDC"
+        )
+        assert quote.min_amount_out.amount <= quote.amount_out.amount
+        assert Decimal(0) <= quote.price_impact <= Decimal("0.1")
+
+    async def test_get_build_sol_usdc(self):
+        """GET /build should return raw swap instructions for 1 SOL → USDC."""
+        j = JupiterSwapV2(api_key=JUPITER_API_KEY)
+        amount_in = TokenAmount.from_human(SOL, "1")
+
+        result = await j.get_build(amount_in, USDC, slippage_bps=50)
+
+        assert isinstance(result, dict)
+        # The build response should contain quote fields
+        assert "outAmount" in result or "swapTransaction" in result
+
+    async def test_build_swap_route_sol_usdc(self):
+        """build_swap_route should return a well-formed SwapRoute."""
+        j = JupiterSwapV2(api_key=JUPITER_API_KEY)
+        amount_in = TokenAmount.from_human(SOL, "1")
+
+        route = await j.build_swap_route(amount_in, USDC, slippage_bps=50)
+
+        assert isinstance(route, SwapRoute)
+        assert route.token_in == SOL
+        assert route.token_out == USDC
+        assert len(route.steps) == 1
+        assert route.steps[0].protocol == "Jupiter"
+        assert MIN_USDC < route.amount_out.amount < MAX_USDC
