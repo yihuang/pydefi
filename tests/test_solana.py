@@ -663,6 +663,7 @@ class TestJupiterSwapV2:
         """get_build should call GET /build and return raw instructions dict."""
         j = JupiterSwapV2()
         amount_in = TokenAmount.from_human(SOL, "1")
+        taker = "DummyWaLLeTaDDreSS1111111111111111111111111"
 
         mock_response = {
             "inputMint": SOL_MINT,
@@ -678,11 +679,12 @@ class TestJupiterSwapV2:
             return mock_response
 
         with patch.object(j, "_get", new=fake_get):
-            result = await j.get_build(amount_in, USDC, slippage_bps=50)
+            result = await j.get_build(amount_in, USDC, taker=taker, slippage_bps=50)
 
         assert captured["endpoint"] == "build"
         assert captured["inputMint"] == SOL_MINT
         assert captured["outputMint"] == USDC_MINT
+        assert captured["taker"] == taker
         assert captured["slippageBps"] == 50
         assert result == mock_response
 
@@ -691,6 +693,7 @@ class TestJupiterSwapV2:
         """get_build without slippage_bps should not include slippageBps param."""
         j = JupiterSwapV2()
         amount_in = TokenAmount.from_human(SOL, "1")
+        taker = "DummyWaLLeTaDDreSS1111111111111111111111111"
         captured: dict = {}
 
         async def fake_get(endpoint: str, params: dict) -> dict:
@@ -698,9 +701,10 @@ class TestJupiterSwapV2:
             return {"outAmount": "1"}
 
         with patch.object(j, "_get", new=fake_get):
-            await j.get_build(amount_in, USDC)
+            await j.get_build(amount_in, USDC, taker=taker)
 
         assert "slippageBps" not in captured
+        assert captured["taker"] == taker
 
     @pytest.mark.asyncio
     async def test_build_swap_route(self):

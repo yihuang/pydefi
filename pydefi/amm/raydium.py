@@ -11,6 +11,7 @@ API:  https://api-v3.raydium.io/
 
 from __future__ import annotations
 
+import json
 from decimal import Decimal
 from typing import Any
 
@@ -47,7 +48,15 @@ class Raydium(BaseSolanaAMM):
         url = f"{self.api_url.rstrip('/')}/{endpoint.lstrip('/')}"
         async with aiohttp.ClientSession() as session:
             async with session.get(url, params=params) as resp:
-                data = await resp.json(content_type=None)
+                text = await resp.text()
+                if not text:
+                    raise InsufficientLiquidityError(f"Raydium API returned empty response (HTTP {resp.status})")
+                try:
+                    data = json.loads(text)
+                except json.JSONDecodeError as exc:
+                    raise InsufficientLiquidityError(
+                        f"Raydium API returned non-JSON response (HTTP {resp.status}): {text[:200]}"
+                    ) from exc
                 if resp.status != 200 or not data.get("success", True):
                     msg = data.get("msg") or data.get("error") or str(data)
                     raise InsufficientLiquidityError(f"Raydium API error ({resp.status}): {msg}")

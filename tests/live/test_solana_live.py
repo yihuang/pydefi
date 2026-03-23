@@ -250,12 +250,13 @@ class TestJupiterSwapV2Live:
         assert quote.min_amount_out.amount <= quote.amount_out.amount
         assert Decimal(0) <= quote.price_impact <= Decimal("0.1")
 
+    @pytest.mark.skipif(not SOLANA_WALLET, reason="SOLANA_WALLET env var not set")
     async def test_get_build_sol_usdc(self):
         """GET /build should return raw swap instructions for 1 SOL → USDC."""
         j = JupiterSwapV2(api_key=JUPITER_API_KEY)
         amount_in = TokenAmount.from_human(SOL, "1")
 
-        result = await j.get_build(amount_in, USDC, slippage_bps=50)
+        result = await j.get_build(amount_in, USDC, taker=SOLANA_WALLET, slippage_bps=50)
 
         assert isinstance(result, dict)
         # The build response should contain quote fields

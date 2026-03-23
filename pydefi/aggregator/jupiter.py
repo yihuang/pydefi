@@ -30,7 +30,7 @@ from pydefi.aggregator.base import AggregatorQuote, BaseAggregator
 from pydefi.exceptions import AggregatorError
 from pydefi.types import ChainId, SwapRoute, SwapStep, Token, TokenAmount
 
-_JUPITER_API_BASE = "https://quote-api.jup.ag/v6"
+_JUPITER_API_BASE = "https://lite-api.jup.ag/swap/v1"
 _JUPITER_SWAP_V2_BASE = "https://api.jup.ag/swap/v2"
 
 
@@ -431,6 +431,7 @@ class JupiterSwapV2(BaseAggregator):
         self,
         amount_in: TokenAmount,
         token_out: Token,
+        taker: str,
         slippage_bps: int | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
@@ -444,6 +445,8 @@ class JupiterSwapV2(BaseAggregator):
         Args:
             amount_in: Exact input amount.
             token_out: Desired output token (Solana mint address).
+            taker: Signer's Solana wallet address (base-58).  Required by the
+                Jupiter Swap V2 ``/build`` endpoint.
             slippage_bps: Maximum acceptable slippage in basis points.  When
                 ``None`` Jupiter applies its RTSE automatically.
             **kwargs: Extra query parameters forwarded to the API.
@@ -459,6 +462,7 @@ class JupiterSwapV2(BaseAggregator):
             "inputMint": amount_in.token.address,
             "outputMint": token_out.address,
             "amount": str(amount_in.amount),
+            "taker": taker,
             **kwargs,
         }
         if slippage_bps is not None:
