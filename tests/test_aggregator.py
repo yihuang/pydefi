@@ -6,7 +6,9 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from pydefi.aggregator.base import AggregatorQuote
+from pydefi.aggregator.okx import OKX
 from pydefi.aggregator.oneinch import OneInch
+from pydefi.aggregator.openocean import OpenOcean
 from pydefi.aggregator.paraswap import ParaSwap
 from pydefi.aggregator.uniswap import UniswapAPI
 from pydefi.aggregator.zerox import ZeroX
@@ -472,6 +474,243 @@ class TestUniswapAPI:
 # ---------------------------------------------------------------------------
 # AggregatorQuote tests
 # ---------------------------------------------------------------------------
+
+# OKX tests
+
+
+class TestOKX:
+    def test_protocol_name(self):
+        client = OKX(chain_id=1)
+        assert client.protocol_name == "OKX"
+
+    def test_chain_id_stored(self):
+        client = OKX(chain_id=137)
+        assert client.chain_id == 137
+
+    def test_base_url_default(self):
+        client = OKX(chain_id=1)
+        assert "okx" in client.base_url.lower()
+
+    def test_base_url_custom(self):
+        client = OKX(chain_id=1, base_url="https://custom.okx.example.com")
+        assert client.base_url == "https://custom.okx.example.com"
+
+    def test_headers_no_api_key(self):
+        client = OKX(chain_id=1)
+        headers = client._headers()
+        assert "OK-ACCESS-KEY" not in headers
+
+    def test_headers_with_api_key(self):
+        client = OKX(chain_id=1, api_key="mykey")
+        headers = client._headers()
+        assert headers["OK-ACCESS-KEY"] == "mykey"
+
+    def test_slippage_to_percent(self):
+        client = OKX(chain_id=1)
+        assert client._slippage_to_percent(50) == 0.5
+        assert client._slippage_to_percent(100) == 1.0
+
+    @pytest.mark.asyncio
+    async def test_get_quote_success(self):
+        client = OKX(chain_id=1)
+        mock_response_data = {
+            "code": "0",
+            "data": {
+                "fromTokenAmount": "1000000000000000000",
+                "toTokenAmount": "2000000000",
+                "estimateGasFee": 160000,
+                "priceImpactPercentage": "0.1",
+                "routerResult": {},
+            },
+        }
+        with patch.object(client, "_get", new=AsyncMock(return_value=mock_response_data)):
+            amount_in = TokenAmount.from_human(WETH, "1")
+            quote = await client.get_quote(amount_in, USDC, slippage_bps=50)
+
+        assert quote.amount_out.amount == 2_000_000_000
+        assert quote.gas_estimate == 160_000
+        assert quote.protocol == "OKX"
+        assert quote.min_amount_out.amount == 2_000_000_000 * 9_950 // 10_000
+
+    @pytest.mark.asyncio
+    async def test_get_quote_api_error(self):
+        client = OKX(chain_id=1)
+        with patch.object(client, "_get", new=AsyncMock(side_effect=AggregatorError("API error", 400))):
+            amount_in = TokenAmount.from_human(WETH, "1")
+            with pytest.raises(AggregatorError):
+                await client.get_quote(amount_in, USDC)
+
+    @pytest.mark.asyncio
+    async def test_get_swap_success(self):
+        client = OKX(chain_id=1)
+        mock_response_data = {
+            "code": "0",
+            "data": {
+                "routerResult": {"toTokenAmount": "1998000000"},
+                "tx": {
+                    "to": "0x" + "AB" * 20,
+                    "data": "0xdeadbeef",
+                    "value": "0",
+                    "gas": 180000,
+                    "gasPrice": "10000000000",
+                },
+                "priceImpactPercentage": "0.05",
+            },
+        }
+        with patch.object(client, "_get", new=AsyncMock(return_value=mock_response_data)):
+            amount_in = TokenAmount.from_human(WETH, "1")
+            quote = await client.get_swap(amount_in, USDC, from_address="0x" + "AA" * 20)
+
+        assert quote.amount_out.amount == 1_998_000_000
+        assert quote.tx_data["to"] == "0x" + "AB" * 20
+        assert "data" in quote.tx_data
+
+    @pytest.mark.asyncio
+    async def test_build_swap_route(self):
+        client = OKX(chain_id=1)
+        mock_data = {
+            "code": "0",
+            "data": {
+                "fromTokenAmount": "1000000000000000000",
+                "toTokenAmount": "2000000000",
+                "estimateGasFee": 160000,
+                "priceImpactPercentage": "0.05",
+                "routerResult": {},
+            },
+        }
+        with patch.object(client, "_get", new=AsyncMock(return_value=mock_data)):
+            amount_in = TokenAmount.from_human(WETH, "1")
+            route = await client.build_swap_route(amount_in, USDC)
+
+        assert route.token_in == WETH
+        assert route.token_out == USDC
+        assert len(route.steps) == 1
+        assert route.steps[0].protocol == "OKX"
+
+
+# ---------------------------------------------------------------------------
+# OpenOcean tests
+# ---------------------------------------------------------------------------
+
+
+class TestOpenOcean:
+    def test_protocol_name(self):
+        client = OpenOcean(chain_id=1)
+        assert client.protocol_name == "OpenOcean"
+
+    def test_chain_id_stored(self):
+        client = OpenOcean(chain_id=137)
+        assert client.chain_id == 137
+
+    def test_base_url_default(self):
+        client = OpenOcean(chain_id=1)
+        assert "openocean" in client.base_url.lower()
+
+    def test_base_url_custom(self):
+        client = OpenOcean(chain_id=1, base_url="https://custom.openocean.example.com")
+        assert client.base_url == "https://custom.openocean.example.com"
+
+    def test_chain_slug_known(self):
+        assert OpenOcean(chain_id=1).chain_slug == "eth"
+        assert OpenOcean(chain_id=137).chain_slug == "polygon"
+        assert OpenOcean(chain_id=42161).chain_slug == "arbitrum"
+        assert OpenOcean(chain_id=8453).chain_slug == "base"
+
+    def test_chain_slug_unknown(self):
+        client = OpenOcean(chain_id=99999)
+        assert client.chain_slug == "99999"
+
+    def test_chain_url(self):
+        client = OpenOcean(chain_id=1)
+        url = client._chain_url("quote")
+        assert "/eth/" in url
+        assert "quote" in url
+
+    def test_slippage_to_percent(self):
+        client = OpenOcean(chain_id=1)
+        assert client._slippage_to_percent(50) == 0.5
+        assert client._slippage_to_percent(100) == 1.0
+
+    @pytest.mark.asyncio
+    async def test_get_quote_success(self):
+        client = OpenOcean(chain_id=1)
+        mock_response_data = {
+            "code": "200",
+            "data": {
+                "inAmount": "1000000000000000000",
+                "outAmount": "2003000000",
+                "estimatedGas": 170000,
+                "price_impact": "0.08",
+                "path": [],
+            },
+        }
+        with patch.object(client, "_get", new=AsyncMock(return_value=mock_response_data)):
+            with patch.object(client, "_get_gas_price", new=AsyncMock(return_value="20000000000")):
+                amount_in = TokenAmount.from_human(WETH, "1")
+                quote = await client.get_quote(amount_in, USDC, slippage_bps=50)
+
+        assert quote.amount_out.amount == 2_003_000_000
+        assert quote.gas_estimate == 170_000
+        assert quote.protocol == "OpenOcean"
+        assert quote.min_amount_out.amount == 2_003_000_000 * 9_950 // 10_000
+
+    @pytest.mark.asyncio
+    async def test_get_quote_api_error(self):
+        client = OpenOcean(chain_id=1)
+        with patch.object(client, "_get", new=AsyncMock(side_effect=AggregatorError("API error", 400))):
+            with patch.object(client, "_get_gas_price", new=AsyncMock(return_value="20000000000")):
+                amount_in = TokenAmount.from_human(WETH, "1")
+                with pytest.raises(AggregatorError):
+                    await client.get_quote(amount_in, USDC)
+
+    @pytest.mark.asyncio
+    async def test_get_swap_success(self):
+        client = OpenOcean(chain_id=1)
+        mock_response_data = {
+            "code": "200",
+            "data": {
+                "inAmount": "1000000000000000000",
+                "outAmount": "2003000000",
+                "estimatedGas": 170000,
+                "price_impact": "0.08",
+                "to": "0x" + "CD" * 20,
+                "data": "0xcafebabe",
+                "value": "0",
+                "gasPrice": "15000000000",
+                "path": [],
+            },
+        }
+        with patch.object(client, "_get", new=AsyncMock(return_value=mock_response_data)):
+            with patch.object(client, "_get_gas_price", new=AsyncMock(return_value="20000000000")):
+                amount_in = TokenAmount.from_human(WETH, "1")
+                quote = await client.get_swap(amount_in, USDC, from_address="0x" + "AA" * 20)
+
+        assert quote.amount_out.amount == 2_003_000_000
+        assert quote.tx_data["to"] == "0x" + "CD" * 20
+        assert "data" in quote.tx_data
+
+    @pytest.mark.asyncio
+    async def test_build_swap_route(self):
+        client = OpenOcean(chain_id=1)
+        mock_data = {
+            "code": "200",
+            "data": {
+                "inAmount": "1000000000000000000",
+                "outAmount": "2003000000",
+                "estimatedGas": 170000,
+                "price_impact": "0.08",
+                "path": [],
+            },
+        }
+        with patch.object(client, "_get", new=AsyncMock(return_value=mock_data)):
+            with patch.object(client, "_get_gas_price", new=AsyncMock(return_value="20000000000")):
+                amount_in = TokenAmount.from_human(WETH, "1")
+                route = await client.build_swap_route(amount_in, USDC)
+
+        assert route.token_in == WETH
+        assert route.token_out == USDC
+        assert len(route.steps) == 1
+        assert route.steps[0].protocol == "OpenOcean"
 
 
 class TestAggregatorQuote:
