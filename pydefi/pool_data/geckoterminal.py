@@ -16,7 +16,6 @@ from pydefi.exceptions import PoolDataError
 from pydefi.pool_data.base import BasePoolDataProvider, PoolData
 from pydefi.types import ChainId, Token
 
-
 # GeckoTerminal network slugs keyed by EVM chain ID
 _CHAIN_TO_NETWORK: dict[int, str] = {
     ChainId.ETHEREUM: "eth",
@@ -82,8 +81,7 @@ class GeckoTerminal(BasePoolDataProvider):
         network = _CHAIN_TO_NETWORK.get(chain_id)
         if network is None:
             raise ValueError(
-                f"Unsupported chain_id {chain_id} for GeckoTerminal. "
-                f"Supported chains: {list(_CHAIN_TO_NETWORK.keys())}"
+                f"Unsupported chain_id {chain_id} for GeckoTerminal. Supported chains: {list(_CHAIN_TO_NETWORK.keys())}"
             )
         self._network = network
 
@@ -94,19 +92,14 @@ class GeckoTerminal(BasePoolDataProvider):
     def _headers(self) -> dict[str, str]:
         return {"Accept": "application/json;version=20230302"}
 
-    async def _get(
-        self, path: str, params: Optional[dict[str, Any]] = None
-    ) -> dict[str, Any]:
+    async def _get(self, path: str, params: Optional[dict[str, Any]] = None) -> dict[str, Any]:
         url = f"{self._base_url}/{path.lstrip('/')}"
         async with aiohttp.ClientSession() as session:
-            async with session.get(
-                url, params=params, headers=self._headers()
-            ) as resp:
+            async with session.get(url, params=params, headers=self._headers()) as resp:
                 data = await resp.json(content_type=None)
                 if resp.status != 200:
                     raise PoolDataError(
-                        f"GeckoTerminal API error {resp.status}: "
-                        f"{data.get('errors', data)}",
+                        f"GeckoTerminal API error {resp.status}: {data.get('errors', data)}",
                         status_code=resp.status,
                     )
                 return data  # type: ignore[return-value]
@@ -162,7 +155,7 @@ class GeckoTerminal(BasePoolDataProvider):
         if reserve_in_usd <= 0 or token_price_usd <= 0:
             return 0
         human_reserve = (reserve_in_usd / 2.0) / token_price_usd
-        return int(human_reserve * 10 ** token_decimals)
+        return int(human_reserve * 10**token_decimals)
 
     def _parse_pool(
         self,
@@ -187,16 +180,8 @@ class GeckoTerminal(BasePoolDataProvider):
             if item.get("type") == "token":
                 token_map[item["id"]] = item.get("attributes", {})
 
-        base_token_id: str = (
-            relationships.get("base_token", {})
-            .get("data", {})
-            .get("id", "")
-        )
-        quote_token_id: str = (
-            relationships.get("quote_token", {})
-            .get("data", {})
-            .get("id", "")
-        )
+        base_token_id: str = relationships.get("base_token", {}).get("data", {}).get("id", "")
+        quote_token_id: str = relationships.get("quote_token", {}).get("data", {}).get("id", "")
 
         base_attrs = token_map.get(base_token_id, {})
         quote_attrs = token_map.get(quote_token_id, {})
@@ -204,11 +189,7 @@ class GeckoTerminal(BasePoolDataProvider):
         token0 = self._parse_token(base_attrs)
         token1 = self._parse_token(quote_attrs)
 
-        dex_id: str = (
-            relationships.get("dex", {})
-            .get("data", {})
-            .get("id", "")
-        )
+        dex_id: str = relationships.get("dex", {}).get("data", {}).get("id", "")
         protocol = _DEX_TO_PROTOCOL.get(dex_id, dex_id)
 
         pool_name: str = attrs.get("name", "")
@@ -218,12 +199,8 @@ class GeckoTerminal(BasePoolDataProvider):
         base_price_usd = float(attrs.get("base_token_price_usd") or 0)
         quote_price_usd = float(attrs.get("quote_token_price_usd") or 0)
 
-        reserve0 = self._estimate_reserve(
-            reserve_in_usd, base_price_usd, token0.decimals
-        )
-        reserve1 = self._estimate_reserve(
-            reserve_in_usd, quote_price_usd, token1.decimals
-        )
+        reserve0 = self._estimate_reserve(reserve_in_usd, base_price_usd, token0.decimals)
+        reserve1 = self._estimate_reserve(reserve_in_usd, quote_price_usd, token1.decimals)
 
         return PoolData(
             pool_address=attrs.get("address", ""),
@@ -303,9 +280,7 @@ class GeckoTerminal(BasePoolDataProvider):
             page += 1
         return pools
 
-    async def get_pools_for_tokens(
-        self, token_addresses: list[str], limit: int = 100
-    ) -> list[PoolData]:
+    async def get_pools_for_tokens(self, token_addresses: list[str], limit: int = 100) -> list[PoolData]:
         """Fetch pools that contain any of the given tokens (batch query).
 
         Uses the GeckoTerminal ``/tokens/multi/{addresses}/pools`` endpoint to
@@ -364,9 +339,7 @@ class GeckoTerminal(BasePoolDataProvider):
             page += 1
         return pools
 
-    async def get_pools_for_token(
-        self, token_address: str, limit: int = 100
-    ) -> list[PoolData]:
+    async def get_pools_for_token(self, token_address: str, limit: int = 100) -> list[PoolData]:
         """Fetch pools that contain a specific token.
 
         Args:

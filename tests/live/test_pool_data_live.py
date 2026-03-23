@@ -16,7 +16,7 @@ from pydefi.pathfinder.router import Router
 from pydefi.pool_data.geckoterminal import GeckoTerminal
 from pydefi.types import ChainId, TokenAmount
 
-from .conftest import USDC, USDT, WETH
+from .conftest import USDC, WETH
 
 # ---------------------------------------------------------------------------
 # Well-known Ethereum mainnet pool addresses for spot checks
@@ -28,7 +28,7 @@ WETH_USDC_V2 = "0xB4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc"
 WETH_USDC_V3 = "0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640"
 
 # Sanity price bounds: 1 WETH should fetch between $500 and $10 000 in USDC
-MIN_USDC = 500 * 10**6    # 500 USDC (6 decimals)
+MIN_USDC = 500 * 10**6  # 500 USDC (6 decimals)
 MAX_USDC = 10_000 * 10**6  # 10 000 USDC
 
 
@@ -100,16 +100,12 @@ class TestGeckoTerminalLive:
         assert len(pools) > 0
         for pool in pools:
             addrs = {pool.token0.address.lower(), pool.token1.address.lower()}
-            assert WETH.address.lower() in addrs, (
-                f"Pool {pool.pool_address} does not contain WETH"
-            )
+            assert WETH.address.lower() in addrs, f"Pool {pool.pool_address} does not contain WETH"
 
     async def test_get_pools_for_tokens_weth_usdc(self):
         """get_pools_for_tokens should return pools for WETH and USDC."""
         client = self._client()
-        pools = await client.get_pools_for_tokens(
-            [WETH.address, USDC.address], limit=10
-        )
+        pools = await client.get_pools_for_tokens([WETH.address, USDC.address], limit=10)
 
         assert len(pools) > 0
         # Each pool must contain at least one of the queried tokens
@@ -119,17 +115,13 @@ class TestGeckoTerminalLive:
                 pool.token0.address.lower(),
                 pool.token1.address.lower(),
             }
-            assert pool_tokens & queried, (
-                f"Pool {pool.pool_address} contains neither WETH nor USDC"
-            )
+            assert pool_tokens & queried, f"Pool {pool.pool_address} contains neither WETH nor USDC"
 
     async def test_get_pools_for_tokens_deduplicated(self):
         """Querying overlapping tokens should not produce duplicate pools."""
         client = self._client()
         # WETH appears in many pools; query it twice (same token twice)
-        pools = await client.get_pools_for_tokens(
-            [WETH.address, WETH.address], limit=10
-        )
+        pools = await client.get_pools_for_tokens([WETH.address, WETH.address], limit=10)
 
         addresses = [p.pool_address for p in pools]
         assert len(addresses) == len(set(addresses)), "Duplicate pool addresses found"
@@ -143,9 +135,7 @@ class TestGeckoTerminalLive:
         - Run the Router and verify a plausible WETH → USDC route.
         """
         client = self._client()
-        pools = await client.get_pools_for_tokens(
-            [WETH.address, USDC.address], limit=20
-        )
+        pools = await client.get_pools_for_tokens([WETH.address, USDC.address], limit=20)
         assert pools, "No pools returned from GeckoTerminal"
 
         graph = client.build_graph(pools)
@@ -159,6 +149,5 @@ class TestGeckoTerminalLive:
         assert route.amount_out.amount > 0
         # Sanity: 1 WETH should be worth between $500 and $10 000 in USDC
         assert MIN_USDC < route.amount_out.amount < MAX_USDC, (
-            f"WETH→USDC via GeckoTerminal out of range: "
-            f"{route.amount_out.human_amount} USDC"
+            f"WETH→USDC via GeckoTerminal out of range: {route.amount_out.human_amount} USDC"
         )

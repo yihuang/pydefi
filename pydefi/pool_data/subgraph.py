@@ -17,31 +17,18 @@ from pydefi.exceptions import PoolDataError
 from pydefi.pool_data.base import BasePoolDataProvider, PoolData
 from pydefi.types import ChainId, Token
 
-
 # Well-known Uniswap V2 subgraph URLs keyed by chain ID
 _UNISWAP_V2_SUBGRAPHS: dict[int, str] = {
-    ChainId.ETHEREUM: (
-        "https://api.thegraph.com/subgraphs/name/uniswap/uniswap-v2"
-    ),
+    ChainId.ETHEREUM: ("https://api.thegraph.com/subgraphs/name/uniswap/uniswap-v2"),
 }
 
 # Well-known Uniswap V3 subgraph URLs keyed by chain ID
 _UNISWAP_V3_SUBGRAPHS: dict[int, str] = {
-    ChainId.ETHEREUM: (
-        "https://api.thegraph.com/subgraphs/name/uniswap/uniswap-v3"
-    ),
-    ChainId.ARBITRUM: (
-        "https://api.thegraph.com/subgraphs/name/ianlapham/arbitrum-minimal"
-    ),
-    ChainId.OPTIMISM: (
-        "https://api.thegraph.com/subgraphs/name/ianlapham/optimism-post-regenesis"
-    ),
-    ChainId.POLYGON: (
-        "https://api.thegraph.com/subgraphs/name/ianlapham/uniswap-v3-polygon"
-    ),
-    ChainId.BASE: (
-        "https://api.studio.thegraph.com/query/48211/uniswap-v3-base/version/latest"
-    ),
+    ChainId.ETHEREUM: ("https://api.thegraph.com/subgraphs/name/uniswap/uniswap-v3"),
+    ChainId.ARBITRUM: ("https://api.thegraph.com/subgraphs/name/ianlapham/arbitrum-minimal"),
+    ChainId.OPTIMISM: ("https://api.thegraph.com/subgraphs/name/ianlapham/optimism-post-regenesis"),
+    ChainId.POLYGON: ("https://api.thegraph.com/subgraphs/name/ianlapham/uniswap-v3-polygon"),
+    ChainId.BASE: ("https://api.studio.thegraph.com/query/48211/uniswap-v3-base/version/latest"),
 }
 
 
@@ -103,9 +90,7 @@ class Subgraph(BasePoolDataProvider):
                     )
                 errors = data.get("errors")
                 if errors:
-                    raise PoolDataError(
-                        f"Subgraph GraphQL errors: {errors}"
-                    )
+                    raise PoolDataError(f"Subgraph GraphQL errors: {errors}")
                 return data.get("data") or {}  # type: ignore[return-value]
 
 
@@ -132,8 +117,7 @@ class UniswapV2Subgraph(Subgraph):
         resolved = url or _UNISWAP_V2_SUBGRAPHS.get(chain_id)
         if not resolved:
             raise ValueError(
-                f"No default Uniswap V2 subgraph URL for chain_id {chain_id}. "
-                "Provide a custom url parameter."
+                f"No default Uniswap V2 subgraph URL for chain_id {chain_id}. Provide a custom url parameter."
             )
         super().__init__(chain_id, resolved)
 
@@ -165,16 +149,8 @@ class UniswapV2Subgraph(Subgraph):
         # to avoid floating-point precision loss when multiplying by 10^decimals.
         raw0 = Decimal(str(pair.get("reserve0") or "0"))
         raw1 = Decimal(str(pair.get("reserve1") or "0"))
-        reserve0 = int(
-            (raw0 * Decimal(10 ** token0.decimals)).to_integral_value(
-                rounding=ROUND_DOWN
-            )
-        )
-        reserve1 = int(
-            (raw1 * Decimal(10 ** token1.decimals)).to_integral_value(
-                rounding=ROUND_DOWN
-            )
-        )
+        reserve0 = int((raw0 * Decimal(10**token0.decimals)).to_integral_value(rounding=ROUND_DOWN))
+        reserve1 = int((raw1 * Decimal(10**token1.decimals)).to_integral_value(rounding=ROUND_DOWN))
 
         return PoolData(
             pool_address=pair["id"],
@@ -214,9 +190,7 @@ class UniswapV2Subgraph(Subgraph):
         data = await self._query(query, {"id": pool_address.lower()})
         pair = data.get("pair")
         if not pair:
-            raise PoolDataError(
-                f"Pool {pool_address} not found in Uniswap V2 subgraph"
-            )
+            raise PoolDataError(f"Pool {pool_address} not found in Uniswap V2 subgraph")
         return self._parse_pair(pair)
 
     async def get_top_pools(self, limit: int = 100) -> list[PoolData]:
@@ -250,15 +224,11 @@ class UniswapV2Subgraph(Subgraph):
             try:
                 result.append(self._parse_pair(pair))
             except Exception as exc:
-                self._logger.warning(
-                    "Failed to parse V2 pair %s: %s", pair.get("id", "?"), exc
-                )
+                self._logger.warning("Failed to parse V2 pair %s: %s", pair.get("id", "?"), exc)
                 continue
         return result
 
-    async def get_pools_for_token(
-        self, token_address: str, limit: int = 100
-    ) -> list[PoolData]:
+    async def get_pools_for_token(self, token_address: str, limit: int = 100) -> list[PoolData]:
         """Fetch Uniswap V2 pairs that contain a specific token.
 
         Args:
@@ -284,17 +254,13 @@ class UniswapV2Subgraph(Subgraph):
             }
         }
         """
-        data = await self._query(
-            query, {"token": token_address.lower(), "limit": limit}
-        )
+        data = await self._query(query, {"token": token_address.lower(), "limit": limit})
         result: list[PoolData] = []
         for pair in data.get("pairs", []):
             try:
                 result.append(self._parse_pair(pair))
             except Exception as exc:
-                self._logger.warning(
-                    "Failed to parse V2 pair %s: %s", pair.get("id", "?"), exc
-                )
+                self._logger.warning("Failed to parse V2 pair %s: %s", pair.get("id", "?"), exc)
                 continue
         return result
 
@@ -322,8 +288,7 @@ class UniswapV3Subgraph(Subgraph):
         resolved = url or _UNISWAP_V3_SUBGRAPHS.get(chain_id)
         if not resolved:
             raise ValueError(
-                f"No default Uniswap V3 subgraph URL for chain_id {chain_id}. "
-                "Provide a custom url parameter."
+                f"No default Uniswap V3 subgraph URL for chain_id {chain_id}. Provide a custom url parameter."
             )
         super().__init__(chain_id, resolved)
 
@@ -397,9 +362,7 @@ class UniswapV3Subgraph(Subgraph):
         data = await self._query(query, {"id": pool_address.lower()})
         pool = data.get("pool")
         if not pool:
-            raise PoolDataError(
-                f"Pool {pool_address} not found in Uniswap V3 subgraph"
-            )
+            raise PoolDataError(f"Pool {pool_address} not found in Uniswap V3 subgraph")
         return self._parse_pool(pool)
 
     async def get_top_pools(self, limit: int = 100) -> list[PoolData]:
@@ -433,15 +396,11 @@ class UniswapV3Subgraph(Subgraph):
             try:
                 result.append(self._parse_pool(pool))
             except Exception as exc:
-                self._logger.warning(
-                    "Failed to parse V3 pool %s: %s", pool.get("id", "?"), exc
-                )
+                self._logger.warning("Failed to parse V3 pool %s: %s", pool.get("id", "?"), exc)
                 continue
         return result
 
-    async def get_pools_for_token(
-        self, token_address: str, limit: int = 100
-    ) -> list[PoolData]:
+    async def get_pools_for_token(self, token_address: str, limit: int = 100) -> list[PoolData]:
         """Fetch Uniswap V3 pools that contain a specific token.
 
         Args:
@@ -468,16 +427,12 @@ class UniswapV3Subgraph(Subgraph):
             }
         }
         """
-        data = await self._query(
-            query, {"token": token_address.lower(), "limit": limit}
-        )
+        data = await self._query(query, {"token": token_address.lower(), "limit": limit})
         result: list[PoolData] = []
         for pool in data.get("pools", []):
             try:
                 result.append(self._parse_pool(pool))
             except Exception as exc:
-                self._logger.warning(
-                    "Failed to parse V3 pool %s: %s", pool.get("id", "?"), exc
-                )
+                self._logger.warning("Failed to parse V3 pool %s: %s", pool.get("id", "?"), exc)
                 continue
         return result

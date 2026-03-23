@@ -151,9 +151,7 @@ class BasePoolDataProvider(ABC):
         """
 
     @abstractmethod
-    async def get_pools_for_token(
-        self, token_address: str, limit: int = 100
-    ) -> list[PoolData]:
+    async def get_pools_for_token(self, token_address: str, limit: int = 100) -> list[PoolData]:
         """Fetch pools that contain a specific token.
 
         Args:

@@ -1,6 +1,5 @@
 """Tests for pydefi.pool_data — PoolData, GeckoTerminal, and subgraph clients."""
 
-from decimal import Decimal
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -11,7 +10,6 @@ from pydefi.pool_data.base import BasePoolDataProvider, PoolData
 from pydefi.pool_data.geckoterminal import GeckoTerminal
 from pydefi.pool_data.subgraph import UniswapV2Subgraph, UniswapV3Subgraph
 from pydefi.types import ChainId, Token
-
 
 # ---------------------------------------------------------------------------
 # Shared test tokens
@@ -50,8 +48,8 @@ class TestPoolData:
             token0=WETH,
             token1=USDC,
             fee_bps=30,
-            reserve0=1_000 * 10 ** 18,
-            reserve1=2_000_000 * 10 ** 6,
+            reserve0=1_000 * 10**18,
+            reserve1=2_000_000 * 10**6,
         )
         edges = pool.to_pool_edges()
         assert len(edges) == 2
@@ -62,17 +60,17 @@ class TestPoolData:
         e0, e1 = edges
         assert e0.token_in == WETH
         assert e0.token_out == USDC
-        assert e0.reserve_in == 1_000 * 10 ** 18
-        assert e0.reserve_out == 2_000_000 * 10 ** 6
+        assert e0.reserve_in == 1_000 * 10**18
+        assert e0.reserve_out == 2_000_000 * 10**6
 
         assert e1.token_in == USDC
         assert e1.token_out == WETH
-        assert e1.reserve_in == 2_000_000 * 10 ** 6
-        assert e1.reserve_out == 1_000 * 10 ** 18
+        assert e1.reserve_in == 2_000_000 * 10**6
+        assert e1.reserve_out == 1_000 * 10**18
 
     def test_to_pool_edges_v3(self):
         """V3-style PoolData produces V3PoolEdge objects."""
-        Q96 = 2 ** 96
+        Q96 = 2**96
         pool = PoolData(
             pool_address=POOL_ADDR,
             protocol="UniswapV3",
@@ -80,8 +78,8 @@ class TestPoolData:
             token0=WETH,
             token1=USDC,
             fee_bps=5,
-            sqrt_price_x96=int(1e9 * Q96 ** 0.5),  # arbitrary non-zero value
-            liquidity=5 * 10 ** 22,
+            sqrt_price_x96=int(1e9 * Q96**0.5),  # arbitrary non-zero value
+            liquidity=5 * 10**22,
         )
         edges = pool.to_pool_edges()
         assert len(edges) == 2
@@ -104,8 +102,8 @@ class TestPoolData:
             token1=USDC,
             sqrt_price_x96=0,
             liquidity=0,
-            reserve0=10 ** 21,
-            reserve1=2 * 10 ** 9,
+            reserve0=10**21,
+            reserve1=2 * 10**9,
         )
         edges = pool.to_pool_edges()
         assert all(type(e) is PoolEdge for e in edges)
@@ -156,9 +154,7 @@ class ConcreteProvider(BasePoolDataProvider):
     async def get_top_pools(self, limit: int = 100) -> list[PoolData]:
         raise NotImplementedError
 
-    async def get_pools_for_token(
-        self, token_address: str, limit: int = 100
-    ) -> list[PoolData]:
+    async def get_pools_for_token(self, token_address: str, limit: int = 100) -> list[PoolData]:
         raise NotImplementedError
 
 
@@ -176,8 +172,8 @@ class TestBuildGraph:
             chain_id=ChainId.ETHEREUM,
             token0=WETH,
             token1=USDC,
-            reserve0=10 ** 21,
-            reserve1=2 * 10 ** 9,
+            reserve0=10**21,
+            reserve1=2 * 10**9,
         )
         graph = provider.build_graph([pool])
         assert len(graph) == 2  # bidirectional
@@ -200,8 +196,8 @@ class TestBuildGraph:
                 chain_id=ChainId.ETHEREUM,
                 token0=WETH,
                 token1=USDC,
-                reserve0=10 ** 21,
-                reserve1=2 * 10 ** 9,
+                reserve0=10**21,
+                reserve1=2 * 10**9,
             ),
             PoolData(
                 pool_address=POOL_ADDR2,
@@ -209,8 +205,8 @@ class TestBuildGraph:
                 chain_id=ChainId.ETHEREUM,
                 token0=USDC,
                 token1=DAI,
-                reserve0=10 ** 9,
-                reserve1=10 ** 21,
+                reserve0=10**9,
+                reserve1=10**21,
                 fee_bps=4,
             ),
         ]
@@ -235,12 +231,8 @@ _MOCK_POOL_RESPONSE = {
             "quote_token_price_usd": "2000.0",
         },
         "relationships": {
-            "base_token": {
-                "data": {"id": "eth_0xdac17f958d2ee523a2206206994597c13d831ec7"}
-            },
-            "quote_token": {
-                "data": {"id": "eth_0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"}
-            },
+            "base_token": {"data": {"id": "eth_0xdac17f958d2ee523a2206206994597c13d831ec7"}},
+            "quote_token": {"data": {"id": "eth_0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"}},
             "dex": {"data": {"id": "uniswap_v2"}},
         },
     },
@@ -305,7 +297,7 @@ class TestGeckoTerminal:
         # $200M TVL, token0 at $2000, 18 decimals
         # Expected: ($200M / 2) / $2000 * 1e18 = 50,000 WETH raw
         reserve = client._estimate_reserve(200_000_000.0, 2000.0, 18)
-        expected = 50_000 * 10 ** 18
+        expected = 50_000 * 10**18
         # Float arithmetic introduces tiny rounding; allow 1 wei tolerance
         assert abs(reserve - expected) <= expected * 1e-12
 
@@ -317,9 +309,7 @@ class TestGeckoTerminal:
     @pytest.mark.asyncio
     async def test_get_pool_success(self):
         client = GeckoTerminal(chain_id=ChainId.ETHEREUM)
-        with patch.object(
-            client, "_get", new=AsyncMock(return_value=_MOCK_POOL_RESPONSE)
-        ):
+        with patch.object(client, "_get", new=AsyncMock(return_value=_MOCK_POOL_RESPONSE)):
             pool = await client.get_pool("0x0d4a11d5eeaac28ec3f61d100daf4d40471f1852")
 
         assert pool.pool_address == "0x0d4a11d5eeaac28ec3f61d100daf4d40471f1852"
@@ -346,9 +336,7 @@ class TestGeckoTerminal:
     async def test_get_top_pools_returns_list(self):
         # Single page, fewer than _PAGE_SIZE items → only one request
         client = GeckoTerminal(chain_id=ChainId.ETHEREUM)
-        with patch.object(
-            client, "_get", new=AsyncMock(return_value=_MOCK_LIST_RESPONSE)
-        ):
+        with patch.object(client, "_get", new=AsyncMock(return_value=_MOCK_LIST_RESPONSE)):
             pools = await client.get_top_pools(limit=5)
 
         assert isinstance(pools, list)
@@ -361,16 +349,14 @@ class TestGeckoTerminal:
         client = GeckoTerminal(chain_id=ChainId.ETHEREUM)
         mock_get = AsyncMock(return_value=_MOCK_LIST_RESPONSE)
         with patch.object(client, "_get", new=mock_get):
-            pools = await client.get_top_pools(limit=100)
+            await client.get_top_pools(limit=100)
         # Only one API call because the page has 1 item < _PAGE_SIZE
         assert mock_get.call_count == 1
 
     @pytest.mark.asyncio
     async def test_get_pools_for_token(self):
         client = GeckoTerminal(chain_id=ChainId.ETHEREUM)
-        with patch.object(
-            client, "_get", new=AsyncMock(return_value=_MOCK_LIST_RESPONSE)
-        ):
+        with patch.object(client, "_get", new=AsyncMock(return_value=_MOCK_LIST_RESPONSE)):
             pools = await client.get_pools_for_token(WETH.address, limit=5)
 
         assert len(pools) == 1
@@ -379,9 +365,7 @@ class TestGeckoTerminal:
     async def test_get_pools_for_tokens_single_token(self):
         """Batch method with one token returns same results as single-token method."""
         client = GeckoTerminal(chain_id=ChainId.ETHEREUM)
-        with patch.object(
-            client, "_get", new=AsyncMock(return_value=_MOCK_LIST_RESPONSE)
-        ):
+        with patch.object(client, "_get", new=AsyncMock(return_value=_MOCK_LIST_RESPONSE)):
             pools = await client.get_pools_for_tokens([WETH.address], limit=5)
 
         assert len(pools) == 1
@@ -424,12 +408,8 @@ class TestGeckoTerminal:
             "included": _MOCK_POOL_RESPONSE["included"],
         }
         client = GeckoTerminal(chain_id=ChainId.ETHEREUM)
-        with patch.object(
-            client, "_get", new=AsyncMock(return_value=duplicate_response)
-        ):
-            pools = await client.get_pools_for_tokens(
-                [WETH.address, USDC.address], limit=10
-            )
+        with patch.object(client, "_get", new=AsyncMock(return_value=duplicate_response)):
+            pools = await client.get_pools_for_tokens([WETH.address, USDC.address], limit=10)
 
         # Should deduplicate to 1 unique pool
         assert len(pools) == 1
@@ -442,8 +422,8 @@ class TestGeckoTerminal:
             chain_id=ChainId.ETHEREUM,
             token0=WETH,
             token1=USDC,
-            reserve0=1_000 * 10 ** 18,
-            reserve1=2_000_000 * 10 ** 6,
+            reserve0=1_000 * 10**18,
+            reserve1=2_000_000 * 10**6,
         )
         client = GeckoTerminal(chain_id=ChainId.ETHEREUM)
         graph = client.build_graph([pool])
@@ -484,9 +464,7 @@ class TestUniswapV2Subgraph:
             UniswapV2Subgraph(chain_id=99999)
 
     def test_custom_url_accepted(self):
-        client = UniswapV2Subgraph(
-            chain_id=99999, url="https://custom.example.com/subgraphs/v2"
-        )
+        client = UniswapV2Subgraph(chain_id=99999, url="https://custom.example.com/subgraphs/v2")
         assert client.url == "https://custom.example.com/subgraphs/v2"
 
     def test_parse_pair(self):
@@ -501,20 +479,16 @@ class TestUniswapV2Subgraph:
         assert pool.fee_bps == 30
 
         # 50 000 WETH in raw units
-        assert pool.reserve0 == 50_000 * 10 ** 18
+        assert pool.reserve0 == 50_000 * 10**18
         # 100 000 000 USDT in raw units
-        assert pool.reserve1 == 100_000_000 * 10 ** 6
+        assert pool.reserve1 == 100_000_000 * 10**6
 
     @pytest.mark.asyncio
     async def test_get_pool_success(self):
         client = UniswapV2Subgraph(chain_id=ChainId.ETHEREUM)
         mock_data = {"pair": _MOCK_V2_PAIR}
-        with patch.object(
-            client, "_query", new=AsyncMock(return_value=mock_data)
-        ):
-            pool = await client.get_pool(
-                "0x0d4a11d5eeaac28ec3f61d100daf4d40471f1852"
-            )
+        with patch.object(client, "_query", new=AsyncMock(return_value=mock_data)):
+            pool = await client.get_pool("0x0d4a11d5eeaac28ec3f61d100daf4d40471f1852")
 
         assert pool.protocol == "UniswapV2"
         assert pool.token0.symbol == "WETH"
@@ -522,9 +496,7 @@ class TestUniswapV2Subgraph:
     @pytest.mark.asyncio
     async def test_get_pool_not_found_raises(self):
         client = UniswapV2Subgraph(chain_id=ChainId.ETHEREUM)
-        with patch.object(
-            client, "_query", new=AsyncMock(return_value={"pair": None})
-        ):
+        with patch.object(client, "_query", new=AsyncMock(return_value={"pair": None})):
             with pytest.raises(PoolDataError, match="not found"):
                 await client.get_pool("0x0000000000000000000000000000000000000000")
 
@@ -532,9 +504,7 @@ class TestUniswapV2Subgraph:
     async def test_get_top_pools(self):
         client = UniswapV2Subgraph(chain_id=ChainId.ETHEREUM)
         mock_data = {"pairs": [_MOCK_V2_PAIR, _MOCK_V2_PAIR]}
-        with patch.object(
-            client, "_query", new=AsyncMock(return_value=mock_data)
-        ):
+        with patch.object(client, "_query", new=AsyncMock(return_value=mock_data)):
             pools = await client.get_top_pools(limit=10)
 
         assert len(pools) == 2
@@ -544,9 +514,7 @@ class TestUniswapV2Subgraph:
     async def test_get_pools_for_token(self):
         client = UniswapV2Subgraph(chain_id=ChainId.ETHEREUM)
         mock_data = {"pairs": [_MOCK_V2_PAIR]}
-        with patch.object(
-            client, "_query", new=AsyncMock(return_value=mock_data)
-        ):
+        with patch.object(client, "_query", new=AsyncMock(return_value=mock_data)):
             pools = await client.get_pools_for_token(WETH.address, limit=10)
 
         assert len(pools) == 1
@@ -557,7 +525,7 @@ class TestUniswapV2Subgraph:
 # UniswapV3Subgraph tests
 # ---------------------------------------------------------------------------
 
-_Q96 = 2 ** 96
+_Q96 = 2**96
 _MOCK_V3_POOL = {
     "id": "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640",
     "token0": {
@@ -574,7 +542,7 @@ _MOCK_V3_POOL = {
     },
     "feeTier": "500",
     "sqrtPrice": str(int(2.236e13 * _Q96)),  # arbitrary non-zero
-    "liquidity": str(5 * 10 ** 22),
+    "liquidity": str(5 * 10**22),
 }
 
 
@@ -588,9 +556,7 @@ class TestUniswapV3Subgraph:
             UniswapV3Subgraph(chain_id=99999)
 
     def test_custom_url_accepted(self):
-        client = UniswapV3Subgraph(
-            chain_id=99999, url="https://custom.example.com/subgraphs/v3"
-        )
+        client = UniswapV3Subgraph(chain_id=99999, url="https://custom.example.com/subgraphs/v3")
         assert client.url == "https://custom.example.com/subgraphs/v3"
 
     def test_parse_pool_fee_tier(self):
@@ -603,7 +569,7 @@ class TestUniswapV3Subgraph:
         # feeTier 500 → fee_bps = 500 // 100 = 5
         assert pool.fee_bps == 5
         assert pool.sqrt_price_x96 > 0
-        assert pool.liquidity == 5 * 10 ** 22
+        assert pool.liquidity == 5 * 10**22
 
     def test_parse_pool_produces_v3_edges(self):
         client = UniswapV3Subgraph(chain_id=ChainId.ETHEREUM)
@@ -615,12 +581,8 @@ class TestUniswapV3Subgraph:
     async def test_get_pool_success(self):
         client = UniswapV3Subgraph(chain_id=ChainId.ETHEREUM)
         mock_data = {"pool": _MOCK_V3_POOL}
-        with patch.object(
-            client, "_query", new=AsyncMock(return_value=mock_data)
-        ):
-            pool = await client.get_pool(
-                "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640"
-            )
+        with patch.object(client, "_query", new=AsyncMock(return_value=mock_data)):
+            pool = await client.get_pool("0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640")
 
         assert pool.protocol == "UniswapV3"
         assert pool.fee_bps == 5
@@ -628,9 +590,7 @@ class TestUniswapV3Subgraph:
     @pytest.mark.asyncio
     async def test_get_pool_not_found_raises(self):
         client = UniswapV3Subgraph(chain_id=ChainId.ETHEREUM)
-        with patch.object(
-            client, "_query", new=AsyncMock(return_value={"pool": None})
-        ):
+        with patch.object(client, "_query", new=AsyncMock(return_value={"pool": None})):
             with pytest.raises(PoolDataError, match="not found"):
                 await client.get_pool("0x0000000000000000000000000000000000000000")
 
@@ -638,9 +598,7 @@ class TestUniswapV3Subgraph:
     async def test_get_top_pools(self):
         client = UniswapV3Subgraph(chain_id=ChainId.ETHEREUM)
         mock_data = {"pools": [_MOCK_V3_POOL]}
-        with patch.object(
-            client, "_query", new=AsyncMock(return_value=mock_data)
-        ):
+        with patch.object(client, "_query", new=AsyncMock(return_value=mock_data)):
             pools = await client.get_top_pools(limit=5)
 
         assert len(pools) == 1
@@ -650,9 +608,7 @@ class TestUniswapV3Subgraph:
     async def test_get_pools_for_token(self):
         client = UniswapV3Subgraph(chain_id=ChainId.ETHEREUM)
         mock_data = {"pools": [_MOCK_V3_POOL]}
-        with patch.object(
-            client, "_query", new=AsyncMock(return_value=mock_data)
-        ):
+        with patch.object(client, "_query", new=AsyncMock(return_value=mock_data)):
             pools = await client.get_pools_for_token(WETH.address, limit=5)
 
         assert len(pools) == 1
@@ -664,9 +620,7 @@ class TestUniswapV3Subgraph:
         with patch.object(
             client,
             "_query",
-            new=AsyncMock(
-                side_effect=PoolDataError("Subgraph GraphQL errors: [...]")
-            ),
+            new=AsyncMock(side_effect=PoolDataError("Subgraph GraphQL errors: [...]")),
         ):
             with pytest.raises(PoolDataError):
                 await client.get_pool("0xdeadbeef")
