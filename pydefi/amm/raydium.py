@@ -128,7 +128,7 @@ class Raydium(BaseSolanaAMM):
         route_data = data["data"]
 
         out_amount = int(route_data["outputAmount"])
-        price_impact = Decimal(str(route_data.get("priceImpactPct", "0"))) / Decimal(100)
+        price_impact = max(Decimal(0), Decimal(str(route_data.get("priceImpactPct", "0"))) / Decimal(100))
 
         # Use the first pool address from the route plan if available
         route_plan = route_data.get("routePlan") or []

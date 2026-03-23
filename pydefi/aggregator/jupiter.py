@@ -115,8 +115,9 @@ class Jupiter(BaseAggregator):
         out_amount = int(data["outAmount"])
         # Jupiter returns otherAmountThreshold as the minimum out after slippage
         min_out_amount = int(data.get("otherAmountThreshold", out_amount))
-        # priceImpactPct is a percentage (e.g. "0.03" = 0.03%); convert to fraction
-        price_impact = Decimal(str(data.get("priceImpactPct", "0"))) / Decimal(100)
+        # priceImpactPct is a percentage (e.g. "0.03" = 0.03%); convert to fraction.
+        # Clamp to 0 — the API can return tiny negatives at favorable market conditions.
+        price_impact = max(Decimal(0), Decimal(str(data.get("priceImpactPct", "0"))) / Decimal(100))
 
         return AggregatorQuote(
             token_in=amount_in.token,
@@ -332,8 +333,9 @@ class JupiterSwapV2(BaseAggregator):
 
         out_amount = int(order["outAmount"])
         min_out_amount = int(order.get("otherAmountThreshold", out_amount))
-        # priceImpactPct is a percentage (e.g. "0.03" = 0.03%); convert to fraction
-        price_impact = Decimal(str(order.get("priceImpactPct", "0"))) / Decimal(100)
+        # priceImpactPct is a percentage (e.g. "0.03" = 0.03%); convert to fraction.
+        # Clamp to 0 — the API can return tiny negatives at favorable market conditions.
+        price_impact = max(Decimal(0), Decimal(str(order.get("priceImpactPct", "0"))) / Decimal(100))
 
         return AggregatorQuote(
             token_in=amount_in.token,
