@@ -87,7 +87,7 @@ class UniswapAPI(BaseAggregator):
                     )
                 return data  # type: ignore[return-value]
 
-    def _parse_classic_quote(
+    def _parse_quote_response(
         self,
         data: dict[str, Any],
         token_out: Token,
@@ -95,21 +95,44 @@ class UniswapAPI(BaseAggregator):
     ) -> tuple[int, int, int, Decimal, str]:
         """Extract amounts and metadata from a ``/v1/quote`` response.
 
+        Handles both CLASSIC AMM quotes and UniswapX (DUTCH_V2/V3/PRIORITY)
+        quotes, which use different response shapes.
+
         Returns ``(amount_out_raw, min_amount_out_raw, gas_estimate,
         price_impact, route_summary)``.
         """
+        routing = data.get("routing", "CLASSIC")
         quote_data = data.get("quote", data)
-        output = quote_data.get("output", {})
-        amount_out_raw = int(output.get("amount", quote_data.get("amountOut", 0)))
 
-        slippage_factor = 10_000 - slippage_bps
-        min_amount_out_raw = amount_out_raw * slippage_factor // 10_000
+        if routing in _SWAP_COMPATIBLE_ROUTING:
+            # CLASSIC / WRAP / UNWRAP / BRIDGE — standard AMM response shape.
+            output = quote_data.get("output", {})
+            amount_out_raw = int(output.get("amount", quote_data.get("amountOut", 0)))
+            slippage_factor = 10_000 - slippage_bps
+            min_amount_out_raw = amount_out_raw * slippage_factor // 10_000
+            gas_fee = quote_data.get("gasFee") or quote_data.get("gasUseEstimate", 0)
+            gas_estimate = int(gas_fee) if gas_fee else 0
+            price_impact_raw = quote_data.get("priceImpact", 0)
+            route_summary = str(quote_data.get("routeString", quote_data.get("route", "")))
+        else:
+            # UniswapX (DUTCH_V2, DUTCH_V3, PRIORITY) — amounts come from
+            # aggregatedOutputs (preferred) or orderInfo.outputs.
+            aggregated = quote_data.get("aggregatedOutputs", [])
+            if aggregated:
+                amount_out_raw = int(aggregated[0].get("amount", 0))
+                min_amount_out_raw = int(aggregated[0].get("minAmount", 0))
+                if not min_amount_out_raw:
+                    slippage_factor = 10_000 - slippage_bps
+                    min_amount_out_raw = amount_out_raw * slippage_factor // 10_000
+            else:
+                order_outputs = quote_data.get("orderInfo", {}).get("outputs", [])
+                amount_out_raw = int(order_outputs[0]["startAmount"]) if order_outputs else 0
+                end_amount = int(order_outputs[0]["endAmount"]) if order_outputs else 0
+                min_amount_out_raw = end_amount or (amount_out_raw * (10_000 - slippage_bps) // 10_000)
+            gas_estimate = 0
+            price_impact_raw = 0
+            route_summary = routing
 
-        gas_fee = quote_data.get("gasFee") or quote_data.get("gasUseEstimate", 0)
-        gas_estimate = int(gas_fee) if gas_fee else 0
-
-        price_impact_raw = quote_data.get("priceImpact", 0)
-        route_summary = str(quote_data.get("routeString", quote_data.get("route", "")))
         return (
             amount_out_raw,
             min_amount_out_raw,
@@ -163,7 +186,7 @@ class UniswapAPI(BaseAggregator):
 
         data = await self._post("v1/quote", body)
 
-        amount_out_raw, min_amount_out_raw, gas_estimate, price_impact, route_summary = self._parse_classic_quote(
+        amount_out_raw, min_amount_out_raw, gas_estimate, price_impact, route_summary = self._parse_quote_response(
             data, token_out, slippage_bps
         )
 
@@ -204,6 +227,9 @@ class UniswapAPI(BaseAggregator):
             slippage_bps: Maximum acceptable slippage in basis points.
             deadline: Optional UNIX timestamp for the transaction deadline.
             **kwargs: Additional body fields forwarded to the quote call.
+                Pass ``signature=<hex>`` (a signed Permit2 payload) to enable
+                gasless Permit2 approval — forwarded to ``/v1/swap`` together
+                with ``permitData`` from the quote response.
 
         Returns:
             An :class:`~pydefi.aggregator.base.AggregatorQuote` with
@@ -212,6 +238,9 @@ class UniswapAPI(BaseAggregator):
         Raises:
             :class:`~pydefi.exceptions.AggregatorError`: On API errors.
         """
+        # ``signature`` is a swap-only parameter; extract it before updating
+        # the quote body so it is not accidentally forwarded to /v1/quote.
+        signature: str | None = kwargs.pop("signature", None)
         # Step 1: POST /v1/quote
         quote_body: dict[str, Any] = {
             "tokenIn": amount_in.token.address,
@@ -237,21 +266,27 @@ class UniswapAPI(BaseAggregator):
                 status_code=None,
             )
 
-        amount_out_raw, min_amount_out_raw, gas_estimate, price_impact, route_summary = self._parse_classic_quote(
+        amount_out_raw, min_amount_out_raw, gas_estimate, price_impact, route_summary = self._parse_quote_response(
             quote_response, token_out, slippage_bps
         )
 
         # Step 2: POST /v1/swap
         # The swap body takes the inner ``quote`` object (ClassicQuote), not
-        # the full QuoteResponse.
+        # the full QuoteResponse.  Note: ``permitData`` from the quote response
+        # is intentionally *not* forwarded here — it requires a paired Permit2
+        # ``signature`` that only the user's wallet can produce.  Callers that
+        # have already signed can pass the signature via ``signature`` kwarg
+        # which will be forwarded together with permitData.
         inner_quote = quote_response.get("quote", quote_response)
         swap_body: dict[str, Any] = {"quote": inner_quote}
         if deadline is not None:
             swap_body["deadline"] = deadline
-        # Include permitData when the quote response requires a Permit2 signature.
+        # Forward permitData + signature together when the caller has already
+        # signed the Permit2 payload.  The API requires both or neither.
         permit_data = quote_response.get("permitData")
-        if permit_data:
+        if permit_data and signature:
             swap_body["permitData"] = permit_data
+            swap_body["signature"] = signature
 
         swap_response = await self._post("v1/swap", swap_body)
 

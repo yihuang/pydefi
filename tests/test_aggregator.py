@@ -285,12 +285,13 @@ class TestUniswapAPI:
     async def test_get_quote_success(self):
         client = UniswapAPI(chain_id=1)
         mock_response = {
+            "routing": "CLASSIC",
             "quote": {
                 "output": {"amount": "2000000000"},
                 "gasFee": "180000",
                 "priceImpact": 0.05,
                 "routeString": "WETH -> USDC",
-            }
+            },
         }
         with patch.object(client, "_post", new=AsyncMock(return_value=mock_response)):
             amount_in = TokenAmount.from_human(WETH, "1")
@@ -302,6 +303,45 @@ class TestUniswapAPI:
         # min_amount_out = 2000 USDC * (1 - 0.5%) = 1990 USDC
         assert quote.min_amount_out.amount == 2_000_000_000 * 9_950 // 10_000
         assert "quoteData" in quote.tx_data
+
+    @pytest.mark.asyncio
+    async def test_get_quote_dutch_v2(self):
+        """get_quote() correctly parses UniswapX DUTCH_V2 responses."""
+        client = UniswapAPI(chain_id=1)
+        mock_response = {
+            "routing": "DUTCH_V2",
+            "quote": {
+                "encodedOrder": "0xdeadbeef",
+                "aggregatedOutputs": [
+                    {
+                        "amount": "2052000000",
+                        "minAmount": "2041000000",
+                        "token": USDC.address,
+                        "recipient": "0x" + "AA" * 20,
+                        "bps": 10000,
+                    }
+                ],
+                "orderInfo": {
+                    "outputs": [
+                        {
+                            "token": USDC.address,
+                            "startAmount": "2052000000",
+                            "endAmount": "2041000000",
+                            "recipient": "0x" + "AA" * 20,
+                        }
+                    ],
+                    "input": {"token": WETH.address, "startAmount": str(10**18), "endAmount": str(10**18)},
+                },
+            },
+        }
+        with patch.object(client, "_post", new=AsyncMock(return_value=mock_response)):
+            amount_in = TokenAmount.from_human(WETH, "1")
+            quote = await client.get_quote(amount_in, USDC, slippage_bps=50)
+
+        assert quote.amount_out.amount == 2_052_000_000
+        # min_amount_out comes from aggregatedOutputs[0].minAmount
+        assert quote.min_amount_out.amount == 2_041_000_000
+        assert quote.protocol == "Uniswap"
 
     @pytest.mark.asyncio
     async def test_get_quote_api_error(self):
