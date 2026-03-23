@@ -1,7 +1,7 @@
 """
 OKX DEX aggregator API client.
 
-Docs: https://web3.okx.com/build/docs/waas/dex-swap
+Docs: https://web3.okx.com/zh-hant/onchainos/dev-docs/trade/dex-swap
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ class OKX(BaseAggregator):
         base_url: Override the default API base URL.
     """
 
-    _DEFAULT_BASE_URL = "https://www.okx.com/api/v5/dex/aggregator"
+    _DEFAULT_BASE_URL = "https://www.okx.com/api/v6/dex/aggregator"
 
     def __init__(
         self,
@@ -82,15 +82,15 @@ class OKX(BaseAggregator):
             An :class:`~pydefi.aggregator.base.AggregatorQuote`.
         """
         params: dict[str, Any] = {
-            "chainId": str(self.chain_id),
+            "chainIndex": str(self.chain_id),
             "amount": str(amount_in.amount),
             "fromTokenAddress": amount_in.token.address,
             "toTokenAddress": token_out.address,
-            "slippage": str(self._slippage_to_fraction(slippage_bps)),
+            "slippagePercent": str(self._slippage_to_percent(slippage_bps)),
             **kwargs,
         }
         data = await self._get("quote", params)
-        result = data["data"][0]
+        result = data["data"]
 
         to_amount = int(result["toTokenAmount"])
         slippage_factor = 10_000 - slippage_bps
@@ -131,16 +131,16 @@ class OKX(BaseAggregator):
             ``tx_data`` populated.
         """
         params: dict[str, Any] = {
-            "chainId": str(self.chain_id),
+            "chainIndex": str(self.chain_id),
             "amount": str(amount_in.amount),
             "fromTokenAddress": amount_in.token.address,
             "toTokenAddress": token_out.address,
-            "slippage": str(self._slippage_to_fraction(slippage_bps)),
+            "slippagePercent": str(self._slippage_to_percent(slippage_bps)),
             "userWalletAddress": from_address,
             **kwargs,
         }
         data = await self._get("swap", params)
-        result = data["data"][0]
+        result = data["data"]
 
         to_amount = int(result["routerResult"]["toTokenAmount"])
         slippage_factor = 10_000 - slippage_bps
