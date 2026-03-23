@@ -19,7 +19,6 @@ import os
 import pytest
 
 from pydefi.aggregator.uniswap import UniswapAPI
-from pydefi.exceptions import AggregatorError
 from pydefi.types import TokenAmount
 
 from .conftest import DAI, USDC, WETH
@@ -28,7 +27,7 @@ from .conftest import DAI, USDC, WETH
 # Plausible WETH → USDC price bounds
 # ---------------------------------------------------------------------------
 
-MIN_USDC = 500 * 10**6   # 500 USDC per ETH minimum
+MIN_USDC = 500 * 10**6  # 500 USDC per ETH minimum
 MAX_USDC = 10_000 * 10**6  # 10 000 USDC per ETH maximum
 
 # ---------------------------------------------------------------------------
@@ -59,16 +58,13 @@ class TestUniswapAPILive:
         """POST /v1/quote should return a non-zero output amount for 1 WETH → USDC."""
         client = _make_client()
         amount_in = TokenAmount.from_human(WETH, "1")
-        quote = await client.get_quote(
-            amount_in, USDC, slippage_bps=50, swapper=_WALLET
-        )
+        quote = await client.get_quote(amount_in, USDC, slippage_bps=50, swapper=_WALLET)
 
         assert quote.token_in == WETH
         assert quote.token_out == USDC
         assert quote.protocol == "Uniswap"
         assert MIN_USDC < quote.amount_out.amount < MAX_USDC, (
-            f"Quote amount_out out of range: "
-            f"{quote.amount_out.amount / 10**6:.2f} USDC for 1 WETH"
+            f"Quote amount_out out of range: {quote.amount_out.amount / 10**6:.2f} USDC for 1 WETH"
         )
         # min_amount_out must be ≤ amount_out (slippage applied)
         assert quote.min_amount_out.amount <= quote.amount_out.amount
@@ -77,9 +73,7 @@ class TestUniswapAPILive:
         """POST /v1/quote should return a non-zero output for 0.01 WETH → USDC."""
         client = _make_client()
         amount_in = TokenAmount.from_human(WETH, "0.01")
-        quote = await client.get_quote(
-            amount_in, USDC, slippage_bps=50, swapper=_WALLET
-        )
+        quote = await client.get_quote(amount_in, USDC, slippage_bps=50, swapper=_WALLET)
 
         assert quote.amount_out.amount > 0, "Expected non-zero amount out for 0.01 WETH"
         assert quote.min_amount_out.amount <= quote.amount_out.amount
@@ -88,9 +82,7 @@ class TestUniswapAPILive:
         """POST /v1/quote should also work for WETH → DAI (18-decimal stablecoin)."""
         client = _make_client()
         amount_in = TokenAmount.from_human(WETH, "1")
-        quote = await client.get_quote(
-            amount_in, DAI, slippage_bps=50, swapper=_WALLET
-        )
+        quote = await client.get_quote(amount_in, DAI, slippage_bps=50, swapper=_WALLET)
 
         assert quote.token_in == WETH
         assert quote.token_out == DAI
@@ -98,17 +90,14 @@ class TestUniswapAPILive:
         min_dai = 500 * 10**18
         max_dai = 10_000 * 10**18
         assert min_dai < quote.amount_out.amount < max_dai, (
-            f"WETH→DAI quote out of range: "
-            f"{quote.amount_out.amount / 10**18:.2f} DAI"
+            f"WETH→DAI quote out of range: {quote.amount_out.amount / 10**18:.2f} DAI"
         )
 
     async def test_build_swap_route(self):
         """build_swap_route should return a well-formed SwapRoute."""
         client = _make_client()
         amount_in = TokenAmount.from_human(WETH, "1")
-        route = await client.build_swap_route(
-            amount_in, USDC, slippage_bps=50, swapper=_WALLET
-        )
+        route = await client.build_swap_route(amount_in, USDC, slippage_bps=50, swapper=_WALLET)
 
         assert route.token_in == WETH
         assert route.token_out == USDC
@@ -130,6 +119,9 @@ class TestUniswapAPILive:
             USDC,
             wallet_address=_WALLET,
             slippage_bps=50,
+            # Force classic AMM routing so the quote is compatible with /v1/swap.
+            # Without this the API may return a UniswapX (DUTCH_V2/V3) quote.
+            protocols=["V2", "V3", "V4"],
         )
 
         assert quote.token_in == WETH
@@ -139,6 +131,4 @@ class TestUniswapAPILive:
         # tx_data must contain at minimum the target address and calldata
         tx = quote.tx_data
         assert tx, "tx_data should be populated by get_swap()"
-        assert tx.get("to") or tx.get("data"), (
-            "tx_data should contain 'to' or 'data' from the /v1/swap response"
-        )
+        assert tx.get("to") or tx.get("data"), "tx_data should contain 'to' or 'data' from the /v1/swap response"

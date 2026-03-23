@@ -239,6 +239,7 @@ class TestZeroX:
 # Uniswap Trading API tests
 # ---------------------------------------------------------------------------
 
+
 class TestUniswapAPI:
     def test_protocol_name(self):
         client = UniswapAPI(chain_id=1)
@@ -305,9 +306,7 @@ class TestUniswapAPI:
     @pytest.mark.asyncio
     async def test_get_quote_api_error(self):
         client = UniswapAPI(chain_id=1)
-        with patch.object(
-            client, "_post", new=AsyncMock(side_effect=AggregatorError("API error", 400))
-        ):
+        with patch.object(client, "_post", new=AsyncMock(side_effect=AggregatorError("API error", 400))):
             amount_in = TokenAmount.from_human(WETH, "1")
             with pytest.raises(AggregatorError):
                 await client.get_quote(amount_in, USDC)
@@ -338,9 +337,7 @@ class TestUniswapAPI:
             new=AsyncMock(side_effect=[mock_quote_response, mock_swap_response]),
         ):
             amount_in = TokenAmount.from_human(WETH, "1")
-            quote = await client.get_swap(
-                amount_in, USDC, wallet_address="0x" + "AA" * 20, slippage_bps=50
-            )
+            quote = await client.get_swap(amount_in, USDC, wallet_address="0x" + "AA" * 20, slippage_bps=50)
 
         assert quote.amount_out.amount == 1_998_000_000
         assert quote.protocol == "Uniswap"
@@ -407,6 +404,29 @@ class TestUniswapAPI:
         assert route.token_out == USDC
         assert len(route.steps) == 1
         assert route.steps[0].protocol == "Uniswap"
+
+    @pytest.mark.asyncio
+    async def test_get_swap_raises_on_uniswapx_routing(self):
+        """get_swap() must raise AggregatorError when the quote routing is UniswapX."""
+        client = UniswapAPI(chain_id=1)
+        # DUTCH_V2 routing cannot be submitted to /v1/swap (requires /v1/order)
+        mock_dutch_quote_response = {
+            "routing": "DUTCH_V2",
+            "quote": {
+                "encodedOrder": "0xdeadbeef",
+                "orderId": "0x123",
+                "orderInfo": {},
+            },
+            "permitData": None,
+        }
+        with patch.object(
+            client,
+            "_post",
+            new=AsyncMock(return_value=mock_dutch_quote_response),
+        ):
+            amount_in = TokenAmount.from_human(WETH, "1")
+            with pytest.raises(AggregatorError, match=r"routing type 'DUTCH_V2' cannot be submitted via /v1/swap"):
+                await client.get_swap(amount_in, USDC, wallet_address="0x" + "AA" * 20, slippage_bps=50)
 
 
 # ---------------------------------------------------------------------------

@@ -15,6 +15,10 @@ from pydefi.aggregator.base import AggregatorQuote, BaseAggregator
 from pydefi.exceptions import AggregatorError
 from pydefi.types import SwapRoute, SwapStep, Token, TokenAmount
 
+# Routing types returned by /v1/quote that are compatible with POST /v1/swap.
+# UniswapX types (DUTCH_V2, DUTCH_V3, PRIORITY) must use POST /v1/order instead.
+_SWAP_COMPATIBLE_ROUTING: frozenset[str] = frozenset({"CLASSIC", "WRAP", "UNWRAP", "BRIDGE"})
+
 
 class UniswapAPI(BaseAggregator):
     """Uniswap Trading API client.
@@ -74,9 +78,7 @@ class UniswapAPI(BaseAggregator):
     async def _post(self, endpoint: str, json_body: dict[str, Any]) -> dict[str, Any]:
         url = f"{self._base_url}/{endpoint.lstrip('/')}"
         async with aiohttp.ClientSession() as session:
-            async with session.post(
-                url, json=json_body, headers=self._headers()
-            ) as resp:
+            async with session.post(url, json=json_body, headers=self._headers()) as resp:
                 data = await resp.json(content_type=None)
                 if resp.status != 200:
                     raise AggregatorError(
@@ -107,9 +109,7 @@ class UniswapAPI(BaseAggregator):
         gas_estimate = int(gas_fee) if gas_fee else 0
 
         price_impact_raw = quote_data.get("priceImpact", 0)
-        route_summary = str(
-            quote_data.get("routeString", quote_data.get("route", ""))
-        )
+        route_summary = str(quote_data.get("routeString", quote_data.get("route", "")))
         return (
             amount_out_raw,
             min_amount_out_raw,
@@ -163,8 +163,8 @@ class UniswapAPI(BaseAggregator):
 
         data = await self._post("v1/quote", body)
 
-        amount_out_raw, min_amount_out_raw, gas_estimate, price_impact, route_summary = (
-            self._parse_classic_quote(data, token_out, slippage_bps)
+        amount_out_raw, min_amount_out_raw, gas_estimate, price_impact, route_summary = self._parse_classic_quote(
+            data, token_out, slippage_bps
         )
 
         return AggregatorQuote(
@@ -226,8 +226,19 @@ class UniswapAPI(BaseAggregator):
         quote_body.update(kwargs)
         quote_response = await self._post("v1/quote", quote_body)
 
-        amount_out_raw, min_amount_out_raw, gas_estimate, price_impact, route_summary = (
-            self._parse_classic_quote(quote_response, token_out, slippage_bps)
+        # Routing types supported by /v1/swap (per the integration guide).
+        # UniswapX types (DUTCH_V2, DUTCH_V3, PRIORITY) require /v1/order instead.
+        routing = quote_response.get("routing", "CLASSIC")
+        if routing not in _SWAP_COMPATIBLE_ROUTING:
+            raise AggregatorError(
+                f"Quote routing type '{routing}' cannot be submitted via /v1/swap. "
+                f"Use protocols=['V2','V3','V4'] to request classic AMM routing, "
+                f"or handle {routing!r} via /v1/order.",
+                status_code=None,
+            )
+
+        amount_out_raw, min_amount_out_raw, gas_estimate, price_impact, route_summary = self._parse_classic_quote(
+            quote_response, token_out, slippage_bps
         )
 
         # Step 2: POST /v1/swap
