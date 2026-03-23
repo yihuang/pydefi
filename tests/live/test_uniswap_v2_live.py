@@ -15,7 +15,7 @@ from .conftest import DAI, USDC, WETH
 UNISWAP_V2_ROUTER = "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D"
 
 # Sanity bounds: 1 WETH should fetch between $500 and $10 000 in USDC/DAI
-MIN_USDC = 500 * 10**6   # 500 USDC
+MIN_USDC = 500 * 10**6  # 500 USDC
 MAX_USDC = 10_000 * 10**6  # 10 000 USDC
 
 MIN_DAI = 500 * 10**18

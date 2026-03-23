@@ -53,8 +53,8 @@ class PoolEdge:
         """
         if self.reserve_in == 0:
             return Decimal(0)
-        adj_in = Decimal(self.reserve_in) / Decimal(10 ** self.token_in.decimals)
-        adj_out = Decimal(self.reserve_out) / Decimal(10 ** self.token_out.decimals)
+        adj_in = Decimal(self.reserve_in) / Decimal(10**self.token_in.decimals)
+        adj_out = Decimal(self.reserve_out) / Decimal(10**self.token_out.decimals)
         return adj_out / adj_in
 
     def amount_out(self, amount_in: int) -> int:
@@ -142,7 +142,7 @@ class V3PoolEdge(PoolEdge):
     liquidity: int = 0
     is_token0_in: bool = True
 
-    _Q96: ClassVar[int] = 2 ** 96
+    _Q96: ClassVar[int] = 2**96
 
     @property
     def spot_price(self) -> Decimal:
@@ -155,9 +155,9 @@ class V3PoolEdge(PoolEdge):
         sqrtP = Decimal(self.sqrt_price_x96) / Decimal(Q96)
         # price_raw = token1 per token0 in the pool's raw (smallest) units,
         # without any decimal adjustment for token precision.
-        price_raw = sqrtP ** 2
+        price_raw = sqrtP**2
         # adj converts from raw units to human-readable units
-        adj = Decimal(10 ** self.token_in.decimals) / Decimal(10 ** self.token_out.decimals)
+        adj = Decimal(10**self.token_in.decimals) / Decimal(10**self.token_out.decimals)
         if self.is_token0_in:
             return price_raw * adj
         else:
@@ -320,26 +320,30 @@ class PoolGraph:
             fee_bps: Swap fee in basis points.
             **extra: Extra metadata stored in ``PoolEdge.extra``.
         """
-        self.add_pool(PoolEdge(
-            token_in=token_a,
-            token_out=token_b,
-            pool_address=pool_address,
-            protocol=protocol,
-            reserve_in=reserve_a,
-            reserve_out=reserve_b,
-            fee_bps=fee_bps,
-            extra=dict(extra),
-        ))
-        self.add_pool(PoolEdge(
-            token_in=token_b,
-            token_out=token_a,
-            pool_address=pool_address,
-            protocol=protocol,
-            reserve_in=reserve_b,
-            reserve_out=reserve_a,
-            fee_bps=fee_bps,
-            extra=dict(extra),
-        ))
+        self.add_pool(
+            PoolEdge(
+                token_in=token_a,
+                token_out=token_b,
+                pool_address=pool_address,
+                protocol=protocol,
+                reserve_in=reserve_a,
+                reserve_out=reserve_b,
+                fee_bps=fee_bps,
+                extra=dict(extra),
+            )
+        )
+        self.add_pool(
+            PoolEdge(
+                token_in=token_b,
+                token_out=token_a,
+                pool_address=pool_address,
+                protocol=protocol,
+                reserve_in=reserve_b,
+                reserve_out=reserve_a,
+                fee_bps=fee_bps,
+                extra=dict(extra),
+            )
+        )
 
     def edges_from(self, token: Token) -> list[PoolEdge]:
         """Return all edges that depart from *token*.
