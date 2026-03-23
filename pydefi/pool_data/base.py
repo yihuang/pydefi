@@ -162,6 +162,34 @@ class BasePoolDataProvider(ABC):
             A list of :class:`PoolData` objects.
         """
 
+    async def get_pools_for_tokens(self, token_addresses: list[str], limit: int = 100) -> list[PoolData]:
+        """Fetch pools that contain any of the given tokens.
+
+        Default implementation fans out to :meth:`get_pools_for_token` for
+        each address and deduplicates results by pool address.  Providers
+        that offer a native batch endpoint (e.g. GeckoTerminal) should
+        override this method for better efficiency.
+
+        Args:
+            token_addresses: List of ERC-20 token addresses to query.
+            limit: Maximum total number of pools to return.
+
+        Returns:
+            A deduplicated list of up to *limit* :class:`PoolData` objects.
+        """
+        pools: list[PoolData] = []
+        seen: set[str] = set()
+        for address in token_addresses:
+            if len(pools) >= limit:
+                break
+            for pool in await self.get_pools_for_token(address, limit=limit):
+                if pool.pool_address not in seen:
+                    seen.add(pool.pool_address)
+                    pools.append(pool)
+                    if len(pools) >= limit:
+                        break
+        return pools
+
     def build_graph(self, pools: list[PoolData]) -> PoolGraph:
         """Convert a list of :class:`PoolData` objects into a :class:`~pydefi.pathfinder.graph.PoolGraph`.
 

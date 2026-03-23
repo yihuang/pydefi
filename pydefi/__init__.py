@@ -35,9 +35,9 @@ from pydefi.exceptions import (
     BridgeError,
     InsufficientLiquidityError,
     NoRouteFoundError,
+    PoolDataError,
     PydefiError,
     SlippageExceededError,
-    PoolDataError,
 )
 from pydefi.pool_data.base import BasePoolDataProvider, PoolData
 from pydefi.types import (

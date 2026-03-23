@@ -414,6 +414,44 @@ class TestGeckoTerminal:
         # Should deduplicate to 1 unique pool
         assert len(pools) == 1
 
+    @pytest.mark.asyncio
+    async def test_get_pools_for_tokens_deduplicates_input_addresses(self):
+        """Duplicate input addresses produce a single API call, not two."""
+        client = GeckoTerminal(chain_id=ChainId.ETHEREUM)
+        mock_get = AsyncMock(return_value=_MOCK_LIST_RESPONSE)
+        with patch.object(client, "_get", new=mock_get):
+            # Pass the same address twice (mixed case)
+            await client.get_pools_for_tokens([WETH.address, WETH.address.lower()], limit=5)
+
+        # Only one unique address → one chunk → only one _get call per page
+        assert mock_get.call_count == 1
+        call_path = mock_get.call_args[0][0]
+        # The comma-separated list should contain the address only once
+        assert call_path.count(WETH.address.lower()) == 1
+
+    def test_parse_pool_missing_token_raises_pool_data_error(self):
+        """_parse_pool should raise PoolDataError when token is missing from included."""
+        client = GeckoTerminal(chain_id=ChainId.ETHEREUM)
+        pool_item = {
+            "id": "eth_0xdeadbeef",
+            "type": "pool",
+            "attributes": {
+                "address": "0xdeadbeef",
+                "name": "FOO / BAR 0.30%",
+                "reserve_in_usd": "1000",
+                "base_token_price_usd": "1.0",
+                "quote_token_price_usd": "1.0",
+            },
+            "relationships": {
+                "base_token": {"data": {"id": "eth_0xaaaa"}},
+                "quote_token": {"data": {"id": "eth_0xbbbb"}},
+                "dex": {"data": {"id": "uniswap_v2"}},
+            },
+        }
+        # No included tokens → should raise PoolDataError
+        with pytest.raises(PoolDataError):
+            client._parse_pool(pool_item, included=[])
+
     def test_build_graph_from_get_top_pools(self):
         """build_graph should produce a navigable PoolGraph."""
         pool = PoolData(

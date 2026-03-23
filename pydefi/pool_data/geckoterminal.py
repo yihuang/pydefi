@@ -7,7 +7,10 @@ Docs: https://www.geckoterminal.com/dex-api
 
 from __future__ import annotations
 
+import asyncio
+import email.utils
 import logging
+import time
 from typing import Any, Optional
 
 import aiohttp
@@ -47,6 +50,12 @@ _DEX_TO_PROTOCOL: dict[str, str] = {
 
 # GeckoTerminal returns at most 20 pools per page
 _PAGE_SIZE = 20
+# Maximum number of token addresses per batch request
+_MAX_ADDRESSES_PER_REQUEST = 10
+# Seconds to wait after a 429 rate-limit response before retrying
+_RATE_LIMIT_BACKOFF = 10.0
+# Maximum number of 429 retries per request before giving up
+_MAX_RATE_LIMIT_RETRIES = 5
 
 logger = logging.getLogger(__name__)
 
@@ -95,25 +104,60 @@ class GeckoTerminal(BasePoolDataProvider):
     async def _get(self, path: str, params: Optional[dict[str, Any]] = None) -> dict[str, Any]:
         url = f"{self._base_url}/{path.lstrip('/')}"
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, params=params, headers=self._headers()) as resp:
-                data = await resp.json(content_type=None)
-                if resp.status != 200:
-                    raise PoolDataError(
-                        f"GeckoTerminal API error {resp.status}: {data.get('errors', data)}",
-                        status_code=resp.status,
-                    )
-                return data  # type: ignore[return-value]
+            for attempt in range(_MAX_RATE_LIMIT_RETRIES + 1):
+                async with session.get(url, params=params, headers=self._headers()) as resp:
+                    if resp.status == 429:
+                        if attempt >= _MAX_RATE_LIMIT_RETRIES:
+                            raise PoolDataError(
+                                f"GeckoTerminal rate limit exceeded after {_MAX_RATE_LIMIT_RETRIES} retries",
+                                status_code=429,
+                            )
+                        retry_after_header = resp.headers.get("Retry-After")
+                        retry_after = _RATE_LIMIT_BACKOFF
+                        if retry_after_header is not None:
+                            try:
+                                retry_after = float(retry_after_header)
+                            except ValueError:
+                                # Header may be an HTTP-date (RFC 7231)
+                                try:
+                                    dt = email.utils.parsedate_to_datetime(retry_after_header)
+                                    retry_after = max(0.0, dt.timestamp() - time.time())
+                                except Exception:
+                                    pass
+                        logger.warning(
+                            "GeckoTerminal rate limit hit (attempt %d/%d); retrying after %.0fs",
+                            attempt + 1,
+                            _MAX_RATE_LIMIT_RETRIES,
+                            retry_after,
+                        )
+                        await asyncio.sleep(retry_after)
+                        continue
+                    data = await resp.json(content_type=None)
+                    if resp.status != 200:
+                        raise PoolDataError(
+                            f"GeckoTerminal API error {resp.status}: {data.get('errors', data)}",
+                            status_code=resp.status,
+                        )
+                    return data  # type: ignore[return-value]
+        # Unreachable, but satisfies type checker
+        raise PoolDataError("GeckoTerminal request failed", status_code=None)
 
     # ------------------------------------------------------------------
     # Parsing helpers
     # ------------------------------------------------------------------
 
-    def _parse_token(self, attrs: dict[str, Any]) -> Token:
+    def _parse_token(self, attrs: dict[str, Any], pool_id: str = "") -> Token:
         """Build a :class:`~pydefi.types.Token` from GeckoTerminal token attributes."""
+        address = attrs.get("address")
+        if not address:
+            raise PoolDataError(
+                f"Missing token address in pool {pool_id!r}: {attrs}",
+                status_code=None,
+            )
         decimals = int(attrs.get("decimals") or 18)
         return Token(
             chain_id=self.chain_id,
-            address=attrs["address"],
+            address=address,
             symbol=attrs.get("symbol") or "???",
             decimals=decimals,
             name=attrs.get("name") or None,
@@ -170,7 +214,12 @@ class GeckoTerminal(BasePoolDataProvider):
 
         Returns:
             A :class:`PoolData` object.
+
+        Raises:
+            :class:`~pydefi.exceptions.PoolDataError`: When required token
+                metadata cannot be resolved from the ``included`` payload.
         """
+        pool_id = pool_item.get("id", "?")
         attrs = pool_item.get("attributes", {})
         relationships = pool_item.get("relationships", {})
 
@@ -183,11 +232,22 @@ class GeckoTerminal(BasePoolDataProvider):
         base_token_id: str = relationships.get("base_token", {}).get("data", {}).get("id", "")
         quote_token_id: str = relationships.get("quote_token", {}).get("data", {}).get("id", "")
 
-        base_attrs = token_map.get(base_token_id, {})
-        quote_attrs = token_map.get(quote_token_id, {})
+        if not base_token_id or base_token_id not in token_map:
+            raise PoolDataError(
+                f"Pool {pool_id!r}: base token {base_token_id!r} not found in included payload",
+                status_code=None,
+            )
+        if not quote_token_id or quote_token_id not in token_map:
+            raise PoolDataError(
+                f"Pool {pool_id!r}: quote token {quote_token_id!r} not found in included payload",
+                status_code=None,
+            )
 
-        token0 = self._parse_token(base_attrs)
-        token1 = self._parse_token(quote_attrs)
+        base_attrs = token_map[base_token_id]
+        quote_attrs = token_map[quote_token_id]
+
+        token0 = self._parse_token(base_attrs, pool_id)
+        token1 = self._parse_token(quote_attrs, pool_id)
 
         dex_id: str = relationships.get("dex", {}).get("data", {}).get("id", "")
         protocol = _DEX_TO_PROTOCOL.get(dex_id, dex_id)
@@ -291,10 +351,12 @@ class GeckoTerminal(BasePoolDataProvider):
         *from/to* tokens plus well-known intermediate "hub" tokens (e.g. WETH,
         USDC) to enable multi-hop pathfinding.
 
+        Input addresses are deduplicated (case-insensitive) and chunked into
+        batches of up to :data:`_MAX_ADDRESSES_PER_REQUEST` (10) before being
+        sent to the API.
+
         Args:
-            token_addresses: List of ERC-20 token addresses to query.  The API
-                accepts up to 10 addresses per request (they are concatenated
-                into the URL path as a comma-separated list).
+            token_addresses: List of ERC-20 token addresses to query.
             limit: Maximum total number of pools to return.
 
         Returns:
@@ -304,39 +366,58 @@ class GeckoTerminal(BasePoolDataProvider):
         if not token_addresses:
             return []
 
-        addresses_param = ",".join(a.lower() for a in token_addresses)
+        # Deduplicate while preserving order
+        seen_input: set[str] = set()
+        unique_addresses: list[str] = []
+        for addr in token_addresses:
+            key = addr.lower()
+            if key not in seen_input:
+                seen_input.add(key)
+                unique_addresses.append(addr.lower())
+
+        # Chunk into batches of _MAX_ADDRESSES_PER_REQUEST
+        chunks = [
+            unique_addresses[i : i + _MAX_ADDRESSES_PER_REQUEST]
+            for i in range(0, len(unique_addresses), _MAX_ADDRESSES_PER_REQUEST)
+        ]
+
         pools: list[PoolData] = []
-        seen_addresses: set[str] = set()
-        page = 1
-        while len(pools) < limit:
-            data = await self._get(
-                f"networks/{self._network}/tokens/multi/{addresses_param}/pools",
-                params={
-                    "include": "base_token,quote_token,dex",
-                    "page": page,
-                },
-            )
-            items = data.get("data", [])
-            if not items:
+        seen_pool_addresses: set[str] = set()
+
+        for chunk in chunks:
+            if len(pools) >= limit:
                 break
-            included = data.get("included", [])
-            for item in items:
-                if len(pools) >= limit:
+            addresses_param = ",".join(chunk)
+            page = 1
+            while len(pools) < limit:
+                data = await self._get(
+                    f"networks/{self._network}/tokens/multi/{addresses_param}/pools",
+                    params={
+                        "include": "base_token,quote_token,dex",
+                        "page": page,
+                    },
+                )
+                items = data.get("data", [])
+                if not items:
                     break
-                try:
-                    pool = self._parse_pool(item, included)
-                except Exception as exc:
-                    pool_addr = item.get("attributes", {}).get("address", "?")
-                    logger.warning("Failed to parse pool %s: %s", pool_addr, exc)
-                    continue
-                # Deduplicate by pool address (API may return duplicates when
-                # multiple queried tokens appear in the same pool)
-                if pool.pool_address not in seen_addresses:
-                    seen_addresses.add(pool.pool_address)
-                    pools.append(pool)
-            if len(items) < _PAGE_SIZE:
-                break
-            page += 1
+                included = data.get("included", [])
+                for item in items:
+                    if len(pools) >= limit:
+                        break
+                    try:
+                        pool = self._parse_pool(item, included)
+                    except Exception as exc:
+                        pool_addr = item.get("attributes", {}).get("address", "?")
+                        logger.warning("Failed to parse pool %s: %s", pool_addr, exc)
+                        continue
+                    # Deduplicate by pool address (API may return duplicates when
+                    # multiple queried tokens appear in the same pool)
+                    if pool.pool_address not in seen_pool_addresses:
+                        seen_pool_addresses.add(pool.pool_address)
+                        pools.append(pool)
+                if len(items) < _PAGE_SIZE:
+                    break
+                page += 1
         return pools
 
     async def get_pools_for_token(self, token_address: str, limit: int = 100) -> list[PoolData]:
