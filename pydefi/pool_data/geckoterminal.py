@@ -7,10 +7,7 @@ Docs: https://www.geckoterminal.com/dex-api
 
 from __future__ import annotations
 
-import asyncio
-import email.utils
 import logging
-import time
 from typing import Any, Optional
 
 import aiohttp
@@ -52,10 +49,6 @@ _DEX_TO_PROTOCOL: dict[str, str] = {
 _PAGE_SIZE = 20
 # Maximum number of token addresses per batch request
 _MAX_ADDRESSES_PER_REQUEST = 10
-# Seconds to wait after a 429 rate-limit response before retrying
-_RATE_LIMIT_BACKOFF = 10.0
-# Maximum number of 429 retries per request before giving up
-_MAX_RATE_LIMIT_RETRIES = 5
 
 logger = logging.getLogger(__name__)
 
@@ -104,43 +97,14 @@ class GeckoTerminal(BasePoolDataProvider):
     async def _get(self, path: str, params: Optional[dict[str, Any]] = None) -> dict[str, Any]:
         url = f"{self._base_url}/{path.lstrip('/')}"
         async with aiohttp.ClientSession() as session:
-            for attempt in range(_MAX_RATE_LIMIT_RETRIES + 1):
-                async with session.get(url, params=params, headers=self._headers()) as resp:
-                    if resp.status == 429:
-                        if attempt >= _MAX_RATE_LIMIT_RETRIES:
-                            raise PoolDataError(
-                                f"GeckoTerminal rate limit exceeded after {_MAX_RATE_LIMIT_RETRIES} retries",
-                                status_code=429,
-                            )
-                        retry_after_header = resp.headers.get("Retry-After")
-                        retry_after = _RATE_LIMIT_BACKOFF
-                        if retry_after_header is not None:
-                            try:
-                                retry_after = float(retry_after_header)
-                            except ValueError:
-                                # Header may be an HTTP-date (RFC 7231)
-                                try:
-                                    dt = email.utils.parsedate_to_datetime(retry_after_header)
-                                    retry_after = max(0.0, dt.timestamp() - time.time())
-                                except Exception:
-                                    pass
-                        logger.warning(
-                            "GeckoTerminal rate limit hit (attempt %d/%d); retrying after %.0fs",
-                            attempt + 1,
-                            _MAX_RATE_LIMIT_RETRIES,
-                            retry_after,
-                        )
-                        await asyncio.sleep(retry_after)
-                        continue
-                    data = await resp.json(content_type=None)
-                    if resp.status != 200:
-                        raise PoolDataError(
-                            f"GeckoTerminal API error {resp.status}: {data.get('errors', data)}",
-                            status_code=resp.status,
-                        )
-                    return data  # type: ignore[return-value]
-        # Unreachable, but satisfies type checker
-        raise PoolDataError("GeckoTerminal request failed", status_code=None)
+            async with session.get(url, params=params, headers=self._headers()) as resp:
+                data = await resp.json(content_type=None)
+                if resp.status != 200:
+                    raise PoolDataError(
+                        f"GeckoTerminal API error {resp.status}: {data.get('errors', data)}",
+                        status_code=resp.status,
+                    )
+                return data  # type: ignore[return-value]
 
     # ------------------------------------------------------------------
     # Parsing helpers
@@ -294,7 +258,7 @@ class GeckoTerminal(BasePoolDataProvider):
             :class:`~pydefi.exceptions.PoolDataError`: On API errors.
         """
         data = await self._get(
-            f"networks/{self._network}/pools/{pool_address}",
+            f"networks/{self._network}/pools/{pool_address.lower()}",
             params={"include": "base_token,quote_token,dex"},
         )
         return self._parse_pool(data["data"], data.get("included", []))
@@ -434,7 +398,7 @@ class GeckoTerminal(BasePoolDataProvider):
         page = 1
         while len(pools) < limit:
             data = await self._get(
-                f"networks/{self._network}/tokens/{token_address}/pools",
+                f"networks/{self._network}/tokens/{token_address.lower()}/pools",
                 params={
                     "include": "base_token,quote_token,dex",
                     "page": page,
