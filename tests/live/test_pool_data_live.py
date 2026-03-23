@@ -37,6 +37,7 @@ MAX_USDC = 10_000 * 10**6  # 10 000 USDC
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.skip(reason="GeckoTerminal live tests skipped — rate-limiting / availability")
 @pytest.mark.live
 class TestGeckoTerminalLive:
     """Live tests against the public GeckoTerminal API v2 (Ethereum mainnet)."""
