@@ -1,8 +1,9 @@
 """Live integration tests for the Uniswap Trading API aggregator.
 
-These tests call the real Uniswap Trading API (https://api.uniswap.org)
-to verify that :class:`~pydefi.aggregator.uniswap.UniswapAPI` constructs
-valid requests and parses responses correctly.
+These tests call the real Uniswap Trading API
+(``https://trade-api.gateway.uniswap.org``) to verify that
+:class:`~pydefi.aggregator.uniswap.UniswapAPI` constructs valid requests and
+parses responses correctly.
 
 The Uniswap Trading API requires an API key for production use.  If the
 ``UNISWAP_API_KEY`` environment variable is not set the tests are skipped
@@ -35,14 +36,13 @@ MAX_USDC = 10_000 * 10**6  # 10 000 USDC per ETH maximum
 # ---------------------------------------------------------------------------
 
 _API_KEY: str | None = os.environ.get("UNISWAP_API_KEY")
-# Optional: origin header value for API keys registered for a specific domain.
-# Defaults to the main Uniswap app origin, which works with most developer keys.
-_ORIGIN: str = os.environ.get("UNISWAP_ORIGIN", "https://app.uniswap.org")
+# Wallet used as swapper for live calls that require a wallet address.
+_WALLET = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"  # vitalik.eth
 
 
 def _make_client(chain_id: int = 1) -> UniswapAPI:
     """Return a UniswapAPI client configured from environment variables."""
-    return UniswapAPI(chain_id=chain_id, api_key=_API_KEY, origin=_ORIGIN)
+    return UniswapAPI(chain_id=chain_id, api_key=_API_KEY)
 
 
 @pytest.mark.live
@@ -56,10 +56,12 @@ class TestUniswapAPILive:
             pytest.skip("UNISWAP_API_KEY environment variable is not set")
 
     async def test_get_quote_weth_usdc(self):
-        """GET /v2/quote should return a non-zero output amount for 1 WETH → USDC."""
+        """POST /v1/quote should return a non-zero output amount for 1 WETH → USDC."""
         client = _make_client()
         amount_in = TokenAmount.from_human(WETH, "1")
-        quote = await client.get_quote(amount_in, USDC, slippage_bps=50)
+        quote = await client.get_quote(
+            amount_in, USDC, slippage_bps=50, swapper=_WALLET
+        )
 
         assert quote.token_in == WETH
         assert quote.token_out == USDC
@@ -72,19 +74,23 @@ class TestUniswapAPILive:
         assert quote.min_amount_out.amount <= quote.amount_out.amount
 
     async def test_get_quote_small_amount(self):
-        """GET /v2/quote should return a non-zero output for 0.01 WETH → USDC."""
+        """POST /v1/quote should return a non-zero output for 0.01 WETH → USDC."""
         client = _make_client()
         amount_in = TokenAmount.from_human(WETH, "0.01")
-        quote = await client.get_quote(amount_in, USDC, slippage_bps=50)
+        quote = await client.get_quote(
+            amount_in, USDC, slippage_bps=50, swapper=_WALLET
+        )
 
         assert quote.amount_out.amount > 0, "Expected non-zero amount out for 0.01 WETH"
         assert quote.min_amount_out.amount <= quote.amount_out.amount
 
     async def test_get_quote_weth_dai(self):
-        """GET /v2/quote should also work for WETH → DAI (18-decimal stablecoin)."""
+        """POST /v1/quote should also work for WETH → DAI (18-decimal stablecoin)."""
         client = _make_client()
         amount_in = TokenAmount.from_human(WETH, "1")
-        quote = await client.get_quote(amount_in, DAI, slippage_bps=50)
+        quote = await client.get_quote(
+            amount_in, DAI, slippage_bps=50, swapper=_WALLET
+        )
 
         assert quote.token_in == WETH
         assert quote.token_out == DAI
@@ -100,7 +106,9 @@ class TestUniswapAPILive:
         """build_swap_route should return a well-formed SwapRoute."""
         client = _make_client()
         amount_in = TokenAmount.from_human(WETH, "1")
-        route = await client.build_swap_route(amount_in, USDC, slippage_bps=50)
+        route = await client.build_swap_route(
+            amount_in, USDC, slippage_bps=50, swapper=_WALLET
+        )
 
         assert route.token_in == WETH
         assert route.token_out == USDC
@@ -109,20 +117,18 @@ class TestUniswapAPILive:
         assert MIN_USDC < route.amount_out.amount < MAX_USDC
 
     async def test_get_swap_end_to_end(self):
-        """Two-step flow (/v2/quote then /v2/swap) should return tx calldata.
+        """Two-step flow (POST /v1/quote → POST /v1/swap) should return tx calldata.
 
         This test exercises the full end-to-end swap-building flow described in
         the Uniswap Trading API guide.  It does *not* broadcast the transaction.
         """
-        # Use a well-known address as the simulated wallet
-        wallet = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"  # vitalik.eth
         client = _make_client()
         amount_in = TokenAmount.from_human(WETH, "0.01")
 
         quote = await client.get_swap(
             amount_in,
             USDC,
-            wallet_address=wallet,
+            wallet_address=_WALLET,
             slippage_bps=50,
         )
 
@@ -134,5 +140,5 @@ class TestUniswapAPILive:
         tx = quote.tx_data
         assert tx, "tx_data should be populated by get_swap()"
         assert tx.get("to") or tx.get("data"), (
-            "tx_data should contain 'to' or 'data' from the /v2/swap response"
+            "tx_data should contain 'to' or 'data' from the /v1/swap response"
         )

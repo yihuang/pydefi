@@ -250,7 +250,7 @@ class TestUniswapAPI:
 
     def test_base_url_default(self):
         client = UniswapAPI(chain_id=1)
-        assert client.base_url == "https://api.uniswap.org"
+        assert client.base_url == "https://trade-api.gateway.uniswap.org"
 
     def test_base_url_custom(self):
         client = UniswapAPI(chain_id=1, base_url="https://custom.api.example.com")
@@ -268,7 +268,7 @@ class TestUniswapAPI:
         client = UniswapAPI(chain_id=1, api_key="mykey")
         headers = client._headers()
         assert headers["x-api-key"] == "mykey"
-        assert headers["Authorization"] == "Bearer mykey"
+        assert "Authorization" not in headers
 
     def test_headers_with_origin(self):
         client = UniswapAPI(chain_id=1, api_key="mykey", origin="https://app.uniswap.org")
@@ -286,12 +286,12 @@ class TestUniswapAPI:
         mock_response = {
             "quote": {
                 "output": {"amount": "2000000000"},
-                "gasFee": 180000,
-                "priceImpact": "0.05",
-                "route": [["UNISWAP_V3"]],
+                "gasFee": "180000",
+                "priceImpact": 0.05,
+                "routeString": "WETH -> USDC",
             }
         }
-        with patch.object(client, "_get", new=AsyncMock(return_value=mock_response)):
+        with patch.object(client, "_post", new=AsyncMock(return_value=mock_response)):
             amount_in = TokenAmount.from_human(WETH, "1")
             quote = await client.get_quote(amount_in, USDC, slippage_bps=50)
 
@@ -306,7 +306,7 @@ class TestUniswapAPI:
     async def test_get_quote_api_error(self):
         client = UniswapAPI(chain_id=1)
         with patch.object(
-            client, "_get", new=AsyncMock(side_effect=AggregatorError("API error", 400))
+            client, "_post", new=AsyncMock(side_effect=AggregatorError("API error", 400))
         ):
             amount_in = TokenAmount.from_human(WETH, "1")
             with pytest.raises(AggregatorError):
@@ -318,9 +318,9 @@ class TestUniswapAPI:
         mock_quote_response = {
             "quote": {
                 "output": {"amount": "1998000000"},
-                "gasFee": 200000,
-                "priceImpact": "0.1",
-                "route": [],
+                "gasFee": "200000",
+                "priceImpact": 0.1,
+                "routeString": "WETH -> USDC",
             }
         }
         mock_swap_response = {
@@ -331,9 +331,11 @@ class TestUniswapAPI:
                 "gasLimit": "200000",
             }
         }
-        with (
-            patch.object(client, "_get", new=AsyncMock(return_value=mock_quote_response)),
-            patch.object(client, "_post", new=AsyncMock(return_value=mock_swap_response)),
+        # get_swap() calls _post twice: once for /v1/quote, once for /v1/swap
+        with patch.object(
+            client,
+            "_post",
+            new=AsyncMock(side_effect=[mock_quote_response, mock_swap_response]),
         ):
             amount_in = TokenAmount.from_human(WETH, "1")
             quote = await client.get_swap(
@@ -351,9 +353,9 @@ class TestUniswapAPI:
         mock_quote_response = {
             "quote": {
                 "output": {"amount": "1998000000"},
-                "gasFee": 0,
-                "priceImpact": "0",
-                "route": [],
+                "gasFee": "0",
+                "priceImpact": 0,
+                "routeString": "",
             }
         }
         mock_swap_response = {
@@ -363,16 +365,15 @@ class TestUniswapAPI:
                 "value": "0",
             }
         }
-        captured_body: dict = {}
+        captured_bodies: list[dict] = []
 
-        async def mock_post(endpoint, json_body):
-            captured_body.update(json_body)
+        async def mock_post(endpoint: str, json_body: dict) -> dict:
+            captured_bodies.append((endpoint, dict(json_body)))
+            if "quote" in endpoint:
+                return mock_quote_response
             return mock_swap_response
 
-        with (
-            patch.object(client, "_get", new=AsyncMock(return_value=mock_quote_response)),
-            patch.object(client, "_post", new=AsyncMock(side_effect=mock_post)),
-        ):
+        with patch.object(client, "_post", new=AsyncMock(side_effect=mock_post)):
             amount_in = TokenAmount.from_human(WETH, "1")
             await client.get_swap(
                 amount_in,
@@ -382,7 +383,10 @@ class TestUniswapAPI:
                 deadline=9999999999,
             )
 
-        assert captured_body["deadline"] == 9999999999
+        # Second call is to /v1/swap and must carry the deadline
+        swap_endpoint, swap_body = captured_bodies[1]
+        assert "swap" in swap_endpoint
+        assert swap_body["deadline"] == 9999999999
 
     @pytest.mark.asyncio
     async def test_build_swap_route(self):
@@ -390,12 +394,12 @@ class TestUniswapAPI:
         mock_response = {
             "quote": {
                 "output": {"amount": "2000000000"},
-                "gasFee": 180000,
-                "priceImpact": "0.05",
-                "route": [],
+                "gasFee": "180000",
+                "priceImpact": 0.05,
+                "routeString": "WETH -> USDC",
             }
         }
-        with patch.object(client, "_get", new=AsyncMock(return_value=mock_response)):
+        with patch.object(client, "_post", new=AsyncMock(return_value=mock_response)):
             amount_in = TokenAmount.from_human(WETH, "1")
             route = await client.build_swap_route(amount_in, USDC)
 
