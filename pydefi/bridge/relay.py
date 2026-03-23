@@ -98,9 +98,7 @@ class Relay(BaseBridge):
             async with session.post(url, json=payload) as resp:
                 data = await resp.json(content_type=None)
                 if resp.status != 200:
-                    raise BridgeError(
-                        f"Relay API error ({resp.status}): {data}"
-                    )
+                    raise BridgeError(f"Relay API error ({resp.status}): {data}")
         return data  # type: ignore[return-value]
 
     async def get_quote(

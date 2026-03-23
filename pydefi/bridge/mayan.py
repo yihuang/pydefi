@@ -16,7 +16,6 @@ from decimal import Decimal
 from typing import Any, Optional
 
 import aiohttp
-
 from eth_contract import Contract
 
 from pydefi.bridge.base import BaseBridge
@@ -43,14 +42,14 @@ _CHAIN_NAMES: dict[int, str] = {
 
 # Wormhole chain IDs for EVM chains (source: Mayan Finance SDK)
 _WORMHOLE_CHAIN_IDS: dict[int, int] = {
-    1: 2,       # Ethereum
-    56: 4,      # BSC
-    137: 5,     # Polygon
-    43114: 6,   # Avalanche
+    1: 2,  # Ethereum
+    56: 4,  # BSC
+    137: 5,  # Polygon
+    43114: 6,  # Avalanche
     42161: 23,  # Arbitrum
-    10: 24,     # Optimism
-    8453: 30,   # Base
-    130: 44,    # Unichain
+    10: 24,  # Optimism
+    8453: 30,  # Base
+    130: 44,  # Unichain
     59144: 38,  # Linea
 }
 
@@ -68,19 +67,21 @@ _MAYAN_SDK_VERSION = "13_2_0"
 _SWIFT_NORMALIZE_DECIMALS = 8
 
 # Native ETH sentinel addresses (both the burn address and EeeE... form)
-_NATIVE_SENTINELS = frozenset({
-    "0x0000000000000000000000000000000000000000",
-    "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-})
+_NATIVE_SENTINELS = frozenset(
+    {
+        "0x0000000000000000000000000000000000000000",
+        "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    }
+)
 
 # WETH ERC-20 addresses per chain (needed for native-ETH input with SWIFT V2)
 _CHAIN_WETH: dict[int, str] = {
-    1: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",   # Ethereum
+    1: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",  # Ethereum
     42161: "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1",  # Arbitrum
-    10: "0x4200000000000000000000000000000000000006",    # Optimism
-    8453: "0x4200000000000000000000000000000000000006",   # Base
-    137: "0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619",   # Polygon
-    56: "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c",    # BSC (WBNB)
+    10: "0x4200000000000000000000000000000000000006",  # Optimism
+    8453: "0x4200000000000000000000000000000000000006",  # Base
+    137: "0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619",  # Polygon
+    56: "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c",  # BSC (WBNB)
     43114: "0x49D5c2BdFfac6CE2BFdB6640F4F80f226bc10bAB",  # Avalanche
     59144: "0xe5D7C2a44FfDDf6b295A15c148167daaAf5Cf34f",  # Linea
 }
@@ -236,9 +237,7 @@ class Mayan(BaseBridge):
                         err = await resp.json(content_type=None)
                     except Exception:
                         err = await resp.text()
-                    raise BridgeError(
-                        f"Mayan API error ({resp.status}): {err}"
-                    )
+                    raise BridgeError(f"Mayan API error ({resp.status}): {err}")
                 data = await resp.json(content_type=None)
 
         # The Mayan v3 API wraps routes in a "quotes" key
@@ -250,16 +249,12 @@ class Mayan(BaseBridge):
         expected_amount_out = best.get("expectedAmountOut", 0)
 
         # Use Decimal for exact base-10 scaling (no floating-point drift)
-        amount_out_raw = int(
-            Decimal(str(expected_amount_out)) * Decimal(10 ** token_out.decimals)
-        )
+        amount_out_raw = int(Decimal(str(expected_amount_out)) * Decimal(10**token_out.decimals))
 
         # Compute fee as (amount_in - effectiveAmountIn) expressed in token_in units
         effective_amount_in_str = best.get("effectiveAmountIn")
         if effective_amount_in_str is not None:
-            effective_amount_in_raw = int(
-                Decimal(str(effective_amount_in_str)) * Decimal(10 ** token_in.decimals)
-            )
+            effective_amount_in_raw = int(Decimal(str(effective_amount_in_str)) * Decimal(10**token_in.decimals))
             fee_raw = max(0, amount_in.amount - effective_amount_in_raw)
         else:
             fee_raw = 0
@@ -318,9 +313,7 @@ class Mayan(BaseBridge):
                 unsupported route type.
         """
         if not token_in.is_native():
-            raise BridgeError(
-                "Mayan build_bridge_tx currently only supports native ETH input"
-            )
+            raise BridgeError("Mayan build_bridge_tx currently only supports native ETH input")
 
         from_chain = self._chain_name(self.src_chain_id)
         to_chain = self._chain_name(self.dst_chain_id)
@@ -329,9 +322,7 @@ class Mayan(BaseBridge):
         # API does not return one (should not normally happen).
         weth_address = _CHAIN_WETH.get(self.src_chain_id)
         if weth_address is None:
-            raise BridgeError(
-                f"Mayan: no WETH address known for chain {self.src_chain_id}"
-            )
+            raise BridgeError(f"Mayan: no WETH address known for chain {self.src_chain_id}")
 
         # Step 1 — fetch a SWIFT V2 quote using the zero address (native ETH)
         # as the source token.  The Mayan API uses the zero address to represent
@@ -366,9 +357,7 @@ class Mayan(BaseBridge):
                         err = await resp.json(content_type=None)
                     except Exception:
                         err = await resp.text()
-                    raise BridgeError(
-                        f"Mayan API error ({resp.status}): {err}"
-                    )
+                    raise BridgeError(f"Mayan API error ({resp.status}): {err}")
                 data = await resp.json(content_type=None)
 
         routes = data.get("quotes") if isinstance(data, dict) else data
@@ -389,22 +378,14 @@ class Mayan(BaseBridge):
         # Resolve Wormhole chain ID for the destination chain
         dest_wh_chain = _WORMHOLE_CHAIN_IDS.get(self.dst_chain_id)
         if dest_wh_chain is None:
-            raise BridgeError(
-                f"Mayan: no Wormhole chain ID mapping for EVM chain {self.dst_chain_id}"
-            )
+            raise BridgeError(f"Mayan: no Wormhole chain ID mapping for EVM chain {self.dst_chain_id}")
 
         # Step 2 — decode SWIFT V2 order parameters from the quote.
         # SWIFT amounts are scaled to at most 8 decimal places (SWIFT normalize factor).
         # Use Decimal for exact base-10 arithmetic (no floating-point drift).
         swift_decimals = min(token_out.decimals, _SWIFT_NORMALIZE_DECIMALS)
-        min_amount_out = int(
-            Decimal(str(swift_route.get("minAmountOut") or "0"))
-            * Decimal(10 ** swift_decimals)
-        )
-        gas_drop = int(
-            Decimal(str(swift_route.get("gasDrop") or "0"))
-            * Decimal(10 ** _SWIFT_NORMALIZE_DECIMALS)
-        )
+        min_amount_out = int(Decimal(str(swift_route.get("minAmountOut") or "0")) * Decimal(10**swift_decimals))
+        gas_drop = int(Decimal(str(swift_route.get("gasDrop") or "0")) * Decimal(10**_SWIFT_NORMALIZE_DECIMALS))
         cancel_fee = int(swift_route.get("cancelRelayerFee64") or "0")
         refund_fee = int(swift_route.get("refundRelayerFee64") or "0")
         deadline = int(swift_route.get("deadline64") or "0")
@@ -415,8 +396,7 @@ class Mayan(BaseBridge):
         # minMiddleAmount: minimum WETH the DEX swap must produce (in WETH decimals)
         swift_input_decimals = int(swift_route.get("swiftInputDecimals") or 18)
         min_middle_amount = int(
-            Decimal(str(swift_route.get("minMiddleAmount") or "0"))
-            * Decimal(10 ** swift_input_decimals)
+            Decimal(str(swift_route.get("minMiddleAmount") or "0")) * Decimal(10**swift_input_decimals)
         )
         # swiftInputContract is the ERC-20 that SWIFT V2 will receive (typically WETH)
         swift_input_contract = swift_route.get("swiftInputContract") or weth_address
@@ -431,20 +411,20 @@ class Mayan(BaseBridge):
 
         # SWIFT V2 OrderParams tuple (field order differs from V1)
         order_tuple = (
-            0,               # uint8 payloadType (0 = default, no custom payload)
-            trader_b32,      # bytes32 trader
-            dest_addr_b32,   # bytes32 destAddr
-            dest_wh_chain,   # uint16 destChainId
-            referrer_b32,    # bytes32 referrerAddr
-            token_out_b32,   # bytes32 tokenOut
+            0,  # uint8 payloadType (0 = default, no custom payload)
+            trader_b32,  # bytes32 trader
+            dest_addr_b32,  # bytes32 destAddr
+            dest_wh_chain,  # uint16 destChainId
+            referrer_b32,  # bytes32 referrerAddr
+            token_out_b32,  # bytes32 tokenOut
             min_amount_out,  # uint64 minAmountOut
-            gas_drop,        # uint64 gasDrop
-            cancel_fee,      # uint64 cancelFee
-            refund_fee,      # uint64 refundFee
-            deadline,        # uint64 deadline
-            0,               # uint8 referrerBps
-            auction_mode,    # uint8 auctionMode
-            random_b32,      # bytes32 random
+            gas_drop,  # uint64 gasDrop
+            cancel_fee,  # uint64 cancelFee
+            refund_fee,  # uint64 refundFee
+            deadline,  # uint64 deadline
+            0,  # uint8 referrerBps
+            auction_mode,  # uint8 auctionMode
+            random_b32,  # bytes32 random
         )
 
         # Step 3 — fetch ETH→WETH swap calldata from the Mayan get-swap/evm API.
@@ -466,9 +446,7 @@ class Mayan(BaseBridge):
                         err = await resp.json(content_type=None)
                     except Exception:
                         err = await resp.text()
-                    raise BridgeError(
-                        f"Mayan get-swap/evm API error ({resp.status}): {err}"
-                    )
+                    raise BridgeError(f"Mayan get-swap/evm API error ({resp.status}): {err}")
                 swap_data = await resp.json(content_type=None)
 
         swap_router_address = swap_data.get("swapRouterAddress")
@@ -480,21 +458,21 @@ class Mayan(BaseBridge):
         swift_c = Contract.from_abi(_SWIFT_V2_ABI, to=swift_contract)
         swift_calldata: bytes = swift_c.fns.createOrderWithToken(
             swift_input_contract,  # address tokenIn (the WETH the SWIFT contract receives)
-            effective_amount_in,   # uint256 amountIn
-            order_tuple,           # OrderParams
-            b"",                   # bytes customPayload (empty = default)
+            effective_amount_in,  # uint256 amountIn
+            order_tuple,  # OrderParams
+            b"",  # bytes customPayload (empty = default)
         ).data
 
         # Step 5 — ABI-encode swapAndForwardEth on the Mayan Forwarder
         forwarder = Contract.from_abi(_FORWARDER_ABI, to=_MAYAN_FORWARDER)
         forward_calldata: bytes = forwarder.fns.swapAndForwardEth(
-            amount_in.amount,       # uint256 amountIn (ETH to swap)
-            swap_router_address,    # address swapProtocol (DEX router)
+            amount_in.amount,  # uint256 amountIn (ETH to swap)
+            swap_router_address,  # address swapProtocol (DEX router)
             bytes.fromhex(swap_router_calldata.removeprefix("0x")),  # bytes swapData
-            swift_input_contract,   # address middleToken (WETH)
-            min_middle_amount,      # uint256 minMiddleAmount
-            swift_contract,         # address mayanProtocol (SWIFT V2 contract)
-            swift_calldata,         # bytes mayanData (createOrderWithToken calldata)
+            swift_input_contract,  # address middleToken (WETH)
+            min_middle_amount,  # uint256 minMiddleAmount
+            swift_contract,  # address mayanProtocol (SWIFT V2 contract)
+            swift_calldata,  # bytes mayanData (createOrderWithToken calldata)
         ).data
 
         return {

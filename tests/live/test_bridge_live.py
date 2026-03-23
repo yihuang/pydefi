@@ -112,9 +112,7 @@ class TestMayanLive:
         client = Mayan(src_chain_id=ChainId.ETHEREUM, dst_chain_id=ChainId.ARBITRUM)
         amount_in = TokenAmount(token=ETH_NATIVE, amount=BRIDGE_AMOUNT_ETH)
         # Bridge ETH → WETH_ARB via SWIFT V2 swapAndForwardEth
-        tx = await client.build_bridge_tx(
-            ETH_NATIVE, WETH_ARB, amount_in, ETH_WHALE
-        )
+        tx = await client.build_bridge_tx(ETH_NATIVE, WETH_ARB, amount_in, ETH_WHALE)
 
         assert tx.get("to"), "Mayan tx must have a 'to' address"
         assert tx.get("data"), "Mayan tx must have calldata"
@@ -151,9 +149,7 @@ class TestGasZipLive:
         assert quote.token_in == ETH_NATIVE
         assert quote.token_out == ETH_NATIVE_ARB
         assert quote.amount_out.amount > 0, "GasZip amount_out should be positive"
-        assert quote.amount_out.amount <= BRIDGE_AMOUNT_ETH, (
-            "GasZip amount_out should not exceed amount_in"
-        )
+        assert quote.amount_out.amount <= BRIDGE_AMOUNT_ETH, "GasZip amount_out should not exceed amount_in"
         assert quote.estimated_time_seconds > 0
 
     async def test_get_quote_returns_bridge_fee(self):
@@ -176,9 +172,7 @@ class TestGasZipLive:
             contract_address=GASZIP_CONTRACT_ETH,
         )
         amount_in = TokenAmount(token=ETH_NATIVE, amount=BRIDGE_AMOUNT_ETH)
-        tx = await client.build_bridge_tx(
-            ETH_NATIVE, ETH_NATIVE_ARB, amount_in, ETH_WHALE
-        )
+        tx = await client.build_bridge_tx(ETH_NATIVE, ETH_NATIVE_ARB, amount_in, ETH_WHALE)
 
         assert tx.get("to"), "GasZip tx must have a 'to' address"
         assert tx.get("data"), "GasZip tx must have calldata"
@@ -212,8 +206,7 @@ class TestRelayLive:
         assert quote.token_in == USDC
         assert quote.token_out == USDC_ARB
         assert MIN_USDC_OUT < quote.amount_out.amount < MAX_USDC_OUT, (
-            f"Relay USDC→USDC amount_out out of range: "
-            f"{quote.amount_out.human_amount} USDC"
+            f"Relay USDC→USDC amount_out out of range: {quote.amount_out.human_amount} USDC"
         )
         assert quote.estimated_time_seconds > 0
 
@@ -238,9 +231,7 @@ class TestRelayLive:
         """Relay: build ETH→ETH bridge tx and verify it doesn't revert via eth_call."""
         client = Relay(src_chain_id=ChainId.ETHEREUM, dst_chain_id=ChainId.ARBITRUM)
         amount_in = TokenAmount(token=ETH_NATIVE, amount=BRIDGE_AMOUNT_ETH)
-        tx = await client.build_bridge_tx(
-            ETH_NATIVE, ETH_NATIVE_ARB, amount_in, ETH_WHALE
-        )
+        tx = await client.build_bridge_tx(ETH_NATIVE, ETH_NATIVE_ARB, amount_in, ETH_WHALE)
 
         assert tx.get("to"), "Relay tx must have a 'to' address"
         assert tx.get("data"), "Relay tx must have calldata"

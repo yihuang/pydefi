@@ -1,16 +1,15 @@
 """Tests for pydefi.bridge (no live calls)."""
 
-from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from pydefi.bridge.across import Across
 from pydefi.bridge.base import BaseBridge
-from pydefi.bridge.gaszip import GasZip, _SUPPORTED_CHAINS
-from pydefi.bridge.mayan import Mayan, _CHAIN_NAMES
+from pydefi.bridge.gaszip import _SUPPORTED_CHAINS, GasZip
+from pydefi.bridge.mayan import _CHAIN_NAMES, Mayan
 from pydefi.bridge.relay import Relay
-from pydefi.bridge.stargate import Stargate, _LZ_CHAIN_ID, _POOL_IDS
+from pydefi.bridge.stargate import _LZ_CHAIN_ID, _POOL_IDS, Stargate
 from pydefi.exceptions import BridgeError
 from pydefi.types import ChainId, Token, TokenAmount
 
@@ -384,13 +383,13 @@ class TestGasZip:
     @pytest.mark.asyncio
     async def test_get_quote(self):
         gz = GasZip(src_chain_id=1, dst_chain_id=42161, contract_address=GASZIP_CONTRACT)
-        amount_in = TokenAmount(token=ETH_NATIVE, amount=10 ** 17)  # 0.1 ETH
+        amount_in = TokenAmount(token=ETH_NATIVE, amount=10**17)  # 0.1 ETH
 
         mock_api_response = {
             "quotes": [
                 {
                     "chain": 42161,
-                    "expected": str(int(0.0998 * 10 ** 18)),
+                    "expected": str(int(0.0998 * 10**18)),
                     "speed": 30,
                 }
             ]
@@ -400,37 +399,38 @@ class TestGasZip:
             quote = await gz.get_quote(ETH_NATIVE, ETH_ARB, amount_in)
 
         assert quote.protocol == "GasZip"
-        assert quote.amount_out.amount == int(0.0998 * 10 ** 18)
+        assert quote.amount_out.amount == int(0.0998 * 10**18)
         assert quote.bridge_fee.amount > 0
         assert quote.estimated_time_seconds == 30
 
     @pytest.mark.asyncio
     async def test_get_quote_unsupported_dst_chain(self):
         gz = GasZip(src_chain_id=1, dst_chain_id=999999, contract_address=GASZIP_CONTRACT)
-        amount_in = TokenAmount(token=ETH_NATIVE, amount=10 ** 17)
+        amount_in = TokenAmount(token=ETH_NATIVE, amount=10**17)
         with pytest.raises(BridgeError):
             await gz.get_quote(ETH_NATIVE, ETH_ARB, amount_in)
 
     def test_supported_chains_set(self):
-        assert 1 in _SUPPORTED_CHAINS        # Ethereum
-        assert 10 in _SUPPORTED_CHAINS       # Optimism
-        assert 56 in _SUPPORTED_CHAINS       # BSC
-        assert 137 in _SUPPORTED_CHAINS      # Polygon
-        assert 8453 in _SUPPORTED_CHAINS     # Base
-        assert 42161 in _SUPPORTED_CHAINS    # Arbitrum
-        assert 43114 in _SUPPORTED_CHAINS    # Avalanche
-        assert 59144 in _SUPPORTED_CHAINS    # Linea
-        assert 534352 in _SUPPORTED_CHAINS   # Scroll
-        assert 81457 in _SUPPORTED_CHAINS    # Blast
-        assert 324 in _SUPPORTED_CHAINS      # zkSync Era
+        assert 1 in _SUPPORTED_CHAINS  # Ethereum
+        assert 10 in _SUPPORTED_CHAINS  # Optimism
+        assert 56 in _SUPPORTED_CHAINS  # BSC
+        assert 137 in _SUPPORTED_CHAINS  # Polygon
+        assert 8453 in _SUPPORTED_CHAINS  # Base
+        assert 42161 in _SUPPORTED_CHAINS  # Arbitrum
+        assert 43114 in _SUPPORTED_CHAINS  # Avalanche
+        assert 59144 in _SUPPORTED_CHAINS  # Linea
+        assert 534352 in _SUPPORTED_CHAINS  # Scroll
+        assert 81457 in _SUPPORTED_CHAINS  # Blast
+        assert 324 in _SUPPORTED_CHAINS  # zkSync Era
         assert 7777777 in _SUPPORTED_CHAINS  # Zora
-        assert 130 in _SUPPORTED_CHAINS      # Unichain
-        assert 480 in _SUPPORTED_CHAINS      # World Chain
+        assert 130 in _SUPPORTED_CHAINS  # Unichain
+        assert 480 in _SUPPORTED_CHAINS  # World Chain
 
 
 # ---------------------------------------------------------------------------
 # Relay tests
 # ---------------------------------------------------------------------------
+
 
 class TestRelay:
     def test_protocol_name(self):
@@ -457,7 +457,7 @@ class TestRelay:
 
         mock_api_response = {
             "details": {
-                "currencyOut": {"amount": str(int(997.5 * 10 ** 6))},
+                "currencyOut": {"amount": str(int(997.5 * 10**6))},
                 "timeEstimate": 15,
             },
             "steps": [
@@ -480,7 +480,7 @@ class TestRelay:
             quote = await r.get_quote(USDC_ETH, USDC_ARB, amount_in)
 
         assert quote.protocol == "Relay"
-        assert quote.amount_out.amount == int(997.5 * 10 ** 6)
+        assert quote.amount_out.amount == int(997.5 * 10**6)
         assert quote.estimated_time_seconds == 15
 
     @pytest.mark.asyncio
@@ -491,7 +491,7 @@ class TestRelay:
 
         mock_api_response = {
             "details": {
-                "currencyOut": {"amount": str(int(997.5 * 10 ** 6))},
+                "currencyOut": {"amount": str(int(997.5 * 10**6))},
                 "timeEstimate": 15,
             },
             "steps": [

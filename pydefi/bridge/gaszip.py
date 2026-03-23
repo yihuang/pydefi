@@ -13,7 +13,6 @@ from __future__ import annotations
 from typing import Any
 
 import aiohttp
-
 from eth_contract import Contract
 
 from pydefi.bridge.base import BaseBridge
@@ -24,20 +23,20 @@ _GASZIP_API_BASE = "https://backend.gas.zip/v2"
 
 # GasZip chain IDs (their own internal numbering may differ; EVM IDs used here)
 _SUPPORTED_CHAINS: set[int] = {
-    1,       # Ethereum
-    10,      # Optimism
-    56,      # BSC
-    137,     # Polygon
-    8453,    # Base
-    42161,   # Arbitrum
-    43114,   # Avalanche
-    59144,   # Linea
+    1,  # Ethereum
+    10,  # Optimism
+    56,  # BSC
+    137,  # Polygon
+    8453,  # Base
+    42161,  # Arbitrum
+    43114,  # Avalanche
+    59144,  # Linea
     534352,  # Scroll
-    81457,   # Blast
-    324,     # zkSync Era
-    7777777, # Zora
-    130,     # Unichain
-    480,     # World Chain
+    81457,  # Blast
+    324,  # zkSync Era
+    7777777,  # Zora
+    130,  # Unichain
+    480,  # World Chain
 }
 
 # ABI fragment for the GasZip deposit function
@@ -118,9 +117,7 @@ class GasZip(BaseBridge):
             async with session.get(url) as resp:
                 if resp.status != 200:
                     text = await resp.text()
-                    raise BridgeError(
-                        f"GasZip API error ({resp.status}): {text[:200]}"
-                    )
+                    raise BridgeError(f"GasZip API error ({resp.status}): {text[:200]}")
                 data = await resp.json(content_type=None)
 
         # Response: {"quotes": [{"chain": int, "expected": str, "speed": int, ...}]}
