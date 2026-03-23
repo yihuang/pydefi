@@ -1,6 +1,5 @@
 """Tests for pydefi.plan, pydefi.planner, and pydefi.cli"""
 
-
 import pytest
 
 from pydefi.plan import ActionType, BridgeAction, ExecutionPlan, SwapAction
@@ -79,7 +78,10 @@ class TestSwapAction:
 
     def test_describe_with_estimate(self):
         action = SwapAction(
-            chain_id=ChainId.ETHEREUM, token_in="ETH", token_out="USDC", amount_in="1.0",
+            chain_id=ChainId.ETHEREUM,
+            token_in="ETH",
+            token_out="USDC",
+            amount_in="1.0",
             estimated_amount_out="3500",
         )
         desc = action.describe()
@@ -168,10 +170,22 @@ class TestCLI:
         from pydefi.cli import cli
 
         runner = CliRunner()
-        result = runner.invoke(cli, [
-            "plan", "--src-chain", "ethereum", "--src-token", "USDC",
-            "--dst-chain", "base", "--dst-token", "WETH", "--amount", "100",
-        ])
+        result = runner.invoke(
+            cli,
+            [
+                "plan",
+                "--src-chain",
+                "ethereum",
+                "--src-token",
+                "USDC",
+                "--dst-chain",
+                "base",
+                "--dst-token",
+                "WETH",
+                "--amount",
+                "100",
+            ],
+        )
         assert result.exit_code == 0
         assert "Ethereum" in result.output
         assert "Base" in result.output
@@ -183,10 +197,20 @@ class TestCLI:
         from pydefi.cli import cli
 
         runner = CliRunner()
-        result = runner.invoke(cli, [
-            "swap", "--chain", "1", "--token-in", "DAI",
-            "--token-out", "USDC", "--amount", "50",
-        ])
+        result = runner.invoke(
+            cli,
+            [
+                "swap",
+                "--chain",
+                "1",
+                "--token-in",
+                "DAI",
+                "--token-out",
+                "USDC",
+                "--amount",
+                "50",
+            ],
+        )
         assert result.exit_code == 0
         assert "DAI" in result.output
         assert "USDC" in result.output
@@ -197,10 +221,20 @@ class TestCLI:
         from pydefi.cli import cli
 
         runner = CliRunner()
-        result = runner.invoke(cli, [
-            "bridge", "--src-chain", "eth", "--dst-chain", "arbitrum",
-            "--token", "USDC", "--amount", "200",
-        ])
+        result = runner.invoke(
+            cli,
+            [
+                "bridge",
+                "--src-chain",
+                "eth",
+                "--dst-chain",
+                "arbitrum",
+                "--token",
+                "USDC",
+                "--amount",
+                "200",
+            ],
+        )
         assert result.exit_code == 0
         assert "USDC" in result.output
 
@@ -210,10 +244,22 @@ class TestCLI:
         from pydefi.cli import cli
 
         runner = CliRunner()
-        result = runner.invoke(cli, [
-            "plan", "--src-chain", "notachain", "--src-token", "USDC",
-            "--dst-chain", "base", "--dst-token", "WETH", "--amount", "100",
-        ])
+        result = runner.invoke(
+            cli,
+            [
+                "plan",
+                "--src-chain",
+                "notachain",
+                "--src-token",
+                "USDC",
+                "--dst-chain",
+                "base",
+                "--dst-token",
+                "WETH",
+                "--amount",
+                "100",
+            ],
+        )
         assert result.exit_code != 0
 
     def test_numeric_chain_id(self):
@@ -232,14 +278,22 @@ class TestCLI:
         from pydefi.cli import cli
 
         runner = CliRunner()
-        result = runner.invoke(cli, [
-            "plan",
-            "--src-chain", "ethereum",
-            "--src-token", "DAI",
-            "--dst-chain", "base",
-            "--dst-token", "WETH",
-            "--amount", "1000",
-        ])
+        result = runner.invoke(
+            cli,
+            [
+                "plan",
+                "--src-chain",
+                "ethereum",
+                "--src-token",
+                "DAI",
+                "--dst-chain",
+                "base",
+                "--dst-token",
+                "WETH",
+                "--amount",
+                "1000",
+            ],
+        )
         assert result.exit_code == 0
         assert "Ethereum" in result.output
         assert "Base" in result.output
@@ -267,16 +321,28 @@ class TestCLI:
 
         out_file = tmp_path / "plan.json"
         runner = CliRunner()
-        result = runner.invoke(cli, [
-            "plan",
-            "--src-chain", "ethereum", "--src-token", "DAI",
-            "--dst-chain", "base", "--dst-token", "WETH",
-            "--amount", "100", "--output", str(out_file),
-        ])
+        result = runner.invoke(
+            cli,
+            [
+                "plan",
+                "--src-chain",
+                "ethereum",
+                "--src-token",
+                "DAI",
+                "--dst-chain",
+                "base",
+                "--dst-token",
+                "WETH",
+                "--amount",
+                "100",
+                "--output",
+                str(out_file),
+            ],
+        )
         assert result.exit_code == 0
         assert out_file.exists()
         import json
+
         data = json.loads(out_file.read_text())
         assert data["description"]
         assert len(data["actions"]) > 0
-

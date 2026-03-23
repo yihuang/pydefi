@@ -31,9 +31,7 @@ from pydefi.types import ChainId
 # Chain name → ID resolution
 # ---------------------------------------------------------------------------
 
-_NAME_TO_CHAIN_ID: dict[str, int] = {
-    name.lower(): cid for cid, name in _CHAIN_NAMES.items()
-}
+_NAME_TO_CHAIN_ID: dict[str, int] = {name.lower(): cid for cid, name in _CHAIN_NAMES.items()}
 # Extra aliases
 _NAME_TO_CHAIN_ID.update(
     {
@@ -58,9 +56,7 @@ def _resolve_chain(value: str) -> int:
         if key in _NAME_TO_CHAIN_ID:
             return _NAME_TO_CHAIN_ID[key]
         known = ", ".join(sorted(_NAME_TO_CHAIN_ID))
-        raise click.BadParameter(
-            f"Unknown chain {value!r}.  Known names: {known}"
-        ) from None
+        raise click.BadParameter(f"Unknown chain {value!r}.  Known names: {known}") from None
 
 
 class _ChainParam(click.ParamType):
@@ -113,22 +109,18 @@ def _print_plan(plan: ExecutionPlan) -> None:
 
 
 @cli.command("plan")
-@click.option("--src-chain", required=True, type=CHAIN, metavar="CHAIN",
-              help="Source chain name or ID (e.g. ethereum, base, 1)")
-@click.option("--src-token", required=True, metavar="TOKEN",
-              help="Source token symbol or address (e.g. USDC)")
-@click.option("--dst-chain", required=True, type=CHAIN, metavar="CHAIN",
-              help="Destination chain name or ID")
-@click.option("--dst-token", required=True, metavar="TOKEN",
-              help="Destination token symbol or address")
-@click.option("--amount", required=True, metavar="AMOUNT",
-              help="Input amount in human-readable form (e.g. 100 or 0.5)")
-@click.option("--bridge-protocol", default="auto", show_default=True, metavar="PROTOCOL",
-              help="Bridge protocol to use")
-@click.option("--swap-protocol", default="auto", show_default=True, metavar="PROTOCOL",
-              help="Swap protocol/aggregator to use")
-@click.option("-o", "--output", type=click.Path(), metavar="FILE",
-              help="Save the plan as JSON to FILE")
+@click.option(
+    "--src-chain", required=True, type=CHAIN, metavar="CHAIN", help="Source chain name or ID (e.g. ethereum, base, 1)"
+)
+@click.option("--src-token", required=True, metavar="TOKEN", help="Source token symbol or address (e.g. USDC)")
+@click.option("--dst-chain", required=True, type=CHAIN, metavar="CHAIN", help="Destination chain name or ID")
+@click.option("--dst-token", required=True, metavar="TOKEN", help="Destination token symbol or address")
+@click.option("--amount", required=True, metavar="AMOUNT", help="Input amount in human-readable form (e.g. 100 or 0.5)")
+@click.option("--bridge-protocol", default="auto", show_default=True, metavar="PROTOCOL", help="Bridge protocol to use")
+@click.option(
+    "--swap-protocol", default="auto", show_default=True, metavar="PROTOCOL", help="Swap protocol/aggregator to use"
+)
+@click.option("-o", "--output", type=click.Path(), metavar="FILE", help="Save the plan as JSON to FILE")
 def cmd_plan(src_chain, src_token, dst_chain, dst_token, amount, bridge_protocol, swap_protocol, output):
     """Generate a cross-chain execution plan."""
     plan = build_plan(
@@ -154,18 +146,12 @@ def cmd_plan(src_chain, src_token, dst_chain, dst_token, amount, bridge_protocol
 
 
 @cli.command("swap")
-@click.option("--chain", required=True, type=CHAIN, metavar="CHAIN",
-              help="Chain name or ID")
-@click.option("--token-in", required=True, metavar="TOKEN",
-              help="Input token symbol or address")
-@click.option("--token-out", required=True, metavar="TOKEN",
-              help="Output token symbol or address")
-@click.option("--amount", required=True, metavar="AMOUNT",
-              help="Input amount in human-readable form")
-@click.option("--protocol", default="auto", show_default=True, metavar="PROTOCOL",
-              help="DEX/aggregator protocol")
-@click.option("-o", "--output", type=click.Path(), metavar="FILE",
-              help="Save the plan as JSON to FILE")
+@click.option("--chain", required=True, type=CHAIN, metavar="CHAIN", help="Chain name or ID")
+@click.option("--token-in", required=True, metavar="TOKEN", help="Input token symbol or address")
+@click.option("--token-out", required=True, metavar="TOKEN", help="Output token symbol or address")
+@click.option("--amount", required=True, metavar="AMOUNT", help="Input amount in human-readable form")
+@click.option("--protocol", default="auto", show_default=True, metavar="PROTOCOL", help="DEX/aggregator protocol")
+@click.option("-o", "--output", type=click.Path(), metavar="FILE", help="Save the plan as JSON to FILE")
 def cmd_swap(chain, token_in, token_out, amount, protocol, output):
     """Create a single-chain swap plan."""
     action = SwapAction(
@@ -193,18 +179,12 @@ def cmd_swap(chain, token_in, token_out, amount, protocol, output):
 
 
 @cli.command("bridge")
-@click.option("--src-chain", required=True, type=CHAIN, metavar="CHAIN",
-              help="Source chain name or ID")
-@click.option("--dst-chain", required=True, type=CHAIN, metavar="CHAIN",
-              help="Destination chain name or ID")
-@click.option("--token", required=True, metavar="TOKEN",
-              help="Token symbol or address")
-@click.option("--amount", required=True, metavar="AMOUNT",
-              help="Amount in human-readable form")
-@click.option("--protocol", default="auto", show_default=True, metavar="PROTOCOL",
-              help="Bridge protocol")
-@click.option("-o", "--output", type=click.Path(), metavar="FILE",
-              help="Save the plan as JSON to FILE")
+@click.option("--src-chain", required=True, type=CHAIN, metavar="CHAIN", help="Source chain name or ID")
+@click.option("--dst-chain", required=True, type=CHAIN, metavar="CHAIN", help="Destination chain name or ID")
+@click.option("--token", required=True, metavar="TOKEN", help="Token symbol or address")
+@click.option("--amount", required=True, metavar="AMOUNT", help="Amount in human-readable form")
+@click.option("--protocol", default="auto", show_default=True, metavar="PROTOCOL", help="Bridge protocol")
+@click.option("-o", "--output", type=click.Path(), metavar="FILE", help="Save the plan as JSON to FILE")
 def cmd_bridge(src_chain, dst_chain, token, amount, protocol, output):
     """Create a cross-chain bridge plan."""
     action = BridgeAction(
@@ -215,10 +195,7 @@ def cmd_bridge(src_chain, dst_chain, token, amount, protocol, output):
         protocol=protocol,
     )
     plan = ExecutionPlan(
-        description=(
-            f"Bridge {amount} {action.token} "
-            f"from chain {src_chain} to chain {dst_chain}"
-        ),
+        description=(f"Bridge {amount} {action.token} from chain {src_chain} to chain {dst_chain}"),
         actions=[action],
     )
     _print_plan(plan)
@@ -235,14 +212,17 @@ def cmd_bridge(src_chain, dst_chain, token, amount, protocol, output):
 
 
 @cli.command("execute")
-@click.option("--plan", "plan_file", required=True, type=click.Path(exists=True), metavar="FILE",
-              help="Path to the plan JSON file")
-@click.option("--rpc", metavar="URL",
-              help="JSON-RPC endpoint URL for on-chain calls")
-@click.option("--wallet", metavar="ADDRESS",
-              help="Wallet address that will sign transactions")
-@click.option("--dry-run", is_flag=True,
-              help="Print steps without submitting transactions")
+@click.option(
+    "--plan",
+    "plan_file",
+    required=True,
+    type=click.Path(exists=True),
+    metavar="FILE",
+    help="Path to the plan JSON file",
+)
+@click.option("--rpc", metavar="URL", help="JSON-RPC endpoint URL for on-chain calls")
+@click.option("--wallet", metavar="ADDRESS", help="Wallet address that will sign transactions")
+@click.option("--dry-run", is_flag=True, help="Print steps without submitting transactions")
 def cmd_execute(plan_file, rpc, wallet, dry_run):
     """Execute a previously generated plan.
 
