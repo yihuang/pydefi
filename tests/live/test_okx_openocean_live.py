@@ -45,6 +45,12 @@ _OKX_API_KEY: str | None = os.environ.get("OKX_API_KEY")
 class TestOKXLive:
     """Live tests against the public OKX DEX Aggregator v6 API."""
 
+    @pytest.fixture(autouse=True)
+    def _skip_without_api_key(self):
+        """Skip all OKX tests when OKX_API_KEY is not configured."""
+        if not _OKX_API_KEY:
+            pytest.skip("OKX_API_KEY environment variable is not set")
+
     async def test_get_quote_weth_usdc(self):
         """GET /quote should return a non-zero output amount for 1 WETH → USDC."""
         client = OKX(chain_id=1, api_key=_OKX_API_KEY)

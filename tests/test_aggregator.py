@@ -645,8 +645,9 @@ class TestOpenOcean:
             },
         }
         with patch.object(client, "_get", new=AsyncMock(return_value=mock_response_data)):
-            amount_in = TokenAmount.from_human(WETH, "1")
-            quote = await client.get_quote(amount_in, USDC, slippage_bps=50)
+            with patch.object(client, "_get_gas_price", new=AsyncMock(return_value="20000000000")):
+                amount_in = TokenAmount.from_human(WETH, "1")
+                quote = await client.get_quote(amount_in, USDC, slippage_bps=50)
 
         assert quote.amount_out.amount == 2_003_000_000
         assert quote.gas_estimate == 170_000
@@ -657,9 +658,10 @@ class TestOpenOcean:
     async def test_get_quote_api_error(self):
         client = OpenOcean(chain_id=1)
         with patch.object(client, "_get", new=AsyncMock(side_effect=AggregatorError("API error", 400))):
-            amount_in = TokenAmount.from_human(WETH, "1")
-            with pytest.raises(AggregatorError):
-                await client.get_quote(amount_in, USDC)
+            with patch.object(client, "_get_gas_price", new=AsyncMock(return_value="20000000000")):
+                amount_in = TokenAmount.from_human(WETH, "1")
+                with pytest.raises(AggregatorError):
+                    await client.get_quote(amount_in, USDC)
 
     @pytest.mark.asyncio
     async def test_get_swap_success(self):
@@ -679,8 +681,9 @@ class TestOpenOcean:
             },
         }
         with patch.object(client, "_get", new=AsyncMock(return_value=mock_response_data)):
-            amount_in = TokenAmount.from_human(WETH, "1")
-            quote = await client.get_swap(amount_in, USDC, from_address="0x" + "AA" * 20)
+            with patch.object(client, "_get_gas_price", new=AsyncMock(return_value="20000000000")):
+                amount_in = TokenAmount.from_human(WETH, "1")
+                quote = await client.get_swap(amount_in, USDC, from_address="0x" + "AA" * 20)
 
         assert quote.amount_out.amount == 2_003_000_000
         assert quote.tx_data["to"] == "0x" + "CD" * 20
@@ -700,8 +703,9 @@ class TestOpenOcean:
             },
         }
         with patch.object(client, "_get", new=AsyncMock(return_value=mock_data)):
-            amount_in = TokenAmount.from_human(WETH, "1")
-            route = await client.build_swap_route(amount_in, USDC)
+            with patch.object(client, "_get_gas_price", new=AsyncMock(return_value="20000000000")):
+                amount_in = TokenAmount.from_human(WETH, "1")
+                route = await client.build_swap_route(amount_in, USDC)
 
         assert route.token_in == WETH
         assert route.token_out == USDC

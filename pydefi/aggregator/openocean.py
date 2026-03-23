@@ -90,6 +90,24 @@ class OpenOcean(BaseAggregator):
                     )
                 return data  # type: ignore[return-value]
 
+    @staticmethod
+    def _parse_price_impact(value: Any) -> Decimal:
+        """Parse a price impact value that may carry a trailing ``%`` sign."""
+        raw = str(value).rstrip("%") if value is not None else "0"
+        try:
+            return Decimal(raw)
+        except Exception:
+            return Decimal("0")
+
+    async def _get_gas_price(self) -> str:
+        """Fetch the current gas price (in Wei) from the OpenOcean ``/gasPrice`` endpoint.
+
+        Returns:
+            The standard legacy gas price as a string (in Wei).
+        """
+        data = await self._get("gasPrice", {})
+        return str(data["data"]["standard"]["legacyGasPrice"])
+
     async def get_quote(
         self,
         amount_in: TokenAmount,
@@ -100,17 +118,22 @@ class OpenOcean(BaseAggregator):
         """Fetch a quote from the OpenOcean ``/quote`` endpoint.
 
         OpenOcean expects *amount* in human-readable units (e.g. ``"1.5"``
-        for 1.5 WETH) rather than raw wei.
+        for 1.5 WETH) rather than raw wei.  A ``gasPrice`` parameter (in Wei)
+        is required by the API; if not supplied via ``kwargs`` it is fetched
+        automatically from the OpenOcean ``/gasPrice`` endpoint.
 
         Args:
             amount_in: Exact input amount.
             token_out: Desired output token.
             slippage_bps: Maximum slippage in basis points.
-            **kwargs: Extra query parameters forwarded to the API.
+            **kwargs: Extra query parameters forwarded to the API.  Pass
+                ``gasPrice="<wei>"`` to override the auto-fetched gas price.
 
         Returns:
             An :class:`~pydefi.aggregator.base.AggregatorQuote`.
         """
+        if "gasPrice" not in kwargs:
+            kwargs = {**kwargs, "gasPrice": await self._get_gas_price()}
         params: dict[str, Any] = {
             "inTokenAddress": amount_in.token.address,
             "outTokenAddress": token_out.address,
@@ -133,7 +156,7 @@ class OpenOcean(BaseAggregator):
             amount_out=TokenAmount(token=token_out, amount=out_amount),
             min_amount_out=TokenAmount(token=token_out, amount=min_amount_out_raw),
             gas_estimate=gas_estimate,
-            price_impact=Decimal(str(result.get("price_impact", "0"))),
+            price_impact=self._parse_price_impact(result.get("price_impact")),
             protocol=self.protocol_name,
             route_summary=str(result.get("path", "")),
         )
@@ -148,17 +171,24 @@ class OpenOcean(BaseAggregator):
     ) -> AggregatorQuote:
         """Fetch a fully-encoded swap transaction from the OpenOcean ``/swap`` endpoint.
 
+        A ``gasPrice`` parameter (in Wei) is required by the API; if not
+        supplied via ``kwargs`` it is fetched automatically from the
+        OpenOcean ``/gasPrice`` endpoint.
+
         Args:
             amount_in: Exact input amount.
             token_out: Desired output token.
             from_address: Wallet address that will execute the swap.
             slippage_bps: Maximum slippage in basis points.
-            **kwargs: Extra query parameters.
+            **kwargs: Extra query parameters.  Pass ``gasPrice="<wei>"`` to
+                override the auto-fetched gas price.
 
         Returns:
             An :class:`~pydefi.aggregator.base.AggregatorQuote` with
             ``tx_data`` populated.
         """
+        if "gasPrice" not in kwargs:
+            kwargs = {**kwargs, "gasPrice": await self._get_gas_price()}
         params: dict[str, Any] = {
             "inTokenAddress": amount_in.token.address,
             "outTokenAddress": token_out.address,
@@ -191,7 +221,7 @@ class OpenOcean(BaseAggregator):
             amount_out=TokenAmount(token=token_out, amount=out_amount),
             min_amount_out=TokenAmount(token=token_out, amount=min_amount_out_raw),
             gas_estimate=gas_estimate,
-            price_impact=Decimal(str(result.get("price_impact", "0"))),
+            price_impact=self._parse_price_impact(result.get("price_impact")),
             tx_data=tx_data,
             protocol=self.protocol_name,
             route_summary=str(result.get("path", "")),
