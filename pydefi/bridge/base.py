@@ -5,7 +5,7 @@ Base class for cross-chain bridge integrations.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, Optional
+from typing import Any
 
 from pydefi.types import BridgeQuote, Token, TokenAmount
 

@@ -188,9 +188,7 @@ class UniswapV3(BaseAMM):
             result = await self._quoter.fns.quoteExactInputSingle(params).call(self.w3)
             amount_out = result[0] if isinstance(result, (list, tuple)) else result
         except Exception as exc:
-            raise InsufficientLiquidityError(
-                f"quoteExactInputSingle failed: {exc}"
-            ) from exc
+            raise InsufficientLiquidityError(f"quoteExactInputSingle failed: {exc}") from exc
 
         return TokenAmount(token=token_out, amount=amount_out)
 
@@ -220,9 +218,7 @@ class UniswapV3(BaseAMM):
 
         hop_fees = fees if fees is not None else [self.default_fee] * (len(path) - 1)
         if len(hop_fees) != len(path) - 1:
-            raise ValueError(
-                f"fees length ({len(hop_fees)}) must equal len(path) - 1 ({len(path) - 1})"
-            )
+            raise ValueError(f"fees length ({len(hop_fees)}) must equal len(path) - 1 ({len(path) - 1})")
 
         if len(path) == 2:
             out = await self.quote_exact_input_single(amount_in, path[1], fee=hop_fees[0])
@@ -231,22 +227,16 @@ class UniswapV3(BaseAMM):
         # Multi-hop: encode path as bytes (tokenA + fee + tokenB + fee + tokenC …)
         encoded_path = self._encode_path(path, hop_fees)
         try:
-            result = await self._quoter.fns.quoteExactInput(
-                encoded_path, amount_in.amount
-            ).call(self.w3)
+            result = await self._quoter.fns.quoteExactInput(encoded_path, amount_in.amount).call(self.w3)
             final_amount_out = result[0] if isinstance(result, (list, tuple)) else result
         except Exception as exc:
-            raise InsufficientLiquidityError(
-                f"quoteExactInput failed: {exc}"
-            ) from exc
+            raise InsufficientLiquidityError(f"quoteExactInput failed: {exc}") from exc
 
         # We only have the final output; intermediate amounts are unavailable
         # from quoteExactInput — return just start and end.
         return [amount_in, TokenAmount(token=path[-1], amount=final_amount_out)]
 
-    async def get_amounts_in(
-        self, amount_out: TokenAmount, path: list[Token]
-    ) -> list[TokenAmount]:
+    async def get_amounts_in(self, amount_out: TokenAmount, path: list[Token]) -> list[TokenAmount]:
         """Simulate an exact-output quote for a single-hop swap.
 
         Args:
@@ -260,8 +250,7 @@ class UniswapV3(BaseAMM):
             raise ValueError("path must contain at least two tokens")
         if len(path) != 2:
             raise ValueError(
-                "get_amounts_in currently only supports single-hop (exactly 2 tokens) "
-                "for exact-output quoting"
+                "get_amounts_in currently only supports single-hop (exactly 2 tokens) for exact-output quoting"
             )
 
         params = QuoteExactOutputSingleParams(
@@ -275,9 +264,7 @@ class UniswapV3(BaseAMM):
             result = await self._quoter.fns.quoteExactOutputSingle(params).call(self.w3)
             amount_in_raw = result[0] if isinstance(result, (list, tuple)) else result
         except Exception as exc:
-            raise InsufficientLiquidityError(
-                f"quoteExactOutputSingle failed: {exc}"
-            ) from exc
+            raise InsufficientLiquidityError(f"quoteExactOutputSingle failed: {exc}") from exc
 
         return [TokenAmount(token=path[0], amount=amount_in_raw), amount_out]
 
@@ -338,9 +325,9 @@ class UniswapV3(BaseAMM):
         Returns:
             Price of token0 denominated in token1.
         """
-        sqrt_price = Decimal(sqrt_price_x96) / Decimal(2 ** 96)
-        price_raw = sqrt_price ** 2
-        adj = Decimal(10 ** token0_decimals) / Decimal(10 ** token1_decimals)
+        sqrt_price = Decimal(sqrt_price_x96) / Decimal(2**96)
+        price_raw = sqrt_price**2
+        adj = Decimal(10**token0_decimals) / Decimal(10**token1_decimals)
         return price_raw * adj
 
     @staticmethod

@@ -1,11 +1,11 @@
 """Tests for pydefi.aggregator (no live HTTP calls)."""
 
 from decimal import Decimal
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from pydefi.aggregator.base import AggregatorQuote, BaseAggregator
+from pydefi.aggregator.base import AggregatorQuote
 from pydefi.aggregator.oneinch import OneInch
 from pydefi.aggregator.paraswap import ParaSwap
 from pydefi.aggregator.uniswap import UniswapAPI
@@ -13,18 +13,28 @@ from pydefi.aggregator.zerox import ZeroX
 from pydefi.exceptions import AggregatorError
 from pydefi.types import ChainId, Token, TokenAmount
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
-WETH = Token(chain_id=ChainId.ETHEREUM, address="0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2", symbol="WETH", decimals=18)
-USDC = Token(chain_id=ChainId.ETHEREUM, address="0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", symbol="USDC", decimals=6)
+WETH = Token(
+    chain_id=ChainId.ETHEREUM,
+    address="0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+    symbol="WETH",
+    decimals=18,
+)
+USDC = Token(
+    chain_id=ChainId.ETHEREUM,
+    address="0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+    symbol="USDC",
+    decimals=6,
+)
 
 
 # ---------------------------------------------------------------------------
 # 1inch tests
 # ---------------------------------------------------------------------------
+
 
 class TestOneInch:
     def test_protocol_name(self):
@@ -118,6 +128,7 @@ class TestOneInch:
 # ParaSwap tests
 # ---------------------------------------------------------------------------
 
+
 class TestParaSwap:
     def test_protocol_name(self):
         client = ParaSwap(chain_id=1)
@@ -154,6 +165,7 @@ class TestParaSwap:
 # ---------------------------------------------------------------------------
 # 0x tests
 # ---------------------------------------------------------------------------
+
 
 class TestZeroX:
     def test_protocol_name(self):
@@ -396,6 +408,7 @@ class TestUniswapAPI:
 # ---------------------------------------------------------------------------
 # AggregatorQuote tests
 # ---------------------------------------------------------------------------
+
 
 class TestAggregatorQuote:
     def test_creation(self):

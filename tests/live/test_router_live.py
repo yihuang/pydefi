@@ -7,10 +7,10 @@ Uniswap V3 pools on Ethereum mainnet, populate a
 """
 
 import pytest
-
 from eth_contract import Contract
+
 from pydefi.exceptions import NoRouteFoundError
-from pydefi.pathfinder.graph import PoolEdge, PoolGraph, V3PoolEdge
+from pydefi.pathfinder.graph import PoolGraph, V3PoolEdge
 from pydefi.pathfinder.router import Router
 from pydefi.types import TokenAmount
 
@@ -21,17 +21,17 @@ from .conftest import DAI, USDC, USDT, WETH
 # ---------------------------------------------------------------------------
 
 PAIR_WETH_USDC = "0xB4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc"  # WETH/USDC
-PAIR_WETH_DAI = "0xA478c2975Ab1Ea89e8196811F51A7B7Ade33eB11"   # WETH/DAI
-PAIR_USDC_DAI = "0xAE461cA67B15dc8dc81CE7615e0320dA1A9aB8D5"   # USDC/DAI
+PAIR_WETH_DAI = "0xA478c2975Ab1Ea89e8196811F51A7B7Ade33eB11"  # WETH/DAI
+PAIR_USDC_DAI = "0xAE461cA67B15dc8dc81CE7615e0320dA1A9aB8D5"  # USDC/DAI
 PAIR_USDC_USDT = "0x3041CbD36888bECc7bbCBc0045E3B1f144466f5f"  # USDC/USDT
 
 # ---------------------------------------------------------------------------
 # Well-known Uniswap V3 pool addresses (Ethereum mainnet)
 # ---------------------------------------------------------------------------
 
-POOL_V3_WETH_USDC_500 = "0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640"   # WETH/USDC 0.05%
+POOL_V3_WETH_USDC_500 = "0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640"  # WETH/USDC 0.05%
 POOL_V3_WETH_USDC_3000 = "0x8ad599c3A0ff1De082011EFDDc58f1908eb6e6D8"  # WETH/USDC 0.3%
-POOL_V3_USDC_DAI_100 = "0x5777d92f208679DB4b9778590Fa3CAB3aC9e2168"    # USDC/DAI 0.01%
+POOL_V3_USDC_DAI_100 = "0x5777d92f208679DB4b9778590Fa3CAB3aC9e2168"  # USDC/DAI 0.01%
 
 _PAIR_ABI = [
     "function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast)",
@@ -105,23 +105,51 @@ class TestRouterLive:
 
         # WETH ↔ USDC
         r_weth, r_usdc = await _get_v2_reserves(w3, PAIR_WETH_USDC, WETH, USDC)
-        g.add_bidirectional_pool(WETH, USDC, PAIR_WETH_USDC, "UniswapV2",
-                                 reserve_a=r_weth, reserve_b=r_usdc, fee_bps=30)
+        g.add_bidirectional_pool(
+            WETH,
+            USDC,
+            PAIR_WETH_USDC,
+            "UniswapV2",
+            reserve_a=r_weth,
+            reserve_b=r_usdc,
+            fee_bps=30,
+        )
 
         # WETH ↔ DAI
         r_weth2, r_dai = await _get_v2_reserves(w3, PAIR_WETH_DAI, WETH, DAI)
-        g.add_bidirectional_pool(WETH, DAI, PAIR_WETH_DAI, "UniswapV2",
-                                 reserve_a=r_weth2, reserve_b=r_dai, fee_bps=30)
+        g.add_bidirectional_pool(
+            WETH,
+            DAI,
+            PAIR_WETH_DAI,
+            "UniswapV2",
+            reserve_a=r_weth2,
+            reserve_b=r_dai,
+            fee_bps=30,
+        )
 
         # USDC ↔ DAI
         r_usdc2, r_dai2 = await _get_v2_reserves(w3, PAIR_USDC_DAI, USDC, DAI)
-        g.add_bidirectional_pool(USDC, DAI, PAIR_USDC_DAI, "UniswapV2",
-                                 reserve_a=r_usdc2, reserve_b=r_dai2, fee_bps=30)
+        g.add_bidirectional_pool(
+            USDC,
+            DAI,
+            PAIR_USDC_DAI,
+            "UniswapV2",
+            reserve_a=r_usdc2,
+            reserve_b=r_dai2,
+            fee_bps=30,
+        )
 
         # USDC ↔ USDT
         r_usdc3, r_usdt = await _get_v2_reserves(w3, PAIR_USDC_USDT, USDC, USDT)
-        g.add_bidirectional_pool(USDC, USDT, PAIR_USDC_USDT, "UniswapV2",
-                                 reserve_a=r_usdc3, reserve_b=r_usdt, fee_bps=30)
+        g.add_bidirectional_pool(
+            USDC,
+            USDT,
+            PAIR_USDC_USDT,
+            "UniswapV2",
+            reserve_a=r_usdc3,
+            reserve_b=r_usdt,
+            fee_bps=30,
+        )
 
         return g
 
@@ -202,9 +230,7 @@ class TestRouterLive:
 
         # Uniswap V2 is 30 bps; in hundredths of a bp that is 3000
         for step in route.steps:
-            assert step.fee == 3000, (
-                f"Expected fee=3000 (30 bps in hundredths), got fee={step.fee}"
-            )
+            assert step.fee == 3000, f"Expected fee=3000 (30 bps in hundredths), got fee={step.fee}"
 
 
 @pytest.mark.live
@@ -216,16 +242,12 @@ class TestRouterV3Live:
         g = PoolGraph()
 
         # WETH ↔ USDC (0.05% fee tier — main WETH/USDC V3 pool)
-        edge_in, edge_out = await _get_v3_pool_state(
-            w3, POOL_V3_WETH_USDC_500, WETH, USDC
-        )
+        edge_in, edge_out = await _get_v3_pool_state(w3, POOL_V3_WETH_USDC_500, WETH, USDC)
         g.add_pool(edge_in)
         g.add_pool(edge_out)
 
         # USDC ↔ DAI (0.01% fee tier — stablecoin pool)
-        edge_in2, edge_out2 = await _get_v3_pool_state(
-            w3, POOL_V3_USDC_DAI_100, USDC, DAI
-        )
+        edge_in2, edge_out2 = await _get_v3_pool_state(w3, POOL_V3_USDC_DAI_100, USDC, DAI)
         g.add_pool(edge_in2)
         g.add_pool(edge_out2)
 
@@ -268,13 +290,18 @@ class TestRouterV3Live:
 
         # Add V2 WETH/USDC
         r_weth, r_usdc = await _get_v2_reserves(eth_w3, PAIR_WETH_USDC, WETH, USDC)
-        g.add_bidirectional_pool(WETH, USDC, PAIR_WETH_USDC, "UniswapV2",
-                                 reserve_a=r_weth, reserve_b=r_usdc, fee_bps=30)
+        g.add_bidirectional_pool(
+            WETH,
+            USDC,
+            PAIR_WETH_USDC,
+            "UniswapV2",
+            reserve_a=r_weth,
+            reserve_b=r_usdc,
+            fee_bps=30,
+        )
 
         # Add V3 WETH/USDC 0.05%
-        edge_in, edge_out = await _get_v3_pool_state(
-            eth_w3, POOL_V3_WETH_USDC_500, WETH, USDC
-        )
+        edge_in, edge_out = await _get_v3_pool_state(eth_w3, POOL_V3_WETH_USDC_500, WETH, USDC)
         g.add_pool(edge_in)
         g.add_pool(edge_out)
 
@@ -287,4 +314,3 @@ class TestRouterV3Live:
         assert route.token_out == USDC
         assert route.amount_out.amount > 0
         assert 500 * 10**6 < route.amount_out.amount < 10_000 * 10**6
-
