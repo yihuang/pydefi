@@ -7,4 +7,13 @@ from pydefi.aggregator.paraswap import ParaSwap
 from pydefi.aggregator.uniswap import UniswapAPI
 from pydefi.aggregator.zerox import ZeroX
 
-__all__ = ["BaseAggregator", "AggregatorQuote", "Jupiter", "JupiterSwapV2", "OneInch", "ParaSwap", "ZeroX", "UniswapAPI"]
+__all__ = [
+    "BaseAggregator",
+    "AggregatorQuote",
+    "Jupiter",
+    "JupiterSwapV2",
+    "OneInch",
+    "ParaSwap",
+    "ZeroX",
+    "UniswapAPI",
+]
