@@ -477,6 +477,7 @@ class TestUniswapAPI:
 
 # OKX tests
 
+
 class TestOKX:
     def test_protocol_name(self):
         client = OKX(chain_id=1)
@@ -504,25 +505,23 @@ class TestOKX:
         headers = client._headers()
         assert headers["OK-ACCESS-KEY"] == "mykey"
 
-    def test_slippage_to_fraction(self):
+    def test_slippage_to_percent(self):
         client = OKX(chain_id=1)
-        assert client._slippage_to_fraction(50) == 0.005
-        assert client._slippage_to_fraction(100) == 0.01
+        assert client._slippage_to_percent(50) == 0.5
+        assert client._slippage_to_percent(100) == 1.0
 
     @pytest.mark.asyncio
     async def test_get_quote_success(self):
         client = OKX(chain_id=1)
         mock_response_data = {
             "code": "0",
-            "data": [
-                {
-                    "fromTokenAmount": "1000000000000000000",
-                    "toTokenAmount": "2000000000",
-                    "estimateGasFee": 160000,
-                    "priceImpactPercentage": "0.1",
-                    "routerResult": {},
-                }
-            ],
+            "data": {
+                "fromTokenAmount": "1000000000000000000",
+                "toTokenAmount": "2000000000",
+                "estimateGasFee": 160000,
+                "priceImpactPercentage": "0.1",
+                "routerResult": {},
+            },
         }
         with patch.object(client, "_get", new=AsyncMock(return_value=mock_response_data)):
             amount_in = TokenAmount.from_human(WETH, "1")
@@ -546,19 +545,17 @@ class TestOKX:
         client = OKX(chain_id=1)
         mock_response_data = {
             "code": "0",
-            "data": [
-                {
-                    "routerResult": {"toTokenAmount": "1998000000"},
-                    "tx": {
-                        "to": "0x" + "AB" * 20,
-                        "data": "0xdeadbeef",
-                        "value": "0",
-                        "gas": 180000,
-                        "gasPrice": "10000000000",
-                    },
-                    "priceImpactPercentage": "0.05",
-                }
-            ],
+            "data": {
+                "routerResult": {"toTokenAmount": "1998000000"},
+                "tx": {
+                    "to": "0x" + "AB" * 20,
+                    "data": "0xdeadbeef",
+                    "value": "0",
+                    "gas": 180000,
+                    "gasPrice": "10000000000",
+                },
+                "priceImpactPercentage": "0.05",
+            },
         }
         with patch.object(client, "_get", new=AsyncMock(return_value=mock_response_data)):
             amount_in = TokenAmount.from_human(WETH, "1")
@@ -573,15 +570,13 @@ class TestOKX:
         client = OKX(chain_id=1)
         mock_data = {
             "code": "0",
-            "data": [
-                {
-                    "fromTokenAmount": "1000000000000000000",
-                    "toTokenAmount": "2000000000",
-                    "estimateGasFee": 160000,
-                    "priceImpactPercentage": "0.05",
-                    "routerResult": {},
-                }
-            ],
+            "data": {
+                "fromTokenAmount": "1000000000000000000",
+                "toTokenAmount": "2000000000",
+                "estimateGasFee": 160000,
+                "priceImpactPercentage": "0.05",
+                "routerResult": {},
+            },
         }
         with patch.object(client, "_get", new=AsyncMock(return_value=mock_data)):
             amount_in = TokenAmount.from_human(WETH, "1")
