@@ -133,6 +133,21 @@ def _token_to_bytes32(token_address: str) -> bytes:
     return _addr_to_bytes32(token_address)
 
 
+_ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
+
+
+def _mayan_token_address(address: str) -> str:
+    """Normalize a token address for the Mayan Price API.
+
+    The Mayan API uses the zero address to represent the native gas token
+    (ETH, BNB, etc.).  Any ``EeeE...`` sentinel is canonicalized here so
+    that API requests always use the representation the server expects.
+    """
+    if address.lower() == "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee":
+        return _ZERO_ADDRESS
+    return address
+
+
 class Mayan(BaseBridge):
     """Mayan Finance cross-chain bridge integration.
 
@@ -190,8 +205,8 @@ class Mayan(BaseBridge):
 
         params: dict[str, Any] = {
             "amountIn": human_amount,
-            "fromToken": token_in.address,
-            "toToken": token_out.address,
+            "fromToken": _mayan_token_address(token_in.address),
+            "toToken": _mayan_token_address(token_out.address),
             "fromChain": from_chain,
             "toChain": to_chain,
             "slippageBps": "auto",
@@ -310,20 +325,21 @@ class Mayan(BaseBridge):
         from_chain = self._chain_name(self.src_chain_id)
         to_chain = self._chain_name(self.dst_chain_id)
 
-        # SWIFT V2 doesn't accept native ETH (EeeE...) directly as fromToken.
-        # We must use WETH as the intermediate token and let the Forwarder's
-        # swapAndForwardEth handle the ETH→WETH DEX swap.
+        # Keep a WETH address as fallback for swiftInputContract when the
+        # API does not return one (should not normally happen).
         weth_address = _CHAIN_WETH.get(self.src_chain_id)
         if weth_address is None:
             raise BridgeError(
                 f"Mayan: no WETH address known for chain {self.src_chain_id}"
             )
 
-        # Step 1 — fetch a SWIFT V2 quote using WETH as the source token.
+        # Step 1 — fetch a SWIFT V2 quote using the zero address (native ETH)
+        # as the source token.  The Mayan API uses the zero address to represent
+        # native gas tokens; the EeeE... sentinel is not recognised.
         params: dict[str, Any] = {
             "amountIn64": str(amount_in.amount),
-            "fromToken": weth_address,
-            "toToken": token_out.address,
+            "fromToken": _mayan_token_address(token_in.address),
+            "toToken": _mayan_token_address(token_out.address),
             "fromChain": from_chain,
             "toChain": to_chain,
             "slippageBps": slippage_bps,
@@ -432,10 +448,11 @@ class Mayan(BaseBridge):
         )
 
         # Step 3 — fetch ETH→WETH swap calldata from the Mayan get-swap/evm API.
+        # The Mayan API uses the zero address for native ETH; normalise here.
         swap_params = {
             "forwarderAddress": _MAYAN_FORWARDER,
             "slippageBps": slippage_bps,
-            "fromToken": token_in.address,     # native ETH (EeeE... sentinel)
+            "fromToken": _mayan_token_address(token_in.address),
             "middleToken": swift_input_contract,  # WETH (or other swift input)
             "chainName": from_chain,
             "amountIn64": str(amount_in.amount),
