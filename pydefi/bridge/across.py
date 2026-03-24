@@ -178,7 +178,7 @@ class Across(BaseBridge):
             fill_deadline,
             0,  # exclusivityDeadline
             b"",
-        ).encode()
+        ).data
 
         value = str(amount_in.amount) if token_in.is_native() else "0"
 

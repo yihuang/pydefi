@@ -219,7 +219,7 @@ class Stargate(BaseBridge):
             lz_tx_params,
             to_bytes,
             b"",
-        ).encode()
+        ).data
 
         return {
             "to": self.router_address,
