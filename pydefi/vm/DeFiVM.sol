@@ -9,7 +9,6 @@ pragma solidity ^0.8.24;
  * -----------------
  *  • Atomic execution – a "program" runs all-at-once; any revert undoes everything.
  *  • Register-based   – 16 named registers (R0-R15) plus a temporary 32-element stack.
- *  • Typed values     – UINT256 | ADDRESS | BYTES (calldata blobs / return-data slices).
  *  • Adapter-only     – external CALLs are restricted to an owner-managed whitelist.
  *  • Gas-capped       – hard limits on total ops (1 024) and external calls (16).
  *  • No unbounded loops – only forward jumps are permitted (JUMP / JUMPI).
@@ -58,11 +57,6 @@ contract DeFiVM {
     uint8  private constant MAX_SNAPS   = 16;
     uint16 private constant MAX_OPS     = 1024;
     uint8  private constant MAX_CALLS   = 16;
-
-    // Value kinds
-    uint8 private constant KIND_UINT256 = 0;
-    uint8 private constant KIND_ADDR    = 1;
-    uint8 private constant KIND_BYTES   = 2; // stack holds index into buffers array
 
     // Opcodes
     uint8 private constant OP_PUSH_U256   = 0x01;
@@ -141,12 +135,10 @@ contract DeFiVM {
     struct VMState {
         // Stack (up to MAX_STACK = 32 entries)
         bytes32[32] stack;
-        uint8[32]   kinds;
         uint8       sp;           // sp == 0 means empty
 
         // Registers (16)
         bytes32[16] regs;
-        uint8[16]   regKinds;
 
         // Byte buffer store (for calldata templates and return-data slices)
         bytes[16]   buffers;
@@ -201,7 +193,7 @@ contract DeFiVM {
                 assembly {
                     v := mload(add(add(prog, 32), moff))
                 }
-                _push(s, v, KIND_UINT256);
+                _push(s, v);
                 pc += 32;
 
             } else if (op == OP_PUSH_ADDR) {
@@ -214,7 +206,7 @@ contract DeFiVM {
                     raw := mload(add(add(prog, 32), moff))
                 }
                 address a = address(uint160(uint256(raw >> 96)));
-                _push(s, bytes32(uint256(uint160(a))), KIND_ADDR);
+                _push(s, bytes32(uint256(uint160(a))));
                 pc += 20;
 
             } else if (op == OP_PUSH_BYTES) {
@@ -230,20 +222,19 @@ contract DeFiVM {
                 uint8 idx = s.numBufs;
                 s.buffers[idx] = buf;
                 s.numBufs++;
-                _push(s, bytes32(uint256(idx)), KIND_BYTES);
+                _push(s, bytes32(uint256(idx)));
                 pc += blen;
 
             } else if (op == OP_DUP) {
                 require(s.sp > 0, "DeFiVM: DUP on empty stack");
                 uint8 top = s.sp - 1;
-                _push(s, s.stack[top], s.kinds[top]);
+                _push(s, s.stack[top]);
 
             } else if (op == OP_SWAP) {
                 require(s.sp >= 2, "DeFiVM: SWAP needs 2 items");
                 uint8 a = s.sp - 1;
                 uint8 b = s.sp - 2;
                 (s.stack[a], s.stack[b]) = (s.stack[b], s.stack[a]);
-                (s.kinds[a], s.kinds[b]) = (s.kinds[b], s.kinds[a]);
 
             } else if (op == OP_POP) {
                 require(s.sp > 0, "DeFiVM: POP on empty stack");
@@ -257,7 +248,7 @@ contract DeFiVM {
                 uint8 i = uint8(prog[pc]);
                 pc++;
                 require(i < MAX_REGS, "DeFiVM: bad register");
-                _push(s, s.regs[i], s.regKinds[i]);
+                _push(s, s.regs[i]);
 
             } else if (op == OP_STORE_REG) {
                 require(pc + 1 <= plen, "DeFiVM: truncated STORE_REG");
@@ -266,8 +257,7 @@ contract DeFiVM {
                 require(i < MAX_REGS, "DeFiVM: bad register");
                 require(s.sp > 0, "DeFiVM: STORE_REG empty stack");
                 s.sp--;
-                s.regs[i]     = s.stack[s.sp];
-                s.regKinds[i] = s.kinds[s.sp];
+                s.regs[i] = s.stack[s.sp];
 
             // ------------------------------------------------------------------
             // Control flow
@@ -368,19 +358,15 @@ contract DeFiVM {
                 require(s.sp >= 4, "DeFiVM: CALL needs 4 items");
 
                 s.sp--;
-                require(s.kinds[s.sp] == KIND_UINT256, "DeFiVM: CALL gasLimit must be uint256");
                 uint256 gasLimit = uint256(s.stack[s.sp]);
 
                 s.sp--;
-                require(s.kinds[s.sp] == KIND_ADDR, "DeFiVM: CALL to must be address");
                 address to = address(uint160(uint256(s.stack[s.sp])));
 
                 s.sp--;
-                require(s.kinds[s.sp] == KIND_UINT256, "DeFiVM: CALL value must be uint256");
                 uint256 callValue = uint256(s.stack[s.sp]);
 
                 s.sp--;
-                require(s.kinds[s.sp] == KIND_BYTES, "DeFiVM: CALL calldata must be bytes");
                 uint8 bufIdx = uint8(uint256(s.stack[s.sp]));
                 require(bufIdx < s.numBufs, "DeFiVM: CALL invalid buffer");
                 bytes memory calldata_ = s.buffers[bufIdx];
@@ -403,18 +389,16 @@ contract DeFiVM {
                 if (requireSuccess) {
                     require(ok, "DeFiVM: adapter call failed");
                 }
-                _push(s, ok ? bytes32(uint256(1)) : bytes32(0), KIND_UINT256);
+                _push(s, ok ? bytes32(uint256(1)) : bytes32(0));
 
             } else if (op == OP_BALANCE_OF) {
                 // pop: token (address, 0x0=ETH), account (address) -> push balance (uint256)
                 require(s.sp >= 2, "DeFiVM: BALANCE_OF needs 2 items");
 
                 s.sp--;
-                require(s.kinds[s.sp] == KIND_ADDR, "DeFiVM: BALANCE_OF token must be address");
                 address token = address(uint160(uint256(s.stack[s.sp])));
 
                 s.sp--;
-                require(s.kinds[s.sp] == KIND_ADDR, "DeFiVM: BALANCE_OF account must be address");
                 address account = address(uint160(uint256(s.stack[s.sp])));
 
                 uint256 bal;
@@ -428,10 +412,10 @@ contract DeFiVM {
                     require(ok, "DeFiVM: balanceOf failed");
                     bal = abi.decode(res, (uint256));
                 }
-                _push(s, bytes32(bal), KIND_UINT256);
+                _push(s, bytes32(bal));
 
             } else if (op == OP_SELF_BAL) {
-                _push(s, bytes32(address(this).balance), KIND_UINT256);
+                _push(s, bytes32(address(this).balance));
 
             } else if (op == OP_DELTA_START) {
                 // pop: token (address, 0x0=ETH), account (address) -> snapshot
@@ -439,11 +423,9 @@ contract DeFiVM {
                 require(s.numSnaps < MAX_SNAPS, "DeFiVM: snapshot limit");
 
                 s.sp--;
-                require(s.kinds[s.sp] == KIND_ADDR, "DeFiVM: DELTA_START token must be address");
                 address dToken = address(uint160(uint256(s.stack[s.sp])));
 
                 s.sp--;
-                require(s.kinds[s.sp] == KIND_ADDR, "DeFiVM: DELTA_START account must be address");
                 address dAccount = address(uint160(uint256(s.stack[s.sp])));
 
                 uint256 snap;
@@ -467,11 +449,9 @@ contract DeFiVM {
                 require(s.sp >= 2, "DeFiVM: DELTA_LOAD needs 2 items");
 
                 s.sp--;
-                require(s.kinds[s.sp] == KIND_ADDR, "DeFiVM: DELTA_LOAD token must be address");
                 address dToken = address(uint160(uint256(s.stack[s.sp])));
 
                 s.sp--;
-                require(s.kinds[s.sp] == KIND_ADDR, "DeFiVM: DELTA_LOAD account must be address");
                 address dAccount = address(uint160(uint256(s.stack[s.sp])));
 
                 // Find matching snapshot
@@ -497,7 +477,7 @@ contract DeFiVM {
                     curBal = abi.decode(res, (uint256));
                 }
                 uint256 delta = curBal >= snapBal ? curBal - snapBal : 0;
-                _push(s, bytes32(delta), KIND_UINT256);
+                _push(s, bytes32(delta));
 
             // ------------------------------------------------------------------
             // ABI / data patching
@@ -510,11 +490,9 @@ contract DeFiVM {
                 require(s.sp >= 2, "DeFiVM: PATCH_U256 needs 2 items");
 
                 s.sp--;
-                require(s.kinds[s.sp] == KIND_UINT256, "DeFiVM: PATCH_U256 value must be uint256");
                 uint256 pval = uint256(s.stack[s.sp]);
 
                 s.sp--;
-                require(s.kinds[s.sp] == KIND_BYTES, "DeFiVM: PATCH_U256 target must be bytes");
                 uint8 bidx = uint8(uint256(s.stack[s.sp]));
                 require(bidx < s.numBufs, "DeFiVM: PATCH_U256 invalid buffer");
                 require(uint256(offset) + 32 <= s.buffers[bidx].length, "DeFiVM: PATCH_U256 out of bounds");
@@ -524,7 +502,7 @@ contract DeFiVM {
                     mstore(add(add(b, 32), moff), pval)
                 }
                 // Push the (now-modified) buffer index back
-                _push(s, bytes32(uint256(bidx)), KIND_BYTES);
+                _push(s, bytes32(uint256(bidx)));
 
             } else if (op == OP_PATCH_ADDR) {
                 // <2-byte offset>  |  pop: addr (address), bufIdx (bytes)
@@ -534,11 +512,9 @@ contract DeFiVM {
                 require(s.sp >= 2, "DeFiVM: PATCH_ADDR needs 2 items");
 
                 s.sp--;
-                require(s.kinds[s.sp] == KIND_ADDR, "DeFiVM: PATCH_ADDR value must be address");
                 address paddr = address(uint160(uint256(s.stack[s.sp])));
 
                 s.sp--;
-                require(s.kinds[s.sp] == KIND_BYTES, "DeFiVM: PATCH_ADDR target must be bytes");
                 uint8 bidx = uint8(uint256(s.stack[s.sp]));
                 require(bidx < s.numBufs, "DeFiVM: PATCH_ADDR invalid buffer");
                 require(uint256(offset) + 20 <= s.buffers[bidx].length, "DeFiVM: PATCH_ADDR out of bounds");
@@ -554,7 +530,7 @@ contract DeFiVM {
                     existing := or(existing, addrWord)
                     mstore(slot, existing)
                 }
-                _push(s, bytes32(uint256(bidx)), KIND_BYTES);
+                _push(s, bytes32(uint256(bidx)));
 
             } else if (op == OP_RET_U256) {
                 // <2-byte offset>  -> push uint256 from last returndata
@@ -568,7 +544,7 @@ contract DeFiVM {
                 assembly {
                     word := mload(add(add(rd, 32), moff))
                 }
-                _push(s, word, KIND_UINT256);
+                _push(s, word);
 
             } else if (op == OP_RET_SLICE) {
                 // <2-byte offset> <2-byte len>  -> push bytes slice from last returndata
@@ -586,7 +562,7 @@ contract DeFiVM {
                 uint8 idx = s.numBufs;
                 s.buffers[idx] = slice;
                 s.numBufs++;
-                _push(s, bytes32(uint256(idx)), KIND_BYTES);
+                _push(s, bytes32(uint256(idx)));
 
             } else {
                 revert("DeFiVM: unknown opcode");
@@ -600,11 +576,10 @@ contract DeFiVM {
     // Internal helpers
     // -------------------------------------------------------------------------
 
-    /// @dev Push a typed value onto the VM stack.
-    function _push(VMState memory s, bytes32 val, uint8 kind) private pure {
+    /// @dev Push a value onto the VM stack.
+    function _push(VMState memory s, bytes32 val) private pure {
         require(s.sp < MAX_STACK, "DeFiVM: stack overflow");
         s.stack[s.sp] = val;
-        s.kinds[s.sp] = kind;
         s.sp++;
     }
 
