@@ -6,6 +6,7 @@ Provides integrations with:
 - DEX aggregator APIs (1inch, ParaSwap, 0x, Jupiter)
 - Cross-chain bridges (Stargate, Across)
 - DEX pathfinding algorithm
+- Pool data providers (GeckoTerminal, Uniswap V2/V3 subgraphs)
 
 Built on top of ``eth-contract`` for modern interaction with on-chain smart
 contracts. Solana AMM and aggregator integrations use REST APIs directly.
@@ -51,9 +52,11 @@ from pydefi.exceptions import (
     BridgeError,
     InsufficientLiquidityError,
     NoRouteFoundError,
+    PoolDataError,
     PydefiError,
     SlippageExceededError,
 )
+from pydefi.pool_data.base import BasePoolDataProvider, PoolData
 from pydefi.types import (
     BridgeQuote,
     ChainId,
@@ -75,6 +78,9 @@ __all__ = [
     "SwapRoute",
     "SwapTransaction",
     "BridgeQuote",
+    # Pool data
+    "PoolData",
+    "BasePoolDataProvider",
     # Exceptions
     "PydefiError",
     "InsufficientLiquidityError",
@@ -82,4 +88,5 @@ __all__ = [
     "AggregatorError",
     "BridgeError",
     "SlippageExceededError",
+    "PoolDataError",
 ]
