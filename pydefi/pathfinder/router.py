@@ -14,11 +14,20 @@ making simple DP relaxation both correct and safe.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from decimal import Decimal
 
 from pydefi.exceptions import NoRouteFoundError
 from pydefi.pathfinder.graph import PoolEdge, PoolGraph
 from pydefi.types import SwapRoute, SwapStep, Token, TokenAmount
+
+
+@dataclass(frozen=True)
+class GasAdjustedRoute:
+    route: SwapRoute
+    gas_units: int
+    gas_cost_out: TokenAmount
+    net_amount_out_raw: int
 
 
 class Router:
@@ -40,6 +49,13 @@ class Router:
         self,
         amount_in: TokenAmount,
         token_out: Token,
+        *,
+        gas_price_gwei: float | None = None,
+        native_token_price_usd: float | None = None,
+        token_out_price_usd: float | None = None,
+        candidate_routes: int = 5,
+        base_gas_units: int = 120_000,
+        per_hop_gas_units: int = 70_000,
     ) -> SwapRoute:
         """Find the route that maximises the output amount.
 
@@ -62,6 +78,15 @@ class Router:
         Args:
             amount_in: Exact input token and amount.
             token_out: Desired output token.
+            gas_price_gwei: Optional gas price. If provided, route selection
+                is post-processed by estimated net output (gross output minus
+                gas cost) across top candidate routes.
+            native_token_price_usd: Native gas token price in USD.
+            token_out_price_usd: Output token price in USD.
+            candidate_routes: Number of top gross-output routes to evaluate
+                during gas-aware post-processing.
+            base_gas_units: Base gas estimate for a single-hop route.
+            per_hop_gas_units: Additional gas estimate per extra hop.
 
         Returns:
             The best :class:`~pydefi.types.SwapRoute` found.
@@ -70,6 +95,22 @@ class Router:
             :class:`~pydefi.exceptions.NoRouteFoundError`: If no path exists
                 between the two tokens within ``max_hops``.
         """
+        if gas_price_gwei is not None:
+            if native_token_price_usd is None or token_out_price_usd is None:
+                raise ValueError(
+                    "native_token_price_usd and token_out_price_usd are required when gas_price_gwei is provided"
+                )
+            return self.find_best_route_with_gas(
+                amount_in,
+                token_out,
+                gas_price_gwei=gas_price_gwei,
+                native_token_price_usd=native_token_price_usd,
+                token_out_price_usd=token_out_price_usd,
+                top_k=candidate_routes,
+                base_gas_units=base_gas_units,
+                per_hop_gas_units=per_hop_gas_units,
+            ).route
+
         src = amount_in.token
         dst_addr = token_out.address.lower()
 
@@ -246,6 +287,83 @@ class Router:
 
         routes.sort(key=lambda r: r.amount_out.amount, reverse=True)
         return routes[:top_k]
+
+    def find_best_route_with_gas(
+        self,
+        amount_in: TokenAmount,
+        token_out: Token,
+        *,
+        gas_price_gwei: float,
+        native_token_price_usd: float,
+        token_out_price_usd: float,
+        top_k: int = 5,
+        base_gas_units: int = 120_000,
+        per_hop_gas_units: int = 70_000,
+    ) -> GasAdjustedRoute:
+        """Find route with highest net output after accounting for gas costs."""
+        routes = self.find_all_routes(amount_in, token_out, top_k=top_k)
+
+        candidates: list[tuple[SwapRoute, int, int, int]] = []
+        for route in routes:
+            gas_units = self._estimate_route_gas_units(
+                route,
+                base_gas_units=base_gas_units,
+                per_hop_gas_units=per_hop_gas_units,
+            )
+            # turn gas cost into raw amount of token_out
+            gas_cost_out_raw = self._gas_cost_in_token_out_raw(
+                gas_units=gas_units,
+                gas_price_gwei=gas_price_gwei,
+                native_token_price_usd=native_token_price_usd,
+                token_out_price_usd=token_out_price_usd,
+                token_out_decimals=route.amount_out.token.decimals,
+            )
+            net_out_raw = route.amount_out.amount - gas_cost_out_raw
+            candidates.append((route, gas_units, gas_cost_out_raw, net_out_raw))
+
+        # prefer higher net output, then higher gross output, then fewer hops
+        route, gas_units, gas_cost_out_raw, net_out_raw = max(
+            candidates,
+            key=lambda c: (c[3], c[0].amount_out.amount, -len(c[0].steps)),
+        )
+        return GasAdjustedRoute(
+            route=route,
+            gas_units=gas_units,
+            gas_cost_out=TokenAmount(token=route.amount_out.token, amount=gas_cost_out_raw),
+            net_amount_out_raw=net_out_raw,
+        )
+
+    @staticmethod
+    def _estimate_route_gas_units(
+        route: SwapRoute,
+        *,
+        base_gas_units: int = 120_000,
+        per_hop_gas_units: int = 70_000,
+    ) -> int:
+        """Estimate route gas from hop count using a simple linear model."""
+        hops = max(1, len(route.steps))
+        return max(0, base_gas_units + per_hop_gas_units * (hops - 1))
+
+    @staticmethod
+    def _gas_cost_in_token_out_raw(
+        *,
+        gas_units: int,
+        gas_price_gwei: float,
+        native_token_price_usd: float,
+        token_out_price_usd: float,
+        token_out_decimals: int,
+    ) -> int:
+        """Convert gas cost into raw units of the output token."""
+        if (
+            gas_units <= 0
+            or gas_price_gwei <= 0
+            or native_token_price_usd <= 0
+            or token_out_price_usd <= 0
+        ):
+            return 0
+        gas_cost_native = gas_units * gas_price_gwei * 1e-9
+        gas_cost_out_tokens = gas_cost_native * native_token_price_usd / token_out_price_usd
+        return max(0, int(gas_cost_out_tokens * (10**token_out_decimals)))
 
     @staticmethod
     def _estimate_price_impact(edges: list[PoolEdge], amount_in: int) -> Decimal:
