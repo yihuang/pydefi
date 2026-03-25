@@ -18,12 +18,7 @@ Run with::
 
 from __future__ import annotations
 
-import asyncio
-import shutil
-import socket
 import struct
-import subprocess
-import time
 from pathlib import Path
 
 import pytest
@@ -40,8 +35,6 @@ solcx = pytest.importorskip("solcx")
 # ---------------------------------------------------------------------------
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SOL_FILE = REPO_ROOT / "pydefi" / "vm" / "DeFiVM.sol"
-
-from .conftest import ETH_RPC_URL  # noqa: E402
 
 # Well-known mainnet addresses used in fork tests
 WETH_MAINNET = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
@@ -285,48 +278,10 @@ def _compile_mock_adapter() -> dict:
 # ---------------------------------------------------------------------------
 
 
-def _free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
-
-
 @pytest.fixture(scope="module")
-async def vm_fork_w3():
-    """Start a single Anvil mainnet fork for the entire test module."""
-    if shutil.which("anvil") is None:
-        pytest.skip("anvil not found on PATH — install Foundry to run fork tests")
-
-    port = _free_port()
-    url = f"http://127.0.0.1:{port}"
-
-    proc = subprocess.Popen(
-        ["anvil", "--fork-url", ETH_RPC_URL, "--port", str(port), "--silent"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-
-    w3 = AsyncWeb3(AsyncWeb3.AsyncHTTPProvider(url))
-    deadline = time.monotonic() + 30
-    while time.monotonic() < deadline:
-        try:
-            await w3.eth.chain_id
-            break
-        except Exception:  # noqa: BLE001
-            await asyncio.sleep(0.25)
-    else:
-        proc.terminate()
-        proc.wait(timeout=10)
-        pytest.fail("Anvil did not start within 30 seconds")
-
-    yield w3
-
-    proc.terminate()
-    try:
-        proc.wait(timeout=10)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait(timeout=5)
+async def vm_fork_w3(fork_w3_module):
+    """Module-scoped Anvil mainnet fork, shared across all tests in this module."""
+    return fork_w3_module
 
 
 # ---------------------------------------------------------------------------
@@ -687,7 +642,9 @@ class TestDeFiVMFork:
 
         from eth_utils import keccak
 
-        selector = keccak(b"getFortyTwo()")[:4]
+        # Use a dummy 4-byte selector that doesn't match any explicit function,
+        # so the call is routed to MockAdapter.fallback() which emits Called and echoes calldata.
+        selector = b"\xde\xad\xbe\xef"
         template = bytearray(selector + b"\x00" * 32)
 
         program = (
@@ -704,6 +661,22 @@ class TestDeFiVMFork:
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
 
+        # Verify PATCH_U256 actually wrote 0xABCD by decoding the Called event.
+        # MockAdapter.fallback() emits Called(sender, value, data) and echoes calldata.
+        called_topic = keccak(b"Called(address,uint256,bytes)")
+        adapter_log = None
+        for log in receipt["logs"]:
+            if log["address"].lower() == adapter.lower() and log["topics"][0] == called_topic:
+                adapter_log = log
+                break
+        assert adapter_log is not None, "Expected Called event from adapter"
+        # ABI layout of data: sender(32) + value(32) + offset(32) + length(32) + calldata
+        encoded = bytes(adapter_log["data"])
+        calldata_len = int.from_bytes(encoded[96:128], "big")
+        received_calldata = encoded[128 : 128 + calldata_len]
+        expected_calldata = selector + (0xABCD).to_bytes(32, "big")
+        assert received_calldata == expected_calldata
+
     async def test_patch_addr(self, ctx):
         """PATCH_ADDR writes a 20-byte address into a calldata template."""
         w3 = ctx["w3"]
@@ -713,9 +686,13 @@ class TestDeFiVMFork:
 
         from eth_utils import keccak
 
-        selector = keccak(b"getFortyTwo()")[:4]
+        # Use a dummy 4-byte selector to trigger MockAdapter.fallback()
+        # which emits Called(sender, value, data) and echoes calldata.
+        selector = b"\xca\xfe\xba\xbe"
         template = bytearray(selector + b"\x00" * 32)
 
+        # patch_offset=16: write the 20-byte address at byte 16 of the buffer,
+        # which fills the right half of the 32-byte ABI slot starting at offset 4.
         patch_offset = 4 + 12
 
         program = (
@@ -731,6 +708,22 @@ class TestDeFiVMFork:
         tx = await vm.functions.execute(program).transact({"from": deployer})
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
+
+        # Verify PATCH_ADDR wrote the address bytes at the correct offset.
+        called_topic = keccak(b"Called(address,uint256,bytes)")
+        adapter_log = None
+        for log in receipt["logs"]:
+            if log["address"].lower() == adapter.lower() and log["topics"][0] == called_topic:
+                adapter_log = log
+                break
+        assert adapter_log is not None, "Expected Called event from adapter"
+        encoded = bytes(adapter_log["data"])
+        calldata_len = int.from_bytes(encoded[96:128], "big")
+        received_calldata = encoded[128 : 128 + calldata_len]
+        # Expected: selector + 12 zero bytes + 20-byte address (raw byte-for-byte patch)
+        addr_bytes = bytes.fromhex(adapter.removeprefix("0x"))
+        expected_calldata = selector + b"\x00" * 12 + addr_bytes
+        assert received_calldata == expected_calldata
 
     # ------------------------------------------------------------------
     # Safety / limits

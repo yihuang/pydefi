@@ -295,9 +295,7 @@ contract DeFiVM {
                     for (uint8 k = 0; k < msgLen; k++) {
                         msg_[k] = prog[pc + k];
                     }
-                    assembly {
-                        revert(add(msg_, 32), mload(msg_))
-                    }
+                    revert(string(msg_));
                 }
                 pc += msgLen;
 
@@ -317,9 +315,7 @@ contract DeFiVM {
                     for (uint8 k = 0; k < msgLen; k++) {
                         msg_[k] = prog[pc + k];
                     }
-                    assembly {
-                        revert(add(msg_, 32), mload(msg_))
-                    }
+                    revert(string(msg_));
                 }
                 pc += msgLen;
 
@@ -339,9 +335,7 @@ contract DeFiVM {
                     for (uint8 k = 0; k < msgLen; k++) {
                         msg_[k] = prog[pc + k];
                     }
-                    assembly {
-                        revert(add(msg_, 32), mload(msg_))
-                    }
+                    revert(string(msg_));
                 }
                 pc += msgLen;
 
@@ -518,17 +512,11 @@ contract DeFiVM {
                 uint8 bidx = uint8(uint256(s.stack[s.sp]));
                 require(bidx < s.numBufs, "DeFiVM: PATCH_ADDR invalid buffer");
                 require(uint256(offset) + 20 <= s.buffers[bidx].length, "DeFiVM: PATCH_ADDR out of bounds");
-                // Patch 20 bytes in the buffer, right-aligned in a 32-byte ABI slot
+                // Patch 20 bytes starting exactly at `offset` (raw byte-wise copy).
                 bytes memory b = s.buffers[bidx];
-                uint256 addrWord = uint256(uint160(paddr));
-                uint256 moff = offset;
-                assembly {
-                    let slot := add(add(b, 32), moff)
-                    let existing := mload(slot)
-                    // Clear the low 20 bytes, then OR in the new address
-                    existing := and(existing, 0xffffffffffffffffffffffff0000000000000000000000000000000000000000)
-                    existing := or(existing, addrWord)
-                    mstore(slot, existing)
+                bytes memory addrBytes = abi.encodePacked(paddr);
+                for (uint256 i = 0; i < 20; i++) {
+                    b[uint256(offset) + i] = addrBytes[i];
                 }
                 _push(s, bytes32(uint256(bidx)));
 
