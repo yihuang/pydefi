@@ -366,7 +366,7 @@ class TestDeFiVMFork:
     # ------------------------------------------------------------------
 
     async def test_self_balance(self, ctx):
-        """SELF_BAL executes and emits ProgramExecuted."""
+        """SELF_BAL executes successfully."""
         w3 = ctx["w3"]
         vm = ctx["vm"]
         deployer = ctx["deployer"]

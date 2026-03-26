@@ -10,8 +10,6 @@ pragma solidity ^0.8.24;
  *  • Atomic execution – a "program" runs all-at-once; any revert undoes everything.
  *  • Register-based   – 16 named registers (R0-R15) plus a temporary 32-element stack.
  *  • Adapter-only     – external CALLs are restricted to an owner-managed whitelist.
- *  • Gas-capped       – hard limit on total ops (1 024); loop and call counts are
- *                       bounded naturally by the EVM gas limit.
  *
  * Instruction set
  * ---------------
@@ -55,7 +53,6 @@ contract DeFiVM {
     uint8  private constant MAX_REGS    = 16;
     uint8  private constant MAX_BUFFERS = 16;
     uint8  private constant MAX_SNAPS   = 16;
-    uint16 private constant MAX_OPS     = 1024;
 
     // Opcodes
     uint8 private constant OP_PUSH_U256   = 0x01;
@@ -95,7 +92,6 @@ contract DeFiVM {
     // -------------------------------------------------------------------------
 
     event AdapterSet(address indexed adapter, bool enabled);
-    event ProgramExecuted(uint256 opsUsed);
 
     // -------------------------------------------------------------------------
     // Constructor
@@ -151,9 +147,6 @@ contract DeFiVM {
         address[16] snapAccounts;
         uint256[16] snapBalances;
         uint8       numSnaps;
-
-        // Safety counters
-        uint16      opsUsed;
     }
 
     // -------------------------------------------------------------------------
@@ -175,9 +168,6 @@ contract DeFiVM {
         uint256 plen = prog.length;
 
         while (pc < plen) {
-            require(s.opsUsed < MAX_OPS, "DeFiVM: max ops exceeded");
-            s.opsUsed++;
-
             uint8 op = uint8(prog[pc]);
             pc++;
 
@@ -549,8 +539,6 @@ contract DeFiVM {
                 revert("DeFiVM: unknown opcode");
             }
         }
-
-        emit ProgramExecuted(s.opsUsed);
     }
 
     // -------------------------------------------------------------------------
