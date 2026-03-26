@@ -547,3 +547,54 @@ class TestRouter:
         ]
         impact = Router._estimate_price_impact(edges, 10**18)
         assert Decimal(0) < impact < Decimal(1)
+
+    def test_find_best_route_with_gas_prefers_lower_hop_when_gas_is_high(self):
+        g = PoolGraph()
+        # Two-hop route has slightly better gross output:
+        # WETH -> USDC -> DAI
+        g.add_bidirectional_pool(
+            WETH,
+            USDC,
+            POOL_A,
+            "UniswapV2",
+            reserve_a=1_000 * 10**18,
+            reserve_b=3_400_000 * 10**6,
+            fee_bps=0,
+        )
+        g.add_bidirectional_pool(
+            USDC,
+            DAI,
+            POOL_B,
+            "Curve",
+            reserve_a=3_400_000 * 10**6,
+            reserve_b=3_395_000 * 10**18,
+            fee_bps=0,
+        )
+        # Direct one-hop route has slightly worse gross output.
+        g.add_bidirectional_pool(
+            WETH,
+            DAI,
+            POOL_C,
+            "UniswapV3",
+            reserve_a=1_000 * 10**18,
+            reserve_b=3_380_000 * 10**18,
+            fee_bps=0,
+        )
+
+        router = Router(g, max_hops=3)
+        amount_in = TokenAmount(token=WETH, amount=10**18)
+
+        gross_best = router.find_best_route(amount_in, DAI)
+        assert len(gross_best.steps) == 2
+
+        net_best = router.find_best_route(
+            amount_in,
+            DAI,
+            gas_price_gwei=100,
+            native_token_price_usd=3000,
+            token_out_price_usd=1,
+            candidate_routes=5,
+            base_gas_units=120_000,
+            per_hop_gas_units=400_000,
+        )
+        assert len(net_best.steps) == 1
