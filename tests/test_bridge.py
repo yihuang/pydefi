@@ -548,6 +548,29 @@ class TestRelay:
 # ---------------------------------------------------------------------------
 
 OFT_ADDRESS = "0x" + "DD" * 20
+OFT_DST_ADDRESS = "0x" + "EE" * 20
+
+# Tokens for unified-address OFTs (same contract address on every chain,
+# e.g. USDT0 at 0x1E4a5963aBFD975d8c9021ce480b42188849D41d).
+OFT_TOKEN_ETH = Token(
+    chain_id=ChainId.ETHEREUM,
+    address=OFT_ADDRESS,
+    symbol="OFT",
+    decimals=18,
+)
+OFT_TOKEN_ARB = Token(
+    chain_id=ChainId.ARBITRUM,
+    address=OFT_ADDRESS,
+    symbol="OFT",
+    decimals=18,
+)
+# Token for a non-unified OFT (different address on the destination chain).
+OFT_TOKEN_ARB_ALT = Token(
+    chain_id=ChainId.ARBITRUM,
+    address=OFT_DST_ADDRESS,
+    symbol="OFT",
+    decimals=18,
+)
 
 
 class TestLayerZeroOFT:
@@ -569,6 +592,27 @@ class TestLayerZeroOFT:
         )
         assert oft.src_chain_id == 1
         assert oft.dst_chain_id == 42161
+
+    def test_dst_oft_address_defaults_to_oft_address(self):
+        """For unified-address OFTs, dst_oft_address defaults to oft_address."""
+        oft = LayerZeroOFT(
+            w3=None,
+            src_chain_id=1,
+            dst_chain_id=42161,
+            oft_address=OFT_ADDRESS,
+        )
+        assert oft.dst_oft_address == OFT_ADDRESS
+
+    def test_dst_oft_address_explicit(self):
+        """Non-unified OFTs can specify a distinct destination address."""
+        oft = LayerZeroOFT(
+            w3=None,
+            src_chain_id=1,
+            dst_chain_id=42161,
+            oft_address=OFT_ADDRESS,
+            dst_oft_address=OFT_DST_ADDRESS,
+        )
+        assert oft.dst_oft_address == OFT_DST_ADDRESS
 
     def test_lz_eid_known(self):
         oft = LayerZeroOFT(
@@ -616,8 +660,8 @@ class TestLayerZeroOFT:
             dst_chain_id=42161,
             oft_address=OFT_ADDRESS,
         )
-        amount_in = TokenAmount.from_human(USDC_ETH, "1000")
-        quote = await oft.get_quote(USDC_ETH, USDC_ARB, amount_in)
+        amount_in = TokenAmount.from_human(OFT_TOKEN_ETH, "1000")
+        quote = await oft.get_quote(OFT_TOKEN_ETH, OFT_TOKEN_ARB, amount_in)
 
         assert quote.protocol == "LayerZeroOFT"
         # OFT is 1:1 — no token protocol fee
@@ -626,16 +670,79 @@ class TestLayerZeroOFT:
         assert quote.estimated_time_seconds == 30
 
     @pytest.mark.asyncio
-    async def test_quote_send_fee(self):
+    async def test_get_quote_validates_token_in(self):
+        """get_quote raises BridgeError when token_in address does not match."""
         oft = LayerZeroOFT(
             w3=None,
             src_chain_id=1,
             dst_chain_id=42161,
             oft_address=OFT_ADDRESS,
         )
-        with patch.object(oft, "quote_send_fee", new=AsyncMock(return_value=5 * 10**15)):
-            fee = await oft.quote_send_fee(1_000_000, "0x" + "AA" * 20)
+        wrong_token = Token(
+            chain_id=ChainId.ETHEREUM,
+            address="0x" + "FF" * 20,
+            symbol="WRONG",
+            decimals=18,
+        )
+        amount_in = TokenAmount.from_human(wrong_token, "10")
+        with pytest.raises(BridgeError, match="token_in"):
+            await oft.get_quote(wrong_token, OFT_TOKEN_ARB, amount_in)
+
+    @pytest.mark.asyncio
+    async def test_get_quote_validates_token_out(self):
+        """get_quote raises BridgeError when token_out address does not match."""
+        oft = LayerZeroOFT(
+            w3=None,
+            src_chain_id=1,
+            dst_chain_id=42161,
+            oft_address=OFT_ADDRESS,
+        )
+        wrong_token = Token(
+            chain_id=ChainId.ARBITRUM,
+            address="0x" + "FF" * 20,
+            symbol="WRONG",
+            decimals=18,
+        )
+        amount_in = TokenAmount.from_human(OFT_TOKEN_ETH, "10")
+        with pytest.raises(BridgeError, match="token_out"):
+            await oft.get_quote(OFT_TOKEN_ETH, wrong_token, amount_in)
+
+    @pytest.mark.asyncio
+    async def test_get_quote_non_unified_oft(self):
+        """For a non-unified OFT, token_out must match dst_oft_address."""
+        oft = LayerZeroOFT(
+            w3=None,
+            src_chain_id=1,
+            dst_chain_id=42161,
+            oft_address=OFT_ADDRESS,
+            dst_oft_address=OFT_DST_ADDRESS,
+        )
+        amount_in = TokenAmount.from_human(OFT_TOKEN_ETH, "10")
+        quote = await oft.get_quote(OFT_TOKEN_ETH, OFT_TOKEN_ARB_ALT, amount_in)
+        assert quote.amount_out.amount == amount_in.amount
+
+    @pytest.mark.asyncio
+    async def test_quote_send_fee(self):
+        """quote_send_fee calls quoteSend on the underlying OFT contract."""
+        oft = LayerZeroOFT(
+            w3=None,
+            src_chain_id=1,
+            dst_chain_id=42161,
+            oft_address=OFT_ADDRESS,
+        )
+        # Mock the underlying OFT contract call so we exercise the real
+        # quote_send_fee logic (EID mapping, send_param construction, contract wiring)
+        # rather than patching quote_send_fee itself.
+        mock_call = AsyncMock(return_value=(5 * 10**15, 0))
+        mock_quote_send = MagicMock(return_value=MagicMock(call=mock_call))
+        oft._oft = MagicMock()
+        oft._oft.fns = MagicMock()
+        oft._oft.fns.quoteSend = mock_quote_send
+
+        fee = await oft.quote_send_fee(1_000_000, "0x" + "AA" * 20)
+
         assert fee == 5 * 10**15
+        mock_quote_send.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_build_bridge_tx(self):
@@ -645,11 +752,11 @@ class TestLayerZeroOFT:
             dst_chain_id=42161,
             oft_address=OFT_ADDRESS,
         )
-        amount_in = TokenAmount.from_human(USDC_ETH, "1000")
+        amount_in = TokenAmount.from_human(OFT_TOKEN_ETH, "1000")
         recipient = "0x" + "AA" * 20
 
         with patch.object(oft, "quote_send_fee", new=AsyncMock(return_value=5 * 10**15)):
-            tx = await oft.build_bridge_tx(USDC_ETH, USDC_ARB, amount_in, recipient)
+            tx = await oft.build_bridge_tx(OFT_TOKEN_ETH, OFT_TOKEN_ARB, amount_in, recipient)
 
         assert tx["to"] == OFT_ADDRESS
         assert tx["data"].startswith("0x")
@@ -664,15 +771,36 @@ class TestLayerZeroOFT:
             dst_chain_id=42161,
             oft_address=OFT_ADDRESS,
         )
-        amount_in = TokenAmount.from_human(USDC_ETH, "100")
+        amount_in = TokenAmount.from_human(OFT_TOKEN_ETH, "100")
         recipient = "0x" + "AA" * 20
         refund = "0x" + "BB" * 20
 
         with patch.object(oft, "quote_send_fee", new=AsyncMock(return_value=10**15)):
-            tx = await oft.build_bridge_tx(USDC_ETH, USDC_ARB, amount_in, recipient, refund_address=refund)
+            tx = await oft.build_bridge_tx(OFT_TOKEN_ETH, OFT_TOKEN_ARB, amount_in, recipient, refund_address=refund)
 
-        # The transaction target is always the OFT contract
         assert tx["to"] == OFT_ADDRESS
+        # The refund address must be encoded into the calldata
+        assert refund[2:].lower() in tx["data"].lower()
+
+    @pytest.mark.asyncio
+    async def test_build_bridge_tx_validates_token_in(self):
+        """build_bridge_tx raises BridgeError when token_in address does not match."""
+        oft = LayerZeroOFT(
+            w3=None,
+            src_chain_id=1,
+            dst_chain_id=42161,
+            oft_address=OFT_ADDRESS,
+        )
+        wrong_token = Token(
+            chain_id=ChainId.ETHEREUM,
+            address="0x" + "FF" * 20,
+            symbol="WRONG",
+            decimals=18,
+        )
+        amount_in = TokenAmount.from_human(wrong_token, "10")
+        with pytest.raises(BridgeError, match="token_in"):
+            with patch.object(oft, "quote_send_fee", new=AsyncMock(return_value=10**15)):
+                await oft.build_bridge_tx(wrong_token, OFT_TOKEN_ARB, amount_in, "0x" + "AA" * 20)
 
     def test_lz_eid_constants(self):
         assert _LZ_EID[1] == 30101  # Ethereum

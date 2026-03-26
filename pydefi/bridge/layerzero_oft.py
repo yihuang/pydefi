@@ -14,7 +14,8 @@ from __future__ import annotations
 from typing import Any
 
 from eth_contract import Contract
-from web3 import AsyncWeb3
+from hexbytes import HexBytes
+from web3 import AsyncWeb3, Web3
 
 from pydefi.bridge.base import BaseBridge
 from pydefi.exceptions import BridgeError
@@ -63,11 +64,19 @@ class LayerZeroOFT(BaseBridge):
     from the token).  The only cost is the LayerZero native messaging fee
     paid on top in the source chain's native gas token.
 
+    For OFTs deployed at the same contract address on every chain (e.g.
+    USDT0 at ``0x1E4a5963aBFD975d8c9021ce480b42188849D41d``), omit
+    ``dst_oft_address`` — it defaults to ``oft_address``.  For OFTs that use
+    different addresses per chain, pass the destination chain contract address
+    explicitly via ``dst_oft_address``.
+
     Args:
         w3: :class:`~web3.AsyncWeb3` instance for the source chain.
         src_chain_id: Source chain EVM ID.
         dst_chain_id: Destination chain EVM ID.
         oft_address: Address of the OFT contract on the source chain.
+        dst_oft_address: Address of the OFT contract on the destination chain.
+            Defaults to ``oft_address`` for unified-address OFTs.
     """
 
     def __init__(
@@ -76,10 +85,12 @@ class LayerZeroOFT(BaseBridge):
         src_chain_id: int,
         dst_chain_id: int,
         oft_address: str,
+        dst_oft_address: str | None = None,
     ) -> None:
         super().__init__(src_chain_id, dst_chain_id)
         self.w3 = w3
         self.oft_address = oft_address
+        self.dst_oft_address = dst_oft_address or oft_address
         self._oft = Contract.from_abi(_OFT_ABI, to=oft_address)
 
     @property
@@ -95,9 +106,28 @@ class LayerZeroOFT(BaseBridge):
 
     @staticmethod
     def _address_to_bytes32(address: str) -> bytes:
-        """Convert a 20-byte EVM address to a zero-padded 32-byte value."""
-        hex_addr = address.removeprefix("0x").lower()
-        return bytes.fromhex(hex_addr.zfill(64))
+        """Convert an EVM address to a zero-padded 32-byte value."""
+        return HexBytes(address).rjust(32, b"\x00")
+
+    def _validate_tokens(self, token_in: Token, token_out: Token) -> None:
+        """Validate that token addresses match the configured OFT contracts.
+
+        Raises:
+            :class:`~pydefi.exceptions.BridgeError`: If either token address
+                does not match the expected OFT contract address.
+        """
+        src_addr = Web3.to_checksum_address(self.oft_address)
+        dst_addr = Web3.to_checksum_address(self.dst_oft_address)
+        if Web3.to_checksum_address(token_in.address) != src_addr:
+            raise BridgeError(
+                f"LayerZeroOFT: token_in address {token_in.address!r} "
+                f"does not match source OFT address {self.oft_address!r}"
+            )
+        if Web3.to_checksum_address(token_out.address) != dst_addr:
+            raise BridgeError(
+                f"LayerZeroOFT: token_out address {token_out.address!r} "
+                f"does not match destination OFT address {self.dst_oft_address!r}"
+            )
 
     async def quote_send_fee(
         self,
@@ -165,7 +195,12 @@ class LayerZeroOFT(BaseBridge):
 
         Returns:
             A :class:`~pydefi.types.BridgeQuote`.
+
+        Raises:
+            :class:`~pydefi.exceptions.BridgeError`: If token addresses do not
+                match the configured OFT contracts.
         """
+        self._validate_tokens(token_in, token_out)
         return BridgeQuote(
             token_in=token_in,
             token_out=token_out,
@@ -205,8 +240,10 @@ class LayerZeroOFT(BaseBridge):
             Transaction dict with ``to``, ``data``, ``value``, ``gas``.
 
         Raises:
-            :class:`~pydefi.exceptions.BridgeError`: On fee estimation failure.
+            :class:`~pydefi.exceptions.BridgeError`: On fee estimation failure
+                or if token addresses do not match the configured OFT contracts.
         """
+        self._validate_tokens(token_in, token_out)
         _refund = refund_address or recipient
         dst_eid = self._lz_eid(self.dst_chain_id)
         to_bytes32 = self._address_to_bytes32(recipient)
