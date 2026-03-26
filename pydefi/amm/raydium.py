@@ -155,7 +155,7 @@ class Raydium(BaseSolanaAMM):
         token_out: Token,
         wallet: str,
         slippage_bps: int = 50,
-        compute_unit_price_micro_lamports: int | None = None,
+        compute_unit_price_micro_lamports: int = 100_000,
         **kwargs: Any,
     ) -> list[str]:
         """Build a Solana transaction for the swap via the Raydium API.
@@ -170,7 +170,8 @@ class Raydium(BaseSolanaAMM):
             wallet: Signer's Solana wallet address (base-58 encoded).
             slippage_bps: Maximum acceptable slippage in basis points.
             compute_unit_price_micro_lamports: Priority fee in micro-lamports
-                per compute unit.  ``None`` uses Raydium's default.
+                per compute unit (required by the Raydium API).  Defaults to
+                ``100_000`` (0.1 lamport/CU), which is adequate for most swaps.
             **kwargs: Extra body parameters forwarded to the transaction
                 endpoint (e.g. ``wrapSol``, ``unwrapSol``).
 
@@ -197,10 +198,9 @@ class Raydium(BaseSolanaAMM):
             "swapResponse": compute_response["data"],
             "txVersion": "V0",
             "wallet": wallet,
+            "computeBudgetConfig": {"microLamports": compute_unit_price_micro_lamports},
             **kwargs,
         }
-        if compute_unit_price_micro_lamports is not None:
-            payload["computeBudgetConfig"] = {"microLamports": compute_unit_price_micro_lamports}
 
         async with aiohttp.ClientSession() as session:
             async with session.post(url, json=payload) as resp:
