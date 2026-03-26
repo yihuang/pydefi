@@ -618,9 +618,7 @@ class TestRouter:
             gas_price_gwei=100,
             native_token_price_usd=3000,
             token_out_price_usd=1,
-            candidate_routes=5,
-            base_gas_units=120_000,
-            per_hop_gas_units=400_000,
+            max_hops=3,
         )
         assert len(net_best.steps) == 1
 
@@ -669,9 +667,7 @@ class TestRouter:
             gas_price_gwei=120,
             native_token_price_usd=3000,
             token_out_price_usd=1,
-            candidate_routes=5,
-            base_gas_units=120_000,
-            per_hop_gas_units=400_000,
+            max_hops=3,
         )
 
         gross_path = tuple(step.pool_address for step in gross_best.steps)
