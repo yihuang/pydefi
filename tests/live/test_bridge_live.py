@@ -354,6 +354,11 @@ class TestLayerZeroOFTLive:
         ratio = abs(tx_value - fee) / max(fee, 1)
         assert ratio < 0.10, f"tx value {tx_value} and fee quote {fee} differ by more than 10%"
 
+
+@pytest.mark.fork
+class TestLayerZeroOFTFork:
+    """Fork tests for LayerZeroOFT — require Anvil (``pytest -m fork``)."""
+
     async def test_build_bridge_tx_eth_call(self, fork_w3):
         """LayerZeroOFT: simulate send() on an Anvil fork via eth_call.
 
