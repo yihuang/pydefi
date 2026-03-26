@@ -152,6 +152,18 @@ async def fork_w3(request: pytest.FixtureRequest):
                 pass
         pytest.fail("Anvil did not start within 30 seconds")
 
+    yield w3
+
+    proc.terminate()
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+
 
 @pytest.fixture(scope="module")
 async def fork_w3_module():
