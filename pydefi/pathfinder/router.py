@@ -100,15 +100,13 @@ class Router:
                 raise ValueError(
                     "native_token_price_usd and token_out_price_usd are required when gas_price_gwei is provided"
                 )
-            return self.find_best_route_with_gas(
+            return self.find_best_route_gas_aware(
                 amount_in,
                 token_out,
                 gas_price_gwei=gas_price_gwei,
                 native_token_price_usd=native_token_price_usd,
                 token_out_price_usd=token_out_price_usd,
-                top_k=candidate_routes,
-                base_gas_units=base_gas_units,
-                per_hop_gas_units=per_hop_gas_units,
+                max_hops=self.max_hops,
             ).route
 
         src = amount_in.token
@@ -332,6 +330,73 @@ class Router:
             gas_cost_out=TokenAmount(token=route.amount_out.token, amount=gas_cost_out_raw),
             net_amount_out_raw=net_out_raw,
         )
+
+    def find_best_route_gas_aware(
+        self,
+        amount_in: TokenAmount,
+        token_out: Token,
+        *,
+        gas_price_gwei: float,
+        native_token_price_usd: float,
+        token_out_price_usd: float,
+        max_hops: int = 4,
+    ) -> GasAdjustedRoute:
+        """Graph-level gas-aware routing using ``effective_log_weight``."""
+        path = self.graph.find_best_route_gas_aware(
+            start=amount_in.token,
+            end=token_out,
+            amount_in=amount_in.amount,
+            weight_fn=lambda edge, current_amount: edge.effective_log_weight(
+                amount_in=current_amount,
+                gas_price_gwei=gas_price_gwei,
+                native_token_price_usd=native_token_price_usd,
+                token_out_price_usd=token_out_price_usd,
+            ),
+            max_hops=max_hops,
+        )
+
+        if not path:
+            raise NoRouteFoundError(
+                f"No route found from {amount_in.token.symbol} to {token_out.symbol} within {max_hops} hops"
+            )
+
+        final_amount = amount_in.amount
+        for edge in path:
+            final_amount = edge.amount_out(final_amount)
+
+        route = SwapRoute(
+            steps=[
+                SwapStep(
+                    token_in=edge.token_in,
+                    token_out=edge.token_out,
+                    pool_address=edge.pool_address,
+                    protocol=edge.protocol,
+                    fee=edge.fee_bps * 100,
+                )
+                for edge in path
+            ],
+            amount_in=amount_in,
+            amount_out=TokenAmount(token=token_out, amount=final_amount),
+            price_impact=self._estimate_price_impact(path, amount_in.amount),
+        )
+
+        gas_units = self._estimate_route_gas_units(route)
+        gas_cost_out_raw = self._gas_cost_in_token_out_raw(
+            gas_units=gas_units,
+            gas_price_gwei=gas_price_gwei,
+            native_token_price_usd=native_token_price_usd,
+            token_out_price_usd=token_out_price_usd,
+            token_out_decimals=route.amount_out.token.decimals,
+        )
+        net_out_raw = route.amount_out.amount - gas_cost_out_raw
+
+        return GasAdjustedRoute(
+            route=route,
+            gas_units=gas_units,
+            gas_cost_out=TokenAmount(token=route.amount_out.token, amount=gas_cost_out_raw),
+            net_amount_out_raw=net_out_raw,
+        )
+    
 
     @staticmethod
     def _estimate_route_gas_units(
