@@ -5,6 +5,7 @@ Each node in the graph is a :class:`~pydefi.types.Token`.
 Each directed edge represents a liquidity pool that can swap *token_in* →
 *token_out* and carries the pool's reserve information for price estimation.
 """
+
 from __future__ import annotations
 
 import math
@@ -366,9 +367,7 @@ class PoolGraph:
             raise ValueError("token_in and token_out must be different")
 
         # state -> (cumulative_weight, current_amount, path)
-        best: dict[tuple[str, int], tuple[float, int, list[PoolEdge]]] = {
-            (src_addr, 0): (0.0, amount_in, [])
-        }
+        best: dict[tuple[str, int], tuple[float, int, list[PoolEdge]]] = {(src_addr, 0): (0.0, amount_in, [])}
 
         for hop in range(max_hops):
             current_states = [(k, v) for k, v in best.items() if k[1] == hop]
@@ -407,9 +406,7 @@ class PoolGraph:
             if best_result is None:
                 best_result = entry
                 continue
-            if entry[0] < best_result[0] or (
-                entry[0] == best_result[0] and entry[1] > best_result[1]
-            ):
+            if entry[0] < best_result[0] or (entry[0] == best_result[0] and entry[1] > best_result[1]):
                 best_result = entry
 
         return [] if best_result is None else best_result[2]
