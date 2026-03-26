@@ -169,4 +169,6 @@ class BaseSolanaAMM(ABC):
         """Return the minimum acceptable amount after applying slippage."""
         if not 0 <= slippage_bps <= 10_000:
             raise ValueError("slippage_bps must be between 0 and 10_000 (inclusive)")
+        if not 0 <= slippage_bps <= 10_000:
+            raise ValueError("slippage_bps must be between 0 and 10_000 (inclusive)")
         return int(amount * (10_000 - slippage_bps) // 10_000)
