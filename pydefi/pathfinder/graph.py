@@ -72,8 +72,6 @@ class PoolEdge:
         amount_in_with_fee = amount_in * fee_factor
         numerator = amount_in_with_fee * self.reserve_out
         denominator = self.reserve_in * 10_000 + amount_in_with_fee
-        if denominator == 0:
-            return 0
         return numerator // denominator
 
     def estimate_price_impact(self, amount_in: int) -> Decimal:

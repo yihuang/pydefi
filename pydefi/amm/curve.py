@@ -109,7 +109,9 @@ class CurvePool(BaseAMM):
         try:
             amount_out: int = await getattr(self._pool.fns, fn_name)(i, j, amount_in).call(self.w3)
         except Exception as exc:
-            raise InsufficientLiquidityError(f"get_dy failed: {exc}") from exc
+            if "revert" in str(exc).lower() or "insufficient" in str(exc).lower():
+                raise InsufficientLiquidityError(f"get_dy failed: {exc}") from exc
+            raise
         return amount_out
 
     async def get_amounts_out(self, amount_in: TokenAmount, path: list[Token]) -> list[TokenAmount]:
