@@ -5,8 +5,8 @@ Raydium is the primary AMM on Solana, providing concentrated and standard
 liquidity pools.  This module queries the Raydium V3 compute API for swap
 quotes without requiring a Solana RPC connection.
 
-Docs: https://docs.raydium.io/
-API:  https://api-v3.raydium.io/
+Docs: https://docs.raydium.io/raydium/api-reference/trade/trade-api
+API:  https://transaction-v1.raydium.io/
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from pydefi.amm.base import BaseSolanaAMM
 from pydefi.exceptions import InsufficientLiquidityError
 from pydefi.types import SwapRoute, SwapStep, Token, TokenAmount
 
-_RAYDIUM_API_BASE = "https://api-v3.raydium.io"
+_RAYDIUM_API_BASE = "https://transaction-v1.raydium.io"
 
 
 class Raydium(BaseSolanaAMM):
