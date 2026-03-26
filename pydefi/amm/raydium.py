@@ -22,6 +22,8 @@ from pydefi.exceptions import InsufficientLiquidityError
 from pydefi.types import SwapRoute, SwapStep, Token, TokenAmount
 
 _RAYDIUM_API_BASE = "https://transaction-v1.raydium.io"
+# Native SOL mint address (used to detect when wrapping/unwrapping is needed)
+_SOL_MINT = "So11111111111111111111111111111111111111112"
 
 
 class Raydium(BaseSolanaAMM):
@@ -194,11 +196,17 @@ class Raydium(BaseSolanaAMM):
 
         # Step 2: build the transaction
         url = f"{self.api_url.rstrip('/')}/transaction/swap-base-in"
+        # Raydium requires wrapSol/unwrapSol when the native SOL mint is involved
+        # so that the API can auto-create/close the wSOL token account.
+        wrap_sol = kwargs.pop("wrapSol", amount_in.token.address == _SOL_MINT)
+        unwrap_sol = kwargs.pop("unwrapSol", token_out.address == _SOL_MINT)
         payload: dict[str, Any] = {
-            "swapResponse": compute_response["data"],
+            "swapResponse": compute_response,
             "txVersion": "V0",
             "wallet": wallet,
-            "computeBudgetConfig": {"microLamports": compute_unit_price_micro_lamports},
+            "computeUnitPriceMicroLamports": str(compute_unit_price_micro_lamports),
+            "wrapSol": wrap_sol,
+            "unwrapSol": unwrap_sol,
             **kwargs,
         }
 
