@@ -39,7 +39,7 @@ Control flow
 External / introspection
   0x30  CALL  <1-byte flags>  (bit0=requireSuccess)
   0x31  BALANCE_OF            (pop: token, account → push balance)
-  0x32  SELF_BAL              (push VM ETH balance)
+  0x32  SELF_ADDR             (push address(this))
   0x33  DELTA_START           (pop: token, account → snapshot)
   0x34  DELTA_LOAD            (pop: token, account → push delta)
 
@@ -73,7 +73,7 @@ OP_ASSERT_GE: int = 0x23
 OP_ASSERT_LE: int = 0x24
 OP_CALL: int = 0x30
 OP_BALANCE_OF: int = 0x31
-OP_SELF_BAL: int = 0x32
+OP_SELF_ADDR: int = 0x32
 OP_DELTA_START: int = 0x33
 OP_DELTA_LOAD: int = 0x34
 OP_PATCH_U256: int = 0x40
@@ -231,9 +231,15 @@ def balance_of() -> bytes:
     return bytes([OP_BALANCE_OF])
 
 
-def self_bal() -> bytes:
-    """Emit SELF_BAL — push the VM contract's native ETH balance."""
-    return bytes([OP_SELF_BAL])
+def self_addr() -> bytes:
+    """Emit SELF_ADDR — push the VM contract's own address onto the stack.
+
+    Combined with :func:`balance_of` and ``push_u256(0)`` (ETH token), this
+    gives the self ETH balance::
+
+        self_addr() + push_u256(0) + balance_of()
+    """
+    return bytes([OP_SELF_ADDR])
 
 
 def delta_start() -> bytes:

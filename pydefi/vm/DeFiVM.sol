@@ -44,7 +44,7 @@ pragma solidity ^0.8.24;
  *   0x30  CALL       <1-byte flags>      pop: gasLimit, to, value, calldataBufIdx -> push success
  *                                        flags bit-0: require success
  *   0x31  BALANCE_OF                     pop: token (0x0=ETH), account -> push balance
- *   0x32  SELF_BAL                       push self ETH balance
+ *   0x32  SELF_ADDR                      push address(this)
  *   0x33  DELTA_START                    pop: token (0x0=ETH), account -> snapshot balance
  *   0x34  DELTA_LOAD                     pop: token, account -> push (current - snapshot)
  *
@@ -80,7 +80,7 @@ contract DeFiVM {
     uint8 private constant OP_ASSERT_LE   = 0x24;
     uint8 private constant OP_CALL        = 0x30;
     uint8 private constant OP_BALANCE_OF  = 0x31;
-    uint8 private constant OP_SELF_BAL    = 0x32;
+    uint8 private constant OP_SELF_ADDR   = 0x32;
     uint8 private constant OP_DELTA_START = 0x33;
     uint8 private constant OP_DELTA_LOAD  = 0x34;
     uint8 private constant OP_PATCH_U256  = 0x40;
@@ -356,8 +356,8 @@ contract DeFiVM {
                 }
                 _push(s, bytes32(bal));
 
-            } else if (op == OP_SELF_BAL) {
-                _push(s, bytes32(address(this).balance));
+            } else if (op == OP_SELF_ADDR) {
+                _push(s, bytes32(uint256(uint160(address(this)))));
 
             } else if (op == OP_DELTA_START) {
                 // pop: token (address, 0x0=ETH), account (address) -> snapshot

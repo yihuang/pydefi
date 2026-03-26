@@ -7,7 +7,7 @@ of Ethereum mainnet, and exercise the full instruction set including:
    LOAD_REG, STORE_REG)
  - Control flow (JUMP, JUMPI, REVERT_IF, ASSERT_GE, ASSERT_LE)
  - External calls to a mock adapter (CALL)
- - Balance introspection (BALANCE_OF, SELF_BAL, DELTA_START, DELTA_LOAD) using
+ - Balance introspection (BALANCE_OF, SELF_ADDR, DELTA_START, DELTA_LOAD) using
    real on-chain WETH contract on the forked chain
  - ABI patching (PATCH_U256, PATCH_ADDR, RET_U256, RET_SLICE)
 
@@ -44,7 +44,7 @@ from pydefi.vm.program import (
     ret_slice,
     ret_u256,
     revert_if,
-    self_bal,
+    self_addr,
     store_reg,
     swap,
 )
@@ -340,12 +340,13 @@ class TestDeFiVMFork:
     # ------------------------------------------------------------------
 
     async def test_self_balance(self, ctx):
-        """SELF_BAL executes successfully."""
+        """SELF_ADDR + BALANCE_OF gives the VM contract's own ETH balance."""
         w3 = ctx["w3"]
         vm = ctx["vm"]
         deployer = ctx["deployer"]
 
-        program = self_bal() + pop()
+        # SELF_ADDR pushes address(this); push_u256(0) = ETH token; BALANCE_OF pops token then account
+        program = self_addr() + push_u256(0) + balance_of() + pop()
         tx = await vm.functions.execute(program).transact({"from": deployer})
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
