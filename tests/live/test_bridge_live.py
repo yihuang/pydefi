@@ -1,9 +1,10 @@
-"""Live integration tests for Mayan, GasZip, and Relay bridge APIs.
+"""Live integration tests for Mayan, GasZip, Relay, and LayerZeroOFT bridge integrations.
 
-These tests make real HTTP requests to public bridge APIs and verify that
-responses are structurally valid and numerically plausible.  Additionally,
-each bridge's ``build_bridge_tx()`` is verified on the source chain by
-simulating the produced transaction via ``eth_call``.
+These tests make real HTTP requests to public bridge APIs and/or on-chain
+JSON-RPC calls and verify that responses are structurally valid and numerically
+plausible.  Additionally, each bridge's ``build_bridge_tx()`` is verified on
+the source chain by simulating the produced transaction via ``eth_call`` where
+possible.
 
 Run with::
 
@@ -14,6 +15,7 @@ import pytest
 from web3 import Web3
 
 from pydefi.bridge.gaszip import GasZip
+from pydefi.bridge.layerzero_oft import LayerZeroOFT
 from pydefi.bridge.mayan import Mayan
 from pydefi.bridge.relay import Relay
 from pydefi.types import ChainId, Token, TokenAmount
@@ -243,3 +245,111 @@ class TestRelayLive:
             "data": tx["data"],
         }
         await eth_w3.eth.call(tx_params)
+
+
+# ---------------------------------------------------------------------------
+# LayerZeroOFT live tests
+# ---------------------------------------------------------------------------
+
+# ZRO (LayerZero governance token) — a canonical OFT v2 deployment.
+# Same contract address on Ethereum and Arbitrum (CREATE2 deployment).
+# Ethereum: https://etherscan.io/token/0x6985884C4392D348587B19cb9eAAf157F13271cd
+# Arbitrum: https://arbiscan.io/token/0x6985884C4392D348587B19cb9eAAf157F13271cd
+_ZRO_ADDRESS = "0x6985884C4392D348587B19cb9eAAf157F13271cd"
+
+ZRO_ETH = Token(
+    chain_id=ChainId.ETHEREUM,
+    address=_ZRO_ADDRESS,
+    symbol="ZRO",
+    decimals=18,
+)
+ZRO_ARB = Token(
+    chain_id=ChainId.ARBITRUM,
+    address=_ZRO_ADDRESS,
+    symbol="ZRO",
+    decimals=18,
+)
+
+# Bridge 1 ZRO in these tests (small amount, only fee estimation matters)
+BRIDGE_AMOUNT_ZRO = 10**18  # 1 ZRO
+
+
+@pytest.mark.live
+class TestLayerZeroOFTLive:
+    """Live tests for the LayerZeroOFT bridge integration.
+
+    These tests make real JSON-RPC calls to Ethereum mainnet to exercise the
+    ``quoteSend`` view function on the ZRO OFT contract.  No transactions are
+    broadcast and no token balance is required.
+    """
+
+    def _client(self, eth_w3) -> LayerZeroOFT:
+        return LayerZeroOFT(
+            w3=eth_w3,
+            src_chain_id=ChainId.ETHEREUM,
+            dst_chain_id=ChainId.ARBITRUM,
+            oft_address=_ZRO_ADDRESS,
+        )
+
+    async def test_get_quote_zro_eth_to_arb(self):
+        """LayerZeroOFT: get_quote returns a 1:1 quote with zero token bridge_fee."""
+        client = LayerZeroOFT(
+            w3=None,
+            src_chain_id=ChainId.ETHEREUM,
+            dst_chain_id=ChainId.ARBITRUM,
+            oft_address=_ZRO_ADDRESS,
+        )
+        amount_in = TokenAmount(token=ZRO_ETH, amount=BRIDGE_AMOUNT_ZRO)
+        quote = await client.get_quote(ZRO_ETH, ZRO_ARB, amount_in)
+
+        assert quote.protocol == "LayerZeroOFT"
+        assert quote.token_in == ZRO_ETH
+        assert quote.token_out == ZRO_ARB
+        # OFT transfers 1:1 — full amount arrives on destination
+        assert quote.amount_out.amount == BRIDGE_AMOUNT_ZRO, (
+            f"LayerZeroOFT amount_out should equal amount_in, got {quote.amount_out.human_amount}"
+        )
+        # No protocol fee deducted from the token
+        assert quote.bridge_fee.amount == 0
+        assert quote.estimated_time_seconds > 0
+
+    async def test_quote_send_fee_positive(self, eth_w3):
+        """LayerZeroOFT: quoteSend returns a positive native fee from the real contract."""
+        client = self._client(eth_w3)
+        fee = await client.quote_send_fee(
+            amount=BRIDGE_AMOUNT_ZRO,
+            recipient=ETH_WHALE,
+        )
+
+        assert isinstance(fee, int), "Native fee must be an integer"
+        assert fee > 0, f"Expected a positive LayerZero native fee, got {fee}"
+
+    async def test_build_bridge_tx_structure(self, eth_w3):
+        """LayerZeroOFT: build_bridge_tx returns a well-formed transaction dict."""
+        client = self._client(eth_w3)
+        amount_in = TokenAmount(token=ZRO_ETH, amount=BRIDGE_AMOUNT_ZRO)
+        tx = await client.build_bridge_tx(ZRO_ETH, ZRO_ARB, amount_in, ETH_WHALE)
+
+        assert tx.get("to") == _ZRO_ADDRESS, "tx['to'] must be the OFT contract address"
+        assert tx.get("data", "").startswith("0x"), "tx['data'] must be hex-encoded calldata"
+        assert len(tx["data"]) > 2, "tx['data'] must be non-empty"
+        # Value equals the native LZ messaging fee returned by quoteSend
+        assert int(tx.get("value", 0)) > 0, "tx['value'] must carry the LZ native fee"
+        assert int(tx.get("gas", 0)) > 0, "tx['gas'] must be a positive gas estimate"
+
+    async def test_build_bridge_tx_value_matches_quote_fee(self, eth_w3):
+        """LayerZeroOFT: the value in build_bridge_tx matches the standalone quote_send_fee."""
+        client = self._client(eth_w3)
+        amount_in = TokenAmount(token=ZRO_ETH, amount=BRIDGE_AMOUNT_ZRO)
+
+        fee = await client.quote_send_fee(BRIDGE_AMOUNT_ZRO, ETH_WHALE)
+        tx = await client.build_bridge_tx(ZRO_ETH, ZRO_ARB, amount_in, ETH_WHALE)
+
+        # Both calls go through quoteSend; the values should be consistent
+        # (allow a small margin in case of a block boundary between the two calls)
+        tx_value = int(tx["value"])
+        assert tx_value > 0
+        # The two independent quoteSend calls may differ slightly across blocks,
+        # but should be within 10% of each other on a stable network.
+        ratio = abs(tx_value - fee) / max(fee, 1)
+        assert ratio < 0.10, f"tx value {tx_value} and fee quote {fee} differ by more than 10%"
