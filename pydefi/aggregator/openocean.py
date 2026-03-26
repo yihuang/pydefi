@@ -54,6 +54,8 @@ class OpenOcean(BaseAggregator):
     ) -> None:
         super().__init__(chain_id, api_key)
         self._base_url = base_url or self._DEFAULT_BASE_URL
+        self._gas_price_cache: tuple[str, float] | None = None  # (price, timestamp)
+        self._gas_price_ttl: float = 30.0  # seconds
 
     @property
     def base_url(self) -> str:
@@ -105,8 +107,16 @@ class OpenOcean(BaseAggregator):
         Returns:
             The standard legacy gas price as a string (in Wei).
         """
+        import time
+        now = time.monotonic()
+        if self._gas_price_cache is not None:
+            cached_price, cached_time = self._gas_price_cache
+            if now - cached_time < self._gas_price_ttl:
+                return cached_price
         data = await self._get("gasPrice", {})
-        return str(data["data"]["standard"]["legacyGasPrice"])
+        price = str(data["data"]["standard"]["legacyGasPrice"])
+        self._gas_price_cache = (price, now)
+        return price
 
     async def get_quote(
         self,

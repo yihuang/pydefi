@@ -296,7 +296,13 @@ class GeckoTerminal(BasePoolDataProvider):
                     pools.append(self._parse_pool(item, included))
                 except Exception as exc:
                     pool_addr = item.get("attributes", {}).get("address", "?")
-                    logger.warning("Failed to parse pool %s: %s", pool_addr, exc)
+                    err_msg = str(exc)[:200]
+                    logger.warning(
+                        "Failed to parse pool %s [%s]: %s",
+                        pool_addr,
+                        type(exc).__name__,
+                        err_msg,
+                    )
                     continue
             if len(items) < _PAGE_SIZE:
                 # Last page reached
@@ -372,7 +378,13 @@ class GeckoTerminal(BasePoolDataProvider):
                         pool = self._parse_pool(item, included)
                     except Exception as exc:
                         pool_addr = item.get("attributes", {}).get("address", "?")
-                        logger.warning("Failed to parse pool %s: %s", pool_addr, exc)
+                        err_msg = str(exc)[:200]
+                        logger.warning(
+                            "Failed to parse pool %s [%s]: %s",
+                            pool_addr,
+                            type(exc).__name__,
+                            err_msg,
+                        )
                         continue
                     # Deduplicate by pool address (API may return duplicates when
                     # multiple queried tokens appear in the same pool)
@@ -415,7 +427,13 @@ class GeckoTerminal(BasePoolDataProvider):
                     pools.append(self._parse_pool(item, included))
                 except Exception as exc:
                     pool_addr = item.get("attributes", {}).get("address", "?")
-                    logger.warning("Failed to parse pool %s: %s", pool_addr, exc)
+                    err_msg = str(exc)[:200]
+                    logger.warning(
+                        "Failed to parse pool %s [%s]: %s",
+                        pool_addr,
+                        type(exc).__name__,
+                        err_msg,
+                    )
                     continue
             if len(items) < _PAGE_SIZE:
                 break
