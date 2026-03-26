@@ -7,6 +7,7 @@ import pytest
 from pydefi.bridge.across import Across
 from pydefi.bridge.base import BaseBridge
 from pydefi.bridge.gaszip import _SUPPORTED_CHAINS, GasZip
+from pydefi.bridge.layerzero_oft import _LZ_EID, LayerZeroOFT
 from pydefi.bridge.mayan import _CHAIN_NAMES, Mayan
 from pydefi.bridge.relay import Relay
 from pydefi.bridge.stargate import _LZ_CHAIN_ID, _POOL_IDS, Stargate
@@ -540,3 +541,151 @@ class TestRelay:
         with patch.object(r, "_request_quote", new=AsyncMock(return_value=mock_api_response)):
             with pytest.raises(BridgeError):
                 await r.build_bridge_tx(USDC_ETH, USDC_ARB, amount_in, recipient)
+
+
+# ---------------------------------------------------------------------------
+# LayerZeroOFT tests
+# ---------------------------------------------------------------------------
+
+OFT_ADDRESS = "0x" + "DD" * 20
+
+
+class TestLayerZeroOFT:
+    def test_protocol_name(self):
+        oft = LayerZeroOFT(
+            w3=None,
+            src_chain_id=1,
+            dst_chain_id=42161,
+            oft_address=OFT_ADDRESS,
+        )
+        assert oft.protocol_name == "LayerZeroOFT"
+
+    def test_chain_ids_stored(self):
+        oft = LayerZeroOFT(
+            w3=None,
+            src_chain_id=1,
+            dst_chain_id=42161,
+            oft_address=OFT_ADDRESS,
+        )
+        assert oft.src_chain_id == 1
+        assert oft.dst_chain_id == 42161
+
+    def test_lz_eid_known(self):
+        oft = LayerZeroOFT(
+            w3=None,
+            src_chain_id=1,
+            dst_chain_id=42161,
+            oft_address=OFT_ADDRESS,
+        )
+        assert oft._lz_eid(1) == _LZ_EID[1]
+        assert oft._lz_eid(42161) == _LZ_EID[42161]
+
+    def test_lz_eid_unknown_raises(self):
+        oft = LayerZeroOFT(
+            w3=None,
+            src_chain_id=1,
+            dst_chain_id=999999,
+            oft_address=OFT_ADDRESS,
+        )
+        with pytest.raises(BridgeError):
+            oft._lz_eid(999999)
+
+    def test_address_to_bytes32(self):
+        addr = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"
+        result = LayerZeroOFT._address_to_bytes32(addr)
+        assert len(result) == 32
+        # Address bytes should appear in the last 20 bytes
+        assert result[:12] == b"\x00" * 12
+        assert result[12:].hex() == addr[2:].lower()
+
+    def test_apply_slippage(self):
+        oft = LayerZeroOFT(
+            w3=None,
+            src_chain_id=1,
+            dst_chain_id=42161,
+            oft_address=OFT_ADDRESS,
+        )
+        assert oft._apply_slippage(1_000_000, 50) == 995_000
+        assert oft._apply_slippage(1_000_000, 0) == 1_000_000
+
+    @pytest.mark.asyncio
+    async def test_get_quote(self):
+        oft = LayerZeroOFT(
+            w3=None,
+            src_chain_id=1,
+            dst_chain_id=42161,
+            oft_address=OFT_ADDRESS,
+        )
+        amount_in = TokenAmount.from_human(USDC_ETH, "1000")
+        quote = await oft.get_quote(USDC_ETH, USDC_ARB, amount_in)
+
+        assert quote.protocol == "LayerZeroOFT"
+        # OFT is 1:1 — no token protocol fee
+        assert quote.amount_out.amount == amount_in.amount
+        assert quote.bridge_fee.amount == 0
+        assert quote.estimated_time_seconds == 30
+
+    @pytest.mark.asyncio
+    async def test_quote_send_fee(self):
+        oft = LayerZeroOFT(
+            w3=None,
+            src_chain_id=1,
+            dst_chain_id=42161,
+            oft_address=OFT_ADDRESS,
+        )
+        with patch.object(oft, "quote_send_fee", new=AsyncMock(return_value=5 * 10**15)):
+            fee = await oft.quote_send_fee(1_000_000, "0x" + "AA" * 20)
+        assert fee == 5 * 10**15
+
+    @pytest.mark.asyncio
+    async def test_build_bridge_tx(self):
+        oft = LayerZeroOFT(
+            w3=None,
+            src_chain_id=1,
+            dst_chain_id=42161,
+            oft_address=OFT_ADDRESS,
+        )
+        amount_in = TokenAmount.from_human(USDC_ETH, "1000")
+        recipient = "0x" + "AA" * 20
+
+        with patch.object(oft, "quote_send_fee", new=AsyncMock(return_value=5 * 10**15)):
+            tx = await oft.build_bridge_tx(USDC_ETH, USDC_ARB, amount_in, recipient)
+
+        assert tx["to"] == OFT_ADDRESS
+        assert tx["data"].startswith("0x")
+        assert tx["value"] == str(5 * 10**15)
+        assert int(tx["gas"]) > 0
+
+    @pytest.mark.asyncio
+    async def test_build_bridge_tx_uses_refund_address(self):
+        oft = LayerZeroOFT(
+            w3=None,
+            src_chain_id=1,
+            dst_chain_id=42161,
+            oft_address=OFT_ADDRESS,
+        )
+        amount_in = TokenAmount.from_human(USDC_ETH, "100")
+        recipient = "0x" + "AA" * 20
+        refund = "0x" + "BB" * 20
+
+        with patch.object(oft, "quote_send_fee", new=AsyncMock(return_value=10**15)):
+            tx = await oft.build_bridge_tx(USDC_ETH, USDC_ARB, amount_in, recipient, refund_address=refund)
+
+        # The transaction target is always the OFT contract
+        assert tx["to"] == OFT_ADDRESS
+
+    def test_lz_eid_constants(self):
+        assert _LZ_EID[1] == 30101  # Ethereum
+        assert _LZ_EID[42161] == 30110  # Arbitrum
+        assert _LZ_EID[10] == 30111  # Optimism
+        assert _LZ_EID[8453] == 30184  # Base
+        assert _LZ_EID[56] == 30102  # BNB Chain
+        assert _LZ_EID[137] == 30109  # Polygon
+        assert _LZ_EID[43114] == 30106  # Avalanche
+        assert _LZ_EID[59144] == 30183  # Linea
+        assert _LZ_EID[534352] == 30214  # Scroll
+        assert _LZ_EID[81457] == 30243  # Blast
+        assert _LZ_EID[324] == 30165  # zkSync Era
+        assert _LZ_EID[7777777] == 30195  # Zora
+        assert _LZ_EID[130] == 30320  # Unichain
+        assert _LZ_EID[480] == 30337  # World Chain
