@@ -2,14 +2,14 @@
 pydefi — Modern Python library for DeFi.
 
 Provides integrations with:
-- AMM DEXes (Uniswap V2/V3, Curve)
-- DEX aggregator APIs (1inch, ParaSwap, 0x)
+- AMM DEXes (Uniswap V2/V3, Curve, Raydium)
+- DEX aggregator APIs (1inch, ParaSwap, 0x, Jupiter)
 - Cross-chain bridges (Stargate, Across)
 - DEX pathfinding algorithm
 - Pool data providers (GeckoTerminal, Uniswap V2/V3 subgraphs)
 
 Built on top of ``eth-contract`` for modern interaction with on-chain smart
-contracts.
+contracts. Solana AMM and aggregator integrations use REST APIs directly.
 
 Quick-start example::
 
@@ -26,6 +26,23 @@ Quick-start example::
     # Build a swap route (requires live node)
     route = await uniswap.build_swap_route(
         amount_in=TokenAmount.from_human(ETH, "1.0"),
+        token_out=USDC,
+    )
+
+Solana quick-start::
+
+    from pydefi.aggregator import Jupiter
+    from pydefi.types import Token, TokenAmount, ChainId
+
+    SOL_MINT  = "So11111111111111111111111111111111111111112"
+    USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+
+    SOL  = Token(ChainId.SOLANA, SOL_MINT,  "SOL",  decimals=9)
+    USDC = Token(ChainId.SOLANA, USDC_MINT, "USDC", decimals=6)
+
+    jupiter = Jupiter()
+    route = await jupiter.build_swap_route(
+        amount_in=TokenAmount.from_human(SOL, "1.0"),
         token_out=USDC,
     )
 """

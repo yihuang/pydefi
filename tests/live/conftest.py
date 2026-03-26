@@ -10,11 +10,18 @@ the regular ``pytest`` run.  Run them explicitly with::
 
     pytest -m live
 
-Fork tests (``@pytest.mark.fork``) require `Anvil
-<https://book.getfoundry.sh/anvil/>`_ (part of the Foundry toolchain) to be
-installed and available on ``$PATH``.  They spin up a temporary Anvil process
-that forks the configured ``ETH_RPC_URL`` and execute *real* transactions
-against that local fork.  Run them with::
+Fork tests (``@pytest.mark.fork``) require either:
+
+- **EVM fork**: `Anvil <https://book.getfoundry.sh/anvil/>`_ (part of the
+  Foundry toolchain) installed on ``$PATH``.  They spin up a temporary Anvil
+  process that forks the configured ``ETH_RPC_URL``.
+
+- **Solana fork**: `surfpool <https://github.com/txtx/surfpool>`_ installed
+  on ``$PATH``.  They spin up a local surfpool process that forks Solana
+  mainnet state via ``SOLANA_RPC_URL`` (default:
+  ``https://api.mainnet-beta.solana.com``).
+
+Run fork tests with::
 
     pytest -m fork
 """
@@ -25,6 +32,7 @@ import socket
 import subprocess
 import time
 
+import aiohttp
 import pytest
 from web3 import AsyncWeb3
 
@@ -35,6 +43,12 @@ from pydefi.types import ChainId, Token
 # ---------------------------------------------------------------------------
 
 ETH_RPC_URL = os.environ.get("ETH_RPC_URL", "https://eth.drpc.org")
+
+# ---------------------------------------------------------------------------
+# Solana public RPC (used for simulation and as the surfpool upstream)
+# ---------------------------------------------------------------------------
+
+SOLANA_RPC_URL = os.environ.get("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com")
 
 # ---------------------------------------------------------------------------
 # Well-known Ethereum mainnet tokens
@@ -211,6 +225,81 @@ async def fork_w3_module():
         pytest.fail("Anvil did not start within 30 seconds")
 
     yield w3
+
+    proc.terminate()
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+
+
+@pytest.fixture
+async def surfpool_rpc():
+    """Start a surfpool Solana mainnet fork and yield the local RPC URL.
+
+    surfpool is a drop-in replacement for ``solana-test-validator`` that mirrors
+    live mainnet state without a full chain download.  It exposes the standard
+    Solana JSON-RPC interface at the chosen port.
+
+    The fixture is automatically skipped when the ``surfpool`` binary is not
+    found on ``$PATH``.  Install it with::
+
+        curl -sL https://run.surfpool.run/ | bash
+
+    Set ``SOLANA_RPC_URL`` to override the upstream Solana mainnet RPC used for
+    the fork (default: ``https://api.mainnet-beta.solana.com``).
+    """
+    import shutil
+
+    if shutil.which("surfpool") is None:
+        pytest.skip("surfpool not found on PATH — install surfpool to run Solana fork tests")
+
+    port = _free_port()
+    url = f"http://127.0.0.1:{port}"
+
+    env = os.environ.copy()
+    env.setdefault("SOLANA_RPC_URL", SOLANA_RPC_URL)
+
+    proc = subprocess.Popen(
+        ["surfpool", "start", "--rpc-port", str(port)],
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+    # Poll until surfpool is ready (mainnet state sync can take up to 60 s).
+    deadline = time.monotonic() + 60
+    ready = False
+    while time.monotonic() < deadline:
+        try:
+            async with aiohttp.ClientSession() as session:
+                payload = {"jsonrpc": "2.0", "id": 1, "method": "getHealth", "params": []}
+                async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                    data = await resp.json(content_type=None)
+                    if "result" in data:
+                        ready = True
+                        break
+        except Exception:  # noqa: BLE001 — expected during startup
+            pass
+        await asyncio.sleep(1)
+
+    if not ready:
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+        pytest.fail("surfpool did not start within 60 seconds")
+
+    yield url
 
     proc.terminate()
     try:

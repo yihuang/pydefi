@@ -11,7 +11,7 @@ from typing import ClassVar
 
 
 class ChainId(IntEnum):
-    """Well-known EVM chain IDs."""
+    """Well-known chain IDs (EVM and non-EVM)."""
 
     ETHEREUM = 1
     OPTIMISM = 10
@@ -28,6 +28,8 @@ class ChainId(IntEnum):
     ZKSYNC = 324
     ZORA = 7777777
     SEPOLIA = 11155111
+    # Solana – uses the Wormhole / cross-chain convention for its "chain ID"
+    SOLANA = 1399811149
 
 
 @dataclass(frozen=True)

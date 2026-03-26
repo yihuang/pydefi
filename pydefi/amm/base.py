@@ -1,11 +1,12 @@
 """
-Base class for AMM DEX integrations.
+Base classes for AMM DEX integrations (EVM and Solana).
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from decimal import Decimal
+from typing import Any
 
 from eth_contract import Contract
 from web3 import AsyncWeb3
@@ -87,6 +88,8 @@ class BaseAMM(ABC):
     @staticmethod
     def _apply_slippage(amount: int, slippage_bps: int) -> int:
         """Return the minimum acceptable amount after applying slippage."""
+        if not 0 <= slippage_bps <= 10_000:
+            raise ValueError("slippage_bps must be between 0 and 10_000 (inclusive)")
         return int(amount * (10_000 - slippage_bps) // 10_000)
 
     @staticmethod
@@ -99,3 +102,73 @@ class BaseAMM(ABC):
     def _make_contract(self, abi_or_signatures: list, address: str) -> Contract:
         """Convenience: create a bound :class:`~eth_contract.Contract`."""
         return Contract.from_abi(abi_or_signatures, to=address)
+
+
+class BaseSolanaAMM(ABC):
+    """Abstract base class for Solana AMM integrations.
+
+    Sub-classes wrap specific Solana AMM protocols (Raydium, Orca, …) and
+    expose a uniform interface for querying prices and building swap routes
+    using HTTP APIs rather than EVM contract calls.
+
+    Args:
+        api_url: Base URL for the AMM's HTTP API.  Sub-classes define a
+            sensible default when *api_url* is ``None``.
+    """
+
+    def __init__(self, api_url: str | None = None) -> None:
+        self.api_url = api_url
+
+    @property
+    @abstractmethod
+    def protocol_name(self) -> str:
+        """Human-readable name of this AMM protocol."""
+
+    @abstractmethod
+    async def get_quote(
+        self,
+        amount_in: TokenAmount,
+        token_out: Token,
+        slippage_bps: int = 50,
+        **kwargs: Any,
+    ) -> TokenAmount:
+        """Get a swap quote for the given input and output tokens.
+
+        Args:
+            amount_in: Exact input amount.
+            token_out: Desired output token.
+            slippage_bps: Maximum acceptable slippage in basis points.
+            **kwargs: Extra protocol-specific parameters.
+
+        Returns:
+            Expected output :class:`~pydefi.types.TokenAmount`.
+        """
+
+    @abstractmethod
+    async def build_swap_route(
+        self,
+        amount_in: TokenAmount,
+        token_out: Token,
+        slippage_bps: int = 50,
+        **kwargs: Any,
+    ) -> SwapRoute:
+        """Build a :class:`~pydefi.types.SwapRoute` for the given swap.
+
+        Args:
+            amount_in: Exact input amount.
+            token_out: Desired output token.
+            slippage_bps: Maximum acceptable slippage in basis points.
+            **kwargs: Extra protocol-specific parameters.
+
+        Returns:
+            A fully described :class:`~pydefi.types.SwapRoute`.
+        """
+
+    @staticmethod
+    def _apply_slippage(amount: int, slippage_bps: int) -> int:
+        """Return the minimum acceptable amount after applying slippage."""
+        if not 0 <= slippage_bps <= 10_000:
+            raise ValueError("slippage_bps must be between 0 and 10_000 (inclusive)")
+        if not 0 <= slippage_bps <= 10_000:
+            raise ValueError("slippage_bps must be between 0 and 10_000 (inclusive)")
+        return int(amount * (10_000 - slippage_bps) // 10_000)
