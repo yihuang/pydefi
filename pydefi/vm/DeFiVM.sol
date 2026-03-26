@@ -45,8 +45,7 @@ pragma solidity ^0.8.24;
  *                                        flags bit-0: require success
  *   0x31  BALANCE_OF                     pop: token (0x0=ETH), account -> push balance
  *   0x32  SELF_ADDR                      push address(this)
- *   0x33  DELTA_START                    pop: token (0x0=ETH), account -> snapshot balance
- *   0x34  DELTA_LOAD                     pop: token, account -> push (current - snapshot)
+ *   0x33  SUB                            pop a, b -> push a - b  (saturates to 0 if a < b)
  *
  * ABI / data
  *   0x40  PATCH_U256 <2-byte offset>     pop: value, bufIdx -> patch 32-byte word in buffer
@@ -62,7 +61,6 @@ contract DeFiVM {
     uint8  private constant MAX_STACK   = 32;
     uint8  private constant MAX_REGS    = 16;
     uint8  private constant MAX_BUFFERS = 16;
-    uint8  private constant MAX_SNAPS   = 16;
 
     // Opcodes
     uint8 private constant OP_PUSH_U256   = 0x01;
@@ -81,8 +79,7 @@ contract DeFiVM {
     uint8 private constant OP_CALL        = 0x30;
     uint8 private constant OP_BALANCE_OF  = 0x31;
     uint8 private constant OP_SELF_ADDR   = 0x32;
-    uint8 private constant OP_DELTA_START = 0x33;
-    uint8 private constant OP_DELTA_LOAD  = 0x34;
+    uint8 private constant OP_SUB         = 0x33;
     uint8 private constant OP_PATCH_U256  = 0x40;
     uint8 private constant OP_PATCH_ADDR  = 0x41;
     uint8 private constant OP_RET_U256    = 0x42;
@@ -109,12 +106,6 @@ contract DeFiVM {
 
         // Last external call returndata
         bytes       retdata;
-
-        // Balance snapshots for DELTA_START / DELTA_LOAD
-        address[16] snapTokens;
-        address[16] snapAccounts;
-        uint256[16] snapBalances;
-        uint8       numSnaps;
     }
 
     // -------------------------------------------------------------------------
@@ -359,67 +350,17 @@ contract DeFiVM {
             } else if (op == OP_SELF_ADDR) {
                 _push(s, bytes32(uint256(uint160(address(this)))));
 
-            } else if (op == OP_DELTA_START) {
-                // pop: token (address, 0x0=ETH), account (address) -> snapshot
-                require(s.sp >= 2, "DeFiVM: DELTA_START needs 2 items");
-                require(s.numSnaps < MAX_SNAPS, "DeFiVM: snapshot limit");
+            } else if (op == OP_SUB) {
+                // pop a (top), pop b -> push (a - b), saturates to 0
+                require(s.sp >= 2, "DeFiVM: SUB needs 2 items");
 
                 s.sp--;
-                address dToken = address(uint160(uint256(s.stack[s.sp])));
+                uint256 a = uint256(s.stack[s.sp]);
 
                 s.sp--;
-                address dAccount = address(uint160(uint256(s.stack[s.sp])));
+                uint256 b = uint256(s.stack[s.sp]);
 
-                uint256 snap;
-                if (dToken == address(0)) {
-                    snap = dAccount.balance;
-                } else {
-                    (bool ok, bytes memory res) = dToken.staticcall(
-                        abi.encodeWithSelector(0x70a08231, dAccount)
-                    );
-                    require(ok, "DeFiVM: DELTA_START balanceOf failed");
-                    snap = abi.decode(res, (uint256));
-                }
-                uint8 si = s.numSnaps;
-                s.snapTokens[si]   = dToken;
-                s.snapAccounts[si] = dAccount;
-                s.snapBalances[si] = snap;
-                s.numSnaps++;
-
-            } else if (op == OP_DELTA_LOAD) {
-                // pop: token (address), account (address) -> push (current - snapshot)
-                require(s.sp >= 2, "DeFiVM: DELTA_LOAD needs 2 items");
-
-                s.sp--;
-                address dToken = address(uint160(uint256(s.stack[s.sp])));
-
-                s.sp--;
-                address dAccount = address(uint160(uint256(s.stack[s.sp])));
-
-                // Find matching snapshot
-                uint256 snapBal;
-                bool found;
-                for (uint8 si = 0; si < s.numSnaps; si++) {
-                    if (s.snapTokens[si] == dToken && s.snapAccounts[si] == dAccount) {
-                        snapBal = s.snapBalances[si];
-                        found = true;
-                        break;
-                    }
-                }
-                require(found, "DeFiVM: no snapshot found");
-
-                uint256 curBal;
-                if (dToken == address(0)) {
-                    curBal = dAccount.balance;
-                } else {
-                    (bool ok, bytes memory res) = dToken.staticcall(
-                        abi.encodeWithSelector(0x70a08231, dAccount)
-                    );
-                    require(ok, "DeFiVM: DELTA_LOAD balanceOf failed");
-                    curBal = abi.decode(res, (uint256));
-                }
-                uint256 delta = curBal >= snapBal ? curBal - snapBal : 0;
-                _push(s, bytes32(delta));
+                _push(s, bytes32(a >= b ? a - b : 0));
 
             // ------------------------------------------------------------------
             // ABI / data patching

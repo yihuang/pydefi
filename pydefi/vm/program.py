@@ -40,8 +40,7 @@ External / introspection
   0x30  CALL  <1-byte flags>  (bit0=requireSuccess)
   0x31  BALANCE_OF            (pop: token, account → push balance)
   0x32  SELF_ADDR             (push address(this))
-  0x33  DELTA_START           (pop: token, account → snapshot)
-  0x34  DELTA_LOAD            (pop: token, account → push delta)
+  0x33  SUB                   (pop a, b → push a - b, saturates to 0 if a < b)
 
 ABI / data
   0x40  PATCH_U256 <2-byte offset>
@@ -74,8 +73,7 @@ OP_ASSERT_LE: int = 0x24
 OP_CALL: int = 0x30
 OP_BALANCE_OF: int = 0x31
 OP_SELF_ADDR: int = 0x32
-OP_DELTA_START: int = 0x33
-OP_DELTA_LOAD: int = 0x34
+OP_SUB: int = 0x33
 OP_PATCH_U256: int = 0x40
 OP_PATCH_ADDR: int = 0x41
 OP_RET_U256: int = 0x42
@@ -242,21 +240,21 @@ def self_addr() -> bytes:
     return bytes([OP_SELF_ADDR])
 
 
-def delta_start() -> bytes:
-    """Emit DELTA_START — snapshot the ERC-20 balance of (account, token).
+def sub() -> bytes:
+    """Emit SUB — pop ``a`` (top) then ``b``; push ``a - b`` (saturates to 0 if a < b).
 
-    Pops ``token`` (top) then ``account`` from the stack and records the
-    current balance for a later :func:`delta_load` call.
+    Use with two :func:`balance_of` calls to compute a balance delta::
+
+        push_addr(account)
+        + push_addr(token)    # or push_u256(0) for ETH
+        + balance_of()        # pre-balance on stack
+        + <call that changes balance>
+        + push_addr(account)
+        + push_addr(token)
+        + balance_of()        # post-balance on top
+        + sub()               # post - pre
     """
-    return bytes([OP_DELTA_START])
-
-
-def delta_load() -> bytes:
-    """Emit DELTA_LOAD — compute balance delta since the last :func:`delta_start`.
-
-    Pops ``token`` (top) then ``account``; pushes ``current_balance - snapshot``.
-    """
-    return bytes([OP_DELTA_LOAD])
+    return bytes([OP_SUB])
 
 
 # ---------------------------------------------------------------------------

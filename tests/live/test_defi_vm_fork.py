@@ -7,7 +7,7 @@ of Ethereum mainnet, and exercise the full instruction set including:
    LOAD_REG, STORE_REG)
  - Control flow (JUMP, JUMPI, REVERT_IF, ASSERT_GE, ASSERT_LE)
  - External calls to a mock adapter (CALL)
- - Balance introspection (BALANCE_OF, SELF_ADDR, DELTA_START, DELTA_LOAD) using
+ - Balance introspection (BALANCE_OF, SELF_ADDR, SUB) using
    real on-chain WETH contract on the forked chain
  - ABI patching (PATCH_U256, PATCH_ADDR, RET_U256, RET_SLICE)
 
@@ -29,8 +29,6 @@ from pydefi.vm.program import (
     assert_le,
     balance_of,
     call,
-    delta_load,
-    delta_start,
     dup,
     jump,
     jumpi,
@@ -46,6 +44,7 @@ from pydefi.vm.program import (
     revert_if,
     self_addr,
     store_reg,
+    sub,
     swap,
 )
 
@@ -363,18 +362,26 @@ class TestDeFiVMFork:
         assert receipt["status"] == 1
 
     async def test_delta_balance_weth(self, ctx):
-        """DELTA_START / DELTA_LOAD measures zero delta when no transfer occurs."""
+        """SUB computes a zero balance delta when no transfer occurs.
+
+        Pattern: balance_of (pre) → balance_of (post) → sub
+        """
         w3 = ctx["w3"]
         vm = ctx["vm"]
         deployer = ctx["deployer"]
 
+        # Stack after each step:
+        #   push WHALE + WETH + BALANCE_OF → [pre_bal]
+        #   push WHALE + WETH + BALANCE_OF → [pre_bal, post_bal]
+        #   sub → [post_bal - pre_bal]  (== 0 here since no transfer happened)
         program = (
             push_addr(WHALE)
             + push_addr(WETH_MAINNET)
-            + delta_start()
+            + balance_of()
             + push_addr(WHALE)
             + push_addr(WETH_MAINNET)
-            + delta_load()
+            + balance_of()
+            + sub()
             + pop()
         )
         tx = await vm.functions.execute(program).transact({"from": deployer})
