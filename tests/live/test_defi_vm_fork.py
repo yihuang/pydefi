@@ -18,12 +18,36 @@ Run with::
 
 from __future__ import annotations
 
-import struct
 from pathlib import Path
 
 import pytest
 from web3 import AsyncWeb3
 from web3.exceptions import ContractLogicError, Web3RPCError
+
+from pydefi.vm.program import (
+    assert_ge,
+    assert_le,
+    balance_of,
+    call,
+    delta_load,
+    delta_start,
+    dup,
+    jump,
+    jumpi,
+    load_reg,
+    patch_addr,
+    patch_u256,
+    pop,
+    push_addr,
+    push_bytes,
+    push_u256,
+    ret_slice,
+    ret_u256,
+    revert_if,
+    self_bal,
+    store_reg,
+    swap,
+)
 
 # ---------------------------------------------------------------------------
 # Optional: skip whole module if solcx not installed
@@ -40,161 +64,6 @@ SOL_FILE = REPO_ROOT / "pydefi" / "vm" / "DeFiVM.sol"
 WETH_MAINNET = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
 # Coinbase 8 — a well-funded address on mainnet (used for introspection only)
 WHALE = "0x77134cbC06cB00b66F4c7e623D5fdBF6777635EC"
-
-# ---------------------------------------------------------------------------
-# Opcodes (mirrors the constants in DeFiVM.sol)
-# ---------------------------------------------------------------------------
-OP_PUSH_U256 = 0x01
-OP_PUSH_ADDR = 0x02
-OP_PUSH_BYTES = 0x03
-OP_DUP = 0x04
-OP_SWAP = 0x05
-OP_POP = 0x06
-OP_LOAD_REG = 0x10
-OP_STORE_REG = 0x11
-OP_JUMP = 0x20
-OP_JUMPI = 0x21
-OP_REVERT_IF = 0x22
-OP_ASSERT_GE = 0x23
-OP_ASSERT_LE = 0x24
-OP_CALL = 0x30
-OP_BALANCE_OF = 0x31
-OP_SELF_BAL = 0x32
-OP_DELTA_START = 0x33
-OP_DELTA_LOAD = 0x34
-OP_PATCH_U256 = 0x40
-OP_PATCH_ADDR = 0x41
-OP_RET_U256 = 0x42
-OP_RET_SLICE = 0x43
-
-
-# ---------------------------------------------------------------------------
-# Program builder helpers
-# ---------------------------------------------------------------------------
-
-
-def u256(n: int) -> bytes:
-    """Encode a uint256 as 32 big-endian bytes."""
-    return n.to_bytes(32, "big")
-
-
-def addr(a: str) -> bytes:
-    """Encode a checksummed / hex Ethereum address as 20 bytes."""
-    raw = bytes.fromhex(a.removeprefix("0x"))
-    assert len(raw) == 20, f"bad address length: {a!r}"
-    return raw
-
-
-def u16(n: int) -> bytes:
-    return struct.pack(">H", n)
-
-
-def push_u256(n: int) -> bytes:
-    return bytes([OP_PUSH_U256]) + u256(n)
-
-
-def push_addr(a: str) -> bytes:
-    return bytes([OP_PUSH_ADDR]) + addr(a)
-
-
-def push_bytes(data: bytes) -> bytes:
-    assert len(data) <= 0xFFFF
-    return bytes([OP_PUSH_BYTES]) + u16(len(data)) + data
-
-
-def dup() -> bytes:
-    return bytes([OP_DUP])
-
-
-def swap() -> bytes:
-    return bytes([OP_SWAP])
-
-
-def pop() -> bytes:
-    return bytes([OP_POP])
-
-
-def load_reg(i: int) -> bytes:
-    return bytes([OP_LOAD_REG, i])
-
-
-def store_reg(i: int) -> bytes:
-    return bytes([OP_STORE_REG, i])
-
-
-def jump(target: int) -> bytes:
-    return bytes([OP_JUMP]) + u16(target)
-
-
-def jumpi(target: int) -> bytes:
-    return bytes([OP_JUMPI]) + u16(target)
-
-
-def revert_if(msg: str) -> bytes:
-    raw = msg.encode()
-    assert len(raw) <= 255
-    return bytes([OP_REVERT_IF, len(raw)]) + raw
-
-
-def assert_ge(msg: str = "") -> bytes:
-    raw = msg.encode()
-    assert len(raw) <= 255
-    return bytes([OP_ASSERT_GE, len(raw)]) + raw
-
-
-def assert_le(msg: str = "") -> bytes:
-    raw = msg.encode()
-    assert len(raw) <= 255
-    return bytes([OP_ASSERT_LE, len(raw)]) + raw
-
-
-def call(require_success: bool = True) -> bytes:
-    """Emit a CALL opcode.
-
-    Caller must have pushed on the stack (top to bottom):
-        gasLimit (uint256)  <- top
-        to       (address)
-        value    (uint256)
-        calldataBufIdx (bytes)
-    """
-    flags = 0x01 if require_success else 0x00
-    return bytes([OP_CALL, flags])
-
-
-def balance_of() -> bytes:
-    """BALANCE_OF – pop: token, account → push balance."""
-    return bytes([OP_BALANCE_OF])
-
-
-def self_bal() -> bytes:
-    return bytes([OP_SELF_BAL])
-
-
-def delta_start() -> bytes:
-    """DELTA_START – pop: token, account → snapshot."""
-    return bytes([OP_DELTA_START])
-
-
-def delta_load() -> bytes:
-    """DELTA_LOAD – pop: token, account → push delta."""
-    return bytes([OP_DELTA_LOAD])
-
-
-def patch_u256(offset: int) -> bytes:
-    return bytes([OP_PATCH_U256]) + u16(offset)
-
-
-def patch_addr(offset: int) -> bytes:
-    return bytes([OP_PATCH_ADDR]) + u16(offset)
-
-
-def ret_u256(offset: int) -> bytes:
-    return bytes([OP_RET_U256]) + u16(offset)
-
-
-def ret_slice(offset: int, length: int) -> bytes:
-    return bytes([OP_RET_SLICE]) + u16(offset) + u16(length)
-
 
 # ---------------------------------------------------------------------------
 # Compile + deploy helpers
