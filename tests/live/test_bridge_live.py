@@ -357,48 +357,11 @@ class TestLayerZeroOFTLive:
     async def test_build_bridge_tx_eth_call(self, fork_w3):
         """LayerZeroOFT: simulate send() on an Anvil fork via eth_call.
 
-        Scans recent ZRO Transfer events in the fork to find a token holder,
-        then verifies the built transaction does not revert.
+        Uses a known ZRO whale on Ethereum mainnet and verifies the built
+        transaction does not revert when submitted via eth_call.
         """
-        from hexbytes import HexBytes
-
-        # Scan the last 500 blocks for Transfer events from the ZRO token contract
-        # to identify a current token holder with sufficient balance.
-        block_num = await fork_w3.eth.block_number
-        transfer_topic = Web3.keccak(text="Transfer(address,address,uint256)")
-        logs = await fork_w3.eth.get_logs(
-            {
-                "fromBlock": block_num - 500,
-                "toBlock": block_num,
-                "address": Web3.to_checksum_address(_ZRO_ADDRESS),
-                "topics": [transfer_topic],
-            }
-        )
-        if not logs:
-            pytest.skip("No ZRO Transfer events in the last 500 blocks; cannot identify a holder")
-
-        # Walk backwards through recent transfers to find a recipient with enough ZRO.
-        # Transfer(address indexed from, address indexed to, uint256 value):
-        #   topics[0] = event signature hash
-        #   topics[1] = from (sender, padded to 32 bytes)
-        #   topics[2] = to   (recipient, padded to 32 bytes)  ← we extract this
-        from eth_contract import Contract
-
-        erc20 = Contract.from_abi(
-            ["function balanceOf(address) view returns (uint256)"],
-            to=_ZRO_ADDRESS,
-        )
-        whale = None
-        for log in reversed(logs):
-            # topics[2] is the 'to' address (recipient) padded to 32 bytes
-            candidate = Web3.to_checksum_address(HexBytes(log["topics"][2])[-20:])
-            balance = await erc20.fns.balanceOf(candidate).call(fork_w3)
-            if balance >= BRIDGE_AMOUNT_ZRO:
-                whale = candidate
-                break
-
-        if whale is None:
-            pytest.skip("Could not find a ZRO holder with sufficient balance in recent transfers")
+        # Known ZRO whale on Ethereum mainnet with a large ZRO balance.
+        whale = Web3.to_checksum_address("0x1f903473376fbe98cc763f1bc459c8fdb6ac3909")
 
         # Give the whale enough ETH to cover the LayerZero messaging fee
         await fork_w3.provider.make_request("anvil_setBalance", [whale, hex(10 * 10**18)])
