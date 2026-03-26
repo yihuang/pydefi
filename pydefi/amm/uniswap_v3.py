@@ -190,7 +190,9 @@ class UniswapV3(BaseAMM):
             result = await self._quoter.fns.quoteExactInputSingle(params).call(self.w3)
             amount_out = result[0] if isinstance(result, (list, tuple)) else result
         except Exception as exc:
-            raise InsufficientLiquidityError(f"quoteExactInputSingle failed: {exc}") from exc
+            if "revert" in str(exc).lower() or "insufficient" in str(exc).lower():
+                raise InsufficientLiquidityError(f"quoteExactInputSingle failed: {exc}") from exc
+            raise
 
         return TokenAmount(token=token_out, amount=amount_out)
 
@@ -232,7 +234,9 @@ class UniswapV3(BaseAMM):
             result = await self._quoter.fns.quoteExactInput(encoded_path, amount_in.amount).call(self.w3)
             final_amount_out = result[0] if isinstance(result, (list, tuple)) else result
         except Exception as exc:
-            raise InsufficientLiquidityError(f"quoteExactInput failed: {exc}") from exc
+            if "revert" in str(exc).lower() or "insufficient" in str(exc).lower():
+                raise InsufficientLiquidityError(f"quoteExactInput failed: {exc}") from exc
+            raise
 
         # We only have the final output; intermediate amounts are unavailable
         # from quoteExactInput — return just start and end.
@@ -266,7 +270,9 @@ class UniswapV3(BaseAMM):
             result = await self._quoter.fns.quoteExactOutputSingle(params).call(self.w3)
             amount_in_raw = result[0] if isinstance(result, (list, tuple)) else result
         except Exception as exc:
-            raise InsufficientLiquidityError(f"quoteExactOutputSingle failed: {exc}") from exc
+            if "revert" in str(exc).lower() or "insufficient" in str(exc).lower():
+                raise InsufficientLiquidityError(f"quoteExactOutputSingle failed: {exc}") from exc
+            raise
 
         return [TokenAmount(token=path[0], amount=amount_in_raw), amount_out]
 

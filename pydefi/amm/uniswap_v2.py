@@ -110,7 +110,11 @@ class UniswapV2(BaseAMM):
         try:
             raw_amounts: list[int] = await self._router.fns.getAmountsOut(amount_in.amount, addresses).call(self.w3)
         except Exception as exc:
-            raise InsufficientLiquidityError(f"getAmountsOut failed: {exc}") from exc
+            # Only convert to InsufficientLiquidityError for contract reverts.
+            # Other exceptions (RPC timeout, connection error, etc.) propagate as-is.
+            if "revert" in str(exc).lower() or "insufficient" in str(exc).lower():
+                raise InsufficientLiquidityError(f"getAmountsOut failed: {exc}") from exc
+            raise
 
         return [TokenAmount(token=path[i], amount=raw_amounts[i]) for i in range(len(path))]
 
@@ -135,7 +139,9 @@ class UniswapV2(BaseAMM):
         try:
             raw_amounts: list[int] = await self._router.fns.getAmountsIn(amount_out.amount, addresses).call(self.w3)
         except Exception as exc:
-            raise InsufficientLiquidityError(f"getAmountsIn failed: {exc}") from exc
+            if "revert" in str(exc).lower() or "insufficient" in str(exc).lower():
+                raise InsufficientLiquidityError(f"getAmountsIn failed: {exc}") from exc
+            raise
 
         return [TokenAmount(token=path[i], amount=raw_amounts[i]) for i in range(len(path))]
 
