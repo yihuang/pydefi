@@ -128,7 +128,7 @@ class Router:
                 token_out=edge.token_out,
                 pool_address=edge.pool_address,
                 protocol=edge.protocol,
-                fee=edge.fee_bps * 100,
+                fee=edge.fee_bps,
             )
             for edge in final_path
         ]
@@ -208,7 +208,7 @@ class Router:
                         token_out=e.token_out,
                         pool_address=e.pool_address,
                         protocol=e.protocol,
-                        fee=e.fee_bps * 100,
+                        fee=e.fee_bps,
                     )
                     for e in path
                 ]
