@@ -10,8 +10,8 @@ pragma solidity ^0.8.24;
  *  • Atomic execution – a "program" runs all-at-once; any revert undoes everything.
  *  • Register-based   – 16 named registers (R0-R15) plus a temporary 32-element stack.
  *  • Adapter-only     – external CALLs are restricted to an owner-managed whitelist.
- *  • Gas-capped       – hard limits on total ops (1 024) and external calls (16).
- *  • No unbounded loops – only forward jumps are permitted (JUMP / JUMPI).
+ *  • Gas-capped       – hard limit on total ops (1 024); loop and call counts are
+ *                       bounded naturally by the EVM gas limit.
  *
  * Instruction set
  * ---------------
@@ -26,7 +26,7 @@ pragma solidity ^0.8.24;
  *   0x11  STORE_REG  <1-byte i>          pop -> register[i]
  *
  * Control flow
- *   0x20  JUMP       <2-byte target>     unconditional forward jump
+ *   0x20  JUMP       <2-byte target>     unconditional jump
  *   0x21  JUMPI      <2-byte target>     jump if top-of-stack != 0
  *   0x22  REVERT_IF  <1-byte msgLen>     revert with msg if top != 0
  *   0x23  ASSERT_GE  <1-byte msgLen>     pop a, b -> revert if a < b  (a >= b required)
@@ -56,7 +56,6 @@ contract DeFiVM {
     uint8  private constant MAX_BUFFERS = 16;
     uint8  private constant MAX_SNAPS   = 16;
     uint16 private constant MAX_OPS     = 1024;
-    uint8  private constant MAX_CALLS   = 16;
 
     // Opcodes
     uint8 private constant OP_PUSH_U256   = 0x01;
@@ -96,7 +95,7 @@ contract DeFiVM {
     // -------------------------------------------------------------------------
 
     event AdapterSet(address indexed adapter, bool enabled);
-    event ProgramExecuted(uint256 opsUsed, uint256 callsUsed);
+    event ProgramExecuted(uint256 opsUsed);
 
     // -------------------------------------------------------------------------
     // Constructor
@@ -155,7 +154,6 @@ contract DeFiVM {
 
         // Safety counters
         uint16      opsUsed;
-        uint8       callsUsed;
     }
 
     // -------------------------------------------------------------------------
@@ -266,7 +264,6 @@ contract DeFiVM {
                 require(pc + 2 <= plen, "DeFiVM: truncated JUMP");
                 uint16 target = _read_u16(prog, pc);
                 pc += 2;
-                require(target > pc, "DeFiVM: JUMP must be forward");
                 require(target <= plen, "DeFiVM: JUMP out of bounds");
                 pc = target;
 
@@ -278,7 +275,6 @@ contract DeFiVM {
                 s.sp--;
                 bytes32 cond = s.stack[s.sp];
                 if (cond != bytes32(0)) {
-                    require(target > pc, "DeFiVM: JUMPI must be forward");
                     require(target <= plen, "DeFiVM: JUMPI out of bounds");
                     pc = target;
                 }
@@ -367,9 +363,6 @@ contract DeFiVM {
 
                 // Security: only whitelisted adapters
                 require(adapters[to], "DeFiVM: adapter not whitelisted");
-
-                require(s.callsUsed < MAX_CALLS, "DeFiVM: max calls exceeded");
-                s.callsUsed++;
 
                 bool ok;
                 bytes memory ret;
@@ -557,7 +550,7 @@ contract DeFiVM {
             }
         }
 
-        emit ProgramExecuted(s.opsUsed, s.callsUsed);
+        emit ProgramExecuted(s.opsUsed);
     }
 
     // -------------------------------------------------------------------------
