@@ -40,8 +40,16 @@ class Router:
         self,
         amount_in: TokenAmount,
         token_out: Token,
+        *,
+        gas_price_gwei: float = 0.0,
+        native_token_price_usd: float = 0.0,
+        token_out_price_usd: float = 0.0,
+        max_hops: int | None = None,
     ) -> SwapRoute:
-        """Find the route that maximises the output amount.
+        """Find the best route with optional gas-aware scoring.
+
+        - ``gas_price_gwei <= 0``: use output-only routing (legacy behavior).
+        - ``gas_price_gwei > 0``: use gas-aware effective-log-weight routing.
 
         Uses hop-bounded DP relaxation:
 
@@ -62,6 +70,12 @@ class Router:
         Args:
             amount_in: Exact input token and amount.
             token_out: Desired output token.
+            gas_price_gwei: Gas price in gwei. Set to 0 to ignore gas
+                (backward-compatible behavior).
+            native_token_price_usd: Native gas token price in USD.
+            token_out_price_usd: Output token price in USD.
+            max_hops: Maximum hop depth to explore. If omitted, uses the
+                router instance's ``self.max_hops``.
 
         Returns:
             The best :class:`~pydefi.types.SwapRoute` found.
@@ -70,6 +84,32 @@ class Router:
             :class:`~pydefi.exceptions.NoRouteFoundError`: If no path exists
                 between the two tokens within ``max_hops``.
         """
+        effective_max_hops = self.max_hops if max_hops is None else max_hops
+
+        if gas_price_gwei > 0:
+            if native_token_price_usd <= 0 or token_out_price_usd <= 0:
+                raise ValueError(
+                    "native_token_price_usd and token_out_price_usd are required when gas_price_gwei is provided"
+                )
+            return self._find_best_route_gas_aware(
+                amount_in,
+                token_out,
+                gas_price_gwei=gas_price_gwei,
+                native_token_price_usd=native_token_price_usd,
+                token_out_price_usd=token_out_price_usd,
+                max_hops=effective_max_hops,
+            )
+
+        return self._find_best_route_no_gas(amount_in, token_out, max_hops=effective_max_hops)
+
+    def _find_best_route_no_gas(
+        self,
+        amount_in: TokenAmount,
+        token_out: Token,
+        *,
+        max_hops: int,
+    ) -> SwapRoute:
+        """Find the best route by output amount only (ignoring gas costs)."""
         src = amount_in.token
         dst_addr = token_out.address.lower()
 
@@ -80,7 +120,7 @@ class Router:
         # Seed with the source state at hop depth 0.
         best: dict[tuple[str, int], tuple[int, list[PoolEdge]]] = {(src.address.lower(), 0): (amount_in.amount, [])}
 
-        for hop in range(self.max_hops):
+        for hop in range(max_hops):
             # Snapshot all states at the current depth to avoid processing
             # states we add during this iteration.
             current_states = [(k, v) for k, v in best.items() if k[1] == hop]
@@ -110,7 +150,7 @@ class Router:
 
         # Collect the best path to the destination across all hop depths.
         best_result: tuple[int, list[PoolEdge]] | None = None
-        for h in range(1, self.max_hops + 1):
+        for h in range(1, max_hops + 1):
             entry = best.get((dst_addr, h))
             if entry is not None:
                 if best_result is None or entry[0] > best_result[0]:
@@ -118,7 +158,7 @@ class Router:
 
         if best_result is None:
             raise NoRouteFoundError(
-                f"No route found from {amount_in.token.symbol} to {token_out.symbol} within {self.max_hops} hops"
+                f"No route found from {amount_in.token.symbol} to {token_out.symbol} within {max_hops} hops"
             )
 
         final_amount, final_path = best_result
@@ -137,6 +177,55 @@ class Router:
             amount_in=amount_in,
             amount_out=TokenAmount(token=token_out, amount=final_amount),
             price_impact=self._estimate_price_impact(final_path, amount_in.amount),
+        )
+
+    def _find_best_route_gas_aware(
+        self,
+        amount_in: TokenAmount,
+        token_out: Token,
+        *,
+        gas_price_gwei: float,
+        native_token_price_usd: float,
+        token_out_price_usd: float,
+        max_hops: int,
+    ) -> SwapRoute:
+        """Find the lowest effective-log-weight route under gas-aware scoring."""
+        path = self.graph.find_best_route_gas_aware(
+            start=amount_in.token,
+            end=token_out,
+            amount_in=amount_in.amount,
+            weight_fn=lambda edge, current_amount: edge.effective_log_weight(
+                amount_in=current_amount,
+                gas_price_gwei=gas_price_gwei,
+                native_token_price_usd=native_token_price_usd,
+                token_out_price_usd=token_out_price_usd,
+            ),
+            max_hops=max_hops,
+        )
+
+        if not path:
+            raise NoRouteFoundError(
+                f"No route found from {amount_in.token.symbol} to {token_out.symbol} within {max_hops} hops"
+            )
+
+        final_amount = amount_in.amount
+        for edge in path:
+            final_amount = edge.amount_out(final_amount)
+
+        return SwapRoute(
+            steps=[
+                SwapStep(
+                    token_in=edge.token_in,
+                    token_out=edge.token_out,
+                    pool_address=edge.pool_address,
+                    protocol=edge.protocol,
+                    fee=edge.fee_bps * 100,
+                )
+                for edge in path
+            ],
+            amount_in=amount_in,
+            amount_out=TokenAmount(token=token_out, amount=final_amount),
+            price_impact=self._estimate_price_impact(path, amount_in.amount),
         )
 
     def find_all_routes(

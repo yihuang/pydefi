@@ -8,10 +8,11 @@ Each directed edge represents a liquidity pool that can swap *token_in* →
 
 from __future__ import annotations
 
+import math
 from collections import defaultdict
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import ClassVar, Iterator
+from typing import Callable, ClassVar, Iterator
 
 from pydefi.types import Token
 
@@ -112,12 +113,68 @@ class PoolEdge:
             Float weight; returns ``float('inf')`` if the pool has no
             liquidity.
         """
-        import math
 
         out = self.amount_out(amount_in)
         if out == 0:
             return float("inf")
         ratio = out / amount_in
+        if ratio <= 0:
+            return float("inf")
+        return -math.log(ratio)
+
+    def effective_log_weight(
+        self,
+        amount_in: int = 1,
+        gas_price_gwei: float | None = None,
+        *,
+        native_token_price_usd: float | None = None,
+        token_out_price_usd: float | None = None,
+        estimated_gas_units: int | None = None,
+        default_gas_units: int = 150_000,
+    ) -> float:
+        """Gas-aware variant of :meth:`log_weight`.
+
+        Computes ``effective_out = amount_out - gas_cost_out`` and returns
+        ``-log(effective_out / amount_in)``. If gas/price inputs are missing
+        or invalid, falls back to :meth:`log_weight`.
+
+        Returns ``float('inf')`` when the hop is invalid or gas cost consumes
+        all output.
+        """
+
+        if amount_in <= 0:
+            return float("inf")
+
+        out = self.amount_out(amount_in)
+        if out <= 0:
+            return float("inf")
+
+        if gas_price_gwei is None or gas_price_gwei <= 0:
+            return self.log_weight(amount_in)
+
+        if (
+            native_token_price_usd is None
+            or native_token_price_usd <= 0
+            or token_out_price_usd is None
+            or token_out_price_usd <= 0
+        ):
+            return self.log_weight(amount_in)
+
+        gas_units = estimated_gas_units
+        if gas_units is None:
+            gas_units = int(self.extra.get("estimated_gas", default_gas_units))
+        if gas_units <= 0:
+            return self.log_weight(amount_in)
+
+        gas_cost_native = gas_units * gas_price_gwei * 1e-9
+        gas_cost_out_tokens = gas_cost_native * native_token_price_usd / token_out_price_usd
+        gas_cost_out_raw = int(gas_cost_out_tokens * (10**self.token_out.decimals))
+
+        effective_out = out - gas_cost_out_raw
+        if effective_out <= 0:
+            return float("inf")
+
+        ratio = effective_out / amount_in
         if ratio <= 0:
             return float("inf")
         return -math.log(ratio)
@@ -285,6 +342,74 @@ class PoolGraph:
         # adjacency list: token_in_address -> list[PoolEdge]
         self._adj: defaultdict[str, list[PoolEdge]] = defaultdict(list)
         self._tokens: dict[str, Token] = {}
+
+    def find_best_route_gas_aware(
+        self,
+        start: Token,
+        end: Token,
+        *,
+        amount_in: int,
+        weight_fn: Callable[[PoolEdge, int], float],
+        max_hops: int = 4,
+    ) -> list[PoolEdge]:
+        """Return the lowest-weight path under a hop limit.
+
+        Uses hop-bounded relaxation and applies ``weight_fn(edge, current_amount)``
+        during traversal (for example, gas-aware ``effective_log_weight``).
+        Returns the best edge path, or an empty list when no route is found.
+        """
+        if amount_in <= 0:
+            return []
+
+        src_addr = start.address.lower()
+        dst_addr = end.address.lower()
+        if src_addr == dst_addr:
+            raise ValueError("token_in and token_out must be different")
+
+        # state -> (cumulative_weight, current_amount, path)
+        best: dict[tuple[str, int], tuple[float, int, list[PoolEdge]]] = {(src_addr, 0): (0.0, amount_in, [])}
+
+        for hop in range(max_hops):
+            current_states = [(k, v) for k, v in best.items() if k[1] == hop]
+            for (token_addr, _), (cur_weight, cur_amount, path) in current_states:
+                visited_tokens: set[str] = {e.token_in.address.lower() for e in path}
+                visited_tokens.add(token_addr)
+
+                token: Token = path[-1].token_out if path else start
+
+                for edge in self.edges_from(token):
+                    next_addr = edge.token_out.address.lower()
+                    if next_addr in visited_tokens:
+                        continue
+
+                    next_amount = edge.amount_out(cur_amount)
+                    if next_amount <= 0:
+                        continue
+
+                    edge_weight = weight_fn(edge, cur_amount)
+                    next_weight = cur_weight + edge_weight
+
+                    next_key = (next_addr, hop + 1)
+                    existing = best.get(next_key)
+                    if (
+                        existing is None
+                        or next_weight < existing[0]
+                        or (next_weight == existing[0] and next_amount > existing[1])
+                    ):
+                        best[next_key] = (next_weight, next_amount, path + [edge])
+
+        best_result: tuple[float, int, list[PoolEdge]] | None = None
+        for h in range(1, max_hops + 1):
+            entry = best.get((dst_addr, h))
+            if entry is None:
+                continue
+            if best_result is None:
+                best_result = entry
+                continue
+            if entry[0] < best_result[0] or (entry[0] == best_result[0] and entry[1] > best_result[1]):
+                best_result = entry
+
+        return [] if best_result is None else best_result[2]
 
     def add_pool(self, edge: PoolEdge) -> None:
         """Register a pool edge in the graph.
