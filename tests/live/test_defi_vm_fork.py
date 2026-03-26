@@ -6,7 +6,7 @@ of Ethereum mainnet, and exercise the full instruction set including:
  - Stack / register instructions (PUSH_U256, PUSH_ADDR, PUSH_BYTES, DUP, SWAP, POP,
    LOAD_REG, STORE_REG)
  - Control flow (JUMP, JUMPI, REVERT_IF, ASSERT_GE, ASSERT_LE)
- - External calls to a whitelisted mock adapter (CALL)
+ - External calls to a mock adapter (CALL)
  - Balance introspection (BALANCE_OF, SELF_BAL, DELTA_START, DELTA_LOAD) using
    real on-chain WETH contract on the forked chain
  - ABI patching (PATCH_U256, PATCH_ADDR, RET_U256, RET_SLICE)
@@ -170,7 +170,7 @@ def compiled_adapter():
 
 @pytest.fixture(scope="module")
 async def ctx(vm_fork_w3, compiled_vm, compiled_adapter):
-    """Deploy DeFiVM + MockAdapter once, whitelist the adapter, return context dict."""
+    """Deploy DeFiVM + MockAdapter once and return context dict."""
     w3 = vm_fork_w3
 
     accounts = await w3.eth.accounts
@@ -180,9 +180,6 @@ async def ctx(vm_fork_w3, compiled_vm, compiled_adapter):
     adapter_address = await _deploy(w3, compiled_adapter, deployer)
 
     vm = w3.eth.contract(address=vm_address, abi=compiled_vm["abi"])
-
-    tx = await vm.functions.setAdapter(adapter_address, True).transact({"from": deployer})
-    await w3.eth.get_transaction_receipt(tx)
 
     return {
         "w3": w3,
@@ -202,29 +199,6 @@ async def ctx(vm_fork_w3, compiled_vm, compiled_adapter):
 @pytest.mark.fork
 class TestDeFiVMFork:
     """Fork-level tests for DeFiVM.sol on a local Anvil mainnet fork."""
-
-    # ------------------------------------------------------------------
-    # Deployment / admin
-    # ------------------------------------------------------------------
-
-    async def test_deploy_and_ownership(self, ctx):
-        """DeFiVM deploys correctly and owner is the deployer."""
-        vm = ctx["vm"]
-        owner = await vm.functions.owner().call()
-        assert owner.lower() == ctx["deployer"].lower()
-
-    async def test_set_adapter_whitelists(self, ctx):
-        """setAdapter enables the mock adapter."""
-        vm = ctx["vm"]
-        enabled = await vm.functions.adapters(ctx["adapter_address"]).call()
-        assert enabled is True
-
-    async def test_non_owner_cannot_set_adapter(self, ctx):
-        """Non-owner address cannot whitelist adapters."""
-        vm = ctx["vm"]
-        other = ctx["accounts"][1]
-        with pytest.raises((ContractLogicError, Web3RPCError)):
-            await vm.functions.setAdapter(ctx["adapter_address"], False).transact({"from": other})
 
     # ------------------------------------------------------------------
     # Stack / register instructions
@@ -410,8 +384,8 @@ class TestDeFiVMFork:
     # External CALL
     # ------------------------------------------------------------------
 
-    async def test_call_whitelisted_adapter(self, ctx):
-        """CALL succeeds for a whitelisted adapter."""
+    async def test_call_adapter(self, ctx):
+        """CALL succeeds for a deployed mock adapter."""
         w3 = ctx["w3"]
         vm = ctx["vm"]
         deployer = ctx["deployer"]
@@ -428,23 +402,6 @@ class TestDeFiVMFork:
         tx = await vm.functions.execute(program).transact({"from": deployer})
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
-
-    async def test_call_non_whitelisted_reverts(self, ctx):
-        """CALL to a non-whitelisted address must revert."""
-        vm = ctx["vm"]
-        deployer = ctx["deployer"]
-        random_addr = "0x000000000000000000000000000000000000dEaD"
-
-        program = (
-            push_bytes(b"\x00\x00\x00\x00")
-            + push_u256(0)
-            + push_addr(random_addr)
-            + push_u256(0)
-            + call(require_success=False)
-            + pop()
-        )
-        with pytest.raises((ContractLogicError, Web3RPCError)):
-            await vm.functions.execute(program).transact({"from": deployer})
 
     async def test_ret_u256_from_adapter(self, ctx):
         """RET_U256 reads a uint256 from the last call's returndata."""

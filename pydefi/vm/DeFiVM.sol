@@ -9,7 +9,17 @@ pragma solidity ^0.8.24;
  * -----------------
  *  • Atomic execution – a "program" runs all-at-once; any revert undoes everything.
  *  • Register-based   – 16 named registers (R0-R15) plus a temporary 32-element stack.
- *  • Adapter-only     – external CALLs are restricted to an owner-managed whitelist.
+ *  • Fully stateless  – no owner, no whitelist; the CALL opcode can reach any address.
+ *
+ * Security assumptions
+ * --------------------
+ *  1. Never approve tokens directly to this contract.  Approvals can be drained by
+ *     any caller because `execute` is permissionless.  Use permit signatures instead
+ *     (approve and spend atomically inside the program).
+ *  2. Do not leave token or ETH balances in this contract between transactions.
+ *     Any residual balance is accessible to arbitrary programs.
+ *  3. Users must verify every adapter address they include in a program and simulate
+ *     the full transaction off-chain before broadcasting.
  *
  * Instruction set
  * ---------------
@@ -78,49 +88,7 @@ contract DeFiVM {
     uint8 private constant OP_RET_U256    = 0x42;
     uint8 private constant OP_RET_SLICE   = 0x43;
 
-    // -------------------------------------------------------------------------
-    // Persistent state
-    // -------------------------------------------------------------------------
-
-    address public owner;
-
-    /// @notice Whitelisted adapter contracts this VM may call.
-    mapping(address => bool) public adapters;
-
-    // -------------------------------------------------------------------------
-    // Events
-    // -------------------------------------------------------------------------
-
-    event AdapterSet(address indexed adapter, bool enabled);
-
-    // -------------------------------------------------------------------------
-    // Constructor
-    // -------------------------------------------------------------------------
-
-    constructor() {
-        owner = msg.sender;
-    }
-
-    // -------------------------------------------------------------------------
-    // Admin
-    // -------------------------------------------------------------------------
-
-    modifier onlyOwner() {
-        require(msg.sender == owner, "DeFiVM: not owner");
-        _;
-    }
-
-    function setAdapter(address adapter, bool enabled) external onlyOwner {
-        adapters[adapter] = enabled;
-        emit AdapterSet(adapter, enabled);
-    }
-
-    function transferOwnership(address newOwner) external onlyOwner {
-        require(newOwner != address(0), "DeFiVM: zero owner");
-        owner = newOwner;
-    }
-
-    /// @notice Allow the VM to receive ETH (needed for value-bearing adapter calls).
+    /// @notice Allow the VM to receive ETH (needed for value-bearing calls).
     receive() external payable {}
 
     // -------------------------------------------------------------------------
@@ -157,7 +125,7 @@ contract DeFiVM {
      * @notice Execute a DeFiVM program atomically.
      * @param program  Bytecode stream (packed instructions).
      *
-     * Any revert undoes all side-effects including adapter call state changes.
+     * Any revert undoes all side-effects.
      */
     function execute(bytes calldata program) external payable {
         // Copy calldata to memory once; all subsequent reads use memory ops.
@@ -350,9 +318,6 @@ contract DeFiVM {
                 uint8 bufIdx = uint8(uint256(s.stack[s.sp]));
                 require(bufIdx < s.numBufs, "DeFiVM: CALL invalid buffer");
                 bytes memory calldata_ = s.buffers[bufIdx];
-
-                // Security: only whitelisted adapters
-                require(adapters[to], "DeFiVM: adapter not whitelisted");
 
                 bool ok;
                 bytes memory ret;
