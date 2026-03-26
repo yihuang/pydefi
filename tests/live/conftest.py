@@ -163,3 +163,61 @@ async def fork_w3(request: pytest.FixtureRequest):
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             pass
+
+
+@pytest.fixture(scope="module")
+async def fork_w3_module():
+    """Module-scoped Anvil mainnet fork.  Same as ``fork_w3`` but shared across
+    an entire test module to avoid per-test process startup costs."""
+    import shutil
+
+    if shutil.which("anvil") is None:
+        pytest.skip("anvil not found on PATH — install Foundry to run fork tests")
+
+    port = _free_port()
+    url = f"http://127.0.0.1:{port}"
+
+    proc = subprocess.Popen(
+        [
+            "anvil",
+            "--fork-url",
+            ETH_RPC_URL,
+            "--port",
+            str(port),
+            "--silent",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+    w3 = AsyncWeb3(AsyncWeb3.AsyncHTTPProvider(url))
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        try:
+            await w3.eth.chain_id
+            break
+        except Exception:  # noqa: BLE001 — expected during startup
+            await asyncio.sleep(0.25)
+    else:
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+        pytest.fail("Anvil did not start within 30 seconds")
+
+    yield w3
+
+    proc.terminate()
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
