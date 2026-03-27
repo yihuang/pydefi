@@ -50,6 +50,13 @@ _LZ_EID: dict[int, int] = {
     480: 30337,  # World Chain
     534352: 30214,  # Scroll
     7777777: 30195,  # Zora
+    # Testnets
+    97: 40102,  # BNB Chain Testnet
+    11155111: 40161,  # Sepolia
+    11155420: 40232,  # OP Sepolia
+    43113: 40106,  # Avalanche Fuji
+    421614: 40231,  # Arbitrum Sepolia
+    84532: 40245,  # Base Sepolia
 }
 
 

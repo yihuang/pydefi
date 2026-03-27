@@ -51,7 +51,7 @@ jobs:
           pip install ".[dev]"
 
       - name: Run unit tests
-        run: pytest -m "not live and not fork"
+        run: pytest -m "not live and not fork and not e2e"
 
   live-test:
     runs-on: ubuntu-latest
