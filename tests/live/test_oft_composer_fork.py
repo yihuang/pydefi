@@ -8,8 +8,8 @@ contracts on a local Anvil fork of Ethereum mainnet, and exercise the full
  - Multi-call compose execution (sequential calls)
  - Compose execution carrying ETH value to a sub-call
  - Revert when the caller is not the authorised endpoint
- - Revert when the originating OFT is not in the approved list
  - Revert when a sub-call inside the compose fails
+ - Owner rescue of stuck ETH and ERC-20 tokens
 
 Run with::
 
@@ -264,9 +264,8 @@ async def ctx(oft_fork_w3, compiled_oft_composer, compiled_mocks):
     composer = w3.eth.contract(address=composer_address, abi=compiled_oft_composer["abi"])
     endpoint = w3.eth.contract(address=endpoint_address, abi=compiled_mocks["MockEndpoint"]["abi"])
 
-    # Deploy mock OFT and approve it in the composer.
+    # Deploy mock OFT (no approval needed — any OFT may trigger compose).
     oft_address = await _deploy(w3, compiled_mocks["MockOFT"], deployer)
-    await composer.functions.approveOFT(oft_address).transact({"from": deployer})
 
     # Deploy mock target contracts.
     target_address = await _deploy(w3, compiled_mocks["MockTarget"], deployer)
@@ -286,6 +285,7 @@ async def ctx(oft_fork_w3, compiled_oft_composer, compiled_mocks):
         "target": target,
         "target_address": target_address,
         "reverting_address": reverting_address,
+        "compiled_mocks": compiled_mocks,
     }
 
 
@@ -494,34 +494,6 @@ class TestOFTComposerFork:
             ).transact({"from": deployer})
 
     # ------------------------------------------------------------------
-    # Security: unapproved OFT
-    # ------------------------------------------------------------------
-
-    async def test_unapproved_oft_reverts(self, ctx):
-        """lzCompose reverts when the originating OFT is not approved."""
-        w3 = ctx["w3"]
-        composer = ctx["composer"]
-        endpoint = ctx["endpoint"]
-        deployer = ctx["deployer"]
-        target_address = ctx["target_address"]
-        target = ctx["target"]
-
-        # Use a random address that has never been approved.
-        unapproved_oft = w3.eth.account.create().address
-
-        call_data = target.encode_abi("execute", [b"unapproved"])
-        calls = [(target_address, 0, call_data)]
-        message = make_compose_message(nonce=6, src_eid=30101, amount_ld=10**18, calls=calls)
-
-        with pytest.raises((ContractLogicError, Web3RPCError)):
-            await endpoint.functions.deliverCompose(
-                composer.address,
-                unapproved_oft,
-                b"\x00" * 32,
-                message,
-            ).transact({"from": deployer})
-
-    # ------------------------------------------------------------------
     # Security: sub-call failure propagates
     # ------------------------------------------------------------------
 
@@ -558,11 +530,11 @@ class TestOFTComposerFork:
         assert after_count == before_count
 
     # ------------------------------------------------------------------
-    # Admin: approve / revoke OFT
+    # Admin: any OFT can trigger compose (no whitelist)
     # ------------------------------------------------------------------
 
-    async def test_approve_and_revoke_oft(self, ctx):
-        """approveOFT and revokeOFT correctly update the approved list."""
+    async def test_any_oft_can_compose(self, ctx):
+        """Any OFT address forwarded by the endpoint may trigger lzCompose."""
         w3 = ctx["w3"]
         composer = ctx["composer"]
         endpoint = ctx["endpoint"]
@@ -570,53 +542,108 @@ class TestOFTComposerFork:
         target_address = ctx["target_address"]
         target = ctx["target"]
 
-        new_oft = w3.eth.account.create().address
+        # Use a random address that was never explicitly approved.
+        random_oft = w3.eth.account.create().address
 
-        # Approve the new OFT.
-        tx = await composer.functions.approveOFT(new_oft).transact({"from": deployer})
-        receipt = await w3.eth.get_transaction_receipt(tx)
-        assert receipt["status"] == 1
-        assert await composer.functions.approvedOFTs(new_oft).call()
-
-        # Compose should now succeed using the newly approved OFT.
-        call_data = target.encode_abi("execute", [b"new_oft"])
+        call_data = target.encode_abi("execute", [b"random_oft"])
         calls = [(target_address, 0, call_data)]
-        message = make_compose_message(nonce=8, src_eid=30101, amount_ld=10**18, calls=calls)
+        message = make_compose_message(nonce=6, src_eid=30101, amount_ld=10**18, calls=calls)
 
         tx = await endpoint.functions.deliverCompose(
             composer.address,
-            new_oft,
+            random_oft,
             b"\x00" * 32,
             message,
         ).transact({"from": deployer})
+
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
 
-        # Revoke the OFT.
-        await composer.functions.revokeOFT(new_oft).transact({"from": deployer})
-        assert not await composer.functions.approvedOFTs(new_oft).call()
-
-        # Compose should now revert.
-        with pytest.raises((ContractLogicError, Web3RPCError)):
-            await endpoint.functions.deliverCompose(
-                composer.address,
-                new_oft,
-                b"\x00" * 32,
-                message,
-            ).transact({"from": deployer})
-
     # ------------------------------------------------------------------
-    # Admin: only owner may approve OFT
+    # Admin: rescue stuck ETH
     # ------------------------------------------------------------------
 
-    async def test_non_owner_cannot_approve_oft(self, ctx):
-        """approveOFT reverts when called by a non-owner."""
+    async def test_rescue_eth(self, ctx):
+        """Owner can rescue ETH stuck in the composer contract."""
+        w3 = ctx["w3"]
+        composer = ctx["composer"]
+        deployer = ctx["deployer"]
+
+        eth_amount = 5 * 10**16  # 0.05 ETH
+
+        # Fund the composer directly (simulating ETH stuck after a failed compose).
+        await w3.eth.send_transaction({"from": deployer, "to": composer.address, "value": eth_amount})
+
+        before_composer = await w3.eth.get_balance(composer.address)
+        assert before_composer >= eth_amount
+
+        # Rescue to a fresh address with 0 ETH balance.
+        fresh_recipient = w3.eth.account.create().address
+        before_fresh = await w3.eth.get_balance(fresh_recipient)
+        assert before_fresh == 0
+
+        tx = await composer.functions.rescueETH(fresh_recipient, eth_amount).transact({"from": deployer})
+        receipt = await w3.eth.get_transaction_receipt(tx)
+        assert receipt["status"] == 1
+
+        # Verify ETH left the composer and arrived at the recipient.
+        after_composer = await w3.eth.get_balance(composer.address)
+        after_fresh = await w3.eth.get_balance(fresh_recipient)
+        assert after_composer == before_composer - eth_amount
+        assert after_fresh == eth_amount
+
+    async def test_non_owner_cannot_rescue_eth(self, ctx):
+        """rescueETH reverts when called by a non-owner."""
         w3 = ctx["w3"]
         composer = ctx["composer"]
         accounts = ctx["accounts"]
 
         non_owner = accounts[1]
-        random_oft = w3.eth.account.create().address
+        fresh_recipient = w3.eth.account.create().address
 
         with pytest.raises((ContractLogicError, Web3RPCError)):
-            await composer.functions.approveOFT(random_oft).transact({"from": non_owner})
+            await composer.functions.rescueETH(fresh_recipient, 1).transact({"from": non_owner})
+
+    # ------------------------------------------------------------------
+    # Admin: rescue stuck ERC-20 tokens
+    # ------------------------------------------------------------------
+
+    async def test_rescue_token(self, ctx):
+        """Owner can rescue ERC-20 tokens stuck in the composer contract."""
+        w3 = ctx["w3"]
+        composer = ctx["composer"]
+        deployer = ctx["deployer"]
+        compiled_mocks = ctx["compiled_mocks"]
+
+        # Use a fresh recipient address (never received tokens before).
+        fresh_recipient = w3.eth.account.create().address
+        token_amount = 100 * 10**18
+
+        # Deploy a fresh MockOFT and mint tokens directly to the composer
+        # (simulating tokens stranded after a failed compose execution).
+        token_address = await _deploy(w3, compiled_mocks["MockOFT"], deployer)
+        token = w3.eth.contract(address=token_address, abi=compiled_mocks["MockOFT"]["abi"])
+        await token.functions.mint(composer.address, token_amount).transact({"from": deployer})
+
+        assert await token.functions.balanceOf(composer.address).call() == token_amount
+
+        tx = await composer.functions.rescueToken(token_address, fresh_recipient, token_amount).transact(
+            {"from": deployer}
+        )
+        receipt = await w3.eth.get_transaction_receipt(tx)
+        assert receipt["status"] == 1
+
+        assert await token.functions.balanceOf(composer.address).call() == 0
+        assert await token.functions.balanceOf(fresh_recipient).call() == token_amount
+
+    async def test_non_owner_cannot_rescue_token(self, ctx):
+        """rescueToken reverts when called by a non-owner."""
+        composer = ctx["composer"]
+        accounts = ctx["accounts"]
+        oft_address = ctx["oft_address"]
+
+        non_owner = accounts[1]
+        fresh_recipient = "0x000000000000000000000000000000000000dEaD"
+
+        with pytest.raises((ContractLogicError, Web3RPCError)):
+            await composer.functions.rescueToken(oft_address, fresh_recipient, 1).transact({"from": non_owner})

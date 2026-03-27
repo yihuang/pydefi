@@ -12,21 +12,20 @@ pragma solidity ^0.8.24;
  *    ``composeMsg`` in their OFT ``send`` call.
  * 2. After the OFT tokens arrive on the destination chain, the LayerZero
  *    EndpointV2 contract calls ``lzCompose`` on this contract.
- * 3. ``lzCompose`` validates the caller (must be the authorised endpoint) and
- *    the originating OFT (must be in the approved list), then decodes the
- *    compose message and executes each ``Call`` sequentially.  Any revert in
- *    a sub-call reverts the entire compose execution.
+ * 3. ``lzCompose`` validates the caller (must be the authorised endpoint),
+ *    then decodes the compose message and executes each ``Call`` sequentially.
+ *    Any revert in a sub-call reverts the entire compose execution.
  *
  * Security notes
  * --------------
  *  • Only the authorised LayerZero endpoint may call ``lzCompose``.
- *  • Only OFT contracts explicitly approved by the owner may trigger compose
- *    executions.  Approve with ``approveOFT``, revoke with ``revokeOFT``.
+ *  • Any OFT contract forwarded by the endpoint can trigger compose.
  *  • The compose payload encodes arbitrary calls; senders are responsible for
  *    constructing safe payloads.  Review each call's target and calldata
  *    off-chain before broadcasting.
- *  • Do not leave token or ETH balances in this contract between transactions;
- *    any residual balance is accessible to the next compose message.
+ *  • The owner can rescue any ETH or ERC-20 tokens stuck in this contract via
+ *    ``rescueETH`` and ``rescueToken``, e.g. when a compose action keeps
+ *    failing and the funds need to be recovered out-of-band.
  *
  * Compose-message encoding
  * ------------------------
@@ -81,9 +80,6 @@ contract OFTComposer {
     /// @notice Thrown when the caller is not the authorised LayerZero endpoint.
     error UnauthorizedEndpoint(address caller);
 
-    /// @notice Thrown when the originating OFT is not in the approved list.
-    error UnauthorizedOFT(address oft);
-
     /// @notice Thrown when a sub-call inside ``lzCompose`` reverts.
     error CallFailed(uint256 index, bytes reason);
 
@@ -99,12 +95,6 @@ contract OFTComposer {
         uint256 numCalls
     );
 
-    /// @notice Emitted when an OFT contract is approved.
-    event OFTApproved(address indexed oft);
-
-    /// @notice Emitted when an OFT contract is revoked.
-    event OFTRevoked(address indexed oft);
-
     /// @notice Emitted when ownership is transferred.
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
 
@@ -115,10 +105,7 @@ contract OFTComposer {
     /// @notice The LayerZero v2 endpoint address authorised to call ``lzCompose``.
     address public immutable endpoint;
 
-    /// @notice OFT contracts that are allowed to trigger compose executions.
-    mapping(address => bool) public approvedOFTs;
-
-    /// @notice Owner address — may approve or revoke OFT contracts.
+    /// @notice Owner address — may rescue stuck funds and transfer ownership.
     address public owner;
 
     // -----------------------------------------------------------------------
@@ -127,7 +114,7 @@ contract OFTComposer {
 
     /**
      * @param _endpoint  The LayerZero v2 EndpointV2 contract address.
-     * @param _owner     Address that may call ``approveOFT`` / ``revokeOFT``.
+     * @param _owner     Address that may call rescue functions and transfer ownership.
      */
     constructor(address _endpoint, address _owner) {
         endpoint = _endpoint;
@@ -147,23 +134,45 @@ contract OFTComposer {
     // Admin
     // -----------------------------------------------------------------------
 
-    /// @notice Approve an OFT contract to trigger compose executions.
-    function approveOFT(address _oft) external onlyOwner {
-        approvedOFTs[_oft] = true;
-        emit OFTApproved(_oft);
-    }
-
-    /// @notice Revoke an OFT contract from triggering compose executions.
-    function revokeOFT(address _oft) external onlyOwner {
-        approvedOFTs[_oft] = false;
-        emit OFTRevoked(_oft);
-    }
-
     /// @notice Transfer ownership to a new address.
     function transferOwnership(address _newOwner) external onlyOwner {
         require(_newOwner != address(0), "OFTComposer: zero address");
         emit OwnershipTransferred(owner, _newOwner);
         owner = _newOwner;
+    }
+
+    /**
+     * @notice Rescue ETH stuck in this contract.
+     *
+     * Use this when a compose action fails permanently and the ETH sent along
+     * with the compose message needs to be recovered out-of-band.
+     *
+     * @param _recipient Address to send the rescued ETH to.
+     * @param _amount    Amount of ETH (in wei) to rescue.
+     */
+    function rescueETH(address payable _recipient, uint256 _amount) external onlyOwner {
+        require(_recipient != address(0), "OFTComposer: zero address");
+        (bool ok, ) = _recipient.call{value: _amount}("");
+        require(ok, "OFTComposer: ETH transfer failed");
+    }
+
+    /**
+     * @notice Rescue ERC-20 tokens stuck in this contract.
+     *
+     * Use this when OFT tokens or other ERC-20 tokens accumulate in the
+     * contract and need to be recovered by the owner.
+     *
+     * @param _token     ERC-20 token contract address.
+     * @param _recipient Address to send the rescued tokens to.
+     * @param _amount    Token amount to rescue (in the token's native decimals).
+     */
+    function rescueToken(address _token, address _recipient, uint256 _amount) external onlyOwner {
+        require(_recipient != address(0), "OFTComposer: zero address");
+        // Inline low-level call to avoid importing IERC20.
+        (bool ok, bytes memory ret) = _token.call(
+            abi.encodeWithSignature("transfer(address,uint256)", _recipient, _amount)
+        );
+        require(ok && (ret.length == 0 || abi.decode(ret, (bool))), "OFTComposer: token transfer failed");
     }
 
     // -----------------------------------------------------------------------
@@ -189,9 +198,6 @@ contract OFTComposer {
     ) external payable {
         // Only the authorised endpoint may call this function.
         if (msg.sender != endpoint) revert UnauthorizedEndpoint(msg.sender);
-
-        // The originating OFT must be in the approved list.
-        if (!approvedOFTs[_from]) revert UnauthorizedOFT(_from);
 
         // Validate minimum message length: 8B nonce + 4B srcEid + 32B amountLD = 44 bytes.
         require(_message.length >= 44, "OFTComposer: message too short");
