@@ -793,3 +793,65 @@ class TestOFTComposerFork:
 
         with pytest.raises((ContractLogicError, Web3RPCError)):
             await composer.functions.rescueToken(oft_address, fresh_recipient, 1).transact({"from": non_owner})
+
+    # ------------------------------------------------------------------
+    # Token transfer: composer forwards OFT tokens to DeFiVM before execute
+    # ------------------------------------------------------------------
+
+    async def test_token_transfer_to_vm(self, ctx):
+        """lzCompose transfers OFT tokens from the composer to DeFiVM before execution.
+
+        Flow:
+          1. Tokens arrive at the composer (minted here to simulate OFT bridge delivery).
+          2. ``lzCompose`` transfers ``amountLD`` tokens from composer → DeFiVM.
+          3. The DeFiVM program forwards the tokens to a fresh recipient via a CALL.
+          4. After execution the recipient holds the tokens; composer and DeFiVM are empty.
+        """
+        w3 = ctx["w3"]
+        composer = ctx["composer"]
+        endpoint = ctx["endpoint"]
+        deployer = ctx["deployer"]
+        oft_address = ctx["oft_address"]
+        vm_address = ctx["vm_address"]
+        compiled_mocks = ctx["compiled_mocks"]
+
+        token_amount = 50 * 10**18
+        fresh_recipient = w3.eth.account.create().address
+
+        # Wrap MockOFT in a contract object so we can encode ABI and check balances.
+        oft = w3.eth.contract(address=oft_address, abi=compiled_mocks["MockOFT"]["abi"])
+
+        # Simulate OFT bridge: tokens land in the composer before lzCompose is called.
+        await oft.functions.mint(composer.address, token_amount).transact({"from": deployer})
+        assert await oft.functions.balanceOf(composer.address).call() == token_amount
+
+        # Build calldata for token.transfer(fresh_recipient, token_amount).
+        # After the composer's token transfer, DeFiVM holds the tokens and can use them.
+        vm_forward_calldata = _abidata(oft.encode_abi("transfer", [fresh_recipient, token_amount]))
+        program = (
+            store_reg(0)  # R0 = _from (OFT address)
+            + store_reg(1)  # R1 = amountLD
+            + push_bytes(vm_forward_calldata)  # push calldata buffer; stack: [buf_idx]
+            + push_u256(0)  # value = 0 ETH
+            + push_addr(oft_address)  # call the OFT token contract
+            + push_u256(0)  # gasLimit = 0 (all gas)
+            + call()
+            + pop()  # discard success flag
+        )
+        message = make_compose_message(nonce=10, src_eid=30101, amount_ld=token_amount, program=program)
+
+        tx = await endpoint.functions.deliverCompose(
+            composer.address,
+            oft_address,  # _from = the OFT contract that delivered the tokens
+            b"\x00" * 32,
+            message,
+        ).transact({"from": deployer})
+
+        receipt = await w3.eth.get_transaction_receipt(tx)
+        assert receipt["status"] == 1
+
+        # Tokens must have been forwarded through DeFiVM to the fresh recipient.
+        assert await oft.functions.balanceOf(fresh_recipient).call() == token_amount
+        # Neither the composer nor DeFiVM should retain any tokens.
+        assert await oft.functions.balanceOf(composer.address).call() == 0
+        assert await oft.functions.balanceOf(vm_address).call() == 0

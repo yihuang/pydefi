@@ -12,8 +12,9 @@ pragma solidity ^0.8.24;
  *    ``composeMsg`` in their OFT ``send`` call.
  * 2. After the OFT tokens arrive, the LayerZero EndpointV2 calls ``lzCompose``.
  * 3. ``lzCompose`` validates the caller (must be the authorised endpoint), then
- *    prepends two PUSH instructions for the OFT parameters and forwards the
- *    combined program to the DeFiVM contract for execution.
+ *    transfers the OFT tokens from the composer to DeFiVM, prepends two PUSH
+ *    instructions for the OFT parameters and forwards the combined program to
+ *    the DeFiVM contract for execution.
  *
  * Security notes
  * --------------
@@ -227,6 +228,15 @@ contract OFTComposer {
             abi.encodePacked(OP_PUSH_U256, bytes32(amountLD), OP_PUSH_ADDR, bytes20(_from)),
             _message[44:]
         );
+
+        // Transfer the received OFT tokens from this composer to DeFiVM so the
+        // program can use them (e.g. approve a DEX and swap).
+        if (amountLD > 0) {
+            (bool ok, bytes memory ret) = _from.call(
+                abi.encodeWithSignature("transfer(address,uint256)", address(vm), amountLD)
+            );
+            require(ok && (ret.length == 0 || abi.decode(ret, (bool))), "OFTComposer: token transfer failed");
+        }
 
         // Execute via DeFiVM, forwarding any ETH received with this compose call.
         vm.execute{value: msg.value}(program);
