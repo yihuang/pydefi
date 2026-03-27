@@ -879,9 +879,15 @@ class TestOFTComposerFork:
         # Wrap MockOFT in a contract object so we can encode ABI and check balances.
         oft = w3.eth.contract(address=oft_address, abi=compiled_mocks["MockOFT"]["abi"])
 
+        # Record pre-test balances; the module-scoped fixture may carry residual
+        # tokens from earlier tests (e.g. a reverted lzCompose that left tokens at
+        # the composer) or accumulated tokens at the vm.
+        pre_composer = await oft.functions.balanceOf(composer.address).call()
+        pre_vm = await oft.functions.balanceOf(vm_address).call()
+
         # Simulate OFT bridge: tokens land in the composer before lzCompose is called.
         await oft.functions.mint(composer.address, token_amount).transact({"from": deployer})
-        assert await oft.functions.balanceOf(composer.address).call() == token_amount
+        assert await oft.functions.balanceOf(composer.address).call() == pre_composer + token_amount
 
         # Build calldata for token.transfer(fresh_recipient, token_amount).
         # After the composer's token transfer, DeFiVM holds the tokens and can use them.
@@ -910,9 +916,10 @@ class TestOFTComposerFork:
 
         # Tokens must have been forwarded through DeFiVM to the fresh recipient.
         assert await oft.functions.balanceOf(fresh_recipient).call() == token_amount
-        # Neither the composer nor DeFiVM should retain any tokens.
-        assert await oft.functions.balanceOf(composer.address).call() == 0
-        assert await oft.functions.balanceOf(vm_address).call() == 0
+        # Composer lost exactly amountLD; its residual from earlier tests is unchanged.
+        assert await oft.functions.balanceOf(composer.address).call() == pre_composer
+        # DeFiVM gained exactly amountLD then spent it all; its prior balance is unchanged.
+        assert await oft.functions.balanceOf(vm_address).call() == pre_vm
 
     async def test_token_transfer_to_vm_oft_adapter(self, ctx):
         """lzCompose resolves the ERC-20 token via IOFT.token() for an OFT Adapter.
