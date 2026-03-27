@@ -647,7 +647,12 @@ class TestOFTComposerFork:
             + call()
             + pop()
         )
-        message = make_compose_message(nonce=6, src_eid=30101, amount_ld=10**18, program=program)
+        amount_ld = 10**18
+        message = make_compose_message(nonce=6, src_eid=30101, amount_ld=amount_ld, program=program)
+
+        # Simulate OFT bridge: mint tokens to the composer before lzCompose is called.
+        oft = w3.eth.contract(address=oft_address, abi=ctx["compiled_mocks"]["MockOFT"]["abi"])
+        await oft.functions.mint(composer.address, amount_ld).transact({"from": deployer})
 
         tx = await endpoint.functions.deliverCompose(
             composer.address,
@@ -693,6 +698,7 @@ class TestOFTComposerFork:
 
     async def test_sub_call_failure_reverts_compose(self, ctx):
         """A failing CALL in the program reverts the entire compose transaction."""
+        w3 = ctx["w3"]
         composer = ctx["composer"]
         endpoint = ctx["endpoint"]
         deployer = ctx["deployer"]
@@ -700,6 +706,7 @@ class TestOFTComposerFork:
         target_address = ctx["target_address"]
         reverting_address = ctx["reverting_address"]
         target = ctx["target"]
+        compiled_mocks = ctx["compiled_mocks"]
 
         before_count = await target.functions.callCount().call()
 
@@ -716,7 +723,12 @@ class TestOFTComposerFork:
             + push_u256(0)
             + call()  # requireSuccess=True; target reverts -> DeFiVM reverts
         )
-        message = make_compose_message(nonce=8, src_eid=30101, amount_ld=10**18, program=program)
+        amount_ld = 10**18
+        message = make_compose_message(nonce=8, src_eid=30101, amount_ld=amount_ld, program=program)
+
+        # Simulate OFT bridge: mint tokens to the composer before lzCompose is called.
+        oft = w3.eth.contract(address=oft_address, abi=compiled_mocks["MockOFT"]["abi"])
+        await oft.functions.mint(composer.address, amount_ld).transact({"from": deployer})
 
         with pytest.raises((ContractLogicError, Web3RPCError)):
             await endpoint.functions.deliverCompose(
@@ -747,7 +759,8 @@ class TestOFTComposerFork:
 
         calldata = _abidata(target.encode_abi("execute", [b"random_oft"]))
         program = store_reg(0) + store_reg(1) + self._call_target(target_address, calldata)
-        message = make_compose_message(nonce=9, src_eid=30101, amount_ld=10**18, program=program)
+        # amount_ld=0 skips token transfer; this test only verifies there is no OFT whitelist.
+        message = make_compose_message(nonce=9, src_eid=30101, amount_ld=0, program=program)
 
         tx = await endpoint.functions.deliverCompose(
             composer.address,
@@ -900,3 +913,71 @@ class TestOFTComposerFork:
         # Neither the composer nor DeFiVM should retain any tokens.
         assert await oft.functions.balanceOf(composer.address).call() == 0
         assert await oft.functions.balanceOf(vm_address).call() == 0
+
+    async def test_token_transfer_to_vm_oft_adapter(self, ctx):
+        """lzCompose resolves the ERC-20 token via IOFT.token() for an OFT Adapter.
+
+        An OFT Adapter wraps a pre-existing ERC-20 token; its ``token()`` method returns
+        the address of that underlying ERC-20, not ``address(this)``.  This test verifies
+        that ``OFTComposer`` calls ``IOFT(_from).token()`` and transfers the correct token.
+
+        Flow:
+          1. Deploy a standalone ERC-20 token (MockOFT used as plain ERC-20).
+          2. Deploy MockOFTAdapter wrapping that token — ``adapter.token()`` returns the
+             standalone ERC-20 address.
+          3. Mint tokens to the composer (simulating OFT Adapter bridge delivery).
+          4. Call ``lzCompose`` with ``_from = adapter``; the composer resolves the ERC-20
+             via ``adapter.token()`` and transfers it to DeFiVM.
+          5. The DeFiVM program forwards the tokens to a fresh recipient.
+          6. Assert the recipient holds all tokens; composer and DeFiVM are empty.
+        """
+        w3 = ctx["w3"]
+        composer = ctx["composer"]
+        endpoint = ctx["endpoint"]
+        deployer = ctx["deployer"]
+        vm_address = ctx["vm_address"]
+        compiled_mocks = ctx["compiled_mocks"]
+
+        token_amount = 75 * 10**18
+        fresh_recipient = w3.eth.account.create().address
+
+        # Deploy a standalone ERC-20 token (reuse MockOFT — it IS an ERC-20).
+        token_address = await _deploy(w3, compiled_mocks["MockOFT"], deployer)
+        token = w3.eth.contract(address=token_address, abi=compiled_mocks["MockOFT"]["abi"])
+
+        # Deploy an OFT Adapter that wraps the standalone token.
+        adapter_address = await _deploy(w3, compiled_mocks["MockOFTAdapter"], deployer, token_address)
+
+        # Simulate OFT Adapter bridge: tokens land in the composer.
+        await token.functions.mint(composer.address, token_amount).transact({"from": deployer})
+        assert await token.functions.balanceOf(composer.address).call() == token_amount
+
+        # Build calldata for token.transfer(fresh_recipient, token_amount).
+        vm_forward_calldata = _abidata(token.encode_abi("transfer", [fresh_recipient, token_amount]))
+        program = (
+            store_reg(0)  # R0 = _from (adapter address)
+            + store_reg(1)  # R1 = amountLD
+            + push_bytes(vm_forward_calldata)  # push calldata buffer; stack: [buf_idx]
+            + push_u256(0)  # value = 0 ETH
+            + push_addr(token_address)  # call the underlying ERC-20 contract
+            + push_u256(0)  # gasLimit = 0 (all gas)
+            + call()
+            + pop()  # discard success flag
+        )
+        message = make_compose_message(nonce=11, src_eid=30101, amount_ld=token_amount, program=program)
+
+        tx = await endpoint.functions.deliverCompose(
+            composer.address,
+            adapter_address,  # _from = the OFT Adapter (not the ERC-20 itself)
+            b"\x00" * 32,
+            message,
+        ).transact({"from": deployer})
+
+        receipt = await w3.eth.get_transaction_receipt(tx)
+        assert receipt["status"] == 1
+
+        # Tokens must have been forwarded through DeFiVM to the fresh recipient.
+        assert await token.functions.balanceOf(fresh_recipient).call() == token_amount
+        # Neither the composer nor DeFiVM should retain any tokens.
+        assert await token.functions.balanceOf(composer.address).call() == 0
+        assert await token.functions.balanceOf(vm_address).call() == 0
