@@ -3,69 +3,70 @@ pragma solidity ^0.8.24;
 
 /**
  * @title OFTComposer
- * @notice LayerZero OFT compose receiver that executes a list of arbitrary
- *         on-chain calls after an OFT cross-chain token transfer arrives.
+ * @notice LayerZero OFT compose receiver that executes a DeFiVM program after
+ *         an OFT cross-chain token transfer arrives on the destination chain.
  *
  * How it works
  * ------------
- * 1. A sender on the source chain encodes a ``Call[]`` list as the
+ * 1. A sender on the source chain encodes a DeFiVM program as the
  *    ``composeMsg`` in their OFT ``send`` call.
- * 2. After the OFT tokens arrive on the destination chain, the LayerZero
- *    EndpointV2 contract calls ``lzCompose`` on this contract.
- * 3. ``lzCompose`` validates the caller (must be the authorised endpoint),
- *    then decodes the compose message and executes each ``Call`` sequentially.
- *    Any revert in a sub-call reverts the entire compose execution.
+ * 2. After the OFT tokens arrive, the LayerZero EndpointV2 calls ``lzCompose``.
+ * 3. ``lzCompose`` validates the caller (must be the authorised endpoint), then
+ *    prepends two PUSH instructions for the OFT parameters and forwards the
+ *    combined program to the DeFiVM contract for execution.
  *
  * Security notes
  * --------------
  *  • Only the authorised LayerZero endpoint may call ``lzCompose``.
  *  • Any OFT contract forwarded by the endpoint can trigger compose.
- *  • The compose payload encodes arbitrary calls; senders are responsible for
- *    constructing safe payloads.  Review each call's target and calldata
- *    off-chain before broadcasting.
+ *  • The compose payload is raw DeFiVM bytecode; senders are responsible for
+ *    constructing safe programs.  Simulate the full execution off-chain before
+ *    broadcasting.
  *  • The owner can rescue any ETH or ERC-20 tokens stuck in this contract via
- *    ``rescueETH`` and ``rescueToken``, e.g. when a compose action keeps
+ *    ``rescueETH`` and ``rescueToken``, e.g. when a compose program keeps
  *    failing and the funds need to be recovered out-of-band.
  *
  * Compose-message encoding
  * ------------------------
- * The raw ``_message`` bytes that arrive in ``lzCompose`` use the standard
- * LayerZero ``OFTComposeMsgCodec`` layout::
+ * The raw ``_message`` bytes use the standard ``OFTComposeMsgCodec`` layout::
  *
- *   | 8 bytes nonce | 4 bytes srcEid | 32 bytes amountLD | payload |
+ *   | 8 bytes nonce | 4 bytes srcEid | 32 bytes amountLD | DeFiVM program |
  *
- * The custom ``payload`` (everything after the first 44 bytes) must be
- * ABI-encoded as::
+ * The custom payload (bytes 44+) is raw DeFiVM bytecode.
  *
- *   abi.encode(Call[] calls)
+ * Before executing, OFTComposer prepends two PUSH instructions so the DeFiVM
+ * program starts with the OFT transfer parameters already on the stack::
  *
- * where each ``Call`` is:
+ *   PUSH_U256 <amountLD>   ; pushed first  → stack[0] (bottom)
+ *   PUSH_ADDR <_from>      ; pushed second → stack[1] (top)
  *
- *   struct Call { address target; uint256 value; bytes data; }
+ * A typical program begins by saving these into registers::
  *
- * Python helper (eth_abi)::
+ *   STORE_REG 0   ; R0 = _from    (OFT contract that delivered the tokens)
+ *   STORE_REG 1   ; R1 = amountLD (tokens delivered, in local decimals)
+ *   ; ... use R0 and R1 anywhere later with LOAD_REG ...
+ *
+ * Python helper (``pydefi.vm.program``)::
  *
  *   import struct
- *   from eth_abi import encode
+ *   from pydefi.vm.program import store_reg, ...
  *
- *   payload = encode(['(address,uint256,bytes)[]'], [calls])
+ *   program = store_reg(0) + store_reg(1) + ...
  *   message = (
  *       struct.pack('>Q', nonce)        # 8 bytes  — uint64 nonce
  *       + struct.pack('>I', src_eid)    # 4 bytes  — uint32 srcEid
  *       + amount_ld.to_bytes(32, 'big') # 32 bytes — uint256 amountLD
- *       + payload                       # ABI-encoded Call[]
+ *       + program                       # DeFiVM bytecode
  *   )
  */
 
 // ---------------------------------------------------------------------------
-// Call struct
+// IDeFiVM
 // ---------------------------------------------------------------------------
 
-/// @notice A single external call to be executed inside ``lzCompose``.
-struct Call {
-    address target;
-    uint256 value;
-    bytes data;
+/// @notice Minimal interface for calling DeFiVM.execute.
+interface IDeFiVM {
+    function execute(bytes calldata program) external payable;
 }
 
 // ---------------------------------------------------------------------------
@@ -73,6 +74,10 @@ struct Call {
 // ---------------------------------------------------------------------------
 
 contract OFTComposer {
+    // DeFiVM PUSH opcodes (mirrors DeFiVM.sol)
+    uint8 private constant OP_PUSH_U256 = 0x01;
+    uint8 private constant OP_PUSH_ADDR = 0x02;
+
     // -----------------------------------------------------------------------
     // Errors
     // -----------------------------------------------------------------------
@@ -80,20 +85,12 @@ contract OFTComposer {
     /// @notice Thrown when the caller is not the authorised LayerZero endpoint.
     error UnauthorizedEndpoint(address caller);
 
-    /// @notice Thrown when a sub-call inside ``lzCompose`` reverts.
-    error CallFailed(uint256 index, bytes reason);
-
     // -----------------------------------------------------------------------
     // Events
     // -----------------------------------------------------------------------
 
     /// @notice Emitted after a successful compose execution.
-    event Composed(
-        address indexed from,
-        bytes32 indexed guid,
-        uint256 amountLD,
-        uint256 numCalls
-    );
+    event Composed(address indexed from, bytes32 indexed guid, uint256 amountLD);
 
     /// @notice Emitted when ownership is transferred.
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
@@ -105,6 +102,9 @@ contract OFTComposer {
     /// @notice The LayerZero v2 endpoint address authorised to call ``lzCompose``.
     address public immutable endpoint;
 
+    /// @notice The DeFiVM contract used to execute compose programs.
+    IDeFiVM public immutable vm;
+
     /// @notice Owner address — may rescue stuck funds and transfer ownership.
     address public owner;
 
@@ -114,10 +114,12 @@ contract OFTComposer {
 
     /**
      * @param _endpoint  The LayerZero v2 EndpointV2 contract address.
+     * @param _vm        The DeFiVM contract address.
      * @param _owner     Address that may call rescue functions and transfer ownership.
      */
-    constructor(address _endpoint, address _owner) {
+    constructor(address _endpoint, address _vm, address _owner) {
         endpoint = _endpoint;
+        vm = IDeFiVM(_vm);
         owner = _owner;
     }
 
@@ -144,7 +146,7 @@ contract OFTComposer {
     /**
      * @notice Rescue ETH stuck in this contract.
      *
-     * Use this when a compose action fails permanently and the ETH sent along
+     * Use this when a compose program fails permanently and the ETH sent along
      * with the compose message needs to be recovered out-of-band.
      *
      * @param _recipient Address to send the rescued ETH to.
@@ -186,8 +188,7 @@ contract OFTComposer {
      * @param _from     The OFT contract on this chain that received the tokens.
      * @param _guid     Unique LayerZero message GUID.
      * @param _message  ``OFTComposeMsgCodec``-encoded message:
-     *                  ``| 8B nonce | 4B srcEid | 32B amountLD | payload |``
-     *                  where ``payload = abi.encode(Call[] calls)``.
+     *                  ``| 8B nonce | 4B srcEid | 32B amountLD | DeFiVM program |``
      */
     function lzCompose(
         address _from,
@@ -203,22 +204,34 @@ contract OFTComposer {
         require(_message.length >= 44, "OFTComposer: message too short");
 
         // Decode OFTComposeMsgCodec layout:
-        //   bytes  0– 7 : uint64  nonce   (ignored here)
-        //   bytes  8–11 : uint32  srcEid  (ignored here)
+        //   bytes  0– 7 : uint64  nonce    (ignored)
+        //   bytes  8–11 : uint32  srcEid   (ignored)
         //   bytes 12–43 : uint256 amountLD
-        //   bytes 44+   : payload = abi.encode(Call[])
+        //   bytes 44+   : DeFiVM program bytecode
         uint256 amountLD = uint256(bytes32(_message[12:44]));
-        Call[] memory calls = abi.decode(_message[44:], (Call[]));
 
-        // Execute each call sequentially; any failure reverts the whole compose.
-        for (uint256 i = 0; i < calls.length; i++) {
-            (bool success, bytes memory reason) = calls[i].target.call{value: calls[i].value}(
-                calls[i].data
-            );
-            if (!success) revert CallFailed(i, reason);
-        }
+        // Build a prologue that pushes the OFT parameters onto the DeFiVM stack
+        // before the user program runs:
+        //
+        //   PUSH_U256 <amountLD>  (1B opcode + 32B value = 33B)
+        //   PUSH_ADDR <_from>     (1B opcode + 20B value = 21B)
+        //
+        // After the prologue, the initial stack layout is:
+        //   stack[0] = amountLD  (pushed first, bottom)
+        //   stack[1] = _from     (pushed second, top)
+        //
+        // The program typically starts with:
+        //   STORE_REG 0  ; R0 = _from
+        //   STORE_REG 1  ; R1 = amountLD
+        bytes memory program = bytes.concat(
+            abi.encodePacked(OP_PUSH_U256, bytes32(amountLD), OP_PUSH_ADDR, bytes20(_from)),
+            _message[44:]
+        );
 
-        emit Composed(_from, _guid, amountLD, calls.length);
+        // Execute via DeFiVM, forwarding any ETH received with this compose call.
+        vm.execute{value: msg.value}(program);
+
+        emit Composed(_from, _guid, amountLD);
     }
 
     // -----------------------------------------------------------------------

@@ -1,12 +1,14 @@
-"""Fork tests for OFTComposer — LayerZero OFT compose receiver.
+"""Fork tests for OFTComposer — LayerZero OFT compose receiver backed by DeFiVM.
 
-These tests compile OFTComposer.sol with py-solc-x, deploy it alongside mock
-contracts on a local Anvil fork of Ethereum mainnet, and exercise the full
-``lzCompose`` flow including:
+These tests compile OFTComposer.sol and DeFiVM.sol with py-solc-x, deploy them
+alongside mock contracts on a local Anvil fork of Ethereum mainnet, and exercise
+the full ``lzCompose`` flow including:
 
- - Single-call compose execution via a mock LayerZero endpoint
- - Multi-call compose execution (sequential calls)
+ - Basic compose execution via a mock LayerZero endpoint
+ - Multi-call compose execution (two CALL instructions in one program)
  - Compose execution carrying ETH value to a sub-call
+ - Dynamic access to ``amountLD`` inside the program (PATCH_U256)
+ - Dynamic access to ``_from`` (OFT address) inside the program (PATCH_ADDR)
  - Revert when the caller is not the authorised endpoint
  - Revert when a sub-call inside the compose fails
  - Owner rescue of stuck ETH and ERC-20 tokens
@@ -22,9 +24,20 @@ import struct
 from pathlib import Path
 
 import pytest
-from eth_abi import encode as abi_encode
 from web3 import AsyncWeb3
 from web3.exceptions import ContractLogicError, Web3RPCError
+
+from pydefi.vm.program import (
+    call,
+    load_reg,
+    patch_addr,
+    patch_u256,
+    pop,
+    push_addr,
+    push_bytes,
+    push_u256,
+    store_reg,
+)
 
 # ---------------------------------------------------------------------------
 # Optional: skip whole module if solcx not installed
@@ -36,6 +49,7 @@ solcx = pytest.importorskip("solcx")
 # ---------------------------------------------------------------------------
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SOL_FILE = REPO_ROOT / "pydefi" / "bridge" / "OFTComposer.sol"
+DEFI_VM_SOL_FILE = REPO_ROOT / "pydefi" / "vm" / "DeFiVM.sol"
 
 # ---------------------------------------------------------------------------
 # Compile + deploy helpers
@@ -59,6 +73,20 @@ def _compile_oft_composer() -> dict:
         optimize_runs=200,
     )
     key = next(k for k in result if k.endswith(":OFTComposer"))
+    return result[key]
+
+
+def _compile_defi_vm() -> dict:
+    """Compile DeFiVM.sol and return the ABI + bytecode."""
+    _ensure_solc("0.8.24")
+    result = solcx.compile_files(
+        [str(DEFI_VM_SOL_FILE)],
+        output_values=["abi", "bin"],
+        solc_version="0.8.24",
+        optimize=True,
+        optimize_runs=200,
+    )
+    key = next(k for k in result if k.endswith(":DeFiVM"))
     return result[key]
 
 
@@ -177,43 +205,33 @@ def _compile_mock_contracts() -> dict[str, dict]:
 # ---------------------------------------------------------------------------
 
 
-def _to_bytes(hex_or_bytes: str | bytes) -> bytes:
-    """Convert a hex string or bytes to raw bytes."""
-    if isinstance(hex_or_bytes, bytes):
-        return hex_or_bytes
-    return bytes.fromhex(hex_or_bytes.removeprefix("0x"))
-
-
 def make_compose_message(
     nonce: int,
     src_eid: int,
     amount_ld: int,
-    calls: list[tuple],
+    program: bytes,
 ) -> bytes:
-    """Build a LayerZero OFTComposeMsgCodec-encoded message.
+    """Build a LayerZero OFTComposeMsgCodec-encoded message with a DeFiVM program.
 
     Layout::
 
-        | 8B nonce | 4B srcEid | 32B amountLD | abi.encode(Call[]) |
+        | 8B nonce | 4B srcEid | 32B amountLD | DeFiVM program |
 
     Args:
         nonce:     uint64 message nonce.
         src_eid:   uint32 source endpoint ID.
         amount_ld: uint256 amount of OFT tokens delivered (in local decimals).
-        calls:     List of (target, value, data) tuples.
+        program:   Raw DeFiVM bytecode (``_from`` and ``amountLD`` are pre-pushed
+                   by OFTComposer before the program runs).
 
     Returns:
         Raw bytes ready to pass as ``_message`` in ``lzCompose``.
     """
-    payload = abi_encode(
-        ["(address,uint256,bytes)[]"],
-        [[(t, v, _to_bytes(d)) for t, v, d in calls]],
-    )
     return (
         struct.pack(">Q", nonce)  # 8 bytes  — uint64 nonce
         + struct.pack(">I", src_eid)  # 4 bytes  — uint32 srcEid
         + amount_ld.to_bytes(32, "big")  # 32 bytes — uint256 amountLD
-        + payload  # ABI-encoded Call[]
+        + program  # DeFiVM bytecode
     )
 
 
@@ -244,8 +262,13 @@ def compiled_mocks():
 
 
 @pytest.fixture(scope="module")
-async def ctx(oft_fork_w3, compiled_oft_composer, compiled_mocks):
-    """Deploy OFTComposer and mock contracts once, return shared context."""
+def compiled_defi_vm():
+    return _compile_defi_vm()
+
+
+@pytest.fixture(scope="module")
+async def ctx(oft_fork_w3, compiled_oft_composer, compiled_mocks, compiled_defi_vm):
+    """Deploy OFTComposer, DeFiVM, and mock contracts once; return shared context."""
     w3 = oft_fork_w3
     accounts = await w3.eth.accounts
     deployer = accounts[0]
@@ -253,12 +276,16 @@ async def ctx(oft_fork_w3, compiled_oft_composer, compiled_mocks):
     # Deploy mock endpoint (controls which address may call lzCompose).
     endpoint_address = await _deploy(w3, compiled_mocks["MockEndpoint"], deployer)
 
-    # Deploy OFT composer, pointing it at the mock endpoint.
+    # Deploy DeFiVM (no constructor arguments).
+    vm_address = await _deploy(w3, compiled_defi_vm, deployer)
+
+    # Deploy OFT composer pointing it at the mock endpoint and DeFiVM.
     composer_address = await _deploy(
         w3,
         compiled_oft_composer,
         deployer,
         endpoint_address,  # _endpoint
+        vm_address,  # _vm
         deployer,  # _owner
     )
     composer = w3.eth.contract(address=composer_address, abi=compiled_oft_composer["abi"])
@@ -281,6 +308,7 @@ async def ctx(oft_fork_w3, compiled_oft_composer, compiled_mocks):
         "composer_address": composer_address,
         "endpoint": endpoint,
         "endpoint_address": endpoint_address,
+        "vm_address": vm_address,
         "oft_address": oft_address,
         "target": target,
         "target_address": target_address,
@@ -294,16 +322,39 @@ async def ctx(oft_fork_w3, compiled_oft_composer, compiled_mocks):
 # ---------------------------------------------------------------------------
 
 
+def _abidata(hex_or_bytes: str | bytes) -> bytes:
+    """Convert encode_abi() hex output to raw bytes."""
+    if isinstance(hex_or_bytes, bytes):
+        return hex_or_bytes
+    return bytes.fromhex(hex_or_bytes.removeprefix("0x"))
+
+
 @pytest.mark.fork
 class TestOFTComposerFork:
-    """Fork-level tests for OFTComposer.sol on a local Anvil mainnet fork."""
+    """Fork-level tests for OFTComposer.sol backed by DeFiVM on a local Anvil fork."""
+
+    # ------------------------------------------------------------------
+    # Helper: build a single-CALL DeFiVM snippet (no OFT param setup)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _call_target(target_address: str, calldata: bytes, value: int = 0) -> bytes:
+        """Return DeFiVM instructions for one external call (discards success flag)."""
+        return (
+            push_bytes(calldata)  # buf N; stack: [..., N]
+            + push_u256(value)  # stack: [..., N, value]
+            + push_addr(target_address)  # stack: [..., N, value, to]
+            + push_u256(0)  # gasLimit=0 (all gas); stack: [..., N, value, to, 0]
+            + call()  # pops top-4; requireSuccess=True -> reverts on failure; pushes 1
+            + pop()  # discard success flag
+        )
 
     # ------------------------------------------------------------------
     # Basic single-call compose
     # ------------------------------------------------------------------
 
     async def test_single_call_compose(self, ctx):
-        """lzCompose executes a single call to MockTarget.execute()."""
+        """lzCompose runs a DeFiVM program that calls MockTarget.execute()."""
         w3 = ctx["w3"]
         composer = ctx["composer"]
         endpoint = ctx["endpoint"]
@@ -312,15 +363,11 @@ class TestOFTComposerFork:
         target_address = ctx["target_address"]
         target = ctx["target"]
 
-        # Encode the calldata for MockTarget.execute(bytes)
-        call_data = target.encode_abi("execute", [b"hello"])
-        calls = [(target_address, 0, call_data)]
-        message = make_compose_message(
-            nonce=1,
-            src_eid=30101,
-            amount_ld=10**18,
-            calls=calls,
-        )
+        calldata = _abidata(target.encode_abi("execute", [b"hello"]))
+        # The composer pre-pushes amountLD and _from onto the stack.
+        # Save them to R0/_from and R1/amountLD so the stack is clean for the call.
+        program = store_reg(0) + store_reg(1) + self._call_target(target_address, calldata)
+        message = make_compose_message(nonce=1, src_eid=30101, amount_ld=10**18, program=program)
 
         tx = await endpoint.functions.deliverCompose(
             composer.address,
@@ -332,19 +379,16 @@ class TestOFTComposerFork:
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
 
-        # Verify the mock target received exactly one call.
         call_count = await target.functions.callCount().call()
         assert call_count == 1
-
-        last_data = await target.functions.lastData().call()
-        assert last_data == b"hello"
+        assert await target.functions.lastData().call() == b"hello"
 
     # ------------------------------------------------------------------
-    # Multi-call compose
+    # Multi-call compose (two CALL instructions in one program)
     # ------------------------------------------------------------------
 
     async def test_multi_call_compose(self, ctx):
-        """lzCompose executes multiple calls in sequence."""
+        """Program with two sequential CALL instructions increments callCount by 2."""
         w3 = ctx["w3"]
         composer = ctx["composer"]
         endpoint = ctx["endpoint"]
@@ -355,18 +399,15 @@ class TestOFTComposerFork:
 
         before = await target.functions.callCount().call()
 
-        call_data_a = target.encode_abi("execute", [b"call_a"])
-        call_data_b = target.encode_abi("execute", [b"call_b"])
-        calls = [
-            (target_address, 0, call_data_a),
-            (target_address, 0, call_data_b),
-        ]
-        message = make_compose_message(
-            nonce=2,
-            src_eid=30101,
-            amount_ld=5 * 10**17,
-            calls=calls,
+        calldata_a = _abidata(target.encode_abi("execute", [b"call_a"]))
+        calldata_b = _abidata(target.encode_abi("execute", [b"call_b"]))
+        program = (
+            store_reg(0)
+            + store_reg(1)
+            + self._call_target(target_address, calldata_a)
+            + self._call_target(target_address, calldata_b)
         )
+        message = make_compose_message(nonce=2, src_eid=30101, amount_ld=5 * 10**17, program=program)
 
         tx = await endpoint.functions.deliverCompose(
             composer.address,
@@ -379,7 +420,6 @@ class TestOFTComposerFork:
         assert receipt["status"] == 1
 
         after = await target.functions.callCount().call()
-        # Both calls should have been executed, incrementing count by 2.
         assert after == before + 2
 
     # ------------------------------------------------------------------
@@ -387,7 +427,7 @@ class TestOFTComposerFork:
     # ------------------------------------------------------------------
 
     async def test_compose_with_eth_value(self, ctx):
-        """lzCompose forwards ETH to a sub-call correctly."""
+        """ETH sent with deliverCompose is forwarded to a sub-call via msg.value."""
         w3 = ctx["w3"]
         composer = ctx["composer"]
         endpoint = ctx["endpoint"]
@@ -398,42 +438,43 @@ class TestOFTComposerFork:
 
         eth_amount = 10**16  # 0.01 ETH
 
-        # Fund the composer so it can forward ETH.
-        await w3.eth.send_transaction({"from": deployer, "to": composer.address, "value": eth_amount})
-
         before_balance = await w3.eth.get_balance(target_address)
 
-        call_data = target.encode_abi("execute", [b"with_eth"])
-        calls = [(target_address, eth_amount, call_data)]
-        message = make_compose_message(
-            nonce=3,
-            src_eid=30101,
-            amount_ld=10**18,
-            calls=calls,
+        calldata = _abidata(target.encode_abi("execute", [b"with_eth"]))
+        # Pass eth_amount as the call value; DeFiVM forwards it from its own balance
+        # (received via vm.execute{value: msg.value}).
+        program = (
+            store_reg(0)
+            + store_reg(1)
+            + push_bytes(calldata)
+            + push_u256(eth_amount)  # value for sub-call
+            + push_addr(target_address)
+            + push_u256(0)  # gasLimit=0
+            + call()
+            + pop()
         )
+        message = make_compose_message(nonce=3, src_eid=30101, amount_ld=10**18, program=program)
 
+        # Send ETH with the compose delivery; it flows: endpoint -> lzCompose -> vm.execute
         tx = await endpoint.functions.deliverCompose(
             composer.address,
             oft_address,
             b"\x00" * 31 + b"\x02",
             message,
-        ).transact({"from": deployer})
+        ).transact({"from": deployer, "value": eth_amount})
 
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
 
-        after_balance = await w3.eth.get_balance(target_address)
-        assert after_balance == before_balance + eth_amount
-
-        last_value = await target.functions.lastValue().call()
-        assert last_value == eth_amount
+        assert await w3.eth.get_balance(target_address) == before_balance + eth_amount
+        assert await target.functions.lastValue().call() == eth_amount
 
     # ------------------------------------------------------------------
     # Composed event is emitted
     # ------------------------------------------------------------------
 
     async def test_composed_event_emitted(self, ctx):
-        """lzCompose emits the Composed event with correct arguments."""
+        """lzCompose emits Composed(from, guid, amountLD) with correct values."""
         w3 = ctx["w3"]
         composer = ctx["composer"]
         endpoint = ctx["endpoint"]
@@ -444,9 +485,9 @@ class TestOFTComposerFork:
 
         amount_ld = 777 * 10**18
         guid = b"\xde\xad" + b"\x00" * 30
-        call_data = target.encode_abi("execute", [b"event_test"])
-        calls = [(target_address, 0, call_data)]
-        message = make_compose_message(nonce=4, src_eid=30184, amount_ld=amount_ld, calls=calls)
+        calldata = _abidata(target.encode_abi("execute", [b"event_test"]))
+        program = store_reg(0) + store_reg(1) + self._call_target(target_address, calldata)
+        message = make_compose_message(nonce=4, src_eid=30184, amount_ld=amount_ld, program=program)
 
         tx = await endpoint.functions.deliverCompose(
             composer.address,
@@ -458,14 +499,126 @@ class TestOFTComposerFork:
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
 
-        # Parse the Composed event from the receipt.
         events = composer.events.Composed().process_receipt(receipt)
         assert len(events) == 1
         evt = events[0]["args"]
         assert evt["from"] == oft_address
         assert evt["guid"] == guid
         assert evt["amountLD"] == amount_ld
-        assert evt["numCalls"] == 1
+
+    # ------------------------------------------------------------------
+    # Program can read amountLD from the initial stack
+    # ------------------------------------------------------------------
+
+    async def test_compose_accesses_amount_ld(self, ctx):
+        """Program uses PATCH_U256 to write amountLD (from the stack) into calldata."""
+        w3 = ctx["w3"]
+        composer = ctx["composer"]
+        endpoint = ctx["endpoint"]
+        deployer = ctx["deployer"]
+        oft_address = ctx["oft_address"]
+        target_address = ctx["target_address"]
+        target = ctx["target"]
+
+        amount_ld = 42 * 10**18
+
+        # Build a calldata template for MockTarget.execute(bytes data) with 32 zero bytes.
+        # ABI layout:
+        #   [0:4]    selector
+        #   [4:36]   ABI offset = 0x20 (32)
+        #   [36:68]  data length = 32
+        #   [68:100] data content (32 zero bytes -- will be patched with amountLD)
+        template = _abidata(target.encode_abi("execute", [b"\x00" * 32]))
+
+        # Program:
+        #   Stack start: [amountLD, _from]  (_from on top)
+        #   STORE_REG 0 -> R0 = _from;   stack: [amountLD]
+        #   STORE_REG 1 -> R1 = amountLD; stack: []
+        #   PUSH_BYTES template -> buf 0; stack: [0]
+        #   LOAD_REG 1  -> stack: [0, amountLD]
+        #   PATCH_U256 68 -> pops amountLD (top) and bufIdx 0; patches; stack: [0]
+        #   push value=0, push to, push gasLimit=0 -> CALL
+        program = (
+            store_reg(0)  # R0 = _from
+            + store_reg(1)  # R1 = amountLD
+            + push_bytes(template)  # buf 0; stack: [0]
+            + load_reg(1)  # stack: [0, amountLD]
+            + patch_u256(68)  # patch amountLD at offset 68; stack: [0]
+            + push_u256(0)  # value=0
+            + push_addr(target_address)  # to
+            + push_u256(0)  # gasLimit=0
+            + call()
+            + pop()
+        )
+        message = make_compose_message(nonce=5, src_eid=30101, amount_ld=amount_ld, program=program)
+
+        tx = await endpoint.functions.deliverCompose(
+            composer.address,
+            oft_address,
+            b"\x00" * 32,
+            message,
+        ).transact({"from": deployer})
+
+        receipt = await w3.eth.get_transaction_receipt(tx)
+        assert receipt["status"] == 1
+
+        # MockTarget.lastData is the `data` argument -- the 32-byte content that was patched.
+        last_data = await target.functions.lastData().call()
+        assert last_data == amount_ld.to_bytes(32, "big")
+
+    # ------------------------------------------------------------------
+    # Program can read _from (OFT address) from the initial stack
+    # ------------------------------------------------------------------
+
+    async def test_compose_accesses_from_address(self, ctx):
+        """Program uses PATCH_ADDR to write _from (OFT address) into calldata."""
+        w3 = ctx["w3"]
+        composer = ctx["composer"]
+        endpoint = ctx["endpoint"]
+        deployer = ctx["deployer"]
+        oft_address = ctx["oft_address"]
+        target_address = ctx["target_address"]
+        target = ctx["target"]
+
+        # Same calldata template; we'll patch the 20-byte address at offset 68.
+        template = _abidata(target.encode_abi("execute", [b"\x00" * 32]))
+
+        # Program:
+        #   STORE_REG 0 -> R0 = _from   (pop from top)
+        #   STORE_REG 1 -> R1 = amountLD
+        #   PUSH_BYTES template -> buf 0; stack: [0]
+        #   LOAD_REG 0  -> stack: [0, _from]
+        #   PATCH_ADDR 68 -> writes bytes20(_from) at offset 68; stack: [0]
+        #   CALL
+        program = (
+            store_reg(0)  # R0 = _from
+            + store_reg(1)  # R1 = amountLD
+            + push_bytes(template)  # buf 0; stack: [0]
+            + load_reg(0)  # stack: [0, _from]
+            + patch_addr(68)  # write 20 bytes of _from at offset 68; stack: [0]
+            + push_u256(0)  # value=0
+            + push_addr(target_address)  # to
+            + push_u256(0)  # gasLimit=0
+            + call()
+            + pop()
+        )
+        message = make_compose_message(nonce=6, src_eid=30101, amount_ld=10**18, program=program)
+
+        tx = await endpoint.functions.deliverCompose(
+            composer.address,
+            oft_address,
+            b"\x00" * 32,
+            message,
+        ).transact({"from": deployer})
+
+        receipt = await w3.eth.get_transaction_receipt(tx)
+        assert receipt["status"] == 1
+
+        # PATCH_ADDR writes exactly 20 bytes at offset 68; the remaining 12 bytes stay zero.
+        last_data = await target.functions.lastData().call()
+        expected_addr_bytes = bytes.fromhex(oft_address.lower().removeprefix("0x"))
+        assert last_data[:20] == expected_addr_bytes
+        assert last_data[20:] == b"\x00" * 12
 
     # ------------------------------------------------------------------
     # Security: unauthorized endpoint
@@ -476,14 +629,10 @@ class TestOFTComposerFork:
         composer = ctx["composer"]
         deployer = ctx["deployer"]
         oft_address = ctx["oft_address"]
-        target_address = ctx["target_address"]
-        target = ctx["target"]
 
-        call_data = target.encode_abi("execute", [b"unauthorized"])
-        calls = [(target_address, 0, call_data)]
-        message = make_compose_message(nonce=5, src_eid=30101, amount_ld=10**18, calls=calls)
+        program = store_reg(0) + store_reg(1)  # minimal no-op program
+        message = make_compose_message(nonce=7, src_eid=30101, amount_ld=10**18, program=program)
 
-        # Call lzCompose directly from the deployer (not the endpoint).
         with pytest.raises((ContractLogicError, Web3RPCError)):
             await composer.functions.lzCompose(
                 oft_address,
@@ -494,11 +643,11 @@ class TestOFTComposerFork:
             ).transact({"from": deployer})
 
     # ------------------------------------------------------------------
-    # Security: sub-call failure propagates
+    # Security: sub-call failure rolls back all state changes
     # ------------------------------------------------------------------
 
     async def test_sub_call_failure_reverts_compose(self, ctx):
-        """lzCompose reverts when a sub-call fails, rolling back all state changes."""
+        """A failing CALL in the program reverts the entire compose transaction."""
         composer = ctx["composer"]
         endpoint = ctx["endpoint"]
         deployer = ctx["deployer"]
@@ -509,13 +658,20 @@ class TestOFTComposerFork:
 
         before_count = await target.functions.callCount().call()
 
-        # First call succeeds; second call always reverts.
-        call_data = target.encode_abi("execute", [b"before_fail"])
-        calls = [
-            (target_address, 0, call_data),
-            (reverting_address, 0, b""),  # always reverts
-        ]
-        message = make_compose_message(nonce=7, src_eid=30101, amount_ld=10**18, calls=calls)
+        calldata_ok = _abidata(target.encode_abi("execute", [b"before_fail"]))
+        # First call succeeds; second call (to RevertingTarget) always reverts.
+        # DeFiVM's requireSuccess=True causes the whole execute() to revert.
+        program = (
+            store_reg(0)
+            + store_reg(1)
+            + self._call_target(target_address, calldata_ok)  # succeeds, pops success
+            + push_bytes(b"")  # empty calldata for fallback
+            + push_u256(0)
+            + push_addr(reverting_address)
+            + push_u256(0)
+            + call()  # requireSuccess=True; target reverts -> DeFiVM reverts
+        )
+        message = make_compose_message(nonce=8, src_eid=30101, amount_ld=10**18, program=program)
 
         with pytest.raises((ContractLogicError, Web3RPCError)):
             await endpoint.functions.deliverCompose(
@@ -525,7 +681,7 @@ class TestOFTComposerFork:
                 message,
             ).transact({"from": deployer})
 
-        # State change from the first call must be rolled back.
+        # callCount increment from the first CALL must have been rolled back.
         after_count = await target.functions.callCount().call()
         assert after_count == before_count
 
@@ -542,12 +698,11 @@ class TestOFTComposerFork:
         target_address = ctx["target_address"]
         target = ctx["target"]
 
-        # Use a random address that was never explicitly approved.
         random_oft = w3.eth.account.create().address
 
-        call_data = target.encode_abi("execute", [b"random_oft"])
-        calls = [(target_address, 0, call_data)]
-        message = make_compose_message(nonce=6, src_eid=30101, amount_ld=10**18, calls=calls)
+        calldata = _abidata(target.encode_abi("execute", [b"random_oft"]))
+        program = store_reg(0) + store_reg(1) + self._call_target(target_address, calldata)
+        message = make_compose_message(nonce=9, src_eid=30101, amount_ld=10**18, program=program)
 
         tx = await endpoint.functions.deliverCompose(
             composer.address,
@@ -571,26 +726,20 @@ class TestOFTComposerFork:
 
         eth_amount = 5 * 10**16  # 0.05 ETH
 
-        # Fund the composer directly (simulating ETH stuck after a failed compose).
         await w3.eth.send_transaction({"from": deployer, "to": composer.address, "value": eth_amount})
 
         before_composer = await w3.eth.get_balance(composer.address)
         assert before_composer >= eth_amount
 
-        # Rescue to a fresh address with 0 ETH balance.
         fresh_recipient = w3.eth.account.create().address
-        before_fresh = await w3.eth.get_balance(fresh_recipient)
-        assert before_fresh == 0
+        assert await w3.eth.get_balance(fresh_recipient) == 0
 
         tx = await composer.functions.rescueETH(fresh_recipient, eth_amount).transact({"from": deployer})
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
 
-        # Verify ETH left the composer and arrived at the recipient.
-        after_composer = await w3.eth.get_balance(composer.address)
-        after_fresh = await w3.eth.get_balance(fresh_recipient)
-        assert after_composer == before_composer - eth_amount
-        assert after_fresh == eth_amount
+        assert await w3.eth.get_balance(composer.address) == before_composer - eth_amount
+        assert await w3.eth.get_balance(fresh_recipient) == eth_amount
 
     async def test_non_owner_cannot_rescue_eth(self, ctx):
         """rescueETH reverts when called by a non-owner."""
@@ -615,12 +764,9 @@ class TestOFTComposerFork:
         deployer = ctx["deployer"]
         compiled_mocks = ctx["compiled_mocks"]
 
-        # Use a fresh recipient address (never received tokens before).
         fresh_recipient = w3.eth.account.create().address
         token_amount = 100 * 10**18
 
-        # Deploy a fresh MockOFT and mint tokens directly to the composer
-        # (simulating tokens stranded after a failed compose execution).
         token_address = await _deploy(w3, compiled_mocks["MockOFT"], deployer)
         token = w3.eth.contract(address=token_address, abi=compiled_mocks["MockOFT"]["abi"])
         await token.functions.mint(composer.address, token_amount).transact({"from": deployer})
