@@ -628,9 +628,9 @@ class TestDeFiVMFork:
         assert receipt["status"] == 1
 
     async def test_chained_calls_multi_patch_u256(self, ctx):
-        """Chain two adapter calls patching multiple calldata slots.
+        """Chain two adapter calls patching the first calldata slot of a two-argument template.
 
-        Surgery approach 1 — ret_u256 + patch_u256 (two-argument template):
+        Surgery approach 1 — ret_u256 + patch_u256:
           double(7) → 14, then patch first slot of addInputs(0, 3) → addInputs(14, 3) → 17.
         """
         w3 = ctx["w3"]
