@@ -126,6 +126,22 @@ contract MockAdapter {
     function getFortyTwo() external pure returns (uint256) {
         return 42;
     }
+
+    /// Returns the double of the input.  Used in chained-call tests.
+    function double(uint256 x) external pure returns (uint256) {
+        return x * 2;
+    }
+
+    /// Returns the sum of two inputs.  Used in multi-patch chained-call tests.
+    function addInputs(uint256 a, uint256 b) external pure returns (uint256) {
+        return a + b;
+    }
+
+    /// Returns the ABI-encoded calldata needed to call double(x) on this contract.
+    /// Used to exercise the ret_slice calldata-surgery approach.
+    function encodeDouble(uint256 x) external pure returns (bytes memory) {
+        return abi.encodeWithSelector(MockAdapter.double.selector, x);
+    }
 }
 """
 
@@ -558,6 +574,160 @@ class TestDeFiVMFork:
         addr_bytes = bytes.fromhex(adapter.removeprefix("0x"))
         expected_calldata = selector + b"\x00" * 12 + addr_bytes
         assert received_calldata == expected_calldata
+
+    # ------------------------------------------------------------------
+    # Chained actions (calldata surgery)
+    # ------------------------------------------------------------------
+
+    async def test_chained_calls_patch_u256(self, ctx):
+        """Chain two adapter calls by patching calldata with the previous output.
+
+        Surgery approach 1 — ret_u256 + patch_u256:
+          double(5) → 10, then patch template double(0) → double(10) → 20.
+        The final retdata is verified in-program using ASSERT_GE / ASSERT_LE.
+        """
+        w3 = ctx["w3"]
+        vm = ctx["vm"]
+        deployer = ctx["deployer"]
+        adapter = ctx["adapter_address"]
+
+        from eth_utils import keccak
+
+        double_sel = keccak(b"double(uint256)")[:4]
+        calldata1 = double_sel + (5).to_bytes(32, "big")
+        template2 = double_sel + (0).to_bytes(32, "big")  # placeholder; patched at runtime
+
+        program = (
+            # --- Call 1: double(5) → retdata = abi.encode(10) ---
+            push_bytes(calldata1)
+            + push_u256(0)
+            + push_addr(adapter)
+            + push_u256(0)
+            + call(require_success=True)
+            + pop()
+            # --- Calldata surgery: embed call-1 output into call-2 template ---
+            + push_bytes(template2)  # stack: [buf1]
+            + ret_u256(0)  # push 10 from retdata; stack: [buf1, 10]
+            + patch_u256(4)  # patch buf1[4..36] = abi.encode(10); stack: [buf1]
+            # --- Call 2: double(10) → retdata = abi.encode(20) ---
+            + push_u256(0)
+            + push_addr(adapter)
+            + push_u256(0)
+            + call(require_success=True)
+            + pop()
+            # --- In-program assertion: result == 20 ---
+            + push_u256(20)
+            + ret_u256(0)
+            + assert_ge("result below expected")
+            + push_u256(20)
+            + ret_u256(0)
+            + assert_le("result above expected")
+        )
+        tx = await vm.functions.execute(program).transact({"from": deployer})
+        receipt = await w3.eth.get_transaction_receipt(tx)
+        assert receipt["status"] == 1
+
+    async def test_chained_calls_multi_patch_u256(self, ctx):
+        """Chain two adapter calls patching the first calldata slot of a two-argument template.
+
+        Surgery approach 1 — ret_u256 + patch_u256:
+          double(7) → 14, then patch first slot of addInputs(0, 3) → addInputs(14, 3) → 17.
+        """
+        w3 = ctx["w3"]
+        vm = ctx["vm"]
+        deployer = ctx["deployer"]
+        adapter = ctx["adapter_address"]
+
+        from eth_utils import keccak
+
+        double_sel = keccak(b"double(uint256)")[:4]
+        add_sel = keccak(b"addInputs(uint256,uint256)")[:4]
+
+        calldata1 = double_sel + (7).to_bytes(32, "big")
+        # Template: addInputs(0, 3) — first arg is a placeholder patched at runtime.
+        template2 = add_sel + (0).to_bytes(32, "big") + (3).to_bytes(32, "big")
+
+        program = (
+            # --- Call 1: double(7) → retdata = abi.encode(14) ---
+            push_bytes(calldata1)
+            + push_u256(0)
+            + push_addr(adapter)
+            + push_u256(0)
+            + call(require_success=True)
+            + pop()
+            # --- Calldata surgery: embed call-1 output into the first arg of call-2 ---
+            + push_bytes(template2)  # stack: [buf1]
+            + ret_u256(0)  # push 14; stack: [buf1, 14]
+            + patch_u256(4)  # patch buf1[4..36] = abi.encode(14); stack: [buf1]
+            # --- Call 2: addInputs(14, 3) → retdata = abi.encode(17) ---
+            + push_u256(0)
+            + push_addr(adapter)
+            + push_u256(0)
+            + call(require_success=True)
+            + pop()
+            # --- In-program assertion: result == 17 ---
+            + push_u256(17)
+            + ret_u256(0)
+            + assert_ge("result below expected")
+            + push_u256(17)
+            + ret_u256(0)
+            + assert_le("result above expected")
+        )
+        tx = await vm.functions.execute(program).transact({"from": deployer})
+        receipt = await w3.eth.get_transaction_receipt(tx)
+        assert receipt["status"] == 1
+
+    async def test_chained_calls_ret_slice(self, ctx):
+        """Chain two adapter calls by forwarding a raw calldata slice.
+
+        Surgery approach 2 — ret_slice used directly as calldata:
+          encodeDouble(5) returns the ABI calldata for double(5).
+          ret_slice extracts that payload and feeds it straight into the next CALL,
+          so double(5) is invoked without any additional patching.  Result: 10.
+        """
+        w3 = ctx["w3"]
+        vm = ctx["vm"]
+        deployer = ctx["deployer"]
+        adapter = ctx["adapter_address"]
+
+        from eth_utils import keccak
+
+        # encodeDouble(uint256) returns bytes memory.
+        # ABI layout of its returndata:
+        #   [0..32)  offset of bytes value = 0x20
+        #   [32..64) length of inner bytes = 36 (4-byte selector + 32-byte arg)
+        #   [64..100) inner bytes = double(uint256) selector + abi.encode(x)
+        encode_double_sel = keccak(b"encodeDouble(uint256)")[:4]
+        calldata1 = encode_double_sel + (5).to_bytes(32, "big")
+
+        program = (
+            # --- Call 1: encodeDouble(5) → retdata carries calldata for double(5) ---
+            push_bytes(calldata1)
+            + push_u256(0)
+            + push_addr(adapter)
+            + push_u256(0)
+            + call(require_success=True)
+            + pop()
+            # --- Surgery: extract the inner bytes as a new buffer ---
+            # retdata[64..100] = selector(4) + abi.encode(5) = calldata for double(5)
+            + ret_slice(64, 36)  # stack: [buf1]
+            # --- Call 2: double(5) using the slice from call-1's returndata ---
+            + push_u256(0)
+            + push_addr(adapter)
+            + push_u256(0)
+            + call(require_success=True)
+            + pop()
+            # --- In-program assertion: result == 10 ---
+            + push_u256(10)
+            + ret_u256(0)
+            + assert_ge("result below expected")
+            + push_u256(10)
+            + ret_u256(0)
+            + assert_le("result above expected")
+        )
+        tx = await vm.functions.execute(program).transact({"from": deployer})
+        receipt = await w3.eth.get_transaction_receipt(tx)
+        assert receipt["status"] == 1
 
     # ------------------------------------------------------------------
     # Safety / limits
