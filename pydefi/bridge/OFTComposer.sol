@@ -62,6 +62,19 @@ pragma solidity ^0.8.24;
  */
 
 // ---------------------------------------------------------------------------
+// IOFT
+// ---------------------------------------------------------------------------
+
+/// @notice Minimal interface for querying the underlying ERC-20 token of an OFT.
+///
+/// For a native OFT (the OFT contract *is* the ERC-20), ``token()`` returns
+/// ``address(this)``.  For an OFT Adapter that wraps a pre-existing ERC-20,
+/// ``token()`` returns the address of that underlying ERC-20 contract.
+interface IOFT {
+    function token() external view returns (address);
+}
+
+// ---------------------------------------------------------------------------
 // IDeFiVM
 // ---------------------------------------------------------------------------
 
@@ -231,8 +244,12 @@ contract OFTComposer {
 
         // Transfer the received OFT tokens from this composer to DeFiVM so the
         // program can use them (e.g. approve a DEX and swap).
+        // _from is the OFT *app* contract; call token() to get the underlying
+        // ERC-20 address (for a native OFT token() returns address(this),
+        // for an OFT Adapter it returns the wrapped ERC-20).
         if (amountLD > 0) {
-            (bool ok, bytes memory ret) = _from.call(
+            address token = IOFT(_from).token();
+            (bool ok, bytes memory ret) = token.call(
                 abi.encodeWithSignature("transfer(address,uint256)", address(vm), amountLD)
             );
             require(ok && (ret.length == 0 || abi.decode(ret, (bool))), "OFTComposer: token transfer failed");

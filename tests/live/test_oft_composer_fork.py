@@ -133,6 +133,7 @@ contract MockEndpoint {
 }
 
 /// @notice Minimal mock OFT token (ERC-20 subset with mint).
+///         token() returns address(this) — simulates a native OFT that IS an ERC-20.
 contract MockOFT {
     string public name = "Mock OFT";
     string public symbol = "MOFT";
@@ -151,6 +152,26 @@ contract MockOFT {
         balanceOf[msg.sender] -= amount;
         balanceOf[to] += amount;
         return true;
+    }
+
+    /// @notice Returns address(this) — this OFT contract is itself the ERC-20.
+    function token() external view returns (address) {
+        return address(this);
+    }
+}
+
+/// @notice Mock OFT Adapter — wraps a separate ERC-20 token.
+///         token() returns the underlying ERC-20 address (not address(this)).
+///         Simulates an OFT Adapter for a pre-existing ERC-20 token.
+contract MockOFTAdapter {
+    address private immutable _token;
+
+    constructor(address token_) {
+        _token = token_;
+    }
+
+    function token() external view returns (address) {
+        return _token;
     }
 }
 
@@ -195,6 +216,7 @@ def _compile_mock_contracts() -> dict[str, dict]:
     return {
         "MockEndpoint": result["<stdin>:MockEndpoint"],
         "MockOFT": result["<stdin>:MockOFT"],
+        "MockOFTAdapter": result["<stdin>:MockOFTAdapter"],
         "MockTarget": result["<stdin>:MockTarget"],
         "RevertingTarget": result["<stdin>:RevertingTarget"],
     }
@@ -367,7 +389,12 @@ class TestOFTComposerFork:
         # The composer pre-pushes amountLD and _from onto the stack.
         # Save them to R0/_from and R1/amountLD so the stack is clean for the call.
         program = store_reg(0) + store_reg(1) + self._call_target(target_address, calldata)
-        message = make_compose_message(nonce=1, src_eid=30101, amount_ld=10**18, program=program)
+        amount_ld = 10**18
+        message = make_compose_message(nonce=1, src_eid=30101, amount_ld=amount_ld, program=program)
+
+        # Simulate OFT bridge: mint tokens to the composer before lzCompose is called.
+        oft = w3.eth.contract(address=oft_address, abi=ctx["compiled_mocks"]["MockOFT"]["abi"])
+        await oft.functions.mint(composer.address, amount_ld).transact({"from": deployer})
 
         tx = await endpoint.functions.deliverCompose(
             composer.address,
@@ -407,7 +434,12 @@ class TestOFTComposerFork:
             + self._call_target(target_address, calldata_a)
             + self._call_target(target_address, calldata_b)
         )
-        message = make_compose_message(nonce=2, src_eid=30101, amount_ld=5 * 10**17, program=program)
+        amount_ld = 5 * 10**17
+        message = make_compose_message(nonce=2, src_eid=30101, amount_ld=amount_ld, program=program)
+
+        # Simulate OFT bridge: mint tokens to the composer before lzCompose is called.
+        oft = w3.eth.contract(address=oft_address, abi=ctx["compiled_mocks"]["MockOFT"]["abi"])
+        await oft.functions.mint(composer.address, amount_ld).transact({"from": deployer})
 
         tx = await endpoint.functions.deliverCompose(
             composer.address,
@@ -437,6 +469,7 @@ class TestOFTComposerFork:
         target = ctx["target"]
 
         eth_amount = 10**16  # 0.01 ETH
+        amount_ld = 10**18
 
         before_balance = await w3.eth.get_balance(target_address)
 
@@ -453,7 +486,11 @@ class TestOFTComposerFork:
             + call()
             + pop()
         )
-        message = make_compose_message(nonce=3, src_eid=30101, amount_ld=10**18, program=program)
+        message = make_compose_message(nonce=3, src_eid=30101, amount_ld=amount_ld, program=program)
+
+        # Simulate OFT bridge: mint tokens to the composer before lzCompose is called.
+        oft = w3.eth.contract(address=oft_address, abi=ctx["compiled_mocks"]["MockOFT"]["abi"])
+        await oft.functions.mint(composer.address, amount_ld).transact({"from": deployer})
 
         # Send ETH with the compose delivery; it flows: endpoint -> lzCompose -> vm.execute
         tx = await endpoint.functions.deliverCompose(
@@ -488,6 +525,10 @@ class TestOFTComposerFork:
         calldata = _abidata(target.encode_abi("execute", [b"event_test"]))
         program = store_reg(0) + store_reg(1) + self._call_target(target_address, calldata)
         message = make_compose_message(nonce=4, src_eid=30184, amount_ld=amount_ld, program=program)
+
+        # Simulate OFT bridge: mint tokens to the composer before lzCompose is called.
+        oft = w3.eth.contract(address=oft_address, abi=ctx["compiled_mocks"]["MockOFT"]["abi"])
+        await oft.functions.mint(composer.address, amount_ld).transact({"from": deployer})
 
         tx = await endpoint.functions.deliverCompose(
             composer.address,
@@ -551,6 +592,10 @@ class TestOFTComposerFork:
             + pop()
         )
         message = make_compose_message(nonce=5, src_eid=30101, amount_ld=amount_ld, program=program)
+
+        # Simulate OFT bridge: mint tokens to the composer before lzCompose is called.
+        oft = w3.eth.contract(address=oft_address, abi=ctx["compiled_mocks"]["MockOFT"]["abi"])
+        await oft.functions.mint(composer.address, amount_ld).transact({"from": deployer})
 
         tx = await endpoint.functions.deliverCompose(
             composer.address,
