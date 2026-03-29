@@ -1,4 +1,4 @@
-"""Live integration tests for Hyperliquid L1 API and HyperEVM bridge.
+"""Live integration tests for Hyperliquid L1 API, HyperCore bridge, and HyperEVM.
 
 These tests make real HTTP requests to the public Hyperliquid API and to the
 HyperEVM JSON-RPC endpoint.  No private key is needed for the read-only tests.
@@ -24,6 +24,15 @@ from pydefi.types import ChainId, Token, TokenAmount
 USDC_ETH = Token(
     chain_id=ChainId.ETHEREUM,
     address="0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+    symbol="USDC",
+    decimals=6,
+)
+
+# USDC on HyperCore (Hyperliquid L1); CCTP mints on HyperEVM and Hyperliquid
+# routes to HyperCore automatically — same ERC-20 address as HyperEVM.
+USDC_HYPERCORE = Token(
+    chain_id=ChainId.HYPERCORE,
+    address="0xb88339CB7199b77E23DB6E890353E22632Ba630f",
     symbol="USDC",
     decimals=6,
 )
@@ -179,13 +188,97 @@ class TestHyperEVMRpc:
 
 
 # ---------------------------------------------------------------------------
-# CCTP bridge to HyperEVM tests
+# CCTP bridge to HyperCore tests (primary target: chain 1337)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.live
+class TestCCTPHyperCoreLive:
+    """Live tests for CCTP v2 bridging to HyperCore (Hyperliquid L1, chain 1337).
+
+    CCTP physically mints USDC on HyperEVM (domain 19) and Hyperliquid
+    automatically routes the balance to HyperCore.
+    """
+
+    def _bridge(self, eth_w3: AsyncWeb3) -> CCTP:
+        return CCTP(
+            w3=eth_w3,
+            src_chain_id=ChainId.ETHEREUM,
+            dst_chain_id=ChainId.HYPERCORE,
+        )
+
+    async def test_get_fees_eth_to_hypercore(self, eth_w3):
+        """CCTP: get_fees() returns fee entries for ETH → HyperCore."""
+        bridge = self._bridge(eth_w3)
+        fees = await bridge.get_fees()
+
+        assert isinstance(fees, list), "fees should be a list"
+        assert len(fees) > 0, "fees should not be empty"
+        for entry in fees:
+            assert "finalityThreshold" in entry
+            assert "minimumFee" in entry
+
+    async def test_get_quote_eth_to_hypercore(self, eth_w3):
+        """CCTP: get_quote() returns a valid BridgeQuote for ETH → HyperCore."""
+        bridge = self._bridge(eth_w3)
+        amount_in = TokenAmount(token=USDC_ETH, amount=BRIDGE_AMOUNT_USDC)
+        quote = await bridge.get_quote(USDC_ETH, USDC_HYPERCORE, amount_in)
+
+        assert quote.protocol == "CCTP"
+        assert quote.token_in == USDC_ETH
+        assert quote.token_out == USDC_HYPERCORE
+        assert quote.amount_out.amount > 0
+        assert quote.amount_out.amount <= BRIDGE_AMOUNT_USDC
+        assert quote.estimated_time_seconds > 0
+
+    async def test_build_bridge_tx_structure(self, eth_w3):
+        """CCTP: build_bridge_tx() returns a well-formed tx dict for HyperCore."""
+        bridge = self._bridge(eth_w3)
+        amount_in = TokenAmount(token=USDC_ETH, amount=BRIDGE_AMOUNT_USDC)
+        tx = await bridge.build_bridge_tx(
+            token_in=USDC_ETH,
+            token_out=USDC_HYPERCORE,
+            amount_in=amount_in,
+            recipient=MOCK_RECIPIENT,
+        )
+
+        assert tx.get("to") == bridge.token_messenger_address
+        assert tx.get("data", "").startswith("0x")
+        assert len(tx["data"]) > 2
+        assert tx.get("value") == "0"
+        assert int(tx.get("gas", 0)) > 0
+
+    async def test_cctp_domain_hypercore(self):
+        """CCTP: HyperCore (1337) is mapped to CCTP domain 19 (HyperEVM)."""
+        w3 = AsyncWeb3(AsyncWeb3.AsyncHTTPProvider("https://eth.drpc.org"))
+        bridge = CCTP(w3=w3, src_chain_id=ChainId.ETHEREUM, dst_chain_id=ChainId.HYPERCORE)
+        assert bridge._cctp_domain(ChainId.HYPERCORE) == 19
+
+    async def test_cctp_domain_matches_hyperevm(self):
+        """HyperCore and HyperEVM map to the same CCTP domain (19)."""
+        w3 = AsyncWeb3(AsyncWeb3.AsyncHTTPProvider("https://eth.drpc.org"))
+        bridge = CCTP(w3=w3, src_chain_id=ChainId.ETHEREUM, dst_chain_id=ChainId.HYPERCORE)
+        assert bridge._cctp_domain(ChainId.HYPERCORE) == bridge._cctp_domain(ChainId.HYPEREVM)
+
+    async def test_cctp_usdc_address_hypercore(self):
+        """CCTP: USDC address is known for HyperCore."""
+        addr = CCTP.usdc_address(ChainId.HYPERCORE)
+        assert addr.lower() == "0xb88339cb7199b77e23db6e890353e22632ba630f"
+
+    async def test_cctp_message_transmitter_hypercore(self):
+        """CCTP: MessageTransmitterV2 address is known for HyperCore."""
+        addr = CCTP.message_transmitter_address(ChainId.HYPERCORE)
+        assert addr.lower() == "0x81d40f21f12a8f0e3252bccb954d722d4c464b64"
+
+
+# ---------------------------------------------------------------------------
+# CCTP bridge to HyperEVM tests (chain 999, same domain 19)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.live
 class TestCCTPHyperEVMLive:
-    """Live tests for CCTP v2 bridging to HyperEVM (domain 19)."""
+    """Live tests for CCTP v2 bridging to HyperEVM (chain 999, domain 19)."""
 
     def _bridge(self, eth_w3: AsyncWeb3) -> CCTP:
         return CCTP(
@@ -217,23 +310,6 @@ class TestCCTPHyperEVMLive:
         assert quote.amount_out.amount > 0
         assert quote.amount_out.amount <= BRIDGE_AMOUNT_USDC
         assert quote.estimated_time_seconds > 0
-
-    async def test_build_bridge_tx_structure(self, eth_w3):
-        """CCTP: build_bridge_tx() returns a well-formed tx dict for HyperEVM."""
-        bridge = self._bridge(eth_w3)
-        amount_in = TokenAmount(token=USDC_ETH, amount=BRIDGE_AMOUNT_USDC)
-        tx = await bridge.build_bridge_tx(
-            token_in=USDC_ETH,
-            token_out=USDC_HYPEREVM,
-            amount_in=amount_in,
-            recipient=MOCK_RECIPIENT,
-        )
-
-        assert tx.get("to") == bridge.token_messenger_address
-        assert tx.get("data", "").startswith("0x")
-        assert len(tx["data"]) > 2
-        assert tx.get("value") == "0"
-        assert int(tx.get("gas", 0)) > 0
 
     async def test_cctp_domain_hyperevm(self):
         """CCTP: HyperEVM is mapped to domain 19."""

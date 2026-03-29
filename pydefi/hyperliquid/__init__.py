@@ -1,4 +1,4 @@
-"""Hyperliquid L1 and HyperEVM utilities.
+"""Hyperliquid L1 (HyperCore) and HyperEVM utilities.
 
 This module provides:
 
@@ -20,8 +20,8 @@ Quick-start::
     meta = await client.get_meta()
     mids = await client.get_all_mids()
 
-    # HyperEVM access
-    w3 = client.make_evm_w3()          # chain ID 999
+    # HyperEVM access (chain ID 999)
+    w3 = client.make_evm_w3()
     block = await w3.eth.get_block("latest")
 
     # Signed action (requires private key)
@@ -31,17 +31,20 @@ Quick-start::
         amount="10.0",
     )
 
-CCTP bridge to HyperEVM
------------------------
-To bridge USDC to HyperEVM via CCTP v2, use the :class:`~pydefi.bridge.CCTP`
-bridge with ``dst_chain_id=999``::
+CCTP bridge to HyperCore
+-------------------------
+HyperCore (``ChainId.HYPERCORE = 1337``) is Hyperliquid's L1 chain.  To bridge
+USDC from any supported EVM chain to HyperCore via CCTP v2, use
+``dst_chain_id=ChainId.HYPERCORE``.  Per Hyperliquid's documentation, CCTP
+mints USDC on HyperEVM (domain 19) first, and Hyperliquid's system
+automatically credits the balance to HyperCore::
 
     from pydefi.bridge import CCTP
     from pydefi.types import ChainId
 
-    bridge = CCTP(w3=eth_w3, src_chain_id=ChainId.ETHEREUM, dst_chain_id=ChainId.HYPEREVM)
-    quote = await bridge.get_quote(usdc_eth, usdc_hyperevm, amount_in)
-    tx = await bridge.build_bridge_tx(usdc_eth, usdc_hyperevm, amount_in, recipient)
+    bridge = CCTP(w3=eth_w3, src_chain_id=ChainId.ETHEREUM, dst_chain_id=ChainId.HYPERCORE)
+    quote = await bridge.get_quote(usdc_eth, usdc_hypercore, amount_in)
+    tx = await bridge.build_bridge_tx(usdc_eth, usdc_hypercore, amount_in, recipient)
 """
 
 from pydefi.hyperliquid.client import HyperliquidClient
