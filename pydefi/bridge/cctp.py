@@ -43,6 +43,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import aiohttp
 from eth_contract import Contract
 from hexbytes import HexBytes
 from web3 import AsyncWeb3, Web3
@@ -59,6 +60,12 @@ from pydefi.types import BridgeQuote, Token, TokenAmount
 # Use FINALITY_THRESHOLD_FINALIZED (2000) for standard (~15–19 min on Ethereum).
 FINALITY_THRESHOLD_CONFIRMED: int = 1000
 FINALITY_THRESHOLD_FINALIZED: int = 2000
+
+# ---------------------------------------------------------------------------
+# Circle Iris v2 API
+# ---------------------------------------------------------------------------
+
+_IRIS_API_BASE = "https://iris-api.circle.com"
 
 # ---------------------------------------------------------------------------
 # ABI fragments — TokenMessengerV2
@@ -151,6 +158,9 @@ class CCTP(BaseBridge):
             ``src_chain_id`` when omitted.
         src_usdc_address: USDC token address on the source chain.  Defaults to
             the well-known native USDC address for ``src_chain_id``.
+        api_base_url: Override the Circle Iris v2 API base URL.  Defaults to
+            ``https://iris-api.circle.com``.  Use
+            ``https://iris-api-sandbox.circle.com`` for testnet transfers.
     """
 
     def __init__(
@@ -160,9 +170,11 @@ class CCTP(BaseBridge):
         dst_chain_id: int,
         token_messenger_address: str | None = None,
         src_usdc_address: str | None = None,
+        api_base_url: str = _IRIS_API_BASE,
     ) -> None:
         super().__init__(src_chain_id, dst_chain_id)
         self.w3 = w3
+        self._api_base = api_base_url.rstrip("/")
 
         self.token_messenger_address = token_messenger_address or _TOKEN_MESSENGER_V2.get(src_chain_id, "")
         if not self.token_messenger_address:
@@ -200,6 +212,34 @@ class CCTP(BaseBridge):
         return HexBytes(address).rjust(32, b"\x00")
 
     # -----------------------------------------------------------------------
+    # Circle Iris v2 API
+    # -----------------------------------------------------------------------
+
+    async def get_fees(self) -> list[dict[str, Any]]:
+        """Query the Circle Iris v2 API for minimum transfer fees.
+
+        Calls ``GET /v2/burn/USDC/fees/{srcDomain}/{dstDomain}`` and returns
+        the raw list of ``{ finalityThreshold, minimumFee }`` objects — one
+        entry per supported finality tier.
+
+        Returns:
+            List of fee objects from the Iris API.
+
+        Raises:
+            :class:`~pydefi.exceptions.BridgeError`: On HTTP or API error.
+        """
+        src_domain = self._cctp_domain(self.src_chain_id)
+        dst_domain = self._cctp_domain(self.dst_chain_id)
+        url = f"{self._api_base}/v2/burn/USDC/fees/{src_domain}/{dst_domain}"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as resp:
+                if resp.status != 200:
+                    text = await resp.text()
+                    raise BridgeError(f"CCTP Iris API error ({resp.status}): {text}")
+                data = await resp.json(content_type=None)
+                return data  # type: ignore[return-value]
+
+    # -----------------------------------------------------------------------
     # BaseBridge interface
     # -----------------------------------------------------------------------
 
@@ -208,31 +248,55 @@ class CCTP(BaseBridge):
         token_in: Token,
         token_out: Token,
         amount_in: TokenAmount,
+        min_finality_threshold: int = FINALITY_THRESHOLD_CONFIRMED,
         **kwargs: Any,
     ) -> BridgeQuote:
-        """Get a CCTP v2 bridge quote.
+        """Get a CCTP v2 bridge quote by querying the Circle Iris v2 fees API.
 
-        CCTP v2 charges a small relayer fee.  This method returns a
-        *best-effort* quote with zero fee — integrate with Circle's Iris v2 API
-        (``/v1/burn/USDC/fees/{srcDomain}/{dstDomain}``) for an accurate fee
-        estimate before submitting a real transaction.
+        Calls ``GET /v2/burn/USDC/fees/{srcDomain}/{dstDomain}`` to retrieve
+        the minimum relayer fee for the requested finality tier, then computes
+        ``amount_out = amount_in - minimum_fee``.
 
         Args:
             token_in: Source chain USDC token.
             token_out: Destination chain USDC token.
             amount_in: Amount to bridge.
+            min_finality_threshold: Finality tier to price the quote for.
+                Use :data:`FINALITY_THRESHOLD_CONFIRMED` (1000, ~8–20 s) for
+                fast transfers, or :data:`FINALITY_THRESHOLD_FINALIZED` (2000)
+                for standard finality.
 
         Returns:
-            A :class:`~pydefi.types.BridgeQuote` with the same amount in/out
-            (fee not deducted — query Iris for an exact figure).
+            A :class:`~pydefi.types.BridgeQuote` with the fee and estimated
+            time filled in from the Iris API response.
+
+        Raises:
+            :class:`~pydefi.exceptions.BridgeError`: On API error or if no fee
+                entry is found for the requested finality threshold.
         """
+        fee_entries = await self.get_fees()
+
+        # Find the entry matching the requested finality tier.
+        entry = next((e for e in fee_entries if e.get("finalityThreshold") == min_finality_threshold), None)
+        if entry is None:
+            raise BridgeError(
+                f"CCTP: no fee entry found for finalityThreshold={min_finality_threshold}. "
+                f"Available thresholds: {[e.get('finalityThreshold') for e in fee_entries]}"
+            )
+
+        min_fee = int(entry.get("minimumFee", 0))
+        amount_out_raw = max(0, amount_in.amount - min_fee)
+        # ~20 s for fast/confirmed finality (threshold ≤ 1000);
+        # ~19 minutes (1140 s) for standard finalized transfers.
+        estimated_time = 20 if min_finality_threshold <= FINALITY_THRESHOLD_CONFIRMED else 1140
+
         return BridgeQuote(
             token_in=token_in,
             token_out=token_out,
             amount_in=amount_in,
-            amount_out=TokenAmount(token=token_out, amount=amount_in.amount),
-            bridge_fee=TokenAmount(token=token_in, amount=0),
-            estimated_time_seconds=20,  # ~8–20 s fast finality
+            amount_out=TokenAmount(token=token_out, amount=amount_out_raw),
+            bridge_fee=TokenAmount(token=token_in, amount=min_fee),
+            estimated_time_seconds=estimated_time,
             protocol=self.protocol_name,
         )
 
