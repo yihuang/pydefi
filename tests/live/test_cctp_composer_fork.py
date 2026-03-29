@@ -1,13 +1,15 @@
-"""Fork tests for CCTPComposer — Circle CCTP compose receiver backed by DeFiVM.
+"""Fork tests for CCTPComposer — Circle CCTP v2 compose receiver backed by DeFiVM.
 
 These tests compile CCTPComposer.sol and DeFiVM.sol with py-solc-x, deploy them
 alongside mock contracts on a local Anvil fork, and exercise the full
 ``receiveAndExecute`` flow including:
 
- - Basic compose execution (single-call program)
+ - Basic compose execution (program embedded as hookData in CCTP v2 message)
  - Compose execution carrying ETH value to a sub-call
- - Dynamic amount access inside the program via PUSH_U256 prologue
+ - Prologue values (amountReceived, sourceDomain) pushed onto the stack
+ - Fee deduction: amountReceived = amount - feeExecuted
  - Revert when CCTP ``receiveMessage`` fails (bad attestation)
+ - Revert when message is too short
  - Revert when a sub-call inside the compose fails
  - Owner rescue of stuck ETH and ERC-20 tokens
  - Ownership transfer
@@ -83,22 +85,22 @@ contract MockUSDC {
     }
 }
 
-/// @notice Mock CCTP MessageTransmitter.
+/// @notice Mock CCTP v2 MessageTransmitterV2.
 ///
-/// Implements the minimal interface needed by CCTPComposer:
-///   receiveMessage(bytes message, bytes attestation) -> bool
+/// Decodes the v2 BurnMessageV2 body (starts at byte 148 in the full message):
+///   mintRecipient at body+36 (absolute: 184)
+///   amount        at body+68 (absolute: 216)
+///   feeExecuted   at body+164 (absolute: 312)
 ///
-/// On success it:
-///   1. Decodes mintRecipient (bytes[152:184]) and amount (bytes[184:216]) from the message.
-///   2. Mints USDC directly to the mintRecipient via MockUSDC.mint().
-///   3. Returns true.
-///
-/// The ``fail`` flag can be toggled to simulate a bad-attestation failure.
-contract MockMessageTransmitter {
-    // CCTP message offsets (mirrors CCTPComposer.sol constants)
-    uint256 private constant MINT_RECIPIENT_OFFSET = 152; // header(116) + burnMsgVersion(4) + burnToken(32)
-    uint256 private constant AMOUNT_OFFSET         = 184; // header(116) + burnMsgVersion(4) + burnToken(32) + mintRecipient(32)
-    uint256 private constant MIN_MESSAGE_LENGTH     = 216;
+/// On success it mints (amount - feeExecuted) USDC to mintRecipient.
+/// The ``fail`` flag simulates a bad-attestation failure.
+contract MockMessageTransmitterV2 {
+    // CCTP v2 message offsets (mirrors CCTPComposer.sol constants)
+    uint256 private constant MSG_BODY_OFFSET          = 148;
+    uint256 private constant MINT_RECIPIENT_OFFSET    = MSG_BODY_OFFSET + 36;   // 184
+    uint256 private constant AMOUNT_OFFSET            = MSG_BODY_OFFSET + 68;   // 216
+    uint256 private constant FEE_EXECUTED_OFFSET      = MSG_BODY_OFFSET + 164;  // 312
+    uint256 private constant MIN_MESSAGE_LENGTH       = MSG_BODY_OFFSET + 228;  // 376
 
     address public immutable usdc;
     bool public fail;
@@ -107,23 +109,26 @@ contract MockMessageTransmitter {
         usdc = _usdc;
     }
 
-    /// @notice Toggle failure mode (simulate bad attestation).
     function setFail(bool _fail) external {
         fail = _fail;
     }
 
     function receiveMessage(bytes calldata message, bytes calldata /*attestation*/) external returns (bool) {
-        require(!fail, "MockMessageTransmitter: bad attestation");
-        require(message.length >= MIN_MESSAGE_LENGTH, "MockMessageTransmitter: message too short");
+        require(!fail, "MockMessageTransmitterV2: bad attestation");
+        require(message.length >= MIN_MESSAGE_LENGTH, "MockMessageTransmitterV2: message too short");
 
-        // Decode mintRecipient (right 20 bytes of the 32-byte field).
-        address mintRecipient = address(uint160(uint256(bytes32(message[MINT_RECIPIENT_OFFSET:MINT_RECIPIENT_OFFSET + 32]))));
+        address mintRecipient = address(
+            uint160(uint256(bytes32(message[MINT_RECIPIENT_OFFSET:MINT_RECIPIENT_OFFSET + 32])))
+        );
         uint256 amount = uint256(bytes32(message[AMOUNT_OFFSET:AMOUNT_OFFSET + 32]));
+        uint256 feeExecuted = uint256(bytes32(message[FEE_EXECUTED_OFFSET:FEE_EXECUTED_OFFSET + 32]));
 
-        // Mint USDC to the mintRecipient (simulates Circle minting).
-        if (amount > 0) {
-            (bool ok, ) = usdc.call(abi.encodeWithSignature("mint(address,uint256)", mintRecipient, amount));
-            require(ok, "MockMessageTransmitter: mint failed");
+        uint256 amountReceived = amount - feeExecuted;
+        if (amountReceived > 0) {
+            (bool ok, ) = usdc.call(
+                abi.encodeWithSignature("mint(address,uint256)", mintRecipient, amountReceived)
+            );
+            require(ok, "MockMessageTransmitterV2: mint failed");
         }
         return true;
     }
@@ -159,64 +164,96 @@ contract RevertingTarget {
 """
 
 # ---------------------------------------------------------------------------
-# CCTP message builder
+# CCTP v2 message builder
 # ---------------------------------------------------------------------------
 
 _ETHEREUM_DOMAIN = 0  # CCTP domain ID for Ethereum
 
 
-def make_cctp_message(
+def make_cctp_v2_message(
     source_domain: int,
-    nonce: int,
+    nonce: bytes,
     amount: int,
     mint_recipient: str,
+    hook_data: bytes = b"",
+    fee_executed: int = 0,
     destination_domain: int = 6,  # Base
     burn_token: str = "0x" + "0" * 40,
-    destination_caller: str = "0x" + "0" * 40,
 ) -> bytes:
-    """Build a synthetic CCTP v1 burn message.
+    """Build a synthetic CCTP v2 burn message.
 
-    Layout::
+    MessageV2 header (148 bytes):
+      [0:4]    version                    = 0
+      [4:8]    sourceDomain
+      [8:12]   destinationDomain
+      [12:44]  nonce                      (bytes32)
+      [44:76]  sender                     = zero-padded
+      [76:108] recipient                  = zero-padded
+      [108:140] destinationCaller         = zero-padded
+      [140:144] minFinalityThreshold      = 1000
+      [144:148] finalityThresholdExecuted = 1000
 
-        Header (116 bytes):
-          [0:4]    version            = 0
-          [4:8]    sourceDomain
-          [8:12]   destinationDomain
-          [12:20]  nonce
-          [20:52]  sender             = zero-padded
-          [52:84]  recipient          = zero-padded
-          [84:116] destinationCaller  = zero-padded
-
-        BurnMessage body (starts at 116):
-          [116:120]  burnMessageVersion = 0
-          [120:152]  burnToken          (32 bytes, right-aligned address)
-          [152:184]  mintRecipient      (32 bytes, right-aligned address)
-          [184:216]  amount             (32 bytes, uint256)
-          [216:248]  messageSender      = zero-padded
+    BurnMessageV2 body (starts at 148):
+      [0:4]    burnMessageVersion = 1
+      [4:36]   burnToken          (32 bytes, right-aligned address)
+      [36:68]  mintRecipient      (32 bytes, right-aligned address)
+      [68:100] amount             (uint256)
+      [100:132] messageSender     = zero-padded
+      [132:164] maxFee            = zero-padded
+      [164:196] feeExecuted       (uint256)
+      [196:228] expirationBlock   = 0 (no expiry)
+      [228:]   hookData           (DeFiVM program)
     """
-    # Header
+    if isinstance(nonce, int):
+        nonce = nonce.to_bytes(32, "big")
+    assert len(nonce) == 32, "nonce must be 32 bytes"
+
+    # MessageV2 header
     version = (0).to_bytes(4, "big")
     src_domain_bytes = source_domain.to_bytes(4, "big")
     dst_domain_bytes = destination_domain.to_bytes(4, "big")
-    nonce_bytes = nonce.to_bytes(8, "big")
+    nonce_bytes = nonce  # bytes32
     sender_bytes = (0).to_bytes(32, "big")
-    recipient_bytes = (0).to_bytes(32, "big")  # recipient in header (not mint recipient)
-    dst_caller_bytes = int(destination_caller, 16).to_bytes(32, "big")
+    recipient_bytes = (0).to_bytes(32, "big")
+    dst_caller_bytes = (0).to_bytes(32, "big")
+    min_finality = (1000).to_bytes(4, "big")
+    finality_executed = (1000).to_bytes(4, "big")
 
     header = (
-        version + src_domain_bytes + dst_domain_bytes + nonce_bytes + sender_bytes + recipient_bytes + dst_caller_bytes
+        version
+        + src_domain_bytes
+        + dst_domain_bytes
+        + nonce_bytes
+        + sender_bytes
+        + recipient_bytes
+        + dst_caller_bytes
+        + min_finality
+        + finality_executed
     )
-    assert len(header) == 116, f"header length {len(header)}"
+    assert len(header) == 148, f"header length {len(header)}"
 
-    # BurnMessage body
-    burn_msg_version = (0).to_bytes(4, "big")
+    # BurnMessageV2 body
+    burn_msg_version = (1).to_bytes(4, "big")
     burn_token_bytes = int(burn_token, 16).to_bytes(32, "big")
     mint_recipient_bytes = int(mint_recipient, 16).to_bytes(32, "big")
     amount_bytes = amount.to_bytes(32, "big")
     msg_sender_bytes = (0).to_bytes(32, "big")
+    max_fee_bytes = (0).to_bytes(32, "big")
+    fee_executed_bytes = fee_executed.to_bytes(32, "big")
+    expiration_block_bytes = (0).to_bytes(32, "big")
 
-    body = burn_msg_version + burn_token_bytes + mint_recipient_bytes + amount_bytes + msg_sender_bytes
-    assert len(body) == 132, f"body length {len(body)}"
+    body = (
+        burn_msg_version
+        + burn_token_bytes
+        + mint_recipient_bytes
+        + amount_bytes
+        + msg_sender_bytes
+        + max_fee_bytes
+        + fee_executed_bytes
+        + expiration_block_bytes
+        + hook_data
+    )
+    assert len(body) == 228 + len(hook_data), f"body length {len(body)}"
 
     return header + body
 
@@ -266,7 +303,7 @@ def _compile_mock_contracts() -> dict[str, dict]:
     )
     return {
         "MockUSDC": result["<stdin>:MockUSDC"],
-        "MockMessageTransmitter": result["<stdin>:MockMessageTransmitter"],
+        "MockMessageTransmitterV2": result["<stdin>:MockMessageTransmitterV2"],
         "MockTarget": result["<stdin>:MockTarget"],
         "RevertingTarget": result["<stdin>:RevertingTarget"],
     }
@@ -326,8 +363,8 @@ async def ctx(cctp_fork_w3, compiled_cctp_composer, compiled_mocks, compiled_def
     # Deploy mock USDC token.
     usdc_address = await _deploy(w3, compiled_mocks["MockUSDC"], deployer)
 
-    # Deploy mock MessageTransmitter (mints USDC on receiveMessage).
-    transmitter_address = await _deploy(w3, compiled_mocks["MockMessageTransmitter"], deployer, usdc_address)
+    # Deploy mock MessageTransmitterV2 (mints USDC on receiveMessage).
+    transmitter_address = await _deploy(w3, compiled_mocks["MockMessageTransmitterV2"], deployer, usdc_address)
 
     # Deploy DeFiVM.
     vm_address = await _deploy(w3, compiled_defi_vm, deployer)
@@ -344,7 +381,7 @@ async def ctx(cctp_fork_w3, compiled_cctp_composer, compiled_mocks, compiled_def
     )
 
     usdc = w3.eth.contract(address=usdc_address, abi=compiled_mocks["MockUSDC"]["abi"])
-    transmitter = w3.eth.contract(address=transmitter_address, abi=compiled_mocks["MockMessageTransmitter"]["abi"])
+    transmitter = w3.eth.contract(address=transmitter_address, abi=compiled_mocks["MockMessageTransmitterV2"]["abi"])
     composer = w3.eth.contract(address=composer_address, abi=compiled_cctp_composer["abi"])
 
     # Deploy mock targets.
@@ -372,19 +409,27 @@ async def ctx(cctp_fork_w3, compiled_cctp_composer, compiled_mocks, compiled_def
 
 
 # ---------------------------------------------------------------------------
-# Helper: build CCTP message + attestation
+# Helper: build CCTP v2 message + attestation
 # ---------------------------------------------------------------------------
 
 
-def _make_message_and_attestation(composer_address: str, amount: int, nonce: int = 1):
-    """Return (message_bytes, attestation_bytes) for a simple CCTP compose."""
-    message = make_cctp_message(
+def _make_message_and_attestation(
+    composer_address: str,
+    amount: int,
+    hook_data: bytes = b"",
+    nonce: int = 1,
+    fee_executed: int = 0,
+):
+    """Return (message_bytes, attestation_bytes) for a CCTP v2 compose call."""
+    message = make_cctp_v2_message(
         source_domain=_ETHEREUM_DOMAIN,
-        nonce=nonce,
+        nonce=nonce.to_bytes(32, "big"),
         amount=amount,
         mint_recipient=composer_address,
+        hook_data=hook_data,
+        fee_executed=fee_executed,
     )
-    attestation = b"\x00" * 65  # mock: MessageTransmitter ignores attestation content
+    attestation = b"\x00" * 65  # mock: MessageTransmitterV2 ignores attestation content
     return message, attestation
 
 
@@ -398,9 +443,10 @@ class TestCCTPComposerBasic:
     """Basic receiveAndExecute flow tests."""
 
     async def test_receive_and_execute_basic_call(self, ctx):
-        """receiveAndExecute mints USDC and executes a DeFiVM program.
+        """receiveAndExecute mints USDC and executes the DeFiVM program from hookData.
 
-        The program calls MockTarget.execute() — verifies the full pipeline:
+        The program (embedded as hookData in the CCTP v2 message) calls
+        MockTarget.execute() — verifies the full pipeline:
         CCTP mint → token transfer to DeFiVM → program execution.
         """
         w3 = ctx["w3"]
@@ -413,12 +459,12 @@ class TestCCTPComposerBasic:
 
         amount = 1000 * 10**6  # 1000 USDC
 
-        # Build a program that calls MockTarget.execute(bytes data).
+        # Build the DeFiVM program (will be embedded as hookData).
         target_calldata = _abidata(target.encode_abi("execute", [b"\xde\xad\xbe\xef"]))
         program = (
             store_reg(0)  # R0 = sourceDomain (top of stack after prologue)
-            + store_reg(1)  # R1 = amount
-            + push_bytes(target_calldata)  # push calldata buffer
+            + store_reg(1)  # R1 = amountReceived
+            + push_bytes(target_calldata)
             + push_u256(0)  # value = 0 ETH
             + push_addr(target_address)
             + push_u256(0)  # gasLimit = 0 (all gas)
@@ -426,12 +472,12 @@ class TestCCTPComposerBasic:
             + pop()  # discard success flag
         )
 
-        message, attestation = _make_message_and_attestation(composer.address, amount, nonce=1)
+        message, attestation = _make_message_and_attestation(composer.address, amount, hook_data=program, nonce=1)
 
         pre_call_count = await target.functions.callCount().call()
         pre_vm = await usdc.functions.balanceOf(vm_address).call()
 
-        tx = await composer.functions.receiveAndExecute(message, attestation, program).transact({"from": deployer})
+        tx = await composer.functions.receiveAndExecute(message, attestation).transact({"from": deployer})
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
 
@@ -443,56 +489,45 @@ class TestCCTPComposerBasic:
         # DeFiVM gained exactly amount USDC (program did not spend them).
         assert await usdc.functions.balanceOf(vm_address).call() == pre_vm + amount
 
-    async def test_prologue_pushes_correct_values(self, ctx):
-        """The prologue pushes amount and sourceDomain onto the DeFiVM stack.
-
-        The test stores the prologue values into registers and asserts them via
-        the balance_of opcode (using the amount as a balance introspection proxy
-        is tricky; instead we forward the values to MockTarget as calldata and
-        read them back).
-
-        Simpler approach: store amount in R1 via STORE_REG, then call
-        MockTarget.execute(abi.encode(R1)) and verify lastData.
-        """
+    async def test_fee_deduction(self, ctx):
+        """amountReceived = amount - feeExecuted; that is what the prologue pushes."""
         w3 = ctx["w3"]
         composer = ctx["composer"]
         deployer = ctx["deployer"]
         target = ctx["target"]
         target_address = ctx["target_address"]
+        vm_address = ctx["vm_address"]
+        usdc = ctx["usdc"]
 
-        amount = 500 * 10**6
-        source_domain_expected = _ETHEREUM_DOMAIN
+        amount = 1000 * 10**6  # 1000 USDC
+        fee = 1 * 10**6  # 1 USDC relayer fee
+        expected_received = amount - fee
 
-        # Program: store prologue values in R0, R1.
-        # Then call MockTarget.execute(abi.encode(amount, sourceDomain)).
-        # MockTarget.lastData will hold the encoded values.
-
-        # ABI-encode (amount, sourceDomain) as two uint256.
-        # We'll build the calldata: execute(bytes) selector + abi.encode(bytes value)
-        # For simplicity: encode a 64-byte payload (amount || sourceDomain as uint256).
-        payload = amount.to_bytes(32, "big") + source_domain_expected.to_bytes(32, "big")
-        template_calldata = _abidata(target.encode_abi("execute", [payload]))
-        # Note: template_calldata contains the literal payload above; the test just
-        # checks that the program completes successfully and that MockTarget is called.
-
+        target_calldata = _abidata(target.encode_abi("execute", [b"fee_test"]))
         program = (
-            store_reg(0)  # R0 = sourceDomain (top)
-            + store_reg(1)  # R1 = amount (bottom)
-            + push_bytes(template_calldata)
-            + push_u256(0)  # value
+            store_reg(0)  # R0 = sourceDomain
+            + store_reg(1)  # R1 = amountReceived (should be amount - fee)
+            + push_bytes(target_calldata)
+            + push_u256(0)
             + push_addr(target_address)
-            + push_u256(0)  # gasLimit
+            + push_u256(0)
             + call()
             + pop()
         )
 
-        message, attestation = _make_message_and_attestation(composer.address, amount, nonce=2)
+        message, attestation = _make_message_and_attestation(
+            composer.address, amount, hook_data=program, nonce=2, fee_executed=fee
+        )
 
-        pre_count = await target.functions.callCount().call()
-        tx = await composer.functions.receiveAndExecute(message, attestation, program).transact({"from": deployer})
+        pre_vm = await usdc.functions.balanceOf(vm_address).call()
+        tx = await composer.functions.receiveAndExecute(message, attestation).transact({"from": deployer})
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
-        assert await target.functions.callCount().call() == pre_count + 1
+
+        # DeFiVM received only amountReceived = amount - fee.
+        assert await usdc.functions.balanceOf(vm_address).call() == pre_vm + expected_received
+        # Composer has nothing left.
+        assert await usdc.functions.balanceOf(composer.address).call() == 0
 
     async def test_receive_and_execute_with_eth_value(self, ctx):
         """receiveAndExecute forwards ETH to the DeFiVM sub-call."""
@@ -505,11 +540,10 @@ class TestCCTPComposerBasic:
         amount = 100 * 10**6  # 100 USDC
         eth_value = 10**16  # 0.01 ETH
 
-        # Program: call MockTarget.execute() with ETH value.
         target_calldata = _abidata(target.encode_abi("execute", [b"with eth"]))
         program = (
-            store_reg(0)  # discard sourceDomain
-            + store_reg(1)  # discard amount
+            store_reg(0)
+            + store_reg(1)
             + push_bytes(target_calldata)
             + push_u256(eth_value)  # value = 0.01 ETH
             + push_addr(target_address)
@@ -518,16 +552,15 @@ class TestCCTPComposerBasic:
             + pop()
         )
 
-        message, attestation = _make_message_and_attestation(composer.address, amount, nonce=3)
+        message, attestation = _make_message_and_attestation(composer.address, amount, hook_data=program, nonce=3)
 
         pre_target_bal = await w3.eth.get_balance(target.address)
-        tx = await composer.functions.receiveAndExecute(message, attestation, program).transact(
+        tx = await composer.functions.receiveAndExecute(message, attestation).transact(
             {"from": deployer, "value": eth_value}
         )
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
 
-        # Target should have received the ETH.
         assert await w3.eth.get_balance(target.address) == pre_target_bal + eth_value
         assert await target.functions.lastValue().call() == eth_value
 
@@ -540,7 +573,6 @@ class TestCCTPComposerBasic:
         target_address = ctx["target_address"]
 
         amount = 0
-
         target_calldata = _abidata(target.encode_abi("execute", [b"zero"]))
         program = (
             store_reg(0)
@@ -553,16 +585,16 @@ class TestCCTPComposerBasic:
             + pop()
         )
 
-        message, attestation = _make_message_and_attestation(composer.address, amount, nonce=4)
+        message, attestation = _make_message_and_attestation(composer.address, amount, hook_data=program, nonce=4)
 
         pre_count = await target.functions.callCount().call()
-        tx = await composer.functions.receiveAndExecute(message, attestation, program).transact({"from": deployer})
+        tx = await composer.functions.receiveAndExecute(message, attestation).transact({"from": deployer})
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
         assert await target.functions.callCount().call() == pre_count + 1
 
     async def test_emits_composed_event(self, ctx):
-        """receiveAndExecute emits a Composed event with correct sourceDomain, nonce, amount."""
+        """receiveAndExecute emits Composed(sourceDomain, nonce, amountReceived)."""
         w3 = ctx["w3"]
         composer = ctx["composer"]
         deployer = ctx["deployer"]
@@ -570,7 +602,10 @@ class TestCCTPComposerBasic:
         target_address = ctx["target_address"]
 
         amount = 250 * 10**6
-        nonce_val = 5
+        fee = 500_000  # 0.5 USDC
+        expected_received = amount - fee
+        nonce_int = 5
+        nonce_bytes32 = nonce_int.to_bytes(32, "big")
 
         target_calldata = _abidata(target.encode_abi("execute", [b"event"]))
         program = (
@@ -584,29 +619,23 @@ class TestCCTPComposerBasic:
             + pop()
         )
 
-        message, attestation = _make_message_and_attestation(composer.address, amount, nonce=nonce_val)
+        message, attestation = _make_message_and_attestation(
+            composer.address, amount, hook_data=program, nonce=nonce_int, fee_executed=fee
+        )
 
-        tx = await composer.functions.receiveAndExecute(message, attestation, program).transact({"from": deployer})
+        tx = await composer.functions.receiveAndExecute(message, attestation).transact({"from": deployer})
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
 
-        # Parse the Composed event from logs.
         events = composer.events.Composed().process_receipt(receipt)
         assert len(events) == 1
         evt = events[0]
         assert evt["args"]["sourceDomain"] == _ETHEREUM_DOMAIN
-        assert evt["args"]["nonce"] == nonce_val
-        assert evt["args"]["amount"] == amount
+        assert bytes(evt["args"]["nonce"]) == nonce_bytes32
+        assert evt["args"]["amountReceived"] == expected_received
 
     async def test_usdc_transferred_to_vm_then_spent(self, ctx):
-        """receiveAndExecute transfers minted USDC from composer to DeFiVM, then program spends it.
-
-        Flow:
-          1. MessageTransmitter mints USDC to composer.
-          2. CCTPComposer transfers USDC from itself to DeFiVM.
-          3. DeFiVM program calls USDC.transfer(recipient, amount).
-          4. recipient ends up with the USDC; composer unchanged; DeFiVM unchanged.
-        """
+        """receiveAndExecute transfers minted USDC from composer to DeFiVM, then program spends it."""
         w3 = ctx["w3"]
         composer = ctx["composer"]
         deployer = ctx["deployer"]
@@ -617,15 +646,13 @@ class TestCCTPComposerBasic:
         amount = 300 * 10**6
         fresh_recipient = w3.eth.account.create().address
 
-        # Record pre-test balances; other tests may have left residual tokens in DeFiVM.
         pre_composer = await usdc.functions.balanceOf(composer.address).call()
         pre_vm = await usdc.functions.balanceOf(vm_address).call()
 
-        # Program: transfer exactly `amount` USDC from DeFiVM to fresh_recipient.
         transfer_calldata = _abidata(usdc.encode_abi("transfer", [fresh_recipient, amount]))
         program = (
-            store_reg(0)  # discard sourceDomain
-            + store_reg(1)  # discard amount
+            store_reg(0)
+            + store_reg(1)
             + push_bytes(transfer_calldata)
             + push_u256(0)
             + push_addr(usdc_address)
@@ -634,17 +661,14 @@ class TestCCTPComposerBasic:
             + pop()
         )
 
-        message, attestation = _make_message_and_attestation(composer.address, amount, nonce=6)
+        message, attestation = _make_message_and_attestation(composer.address, amount, hook_data=program, nonce=6)
 
-        tx = await composer.functions.receiveAndExecute(message, attestation, program).transact({"from": deployer})
+        tx = await composer.functions.receiveAndExecute(message, attestation).transact({"from": deployer})
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
 
-        # Recipient received the bridged tokens.
         assert await usdc.functions.balanceOf(fresh_recipient).call() == amount
-        # Composer's balance is unchanged (it had 0 residual before the test).
         assert await usdc.functions.balanceOf(composer.address).call() == pre_composer
-        # DeFiVM received amount via CCTPComposer, then the program spent it all.
         assert await usdc.functions.balanceOf(vm_address).call() == pre_vm
 
 
@@ -653,14 +677,13 @@ class TestCCTPComposerErrors:
     """Error handling tests."""
 
     async def test_revert_when_receive_message_fails(self, ctx):
-        """receiveAndExecute reverts when the MessageTransmitter rejects the attestation."""
+        """receiveAndExecute reverts when the MessageTransmitterV2 rejects the attestation."""
         composer = ctx["composer"]
         transmitter = ctx["transmitter"]
         deployer = ctx["deployer"]
         target = ctx["target"]
         target_address = ctx["target_address"]
 
-        # Enable failure mode in mock transmitter.
         await transmitter.functions.setFail(True).transact({"from": deployer})
 
         amount = 100 * 10**6
@@ -676,24 +699,23 @@ class TestCCTPComposerErrors:
             + pop()
         )
 
-        message, attestation = _make_message_and_attestation(composer.address, amount, nonce=50)
+        message, attestation = _make_message_and_attestation(composer.address, amount, hook_data=program, nonce=50)
 
         with pytest.raises((ContractLogicError, Web3RPCError)):
-            await composer.functions.receiveAndExecute(message, attestation, program).transact({"from": deployer})
+            await composer.functions.receiveAndExecute(message, attestation).transact({"from": deployer})
 
-        # Reset failure mode.
         await transmitter.functions.setFail(False).transact({"from": deployer})
 
     async def test_revert_when_message_too_short(self, ctx):
-        """receiveAndExecute reverts when the CCTP message is shorter than the minimum."""
+        """receiveAndExecute reverts when the CCTP v2 message is shorter than 376 bytes."""
         composer = ctx["composer"]
         deployer = ctx["deployer"]
 
-        short_message = b"\x00" * 100  # less than 216 bytes minimum
+        short_message = b"\x00" * 200  # less than 376 bytes minimum
         attestation = b"\x00" * 65
 
         with pytest.raises((ContractLogicError, Web3RPCError)):
-            await composer.functions.receiveAndExecute(short_message, attestation, b"").transact({"from": deployer})
+            await composer.functions.receiveAndExecute(short_message, attestation).transact({"from": deployer})
 
     async def test_revert_when_sub_call_fails(self, ctx):
         """receiveAndExecute reverts when a DeFiVM sub-call inside the program fails."""
@@ -703,11 +725,10 @@ class TestCCTPComposerErrors:
 
         amount = 50 * 10**6
 
-        # Program: call a contract that always reverts (require_success=True default).
         program = (
             store_reg(0)
             + store_reg(1)
-            + push_bytes(b"\xde\xad")  # arbitrary calldata
+            + push_bytes(b"\xde\xad")
             + push_u256(0)
             + push_addr(reverting_address)
             + push_u256(0)
@@ -715,10 +736,10 @@ class TestCCTPComposerErrors:
             + pop()
         )
 
-        message, attestation = _make_message_and_attestation(composer.address, amount, nonce=51)
+        message, attestation = _make_message_and_attestation(composer.address, amount, hook_data=program, nonce=51)
 
         with pytest.raises((ContractLogicError, Web3RPCError)):
-            await composer.functions.receiveAndExecute(message, attestation, program).transact({"from": deployer})
+            await composer.functions.receiveAndExecute(message, attestation).transact({"from": deployer})
 
 
 @pytest.mark.fork
@@ -731,14 +752,12 @@ class TestCCTPComposerAdmin:
         composer = ctx["composer"]
         deployer = ctx["deployer"]
 
-        # Seed composer with ETH.
         eth_amount = 5 * 10**15  # 0.005 ETH
         await w3.eth.send_transaction({"from": deployer, "to": composer.address, "value": eth_amount})
-        assert await w3.eth.get_balance(composer.address) >= eth_amount
+        before = await w3.eth.get_balance(composer.address)
+        assert before >= eth_amount
 
         fresh_recipient = w3.eth.account.create().address
-        before = await w3.eth.get_balance(composer.address)
-
         tx = await composer.functions.rescueETH(fresh_recipient, eth_amount).transact({"from": deployer})
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
@@ -766,10 +785,7 @@ class TestCCTPComposerAdmin:
         token_amount = 99 * 10**6
         fresh_recipient = w3.eth.account.create().address
 
-        # Mint some USDC directly to the composer (simulating stuck funds).
         await usdc.functions.mint(composer.address, token_amount).transact({"from": deployer})
-        assert await usdc.functions.balanceOf(composer.address).call() >= token_amount
-
         before_composer = await usdc.functions.balanceOf(composer.address).call()
 
         tx = await composer.functions.rescueToken(usdc_address, fresh_recipient, token_amount).transact(
@@ -804,7 +820,7 @@ class TestCCTPComposerAdmin:
         assert receipt["status"] == 1
         assert await composer.functions.owner().call() == new_owner
 
-        # Transfer back to deployer so other tests remain unaffected.
+        # Transfer back so other tests remain unaffected.
         await composer.functions.transferOwnership(deployer).transact({"from": new_owner})
         assert await composer.functions.owner().call() == deployer
 

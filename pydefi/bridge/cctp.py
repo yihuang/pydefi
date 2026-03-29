@@ -1,34 +1,40 @@
 """
-Circle Cross-Chain Transfer Protocol (CCTP) USDC bridge integration.
+Circle Cross-Chain Transfer Protocol v2 (CCTP v2) USDC bridge integration.
 
-CCTP is Circle's native protocol for burning USDC on one chain and minting
-the equivalent amount on another chain via Circle's attestation service.
-Unlike wrapped-token bridges, CCTP burns the original USDC and mints freshly
-issued USDC on the destination chain, so no liquidity pools are involved and
-transfers are always 1:1 with zero protocol fee.
+CCTP v2 is Circle's upgraded protocol for burning USDC on one chain and
+minting the equivalent amount on another chain via Circle's attestation
+service.  Unlike CCTP v1, v2 introduces:
+
+* **Fast Transfer** — two finality tiers (1000 = ~8–20 s, 2000 = ~15–19 min)
+* **Relayer fees** — a small fee deducted by the attestation relayer
+* **Native hooks** — ``depositForBurnWithHook`` embeds arbitrary calldata
+  (the DeFiVM program) directly in the attested burn message
 
 High-level flow
 ---------------
-1. **Source chain**: approve ``TokenMessenger`` to spend USDC, then call
-   ``depositForBurn`` (or ``depositForBurnWithCaller``).
-2. **Attestation**: poll Circle's Iris API until the burn is attested
-   (typically < 2 minutes for *fast* finality chains).
-3. **Destination chain**: call ``MessageTransmitter.receiveMessage`` with the
-   signed attestation to mint USDC to the designated recipient.
+1. **Source chain**: approve ``TokenMessengerV2`` to spend USDC, then call
+   ``depositForBurn`` or ``depositForBurnWithHook``.
+2. **Attestation**: poll Circle's Iris v2 API until the burn is attested
+   (~8–20 seconds for fast-finality transfers, or ~15–19 minutes for standard).
+3. **Destination chain**: call ``MessageTransmitterV2.receiveMessage`` with
+   the signed attestation to mint USDC (less any relayer fee) to the
+   designated recipient.
 
 Compose flow (with CCTPComposer)
 ---------------------------------
-Set ``mintRecipient`` to a deployed :class:`CCTPComposer` contract address.
-After Circle attests the burn, call
-``CCTPComposer.receiveAndExecute(message, attestation, program)``
-on the destination chain.  The contract mints USDC to itself, then forwards
-the tokens and a DeFiVM program to the DeFiVM contract for execution
-(e.g. swap, lend, LP into a pool).
+For destination-chain execution, embed the DeFiVM program as ``hookData``
+when calling ``depositForBurnWithHook``.  The CCTPComposer contract on the
+destination chain will:
 
-Use ``depositForBurnWithCaller`` with ``destinationCaller = composer_address``
-to prevent front-running: the ``MessageTransmitter`` will only accept
-``receiveMessage`` originating from the CCTPComposer, so no third party can
-mint the USDC with a different program.
+1. Receive the CCTP attestation and call ``receiveMessage`` to mint USDC.
+2. Extract the DeFiVM program from the ``hookData`` field in the burn message.
+3. Forward the minted USDC to DeFiVM and execute the program.
+
+Since the DeFiVM program is embedded in the CCTP message, it is *committed
+on-chain at burn time* and cannot be altered after submission.  Set
+``destinationCaller = composer_address`` so only the CCTPComposer can relay
+the ``receiveMessage`` call — this prevents third parties from front-running
+the mint.
 
 Docs: https://developers.circle.com/stablecoins/cctp-getting-started
 """
@@ -46,21 +52,30 @@ from pydefi.exceptions import BridgeError
 from pydefi.types import BridgeQuote, Token, TokenAmount
 
 # ---------------------------------------------------------------------------
-# ABI fragments
+# Fast-finality threshold constant (CCTP v2)
 # ---------------------------------------------------------------------------
 
-_TOKEN_MESSENGER_ABI = [
-    # depositForBurn(amount, destinationDomain, mintRecipient, burnToken)
-    "function depositForBurn(uint256 amount, uint32 destinationDomain, bytes32 mintRecipient, address burnToken) external returns (uint64 nonce)",
-    # depositForBurnWithCaller — restricts who may call receiveMessage on dst
-    "function depositForBurnWithCaller(uint256 amount, uint32 destinationDomain, bytes32 mintRecipient, address burnToken, bytes32 destinationCaller) external returns (uint64 nonce)",
+# Use FINALITY_THRESHOLD_CONFIRMED (1000) for "fast transfer" (~8–20 seconds).
+# Use FINALITY_THRESHOLD_FINALIZED (2000) for standard (~15–19 min on Ethereum).
+FINALITY_THRESHOLD_CONFIRMED: int = 1000
+FINALITY_THRESHOLD_FINALIZED: int = 2000
+
+# ---------------------------------------------------------------------------
+# ABI fragments — TokenMessengerV2
+# ---------------------------------------------------------------------------
+
+_TOKEN_MESSENGER_V2_ABI = [
+    # depositForBurn — standard transfer (no compose hook)
+    "function depositForBurn(uint256 amount, uint32 destinationDomain, bytes32 mintRecipient, address burnToken, bytes32 destinationCaller, uint256 maxFee, uint32 minFinalityThreshold) external",
+    # depositForBurnWithHook — compose transfer; DeFiVM program passed as hookData
+    "function depositForBurnWithHook(uint256 amount, uint32 destinationDomain, bytes32 mintRecipient, address burnToken, bytes32 destinationCaller, uint256 maxFee, uint32 minFinalityThreshold, bytes calldata hookData) external",
 ]
 
 # ---------------------------------------------------------------------------
-# Well-known CCTP v1 contract addresses
+# Well-known CCTP v2 contract addresses
 # ---------------------------------------------------------------------------
 
-# Circle CCTP domain IDs (differ from EVM chain IDs).
+# Circle CCTP domain IDs (shared between v1 and v2, unchanged).
 # https://developers.circle.com/stablecoins/supported-domains
 _CCTP_DOMAIN: dict[int, int] = {
     1: 0,  # Ethereum
@@ -69,30 +84,38 @@ _CCTP_DOMAIN: dict[int, int] = {
     42161: 3,  # Arbitrum
     8453: 6,  # Base
     137: 7,  # Polygon PoS
+    130: 10,  # Unichain
+    59144: 11,  # Linea
 }
 
-# CCTP v1 TokenMessenger addresses (source-chain contract that burns USDC).
+# CCTP v2 TokenMessengerV2 addresses.
+# CCTP v2 is deployed at deterministic CREATE2 addresses — the same address
+# on every supported EVM chain.
 # https://developers.circle.com/stablecoins/evm-smart-contracts
-_TOKEN_MESSENGER: dict[int, str] = {
-    1: "0xBd3fa81B58Ba92a82136038B25aDec7066af3155",  # Ethereum
-    43114: "0x6B25532e1060CE10cc3B0A99e5683b91BFDe6982",  # Avalanche
-    10: "0x2B4069517957735bE00ceE0fadAE88a26365528f",  # OP Mainnet
-    42161: "0x19330d10D9Cc8751218eaf51E8885D058642E08A",  # Arbitrum
-    8453: "0x1682Ae6375C4E4A97e4B583BC394c861A46D8962",  # Base
-    137: "0x9daF8c91AEFAE50b9c0E69629D3F6Ca40cA3B3FE",  # Polygon PoS
+_TOKEN_MESSENGER_V2: dict[int, str] = {
+    1: "0x28b5a0e9C621a5BadaA536219b3a228C8168cf00",  # Ethereum
+    43114: "0x28b5a0e9C621a5BadaA536219b3a228C8168cf00",  # Avalanche
+    10: "0x28b5a0e9C621a5BadaA536219b3a228C8168cf00",  # OP Mainnet
+    42161: "0x28b5a0e9C621a5BadaA536219b3a228C8168cf00",  # Arbitrum
+    8453: "0x28b5a0e9C621a5BadaA536219b3a228C8168cf00",  # Base
+    137: "0x28b5a0e9C621a5BadaA536219b3a228C8168cf00",  # Polygon PoS
+    130: "0x28b5a0e9C621a5BadaA536219b3a228C8168cf00",  # Unichain
+    59144: "0x28b5a0e9C621a5BadaA536219b3a228C8168cf00",  # Linea
 }
 
-# CCTP v1 MessageTransmitter addresses (destination-chain contract that mints USDC).
-_MESSAGE_TRANSMITTER: dict[int, str] = {
-    1: "0x0a992d191DEeC32aFe36203Ad87D7d289a738F81",  # Ethereum
-    43114: "0x8186359aF5F57FbB40c6b14A588d2A59C0C29880",  # Avalanche
-    10: "0x4D41f22c5a0e5c74090899E5a8Fb597a8842b3e8",  # OP Mainnet
-    42161: "0xC30362313FBBA5cf9163F0bb16a0e01f01A896ca",  # Arbitrum
-    8453: "0xAD09780d193884d503182aD4588450C416D6F9D4",  # Base
-    137: "0xF3be9355363857F3e001be68856A2f96b4C39Ba9",  # Polygon PoS
+# CCTP v2 MessageTransmitterV2 addresses (same address on all supported chains).
+_MESSAGE_TRANSMITTER_V2: dict[int, str] = {
+    1: "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",  # Ethereum
+    43114: "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",  # Avalanche
+    10: "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",  # OP Mainnet
+    42161: "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",  # Arbitrum
+    8453: "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",  # Base
+    137: "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",  # Polygon PoS
+    130: "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",  # Unichain
+    59144: "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",  # Linea
 }
 
-# Native USDC addresses per chain (Circle-issued, not bridged USDC.e).
+# Native USDC addresses per chain (Circle-issued, unchanged from v1).
 _USDC: dict[int, str] = {
     1: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",  # Ethereum
     43114: "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E",  # Avalanche
@@ -100,27 +123,31 @@ _USDC: dict[int, str] = {
     42161: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",  # Arbitrum
     8453: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",  # Base
     137: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",  # Polygon PoS
+    130: "0x078D888E40faAe0f32594342c85940AF3949E666",  # Unichain
+    59144: "0x176211869cA2b568f2A7D4EE941E073a821EE1ff",  # Linea
 }
 
 
 class CCTP(BaseBridge):
-    """Circle CCTP cross-chain USDC bridge integration.
+    """Circle CCTP v2 cross-chain USDC bridge integration.
 
-    CCTP burns USDC on the source chain and mints it on the destination chain
-    via Circle's off-chain attestation service.  Transfers are always 1:1 with
-    no protocol fee; only gas is paid on each chain.
+    CCTP v2 burns USDC on the source chain and mints it on the destination chain
+    via Circle's off-chain attestation service.  Transfers are always 1:1 minus
+    a small relayer fee; only gas is paid on each chain.
 
     For an end-to-end compose flow (execute a DeFiVM program after minting)
-    use :meth:`build_bridge_compose_tx` on the source chain and then call
-    ``CCTPComposer.receiveAndExecute`` on the destination chain once Circle has
-    attested the burn.
+    use :meth:`build_bridge_compose_tx` on the source chain — it encodes
+    ``depositForBurnWithHook`` with the DeFiVM program embedded as ``hookData``.
+    After Circle attests the burn, call
+    ``CCTPComposer.receiveAndExecute(message, attestation)`` on the destination
+    chain to mint USDC and execute the program in one atomic call.
 
     Args:
         w3: :class:`~web3.AsyncWeb3` instance for the source chain.
         src_chain_id: Source chain EVM ID.
         dst_chain_id: Destination chain EVM ID.
-        token_messenger_address: Address of the ``TokenMessenger`` contract on
-            the source chain.  Defaults to the well-known CCTP v1 address for
+        token_messenger_address: Address of the ``TokenMessengerV2`` contract on
+            the source chain.  Defaults to the well-known CCTP v2 address for
             ``src_chain_id`` when omitted.
         src_usdc_address: USDC token address on the source chain.  Defaults to
             the well-known native USDC address for ``src_chain_id``.
@@ -137,11 +164,10 @@ class CCTP(BaseBridge):
         super().__init__(src_chain_id, dst_chain_id)
         self.w3 = w3
 
-        # Resolve contract addresses, falling back to well-known defaults.
-        self.token_messenger_address = token_messenger_address or _TOKEN_MESSENGER.get(src_chain_id, "")
+        self.token_messenger_address = token_messenger_address or _TOKEN_MESSENGER_V2.get(src_chain_id, "")
         if not self.token_messenger_address:
             raise BridgeError(
-                f"CCTP: no TokenMessenger address known for chain {src_chain_id}. "
+                f"CCTP: no TokenMessengerV2 address known for chain {src_chain_id}. "
                 "Pass token_messenger_address explicitly."
             )
 
@@ -151,7 +177,7 @@ class CCTP(BaseBridge):
                 f"CCTP: no USDC address known for chain {src_chain_id}. Pass src_usdc_address explicitly."
             )
 
-        self._token_messenger = Contract.from_abi(_TOKEN_MESSENGER_ABI, to=self.token_messenger_address)
+        self._token_messenger = Contract.from_abi(_TOKEN_MESSENGER_V2_ABI, to=self.token_messenger_address)
 
     @property
     def protocol_name(self) -> str:
@@ -184,18 +210,21 @@ class CCTP(BaseBridge):
         amount_in: TokenAmount,
         **kwargs: Any,
     ) -> BridgeQuote:
-        """Get a CCTP bridge quote.
+        """Get a CCTP v2 bridge quote.
 
-        CCTP transfers are 1:1 with no protocol fee.  The bridge fee is always
-        zero in token terms; only gas costs are incurred on each chain.
+        CCTP v2 charges a small relayer fee.  This method returns a
+        *best-effort* quote with zero fee — integrate with Circle's Iris v2 API
+        (``/v1/burn/USDC/fees/{srcDomain}/{dstDomain}``) for an accurate fee
+        estimate before submitting a real transaction.
 
         Args:
             token_in: Source chain USDC token.
-            token_out: Destination chain USDC token (same asset, different chain).
+            token_out: Destination chain USDC token.
             amount_in: Amount to bridge.
 
         Returns:
-            A :class:`~pydefi.types.BridgeQuote`.
+            A :class:`~pydefi.types.BridgeQuote` with the same amount in/out
+            (fee not deducted — query Iris for an exact figure).
         """
         return BridgeQuote(
             token_in=token_in,
@@ -203,7 +232,7 @@ class CCTP(BaseBridge):
             amount_in=amount_in,
             amount_out=TokenAmount(token=token_out, amount=amount_in.amount),
             bridge_fee=TokenAmount(token=token_in, amount=0),
-            estimated_time_seconds=120,  # ~2 min typical attestation time
+            estimated_time_seconds=20,  # ~8–20 s fast finality
             protocol=self.protocol_name,
         )
 
@@ -215,42 +244,55 @@ class CCTP(BaseBridge):
         recipient: str,
         slippage_bps: int = 0,
         dst_domain: int | None = None,
+        destination_caller: str | None = None,
+        max_fee: int = 0,
+        min_finality_threshold: int = FINALITY_THRESHOLD_CONFIRMED,
         **kwargs: Any,
     ) -> dict[str, Any]:
-        """Build a CCTP ``depositForBurn`` transaction.
+        """Build a CCTP v2 ``depositForBurn`` transaction.
 
         Burns USDC on the source chain.  After Circle attests the burn event,
         the recipient (or anyone) must submit ``receiveMessage`` on the
-        destination chain to mint the USDC.
+        destination chain to mint the USDC (minus relayer fee).
 
         Args:
             token_in: Source chain USDC token.
             token_out: Destination chain USDC token (used for validation only).
             amount_in: Amount to bridge.
-            recipient: Receiver address on the destination chain.  This becomes
-                the ``mintRecipient`` in the CCTP burn message (zero-padded to
-                32 bytes).
-            slippage_bps: Ignored for CCTP (always 1:1); accepted for API
-                compatibility.
-            dst_domain: Override the CCTP destination domain ID.  Defaults to
-                the well-known domain for ``dst_chain_id``.
+            recipient: Receiver address on the destination chain.
+            slippage_bps: Ignored for CCTP (accepted for API compatibility).
+            dst_domain: Override the CCTP destination domain ID.
+            destination_caller: Restrict who may call ``receiveMessage`` on the
+                destination chain (zero-bytes = no restriction).  Defaults to
+                no restriction.
+            max_fee: Maximum relayer fee in USDC units (must be < amount and
+                >= minimum fee if the chain has a non-zero minimum fee).
+                Defaults to 0 (valid on chains where minFee == 0).
+            min_finality_threshold: Minimum attestation finality.  Use
+                :data:`FINALITY_THRESHOLD_CONFIRMED` (1000, ~8–20 s) for fast
+                transfers or :data:`FINALITY_THRESHOLD_FINALIZED` (2000,
+                ~15–19 min) for maximum security.
 
         Returns:
             Transaction dict with ``to``, ``data``, ``value``, ``gas``.
 
         Note:
-            The caller must separately ``approve`` the ``TokenMessenger``
+            The caller must separately ``approve`` the ``TokenMessengerV2``
             contract to spend ``amount_in.amount`` of USDC before submitting
             this transaction.
         """
         _dst_domain = dst_domain if dst_domain is not None else self._cctp_domain(self.dst_chain_id)
         mint_recipient = self._address_to_bytes32(recipient)
+        dst_caller_bytes = self._address_to_bytes32(destination_caller) if destination_caller else b"\x00" * 32
 
         call_data = self._token_messenger.fns.depositForBurn(
             amount_in.amount,
             _dst_domain,
             mint_recipient,
             Web3.to_checksum_address(self.src_usdc_address),
+            dst_caller_bytes,
+            max_fee,
+            min_finality_threshold,
         ).data
 
         return {
@@ -264,64 +306,68 @@ class CCTP(BaseBridge):
         self,
         amount_in: TokenAmount,
         composer_address: str,
+        program: bytes,
         dst_domain: int | None = None,
-        restrict_caller: bool = True,
+        max_fee: int = 0,
+        min_finality_threshold: int = FINALITY_THRESHOLD_CONFIRMED,
         **kwargs: Any,
     ) -> dict[str, Any]:
-        """Build a CCTP ``depositForBurn`` transaction targeting a CCTPComposer.
+        """Build a CCTP v2 ``depositForBurnWithHook`` transaction for compose.
 
-        This variant sets ``mintRecipient`` to *composer_address* so that USDC
-        is minted directly into the :class:`~pydefi.bridge.CCTPComposer`
-        contract on the destination chain.  After minting, the composer
-        executes a user-supplied DeFiVM program.
+        Embeds the DeFiVM *program* as ``hookData`` in the CCTP v2 burn message
+        and sets ``mintRecipient = composer_address`` so that USDC is minted
+        directly into the :class:`~pydefi.bridge.CCTPComposer` contract on the
+        destination chain.  ``destinationCaller`` is set to *composer_address*
+        so that only the CCTPComposer can invoke ``receiveMessage``, preventing
+        third parties from front-running the mint.
 
-        When *restrict_caller* is ``True`` (default), the transaction uses
-        ``depositForBurnWithCaller`` with ``destinationCaller = composer_address``
-        so that only the CCTPComposer contract can invoke ``receiveMessage``.
-        This prevents third parties from front-running the mint with a different
-        DeFiVM program.
+        The DeFiVM program is *committed on-chain at burn time*:  it is part of
+        the attested CCTP message and cannot be changed after the burn is
+        submitted.
 
         Args:
             amount_in: Amount of USDC to bridge.
             composer_address: Address of the :class:`CCTPComposer` contract on
-                the destination chain.
+                the destination chain.  Used as both ``mintRecipient`` and
+                ``destinationCaller``.
+            program: Raw DeFiVM bytecode to execute on the destination chain
+                after USDC is minted.  Passed as ``hookData``.
             dst_domain: Override the CCTP destination domain ID.
-            restrict_caller: If ``True``, use ``depositForBurnWithCaller`` so
-                that only *composer_address* can call ``receiveMessage``.
+            max_fee: Maximum relayer fee in USDC units.  Defaults to 0 (valid
+                on chains where minFee == 0; query Iris for the exact minimum).
+            min_finality_threshold: Minimum attestation finality level.
 
         Returns:
             Transaction dict with ``to``, ``data``, ``value``, ``gas``.
 
         Note:
-            The caller must separately ``approve`` the ``TokenMessenger``
+            The caller must separately ``approve`` the ``TokenMessengerV2``
             contract to spend ``amount_in.amount`` of USDC before submitting
             this transaction.
         """
+        if not program:
+            raise BridgeError("CCTP: program (hookData) must not be empty for compose transactions.")
+
         _dst_domain = dst_domain if dst_domain is not None else self._cctp_domain(self.dst_chain_id)
         mint_recipient = self._address_to_bytes32(composer_address)
+        destination_caller = self._address_to_bytes32(composer_address)
 
-        if restrict_caller:
-            destination_caller = self._address_to_bytes32(composer_address)
-            call_data = self._token_messenger.fns.depositForBurnWithCaller(
-                amount_in.amount,
-                _dst_domain,
-                mint_recipient,
-                Web3.to_checksum_address(self.src_usdc_address),
-                destination_caller,
-            ).data
-        else:
-            call_data = self._token_messenger.fns.depositForBurn(
-                amount_in.amount,
-                _dst_domain,
-                mint_recipient,
-                Web3.to_checksum_address(self.src_usdc_address),
-            ).data
+        call_data = self._token_messenger.fns.depositForBurnWithHook(
+            amount_in.amount,
+            _dst_domain,
+            mint_recipient,
+            Web3.to_checksum_address(self.src_usdc_address),
+            destination_caller,
+            max_fee,
+            min_finality_threshold,
+            program,
+        ).data
 
         return {
             "to": self.token_messenger_address,
             "data": "0x" + call_data.hex() if isinstance(call_data, bytes) else call_data,
             "value": "0",
-            "gas": str(200_000),
+            "gas": str(220_000),
         }
 
     # -----------------------------------------------------------------------
@@ -330,14 +376,14 @@ class CCTP(BaseBridge):
 
     @classmethod
     def message_transmitter_address(cls, chain_id: int) -> str:
-        """Return the well-known CCTP v1 ``MessageTransmitter`` address for *chain_id*.
+        """Return the well-known CCTP v2 ``MessageTransmitterV2`` address for *chain_id*.
 
         Raises:
             :class:`~pydefi.exceptions.BridgeError`: If no address is known.
         """
-        addr = _MESSAGE_TRANSMITTER.get(chain_id)
+        addr = _MESSAGE_TRANSMITTER_V2.get(chain_id)
         if addr is None:
-            raise BridgeError(f"CCTP: no MessageTransmitter address known for chain {chain_id}")
+            raise BridgeError(f"CCTP: no MessageTransmitterV2 address known for chain {chain_id}")
         return addr
 
     @classmethod
