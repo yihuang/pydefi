@@ -93,6 +93,7 @@ _CCTP_DOMAIN: dict[int, int] = {
     137: 7,  # Polygon PoS
     130: 10,  # Unichain
     59144: 11,  # Linea
+    999: 19,  # HyperEVM (Hyperliquid)
 }
 
 # CCTP v2 TokenMessengerV2 addresses.
@@ -108,6 +109,7 @@ _TOKEN_MESSENGER_V2: dict[int, str] = {
     137: "0x28b5a0e9C621a5BadaA536219b3a228C8168cf00",  # Polygon PoS
     130: "0x28b5a0e9C621a5BadaA536219b3a228C8168cf00",  # Unichain
     59144: "0x28b5a0e9C621a5BadaA536219b3a228C8168cf00",  # Linea
+    999: "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d",  # HyperEVM (Hyperliquid)
 }
 
 # CCTP v2 MessageTransmitterV2 addresses (same address on all supported chains).
@@ -120,6 +122,7 @@ _MESSAGE_TRANSMITTER_V2: dict[int, str] = {
     137: "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",  # Polygon PoS
     130: "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",  # Unichain
     59144: "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",  # Linea
+    999: "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",  # HyperEVM (Hyperliquid)
 }
 
 # Native USDC addresses per chain (Circle-issued, unchanged from v1).
@@ -132,6 +135,7 @@ _USDC: dict[int, str] = {
     137: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",  # Polygon PoS
     130: "0x078D888E40faAe0f32594342c85940AF3949E666",  # Unichain
     59144: "0x176211869cA2b568f2A7D4EE941E073a821EE1ff",  # Linea
+    999: "0xb88339CB7199b77E23DB6E890353E22632Ba630f",  # HyperEVM (Hyperliquid)
 }
 
 

@@ -15,6 +15,7 @@ dependencies = [
     "aiohttp>=3.9.0",
     "requests>=2.31.0",
     "pydantic>=2.0.0",
+    "msgpack>=1.0.0",
 ]
 
 [project.optional-dependencies]
