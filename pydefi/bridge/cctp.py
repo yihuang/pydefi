@@ -182,7 +182,7 @@ _USDC: dict[int, str] = {
 # Mainnet address verified on-chain (tokenMessenger() == TokenMessengerV2).
 # Docs: https://developers.circle.com/cctp/concepts/cctp-on-hypercore
 _CCTP_FORWARDER: dict[bool, str] = {
-    True: "0xb21d281dedb17ae5b501f6aa8256fe38c4e45757",   # HyperEVM mainnet (verified)
+    True: "0xb21d281dedb17ae5b501f6aa8256fe38c4e45757",  # HyperEVM mainnet (verified)
     False: "0x02e39ECb8368b41bF68FF99ff351aC9864e5E2a2",  # HyperEVM testnet
 }
 

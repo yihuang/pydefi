@@ -540,4 +540,3 @@ class HyperliquidClient:
         }
         signature = sign_send_to_evm_with_data_action(private_key, action, self.is_mainnet)
         return await self._post_user_signed_exchange({"action": action, "nonce": nonce, "signature": signature})
-
