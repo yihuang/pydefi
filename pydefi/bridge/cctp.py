@@ -135,14 +135,14 @@ _CCTP_DOMAIN: dict[int, int] = {
 # on every supported EVM chain.
 # https://developers.circle.com/stablecoins/evm-smart-contracts
 _TOKEN_MESSENGER_V2: dict[int, str] = {
-    1: "0x28b5a0e9C621a5BadaA536219b3a228C8168cf00",  # Ethereum
-    43114: "0x28b5a0e9C621a5BadaA536219b3a228C8168cf00",  # Avalanche
-    10: "0x28b5a0e9C621a5BadaA536219b3a228C8168cf00",  # OP Mainnet
-    42161: "0x28b5a0e9C621a5BadaA536219b3a228C8168cf00",  # Arbitrum
-    8453: "0x28b5a0e9C621a5BadaA536219b3a228C8168cf00",  # Base
-    137: "0x28b5a0e9C621a5BadaA536219b3a228C8168cf00",  # Polygon PoS
-    130: "0x28b5a0e9C621a5BadaA536219b3a228C8168cf00",  # Unichain
-    59144: "0x28b5a0e9C621a5BadaA536219b3a228C8168cf00",  # Linea
+    1: "0x28B5a0E9c621a5BAdaa536219b3a228c8168cF00",  # Ethereum
+    43114: "0x28B5a0E9c621a5BAdaa536219b3a228c8168cF00",  # Avalanche
+    10: "0x28B5a0E9c621a5BAdaa536219b3a228c8168cF00",  # OP Mainnet
+    42161: "0x28B5a0E9c621a5BAdaa536219b3a228c8168cF00",  # Arbitrum
+    8453: "0x28B5a0E9c621a5BAdaa536219b3a228c8168cF00",  # Base
+    137: "0x28B5a0E9c621a5BAdaa536219b3a228c8168cF00",  # Polygon PoS
+    130: "0x28B5a0E9c621a5BAdaa536219b3a228c8168cF00",  # Unichain
+    59144: "0x28B5a0E9c621a5BAdaa536219b3a228c8168cF00",  # Linea
     999: "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d",  # HyperEVM (Hyperliquid)
     1337: "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d",  # HyperCore (same contract on HyperEVM)
 }
