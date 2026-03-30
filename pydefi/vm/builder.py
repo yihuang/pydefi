@@ -21,7 +21,7 @@ features that are awkward with the raw byte-concatenation approach:
 Basic usage::
 
     from pydefi.vm import Program
-    from pydefi.vm.abi import erc20_approve
+    from eth_contract.erc20 import ERC20
 
     ROUTER  = "0xE592427A0AEce92De3Edee1F18E0157C05861564"
     TOKEN   = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
@@ -30,7 +30,7 @@ Basic usage::
     bytecode = (
         Program()
         # approve router to spend tokens
-        .call_contract(TOKEN, erc20_approve(ROUTER, AMOUNT))
+        .call_contract(TOKEN, bytes(ERC20.fns.approve(ROUTER, AMOUNT).data))
         .pop()  # consume CALL success flag
         # swap (pre-built calldata)
         .call_contract(ROUTER, swap_calldata, value=0, gas=0)
@@ -59,7 +59,9 @@ Label-based conditional example::
 
 Composition example::
 
-    approve = Program().call_contract(TOKEN, erc20_approve(ROUTER, MAX_U256)).pop()
+    from eth_contract.erc20 import ERC20
+
+    approve = Program().call_contract(TOKEN, bytes(ERC20.fns.approve(ROUTER, MAX_U256).data)).pop()
     swap    = Program().call_contract(ROUTER, swap_calldata).pop()
 
     full = approve + swap            # returns a new Program
@@ -67,6 +69,8 @@ Composition example::
     # or: Program.compose([approve, swap])
 
 Calldata surgery example — embed amount from last returndata::
+
+    from pydefi.vm.program import ret_u256, load_reg
 
     # double_sel(5) → 10; patch that into double_sel(0) template → double_sel(10) → 20
     bytecode = (
@@ -77,7 +81,7 @@ Calldata surgery example — embed amount from last returndata::
             ADAPTER,
             template_calldata,               # double(0) placeholder template
             patches=[
-                ("u256", 4, ("ret_u256", 0)),  # offset 4, value from last returndata[0:32]
+                ("u256", 4, ret_u256(0)),    # offset 4, value from last returndata[0:32]
             ],
         )
         .pop()
@@ -85,6 +89,8 @@ Calldata surgery example — embed amount from last returndata::
     )
 
 Calldata surgery with a register source::
+
+    from pydefi.vm.program import load_reg
 
     # Amount was saved to reg 0 earlier in the program
     bytecode = (
@@ -94,7 +100,7 @@ Calldata surgery with a register source::
             ROUTER,
             swap_template,
             patches=[
-                ("u256", 36, ("reg", 0)),    # offset 36, value from register 0
+                ("u256", 36, load_reg(0)),   # offset 36, value from register 0
             ],
         )
         .pop()
@@ -103,6 +109,8 @@ Calldata surgery with a register source::
 
 Split-swap example — swap token0 → token1, then split the output and route to
 two separate destinations using arithmetic and composition::
+
+    from pydefi.vm.program import load_reg
 
     # Prerequisite: swap01_template produces token1 from token0 (amount in reg 1 from
     # the CCTPComposer / OFTComposer prologue, or a prior STORE_REG).
@@ -146,7 +154,7 @@ two separate destinations using arithmetic and composition::
         Program()
         .call_with_patches(
             SWAP12, swap12_template,
-            patches=[("u256", AMOUNT_OFFSET, ("reg", 1))],
+            patches=[("u256", AMOUNT_OFFSET, load_reg(1))],
         )
         .pop()
     )
@@ -156,7 +164,7 @@ two separate destinations using arithmetic and composition::
         Program()
         .call_with_patches(
             SWAP13, swap13_template,
-            patches=[("u256", AMOUNT_OFFSET, ("reg", 2))],
+            patches=[("u256", AMOUNT_OFFSET, load_reg(2))],
         )
         .pop()
     )
@@ -202,29 +210,26 @@ from pydefi.vm.program import (
 # Patch source types
 # ---------------------------------------------------------------------------
 
-#: A *patch source* describes where the runtime value for a calldata field comes
-#: from.  Supported forms:
+#: A *patch source* is raw DeFiVM opcode bytes that, when executed, push exactly
+#: one value onto the stack.  That value is then used to overwrite the calldata
+#: field at the specified offset.
 #:
-#: ``int``
-#:     Static ``uint256`` value embedded directly into the program bytecode.
+#: Any instruction sequence that leaves exactly one item on the stack is valid.
+#: Common examples::
 #:
-#: ``str``
-#:     Static Ethereum address (hex with ``0x`` prefix).
+#:     from pydefi.vm.program import ret_u256, load_reg, push_u256, push_addr
 #:
-#: ``("ret_u256", offset)``
-#:     ``uint256`` read from the last external call's returndata at ``offset``.
-#:     Emits a ``RET_U256 <offset>`` instruction before the patch.
-#:
-#: ``("reg", reg_idx)``
-#:     Value loaded from VM register *reg_idx*.  Emits ``LOAD_REG <reg_idx>``.
-#:     Works for both ``"u256"`` and ``"addr"`` patch kinds.
-PatchSource = int | str | tuple[str, int]
+#:     ret_u256(0)        # uint256 from last call's returndata at offset 0
+#:     load_reg(2)        # value from VM register 2
+#:     push_u256(1000)    # static uint256 literal (pre-encode if value is known)
+#:     push_addr("0x…")   # static address literal
+PatchSource = bytes
 
-#: A single patch descriptor: ``(kind, calldata_offset, source)`` where:
+#: A single patch descriptor: ``(kind, calldata_offset, opcodes)`` where:
 #:
 #: - *kind*: ``"u256"`` (patch a 32-byte word) or ``"addr"`` (patch a 20-byte address).
 #: - *calldata_offset*: byte offset inside the calldata template to overwrite.
-#: - *source*: a :data:`PatchSource`.
+#: - *opcodes*: :data:`PatchSource` — raw bytecode that pushes the patch value.
 PatchSpec = tuple[str, int, PatchSource]
 
 # ---------------------------------------------------------------------------
@@ -469,8 +474,8 @@ class Program:
 
         This is a higher-level companion to :meth:`call_contract` that builds the
         calldata automatically from a **human-readable ABI function signature** and
-        the Python argument values, using :func:`~pydefi.vm.abi.encode_calldata`
-        internally.
+        the Python argument values, using
+        :class:`eth_contract.contract.ContractFunction` internally.
 
         The ``function`` keyword in *abi_sig* is optional — both bare
         ``"transfer(address,uint256)"`` and fully qualified
@@ -522,9 +527,10 @@ class Program:
                 .build()
             )
         """
-        from pydefi.vm.abi import encode_calldata
+        from eth_contract.contract import ContractFunction
 
-        calldata = encode_calldata(abi_sig, args)
+        normalised = abi_sig if abi_sig.lstrip().startswith("function ") else "function " + abi_sig
+        calldata = bytes(ContractFunction.from_abi(normalised)(*args).data)
         return self.call_contract(to, calldata, value=value, gas=gas, require_success=require_success)
 
     def call_with_patches(
@@ -541,27 +547,27 @@ class Program:
 
         This is the **calldata surgery** helper.  It pushes a mutable copy of
         *calldata* as a buffer, applies each patch from *patches* (each one
-        overwrites a field at a specific byte offset using a value obtained at
-        runtime), then issues the ``CALL`` opcode.
+        overwrites a field at a specific byte offset using a value produced at
+        runtime by arbitrary opcodes), then issues the ``CALL`` opcode.
 
-        Each entry in *patches* is a 3-tuple ``(kind, offset, source)``:
+        Each entry in *patches* is a 3-tuple ``(kind, offset, opcodes)``:
 
         - *kind* — ``"u256"`` to overwrite a 32-byte word, ``"addr"`` for 20 bytes.
         - *offset* — byte offset in the calldata template to overwrite.
-        - *source* — where the value comes from at runtime:
+        - *opcodes* — raw DeFiVM bytecode (``bytes``) that, when executed, pushes
+          exactly one value onto the stack.  Any instruction sequence that leaves a
+          single item on the stack is valid.  For example::
 
-          - ``int`` — static ``uint256`` literal (only valid for ``kind="u256"``).
-          - ``str`` — static address hex string (only valid for ``kind="addr"``).
-          - ``("ret_u256", retdata_offset)`` — ``uint256`` from the last call's
-            returndata at *retdata_offset*.
-          - ``("reg", reg_idx)`` — value from VM register *reg_idx*.
+              from pydefi.vm.program import ret_u256, load_reg, push_u256, push_addr
 
-        Stack contract — the stack must be clean (no leftover items from the
-        current patch value) when each patch instruction runs.  This is
-        automatically satisfied when all sources are static, from returndata, or
-        from registers.
+              ret_u256(0)        # uint256 from last call's returndata
+              load_reg(2)        # value from VM register 2
+              push_u256(1000)    # static uint256 literal
+              push_addr("0x…")   # static address literal
 
         Example::
+
+            from pydefi.vm.program import ret_u256, load_reg
 
             # Embed the output of a previous call (from returndata) as amountIn
             program = (
@@ -572,7 +578,7 @@ class Program:
                     ROUTER,
                     swap_template,          # swap(0, ...) — amount placeholder at offset 36
                     patches=[
-                        ("u256", 36, ("ret_u256", 0)),  # fill amount from last retdata
+                        ("u256", 36, ret_u256(0)),   # fill amount from last retdata
                     ],
                 )
                 .pop()
@@ -582,7 +588,7 @@ class Program:
         Args:
             to: Target contract address.
             calldata: Mutable calldata template bytes.
-            patches: List of ``(kind, offset, source)`` patch descriptors.
+            patches: List of ``(kind, offset, opcodes)`` patch descriptors.
             value: ETH value to forward (wei), default 0.
             gas: Sub-call gas limit (0 = forward all remaining gas).
             require_success: Revert if the sub-call fails (default ``True``).
@@ -592,32 +598,15 @@ class Program:
         """
         self._emit(push_bytes(calldata))  # [bufIdx]
 
-        for kind, offset, source in patches:
+        for kind, offset, opcodes in patches:
             if kind not in ("u256", "addr"):
                 raise ValueError(f"call_with_patches: unknown patch kind {kind!r}; expected 'u256' or 'addr'")
+            if not isinstance(opcodes, (bytes, bytearray)):
+                raise TypeError(
+                    f"call_with_patches: opcodes must be bytes or bytearray, got {type(opcodes).__name__!r}"
+                )
 
-            if isinstance(source, tuple):
-                src_type = source[0]
-                if src_type == "ret_u256":
-                    retdata_offset = source[1]
-                    self._emit(ret_u256(retdata_offset))
-                elif src_type == "reg":
-                    reg_idx = source[1]
-                    self._emit(load_reg(reg_idx))
-                else:
-                    raise ValueError(
-                        f"call_with_patches: unknown source type {src_type!r}; expected 'ret_u256' or 'reg'"
-                    )
-            elif isinstance(source, int):
-                if kind != "u256":
-                    raise ValueError(f"call_with_patches: int source requires kind='u256', got {kind!r}")
-                self._emit(push_u256(source))
-            elif isinstance(source, str):
-                if kind != "addr":
-                    raise ValueError(f"call_with_patches: str source requires kind='addr', got {kind!r}")
-                self._emit(push_addr(source))
-            else:
-                raise TypeError(f"call_with_patches: unsupported source type {type(source).__name__!r}")
+            self._emit(opcodes)  # push the patch value onto the stack
 
             if kind == "u256":
                 self._emit(patch_u256(offset))

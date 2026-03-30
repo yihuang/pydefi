@@ -21,11 +21,11 @@ Two complementary interfaces are provided:
     jumps, and the :meth:`~pydefi.vm.builder.Program.call_contract` helper::
 
         from pydefi.vm import Program
-        from pydefi.vm.abi import erc20_approve
+        from eth_contract.erc20 import ERC20
 
         bytecode = (
             Program()
-            .call_contract(TOKEN, erc20_approve(ROUTER, amount_in))
+            .call_contract(TOKEN, bytes(ERC20.fns.approve(ROUTER, amount_in).data))
             .pop()  # consume CALL success flag
             .call_contract(ROUTER, swap_calldata)
             .pop()  # consume CALL success flag
@@ -37,13 +37,7 @@ Two complementary interfaces are provided:
         )
 """
 
-from pydefi.vm.abi import (
-    encode_calldata,
-    erc20_approve,
-    erc20_balance_of,
-    erc20_transfer,
-    erc20_transfer_from,
-)
+from pydefi.vm.abi import encode_calldata
 from pydefi.vm.builder import PatchSource, PatchSpec, Program
 from pydefi.vm.program import (
     OP_ADD,
@@ -106,10 +100,6 @@ __all__ = [
     "PatchSpec",
     # ABI helpers
     "encode_calldata",
-    "erc20_transfer",
-    "erc20_approve",
-    "erc20_transfer_from",
-    "erc20_balance_of",
     # Opcode constants
     "OP_PUSH_U256",
     "OP_PUSH_ADDR",
