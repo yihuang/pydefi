@@ -6,6 +6,9 @@ These tests are pure Python (no network, no Solidity compilation) and verify:
    the equivalent low-level functional builders from :mod:`pydefi.vm.program`.
  - Label-based jump resolution in :meth:`~pydefi.vm.builder.Program.build`.
  - The :meth:`~pydefi.vm.builder.Program.call_contract` high-level helper.
+ - Program composition via :meth:`~pydefi.vm.builder.Program.extend`,
+   ``+``, ``+=`` and :meth:`~pydefi.vm.builder.Program.compose`.
+ - Calldata surgery via :meth:`~pydefi.vm.builder.Program.call_with_patches`.
  - ABI calldata helpers in :mod:`pydefi.vm.abi`.
  - Error cases (duplicate label, undefined label, invalid arguments).
 """
@@ -428,4 +431,320 @@ class TestIntegration:
         )
         assert len(bytecode) > 0
         # Starts with PUSH_BYTES
+        assert bytecode[0] == OP_PUSH_BYTES
+
+
+# ---------------------------------------------------------------------------
+# Program: composition
+# ---------------------------------------------------------------------------
+
+
+class TestProgramComposition:
+    def test_extend_concatenates_bytecode(self):
+        p1 = Program().push_u256(1)
+        p2 = Program().push_u256(2)
+        p1.extend(p2)
+        assert p1.build() == push_u256(1) + push_u256(2)
+
+    def test_add_returns_new_program(self):
+        p1 = Program().push_u256(1)
+        p2 = Program().push_u256(2)
+        result = p1 + p2
+        # Original programs unchanged
+        assert p1.build() == push_u256(1)
+        assert p2.build() == push_u256(2)
+        # Combined result is correct
+        assert result.build() == push_u256(1) + push_u256(2)
+
+    def test_iadd_modifies_in_place(self):
+        p1 = Program().push_u256(10)
+        p2 = Program().push_u256(20)
+        p1 += p2
+        assert p1.build() == push_u256(10) + push_u256(20)
+
+    def test_compose_list(self):
+        parts = [
+            Program().push_u256(1),
+            Program().push_u256(2),
+            Program().push_u256(3),
+        ]
+        result = Program.compose(parts)
+        assert result.build() == push_u256(1) + push_u256(2) + push_u256(3)
+
+    def test_compose_empty_list(self):
+        result = Program.compose([])
+        assert result.build() == b""
+
+    def test_extend_label_offset_adjusted(self):
+        """Labels in the appended program have their positions shifted correctly."""
+        # Layout: JUMP("here")[3 bytes] from p1 | label("here") + push_u256(1) from p2
+        # After extend, "here" should resolve to offset 3 (right after the JUMP).
+        p1 = Program().jump("here")
+        p2 = Program().label("here").push_u256(1)
+        p1.extend(p2)
+        bytecode = p1.build()
+        assert bytecode[0] == OP_JUMP
+        target = struct.unpack(">H", bytecode[1:3])[0]
+        assert target == 3  # JUMP(3 bytes) → label right after
+
+    def test_extend_fixup_offset_adjusted(self):
+        """JUMP fixup offsets in appended program are shifted correctly."""
+        # p2 has a forward jump: JUMP(3 bytes) | label "done" | push_u256(0)
+        p2 = Program().jump("done").label("done").push_u256(0)
+
+        p1_size = len(Program().push_u256(999))  # 33 bytes
+        p1 = Program().push_u256(999)
+        p1.extend(p2)
+
+        bytecode = p1.build()
+        # The JUMP instruction is at byte p1_size (33)
+        assert bytecode[p1_size] == OP_JUMP
+        target = struct.unpack(">H", bytecode[p1_size + 1 : p1_size + 3])[0]
+        # label "done" should be at p1_size + 3 (after JUMP instruction)
+        assert target == p1_size + 3
+
+    def test_extend_cross_program_label_resolution(self):
+        """Jump in p1 to label defined in p2 resolves correctly."""
+        p1 = Program().jump("end")
+        p2 = Program().push_u256(1).label("end").push_u256(2)
+        p1.extend(p2)
+        bytecode = p1.build()
+        # "end" is at: JUMP(3) + push_u256(1)(33) = offset 36
+        target = struct.unpack(">H", bytecode[1:3])[0]
+        assert target == 36
+
+    def test_extend_duplicate_label_raises(self):
+        p1 = Program().label("x")
+        p2 = Program().label("x")
+        with pytest.raises(ValueError, match="duplicate label"):
+            p1.extend(p2)
+
+    def test_add_duplicate_label_raises(self):
+        p1 = Program().label("x")
+        p2 = Program().label("x")
+        with pytest.raises(ValueError, match="duplicate label"):
+            _ = p1 + p2
+
+    def test_compose_preserves_order(self):
+        """compose([A, B, C]) == A + B + C."""
+        a = Program().push_u256(1)
+        b = Program().push_u256(2)
+        c = Program().push_u256(3)
+        composed = Program.compose([a, b, c])
+        chained = Program().push_u256(1).push_u256(2).push_u256(3)
+        assert composed.build() == chained.build()
+
+    def test_compose_with_labels(self):
+        """Labels from multiple sub-programs are correctly resolved after compose."""
+        # Layout: push_u256(1)[33] | JUMP("end")[3] | label("end") + push_u256(2)[33]
+        # "end" is at offset 33+3 = 36
+        p1 = Program().push_u256(1)
+        p2 = Program().jump("end")
+        p3 = Program().label("end").push_u256(2)
+        result = Program.compose([p1, p2, p3])
+        bytecode = result.build()
+        assert bytecode[33] == OP_JUMP
+        target = struct.unpack(">H", bytecode[34:36])[0]
+        assert target == 36
+
+    def test_sub_programs_independent(self):
+        """Combining programs via + does not mutate the originals."""
+        p1 = Program().push_u256(7)
+        p2 = Program().push_u256(8)
+        _ = p1 + p2
+        assert p1.build() == push_u256(7)
+        assert p2.build() == push_u256(8)
+
+
+# ---------------------------------------------------------------------------
+# Program: call_with_patches (calldata surgery)
+# ---------------------------------------------------------------------------
+
+
+class TestCallWithPatches:
+    def _template(self) -> bytes:
+        """4-byte selector + two 32-byte zero placeholders."""
+        return bytes.fromhex("deadbeef") + b"\x00" * 64
+
+    def test_no_patches_equals_call_contract(self):
+        """With an empty patches list, call_with_patches == call_contract."""
+        cd = self._template()
+        expected = Program().call_contract(ADDR_A, cd).build()
+        actual = Program().call_with_patches(ADDR_A, cd, []).build()
+        assert actual == expected
+
+    def test_static_u256_patch(self):
+        """Static uint256 patch emits push_u256 + patch_u256."""
+        cd = self._template()
+        # Manually build equivalent low-level sequence
+        expected = (
+            push_bytes(cd)
+            + push_u256(42)
+            + patch_u256(4)
+            + push_u256(0)      # value
+            + push_addr(ADDR_A)
+            + push_u256(0)      # gas
+            + call(True)
+        )
+        actual = Program().call_with_patches(
+            ADDR_A, cd, [("u256", 4, 42)]
+        ).build()
+        assert actual == expected
+
+    def test_static_addr_patch(self):
+        """Static address patch emits push_addr + patch_addr."""
+        cd = self._template()
+        expected = (
+            push_bytes(cd)
+            + push_addr(ADDR_B)
+            + patch_addr(16)
+            + push_u256(0)
+            + push_addr(ADDR_A)
+            + push_u256(0)
+            + call(True)
+        )
+        actual = Program().call_with_patches(
+            ADDR_A, cd, [("addr", 16, ADDR_B)]
+        ).build()
+        assert actual == expected
+
+    def test_ret_u256_patch(self):
+        """('ret_u256', offset) source emits ret_u256 + patch_u256."""
+        cd = self._template()
+        expected = (
+            push_bytes(cd)
+            + ret_u256(0)
+            + patch_u256(4)
+            + push_u256(0)
+            + push_addr(ADDR_A)
+            + push_u256(0)
+            + call(True)
+        )
+        actual = Program().call_with_patches(
+            ADDR_A, cd, [("u256", 4, ("ret_u256", 0))]
+        ).build()
+        assert actual == expected
+
+    def test_reg_patch(self):
+        """('reg', idx) source emits load_reg + patch_u256."""
+        cd = self._template()
+        expected = (
+            push_bytes(cd)
+            + load_reg(3)
+            + patch_u256(4)
+            + push_u256(0)
+            + push_addr(ADDR_A)
+            + push_u256(0)
+            + call(True)
+        )
+        actual = Program().call_with_patches(
+            ADDR_A, cd, [("u256", 4, ("reg", 3))]
+        ).build()
+        assert actual == expected
+
+    def test_reg_patch_addr(self):
+        """('reg', idx) with kind='addr' emits load_reg + patch_addr."""
+        cd = self._template()
+        expected = (
+            push_bytes(cd)
+            + load_reg(5)
+            + patch_addr(16)
+            + push_u256(0)
+            + push_addr(ADDR_A)
+            + push_u256(0)
+            + call(True)
+        )
+        actual = Program().call_with_patches(
+            ADDR_A, cd, [("addr", 16, ("reg", 5))]
+        ).build()
+        assert actual == expected
+
+    def test_multiple_patches(self):
+        """Multiple patches are applied in order."""
+        cd = self._template()
+        expected = (
+            push_bytes(cd)
+            + push_u256(100)
+            + patch_u256(4)
+            + push_addr(ADDR_B)
+            + patch_addr(4 + 32 + 12)
+            + push_u256(0)
+            + push_addr(ADDR_A)
+            + push_u256(0)
+            + call(True)
+        )
+        actual = Program().call_with_patches(
+            ADDR_A,
+            cd,
+            [
+                ("u256", 4, 100),
+                ("addr", 4 + 32 + 12, ADDR_B),
+            ],
+        ).build()
+        assert actual == expected
+
+    def test_value_and_gas_forwarded(self):
+        """value and gas parameters are reflected in CALL prologue."""
+        cd = self._template()
+        expected = (
+            push_bytes(cd)
+            + push_u256(10**18)  # value
+            + push_addr(ADDR_A)
+            + push_u256(50_000)  # gas
+            + call(True)
+        )
+        actual = Program().call_with_patches(
+            ADDR_A, cd, [], value=10**18, gas=50_000
+        ).build()
+        assert actual == expected
+
+    def test_require_success_false(self):
+        """require_success=False emits CALL with flags=0x00."""
+        cd = self._template()
+        expected = (
+            push_bytes(cd)
+            + push_u256(0)
+            + push_addr(ADDR_A)
+            + push_u256(0)
+            + call(False)
+        )
+        actual = Program().call_with_patches(
+            ADDR_A, cd, [], require_success=False
+        ).build()
+        assert actual == expected
+
+    def test_unknown_source_type_raises(self):
+        with pytest.raises(ValueError, match="unknown source type"):
+            Program().call_with_patches(
+                ADDR_A, self._template(), [("u256", 4, ("badtype", 0))]
+            ).build()
+
+    def test_wrong_kind_for_int_source_raises(self):
+        with pytest.raises(ValueError, match="kind='u256'"):
+            Program().call_with_patches(
+                ADDR_A, self._template(), [("addr", 4, 99)]
+            ).build()
+
+    def test_wrong_kind_for_str_source_raises(self):
+        with pytest.raises(ValueError, match="kind='addr'"):
+            Program().call_with_patches(
+                ADDR_A, self._template(), [("u256", 4, ADDR_B)]
+            ).build()
+
+    def test_unknown_patch_kind_raises(self):
+        with pytest.raises(ValueError, match="unknown patch kind"):
+            Program().call_with_patches(
+                ADDR_A, self._template(), [("bytes32", 4, 0)]
+            ).build()
+
+    def test_chained_with_composition(self):
+        """call_with_patches works correctly when composed with other programs."""
+        cd = self._template()
+        step1 = Program().call_contract(ADDR_A, cd).pop()
+        step2 = Program().call_with_patches(
+            ADDR_A, cd, [("u256", 4, ("ret_u256", 0))]
+        ).pop()
+        combined = step1 + step2
+        bytecode = combined.build()
+        assert len(bytecode) > 0
         assert bytecode[0] == OP_PUSH_BYTES

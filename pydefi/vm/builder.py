@@ -1,7 +1,7 @@
 """DeFiVM fluent program builder.
 
 :class:`Program` provides a method-chaining interface over the low-level
-instruction builders in :mod:`pydefi.vm.program`.  It adds two higher-level
+instruction builders in :mod:`pydefi.vm.program`.  It adds three higher-level
 features that are awkward with the raw byte-concatenation approach:
 
 1. **Label-based jumps** — define named positions with :meth:`label` and
@@ -10,6 +10,13 @@ features that are awkward with the raw byte-concatenation approach:
 
 2. **``call_contract`` helper** — wraps the four-item stack protocol required
    by the ``CALL`` opcode into a single method call.
+
+3. **Program composition** — combine independent sub-programs with
+   :meth:`extend` / ``+`` / ``+=`` or :meth:`compose`.
+
+4. **Calldata surgery** — :meth:`call_with_patches` embeds runtime values
+   (static, from returndata, or from a register) into a calldata template
+   before dispatching the external call.
 
 Basic usage::
 
@@ -47,6 +54,50 @@ Label-based conditional example::
         .label("skip")
         .build()
     )
+
+Composition example::
+
+    approve = Program().call_contract(TOKEN, erc20_approve(ROUTER, MAX_U256)).pop()
+    swap    = Program().call_contract(ROUTER, swap_calldata).pop()
+
+    full = approve + swap            # returns a new Program
+    # or: approve.extend(swap)       # in-place
+    # or: Program.compose([approve, swap])
+
+Calldata surgery example — embed amount from last returndata::
+
+    # double_sel(5) → 10; patch that into double_sel(0) template → double_sel(10) → 20
+    bytecode = (
+        Program()
+        .call_contract(ADAPTER, double_calldata)
+        .pop()
+        .call_with_patches(
+            ADAPTER,
+            template_calldata,               # double(0) placeholder template
+            patches=[
+                ("u256", 4, ("ret_u256", 0)),  # offset 4, value from last returndata[0:32]
+            ],
+        )
+        .pop()
+        .build()
+    )
+
+Calldata surgery with a register source::
+
+    # Amount was saved to reg 0 earlier in the program
+    bytecode = (
+        Program()
+        .store_reg(0)                        # save amount from stack top
+        .call_with_patches(
+            ROUTER,
+            swap_template,
+            patches=[
+                ("u256", 36, ("reg", 0)),    # offset 36, value from register 0
+            ],
+        )
+        .pop()
+        .build()
+    )
 """
 
 from __future__ import annotations
@@ -78,6 +129,35 @@ from pydefi.vm.program import (
     sub,
     swap,
 )
+
+# ---------------------------------------------------------------------------
+# Patch source types
+# ---------------------------------------------------------------------------
+
+#: A *patch source* describes where the runtime value for a calldata field comes
+#: from.  Supported forms:
+#:
+#: ``int``
+#:     Static ``uint256`` value embedded directly into the program bytecode.
+#:
+#: ``str``
+#:     Static Ethereum address (hex with ``0x`` prefix).
+#:
+#: ``("ret_u256", offset)``
+#:     ``uint256`` read from the last external call's returndata at ``offset``.
+#:     Emits a ``RET_U256 <offset>`` instruction before the patch.
+#:
+#: ``("reg", reg_idx)``
+#:     Value loaded from VM register *reg_idx*.  Emits ``LOAD_REG <reg_idx>``.
+#:     Works for both ``"u256"`` and ``"addr"`` patch kinds.
+PatchSource = int | str | tuple[str, int]
+
+#: A single patch descriptor: ``(kind, calldata_offset, source)`` where:
+#:
+#: - *kind*: ``"u256"`` (patch a 32-byte word) or ``"addr"`` (patch a 20-byte address).
+#: - *calldata_offset*: byte offset inside the calldata template to overwrite.
+#: - *source*: a :data:`PatchSource`.
+PatchSpec = tuple[str, int, PatchSource]
 
 # ---------------------------------------------------------------------------
 # Program builder
@@ -285,6 +365,185 @@ class Program:
             ._emit(push_u256(gas))
             ._emit(call(require_success))
         )
+
+    def call_with_patches(
+        self,
+        to: str,
+        calldata: bytes,
+        patches: list[PatchSpec],
+        *,
+        value: int = 0,
+        gas: int = 0,
+        require_success: bool = True,
+    ) -> "Program":
+        """Emit a patched external call — embed runtime values into a calldata template.
+
+        This is the **calldata surgery** helper.  It pushes a mutable copy of
+        *calldata* as a buffer, applies each patch from *patches* (each one
+        overwrites a field at a specific byte offset using a value obtained at
+        runtime), then issues the ``CALL`` opcode.
+
+        Each entry in *patches* is a 3-tuple ``(kind, offset, source)``:
+
+        - *kind* — ``"u256"`` to overwrite a 32-byte word, ``"addr"`` for 20 bytes.
+        - *offset* — byte offset in the calldata template to overwrite.
+        - *source* — where the value comes from at runtime:
+
+          - ``int`` — static ``uint256`` literal (only valid for ``kind="u256"``).
+          - ``str`` — static address hex string (only valid for ``kind="addr"``).
+          - ``("ret_u256", retdata_offset)`` — ``uint256`` from the last call's
+            returndata at *retdata_offset*.
+          - ``("reg", reg_idx)`` — value from VM register *reg_idx*.
+
+        Stack contract — the stack must be clean (no leftover items from the
+        current patch value) when each patch instruction runs.  This is
+        automatically satisfied when all sources are static, from returndata, or
+        from registers.
+
+        Example::
+
+            # Embed the output of a previous call (from returndata) as amountIn
+            program = (
+                Program()
+                .call_contract(QUOTER, quote_calldata)
+                .pop()
+                .call_with_patches(
+                    ROUTER,
+                    swap_template,          # swap(0, ...) — amount placeholder at offset 36
+                    patches=[
+                        ("u256", 36, ("ret_u256", 0)),  # fill amount from last retdata
+                    ],
+                )
+                .pop()
+                .build()
+            )
+
+        Args:
+            to: Target contract address.
+            calldata: Mutable calldata template bytes.
+            patches: List of ``(kind, offset, source)`` patch descriptors.
+            value: ETH value to forward (wei), default 0.
+            gas: Sub-call gas limit (0 = forward all remaining gas).
+            require_success: Revert if the sub-call fails (default ``True``).
+
+        Returns:
+            ``self`` for chaining.
+        """
+        self._emit(push_bytes(calldata))   # [bufIdx]
+
+        for kind, offset, source in patches:
+            if kind not in ("u256", "addr"):
+                raise ValueError(
+                    f"call_with_patches: unknown patch kind {kind!r}; expected 'u256' or 'addr'"
+                )
+
+            if isinstance(source, tuple):
+                src_type = source[0]
+                if src_type == "ret_u256":
+                    retdata_offset = source[1]
+                    self._emit(ret_u256(retdata_offset))
+                elif src_type == "reg":
+                    reg_idx = source[1]
+                    self._emit(load_reg(reg_idx))
+                else:
+                    raise ValueError(
+                        f"call_with_patches: unknown source type {src_type!r}; "
+                        "expected 'ret_u256' or 'reg'"
+                    )
+            elif isinstance(source, int):
+                if kind != "u256":
+                    raise ValueError(
+                        f"call_with_patches: int source requires kind='u256', got {kind!r}"
+                    )
+                self._emit(push_u256(source))
+            elif isinstance(source, str):
+                if kind != "addr":
+                    raise ValueError(
+                        f"call_with_patches: str source requires kind='addr', got {kind!r}"
+                    )
+                self._emit(push_addr(source))
+            else:
+                raise TypeError(
+                    f"call_with_patches: unsupported source type {type(source).__name__!r}"
+                )
+
+            if kind == "u256":
+                self._emit(patch_u256(offset))
+            else:  # kind == "addr"
+                self._emit(patch_addr(offset))
+
+        # Stack now: [bufIdx] — ready for CALL prologue
+        self._emit(push_u256(value))
+        self._emit(push_addr(to))
+        self._emit(push_u256(gas))
+        self._emit(call(require_success))
+        return self
+
+    # ------------------------------------------------------------------
+    # Composition
+    # ------------------------------------------------------------------
+
+    def extend(self, other: "Program") -> "Program":
+        """Append *other*'s instructions to this program **in-place**.
+
+        All byte offsets in *other*'s labels and fixup table are adjusted by
+        the current length of ``self`` so that label references remain correct
+        after merging.
+
+        Raises :exc:`ValueError` if *other* defines a label that already exists
+        in ``self``.
+
+        Returns:
+            ``self`` for chaining.
+        """
+        offset = len(self._buf)
+        self._buf.extend(other._buf)
+        for name, pos in other._labels.items():
+            if name in self._labels:
+                raise ValueError(
+                    f"Program: duplicate label {name!r} during extend"
+                )
+            self._labels[name] = pos + offset
+        for fixup_off, name in other._fixups:
+            self._fixups.append((fixup_off + offset, name))
+        return self
+
+    def __add__(self, other: "Program") -> "Program":
+        """Return a new :class:`Program` that concatenates *self* and *other*.
+
+        Neither ``self`` nor ``other`` is modified.
+
+        Raises :exc:`ValueError` on duplicate label names.
+        """
+        result = Program()
+        result._buf.extend(self._buf)
+        result._labels.update(self._labels)
+        result._fixups.extend(self._fixups)
+        result.extend(other)
+        return result
+
+    def __iadd__(self, other: "Program") -> "Program":
+        """Extend this program in-place (``self += other``)."""
+        return self.extend(other)
+
+    @classmethod
+    def compose(cls, programs: list["Program"]) -> "Program":
+        """Compose a sequence of programs into a single :class:`Program`.
+
+        Equivalent to reducing the list with ``+``, but more efficient for
+        large numbers of sub-programs.
+
+        Example::
+
+            parts = [approve_prog, wrap_prog, swap_prog, unwrap_prog]
+            bytecode = Program.compose(parts).build()
+
+        Raises :exc:`ValueError` on duplicate label names across sub-programs.
+        """
+        result = cls()
+        for prog in programs:
+            result.extend(prog)
+        return result
 
     # ------------------------------------------------------------------
     # Build

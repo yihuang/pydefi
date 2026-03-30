@@ -41,7 +41,7 @@ from pydefi.vm.abi import (
     erc20_transfer,
     erc20_transfer_from,
 )
-from pydefi.vm.builder import Program
+from pydefi.vm.builder import Program, PatchSource, PatchSpec
 from pydefi.vm.program import (
     OP_ASSERT_GE,
     OP_ASSERT_LE,
@@ -90,6 +90,9 @@ from pydefi.vm.program import (
 __all__ = [
     # Fluent builder
     "Program",
+    # Patch type aliases
+    "PatchSource",
+    "PatchSpec",
     # ABI helpers
     "erc20_transfer",
     "erc20_approve",
