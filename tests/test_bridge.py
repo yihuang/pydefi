@@ -6,6 +6,11 @@ import pytest
 
 from pydefi.bridge.across import Across
 from pydefi.bridge.base import BaseBridge
+from pydefi.bridge.cctp import (
+    HYPERCORE_DEX_PERP,
+    HYPERCORE_DEX_SPOT,
+    encode_cctp_forward_hook_data,
+)
 from pydefi.bridge.gaszip import _SUPPORTED_CHAINS, GasZip
 from pydefi.bridge.layerzero_oft import _LZ_EID, LayerZeroOFT
 from pydefi.bridge.mayan import _CHAIN_NAMES, Mayan
@@ -817,3 +822,88 @@ class TestLayerZeroOFT:
         assert _LZ_EID[7777777] == 30195  # Zora
         assert _LZ_EID[130] == 30320  # Unichain
         assert _LZ_EID[480] == 30337  # World Chain
+
+
+# ---------------------------------------------------------------------------
+# CCTP encode_cctp_forward_hook_data tests
+# ---------------------------------------------------------------------------
+
+_MOCK_RECIPIENT = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"
+
+
+class TestEncodeCctpForwardHookData:
+    """Unit tests for encode_cctp_forward_hook_data() byte layout."""
+
+    def test_no_recipient_length(self):
+        """Header-only hookData is 32 bytes (magic 24 + version 4 + dataLen 4)."""
+        data = encode_cctp_forward_hook_data(recipient=None)
+        assert len(data) == 32
+
+    def test_no_recipient_magic(self):
+        """First 12 bytes are ASCII 'cctp-forward'."""
+        data = encode_cctp_forward_hook_data(recipient=None)
+        assert data[:12] == b"cctp-forward"
+
+    def test_no_recipient_padding(self):
+        """Bytes 12-23 are null (12 bytes of zero padding)."""
+        data = encode_cctp_forward_hook_data(recipient=None)
+        assert data[12:24] == b"\x00" * 12
+
+    def test_no_recipient_version(self):
+        """Bytes 24-27 encode version = 0 (big-endian uint32)."""
+        data = encode_cctp_forward_hook_data(recipient=None)
+        assert data[24:28] == b"\x00\x00\x00\x00"
+
+    def test_no_recipient_data_length_zero(self):
+        """Bytes 28-31 encode dataLength = 0 when no recipient is given."""
+        data = encode_cctp_forward_hook_data(recipient=None)
+        assert data[28:32] == b"\x00\x00\x00\x00"
+
+    def test_with_recipient_total_length(self):
+        """With recipient, hookData is 56 bytes (32 header + 20 addr + 4 dex)."""
+        data = encode_cctp_forward_hook_data(recipient=_MOCK_RECIPIENT)
+        assert len(data) == 56
+
+    def test_with_recipient_magic(self):
+        """Magic prefix is preserved when recipient is provided."""
+        data = encode_cctp_forward_hook_data(recipient=_MOCK_RECIPIENT)
+        assert data[:12] == b"cctp-forward"
+        assert data[12:24] == b"\x00" * 12
+
+    def test_with_recipient_data_length_24(self):
+        """dataLength field encodes 24 (20-byte addr + 4-byte dex)."""
+        data = encode_cctp_forward_hook_data(recipient=_MOCK_RECIPIENT)
+        assert int.from_bytes(data[28:32], "big") == 24
+
+    def test_with_recipient_address_embedded(self):
+        """Address bytes occupy bytes 32-51 of the hookData."""
+        data = encode_cctp_forward_hook_data(recipient=_MOCK_RECIPIENT)
+        expected_addr = bytes.fromhex(_MOCK_RECIPIENT[2:])
+        assert data[32:52] == expected_addr
+
+    def test_perp_dex_default(self):
+        """HYPERCORE_DEX_PERP (0) encodes as four zero bytes in the dex field."""
+        data = encode_cctp_forward_hook_data(recipient=_MOCK_RECIPIENT)
+        assert data[52:56] == b"\x00\x00\x00\x00"
+
+    def test_perp_dex_explicit(self):
+        """Passing HYPERCORE_DEX_PERP explicitly gives the same result."""
+        data = encode_cctp_forward_hook_data(recipient=_MOCK_RECIPIENT, destination_dex=HYPERCORE_DEX_PERP)
+        assert data[52:56] == b"\x00\x00\x00\x00"
+
+    def test_spot_dex(self):
+        """HYPERCORE_DEX_SPOT (0xFFFFFFFF) encodes as four 0xFF bytes."""
+        data = encode_cctp_forward_hook_data(recipient=_MOCK_RECIPIENT, destination_dex=HYPERCORE_DEX_SPOT)
+        assert data[52:56] == b"\xff\xff\xff\xff"
+
+    def test_invalid_recipient_raises(self):
+        """A non-20-byte hex string raises ValueError."""
+        with pytest.raises(ValueError):
+            encode_cctp_forward_hook_data(recipient="0x1234abcd")
+
+    def test_address_without_0x_prefix(self):
+        """Address without '0x' prefix is accepted and correctly embedded."""
+        addr_no_prefix = _MOCK_RECIPIENT[2:]  # strip '0x'
+        data = encode_cctp_forward_hook_data(recipient=addr_no_prefix)
+        expected_addr = bytes.fromhex(addr_no_prefix)
+        assert data[32:52] == expected_addr
