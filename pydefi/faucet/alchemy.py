@@ -31,8 +31,7 @@ class AlchemyFaucet(BaseFaucet):
     Requires an Alchemy API key with faucet drip access.
 
     Args:
-        api_key: Alchemy API key.  Defaults to the ``ALCHEMY_API_KEY``
-            environment variable when ``None`` is passed.
+        api_key: Alchemy API key with faucet drip access.
         chain_id: Target chain (default: :attr:`~pydefi.types.ChainId.SEPOLIA`).
         api_base_url: Override the default Alchemy faucet endpoint URL.
 
@@ -93,7 +92,7 @@ class AlchemyFaucet(BaseFaucet):
                 json=payload,
                 headers=headers,
             ) as resp:
-                if resp.status not in (200, 201):
+                if resp.status < 200 or resp.status >= 300:
                     text = await resp.text()
                     raise FaucetError(f"Alchemy faucet error ({resp.status}): {text[:200]}")
                 data = await resp.json(content_type=None)

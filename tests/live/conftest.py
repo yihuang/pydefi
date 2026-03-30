@@ -31,8 +31,7 @@ API key is available.  Configure via environment variables::
 
     SEPOLIA_RPC_URL  — Sepolia JSON-RPC URL (default: https://rpc.sepolia.org)
     TESTNET_PRIVATE_KEY — hex private key of the test wallet
-    ALCHEMY_API_KEY  — Alchemy API key for the faucet (optional)
-    QUICKNODE_TOKEN  — QuickNode token for the faucet (optional)
+    ALCHEMY_API_KEY  — Alchemy API key for the faucet
 
 Run testnet tests with::
 
@@ -64,7 +63,6 @@ ETH_RPC_URL = os.environ.get("ETH_RPC_URL", "https://eth.drpc.org")
 SEPOLIA_RPC_URL = os.environ.get("SEPOLIA_RPC_URL", "https://rpc.sepolia.org")
 TESTNET_PRIVATE_KEY = os.environ.get("TESTNET_PRIVATE_KEY", "")
 ALCHEMY_API_KEY = os.environ.get("ALCHEMY_API_KEY", "")
-QUICKNODE_TOKEN = os.environ.get("QUICKNODE_TOKEN", "")
 
 # ---------------------------------------------------------------------------
 # Solana public RPC (used for simulation and as the surfpool upstream)
@@ -352,22 +350,14 @@ def sepolia_w3() -> AsyncWeb3:
 def testnet_faucet():
     """Return a configured testnet faucet, or skip the test if none is set up.
 
-    Checks the following environment variables in order:
-
-    1. ``ALCHEMY_API_KEY`` — uses :class:`~pydefi.faucet.AlchemyFaucet`.
-    2. ``QUICKNODE_TOKEN`` — uses :class:`~pydefi.faucet.QuickNodeFaucet`.
-
-    The test is skipped automatically when neither variable is set.
+    Requires the ``ALCHEMY_API_KEY`` environment variable.
+    The test is skipped automatically when the variable is not set.
     """
-    from pydefi.faucet import AlchemyFaucet, QuickNodeFaucet
+    from pydefi.faucet import AlchemyFaucet
 
     if ALCHEMY_API_KEY:
         return AlchemyFaucet(api_key=ALCHEMY_API_KEY, chain_id=ChainId.SEPOLIA)
-    if QUICKNODE_TOKEN:
-        return QuickNodeFaucet(token=QUICKNODE_TOKEN, chain_id=ChainId.SEPOLIA)
-    pytest.skip(
-        "No testnet faucet configured — set ALCHEMY_API_KEY or QUICKNODE_TOKEN to enable automatic wallet funding"
-    )
+    pytest.skip("No testnet faucet configured — set ALCHEMY_API_KEY to enable automatic wallet funding")
 
 
 @pytest.fixture

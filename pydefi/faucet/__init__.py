@@ -9,7 +9,6 @@ only when its balance falls below a specified threshold.
 Supported faucets
 -----------------
 - :class:`AlchemyFaucet` — Alchemy Sepolia faucet (``ALCHEMY_API_KEY``).
-- :class:`QuickNodeFaucet` — QuickNode Sepolia faucet (``QUICKNODE_TOKEN``).
 
 Quick start::
 
@@ -24,6 +23,5 @@ Quick start::
 
 from pydefi.faucet.alchemy import AlchemyFaucet
 from pydefi.faucet.base import BaseFaucet
-from pydefi.faucet.quicknode import QuickNodeFaucet
 
-__all__ = ["BaseFaucet", "AlchemyFaucet", "QuickNodeFaucet"]
+__all__ = ["BaseFaucet", "AlchemyFaucet"]

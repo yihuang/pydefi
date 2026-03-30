@@ -76,6 +76,8 @@ jobs:
           ETH_RPC_URL: https://eth.drpc.org
           JUPITER_API_KEY: ${{ secrets.JUPITER_API_KEY }}
           UNISWAP_API_KEY: ${{ secrets.UNISWAP_API_KEY }}
+          ALCHEMY_API_KEY: ${{ secrets.ALCHEMY_API_KEY }}
+          TESTNET_PRIVATE_KEY: ${{ secrets.TESTNET_PRIVATE_KEY }}
         run: pytest -m live -v --reruns 3 --reruns-delay 5
 
   fork-test:
