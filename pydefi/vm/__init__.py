@@ -36,6 +36,7 @@ Two complementary interfaces are provided:
 """
 
 from pydefi.vm.abi import (
+    encode_calldata,
     erc20_approve,
     erc20_balance_of,
     erc20_transfer,
@@ -102,6 +103,7 @@ __all__ = [
     "PatchSource",
     "PatchSpec",
     # ABI helpers
+    "encode_calldata",
     "erc20_transfer",
     "erc20_approve",
     "erc20_transfer_from",

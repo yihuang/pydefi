@@ -448,6 +448,77 @@ class Program:
             ._emit(call(require_success))
         )
 
+    def call_contract_abi(
+        self,
+        to: str,
+        abi_sig: str,
+        *args: object,
+        value: int = 0,
+        gas: int = 0,
+        require_success: bool = True,
+    ) -> "Program":
+        """Emit an external call encoded from a human-readable ABI signature and args.
+
+        This is a higher-level companion to :meth:`call_contract` that builds the
+        calldata automatically from a **human-readable ABI function signature** and
+        the Python argument values, using :func:`~pydefi.vm.abi.encode_calldata`
+        internally.
+
+        The ``function`` keyword in *abi_sig* is optional — both bare
+        ``"transfer(address,uint256)"`` and fully qualified
+        ``"function transfer(address to, uint256 amount) external"`` forms are
+        accepted.  Parameter names are also optional.
+
+        All Solidity primitive types as well as nested tuples and arrays are
+        supported (anything that :func:`eth_abi.encode` can handle).
+
+        Args:
+            to: Target contract address (hex string with ``0x`` prefix).
+            abi_sig: Human-readable function signature, e.g.
+                ``"transfer(address,uint256)"`` or
+                ``"function exactInputSingle((address,address,uint24,...) params)"``.
+            *args: Positional arguments matching the signature's input parameters.
+                Addresses must be ``str``; numbers must be ``int``.
+                Tuple parameters are passed as Python ``tuple`` (or ``NamedTuple``).
+            value: ETH value to forward with the call (wei), default 0.
+            gas: Gas limit for the sub-call (0 = forward all remaining gas).
+            require_success: If ``True`` (default), revert if the sub-call fails.
+
+        Returns:
+            ``self`` for chaining.
+
+        Example::
+
+            # ERC-20 transfer — no need to pre-build calldata
+            bytecode = (
+                Program()
+                .call_contract_abi(TOKEN, "transfer(address,uint256)", RECIPIENT, 10**18)
+                .pop()
+                .build()
+            )
+
+            # Uniswap V3 exactInputSingle with a struct argument
+            bytecode = (
+                Program()
+                .call_contract_abi(
+                    ROUTER,
+                    "function exactInputSingle("
+                    "  (address tokenIn, address tokenOut, uint24 fee,"
+                    "   address recipient, uint256 deadline,"
+                    "   uint256 amountIn, uint256 amountOutMinimum,"
+                    "   uint160 sqrtPriceLimitX96) params"
+                    ")",
+                    (TOKEN_IN, TOKEN_OUT, 3000, RECIPIENT, deadline, amount_in, 0, 0),
+                )
+                .pop()
+                .build()
+            )
+        """
+        from pydefi.vm.abi import encode_calldata
+
+        calldata = encode_calldata(abi_sig, args)
+        return self.call_contract(to, calldata, value=value, gas=gas, require_success=require_success)
+
     def call_with_patches(
         self,
         to: str,
