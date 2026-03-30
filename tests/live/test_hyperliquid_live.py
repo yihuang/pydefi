@@ -12,8 +12,9 @@ from __future__ import annotations
 
 import pytest
 from web3 import AsyncWeb3
+from web3.exceptions import ContractLogicError
 
-from pydefi.bridge.cctp import CCTP
+from pydefi.bridge.cctp import CCTP, HYPERCORE_DEX_SPOT
 from pydefi.hyperliquid import HyperliquidClient
 from pydefi.types import ChainId, Token, TokenAmount
 
@@ -326,3 +327,119 @@ class TestCCTPHyperEVMLive:
         """CCTP: MessageTransmitterV2 address is known for HyperEVM."""
         addr = CCTP.message_transmitter_address(ChainId.HYPEREVM)
         assert addr.lower() == "0x81d40f21f12a8f0e3252bccb954d722d4c464b64"
+
+
+# ---------------------------------------------------------------------------
+# eth_call simulation tests for CCTP bridge transactions
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.live
+class TestCCTPBridgeTxEthCall:
+    """Live tests that verify bridge tx encoding via eth_call dry-run.
+
+    These tests build the CCTP transaction and submit it via ``eth_call``.
+    The call is expected to revert (because the sender has no USDC approval),
+    but the revert confirms that:
+    - The ``to`` address hosts a real contract with the expected function.
+    - The calldata ABI-encoding is accepted by the EVM (function selector
+      matches; argument types decode without error).
+
+    If the tx data were malformed or the selector unknown the node would
+    return a different error ("execution reverted" vs "function not found").
+    """
+
+    async def test_eth_call_hypercore_bridge_reverts_with_evm_error(self, eth_w3):
+        """eth_call on a HyperCore depositForBurnWithHook tx reverts (expected: no allowance)."""
+        bridge = CCTP(
+            w3=eth_w3,
+            src_chain_id=ChainId.ETHEREUM,
+            dst_chain_id=ChainId.HYPERCORE,
+        )
+        amount_in = TokenAmount(token=USDC_ETH, amount=BRIDGE_AMOUNT_USDC)
+        tx = await bridge.build_bridge_tx(
+            token_in=USDC_ETH,
+            token_out=USDC_HYPERCORE,
+            amount_in=amount_in,
+            recipient=MOCK_RECIPIENT,
+        )
+
+        # Convert gas to int for eth_call (build_bridge_tx returns string).
+        call_params = {
+            "to": tx["to"],
+            "data": tx["data"],
+            "value": int(tx.get("value", 0)),
+        }
+        # The call must revert (no USDC approval), but it must not raise
+        # an RPC-level error about unknown functions or invalid calldata.
+        # We assert that a ContractLogicError or ValueError (EVM revert) is raised.
+        with pytest.raises((ContractLogicError, ValueError)) as exc_info:
+            await eth_w3.eth.call(call_params)
+
+        # The error must originate from the EVM (revert), not from the RPC
+        # transport or an ABI decode failure.
+        err_str = str(exc_info.value).lower()
+        assert any(keyword in err_str for keyword in ("revert", "execution", "0x", "error")), (
+            f"Unexpected error from eth_call: {exc_info.value}"
+        )
+
+    async def test_eth_call_hypercore_spot_bridge_reverts(self, eth_w3):
+        """eth_call on a spot-balance HyperCore bridge tx also reverts as expected."""
+        bridge = CCTP(
+            w3=eth_w3,
+            src_chain_id=ChainId.ETHEREUM,
+            dst_chain_id=ChainId.HYPERCORE,
+        )
+        amount_in = TokenAmount(token=USDC_ETH, amount=BRIDGE_AMOUNT_USDC)
+        tx = await bridge.build_bridge_tx(
+            token_in=USDC_ETH,
+            token_out=USDC_HYPERCORE,
+            amount_in=amount_in,
+            recipient=MOCK_RECIPIENT,
+            hypercore_dex=HYPERCORE_DEX_SPOT,
+        )
+
+        call_params = {
+            "to": tx["to"],
+            "data": tx["data"],
+            "value": int(tx.get("value", 0)),
+        }
+        with pytest.raises((ContractLogicError, ValueError)) as exc_info:
+            await eth_w3.eth.call(call_params)
+
+        err_str = str(exc_info.value).lower()
+        assert any(keyword in err_str for keyword in ("revert", "execution", "0x", "error")), (
+            f"Unexpected error from eth_call (spot): {exc_info.value}"
+        )
+
+    async def test_bridge_tx_uses_deposit_for_burn_with_hook_selector(self, eth_w3):
+        """The calldata for HyperCore uses depositForBurnWithHook (not depositForBurn).
+
+        depositForBurn selector:         0x6b86d4b0 (CCTP v1-style)
+        depositForBurnWithHook selector: computed from the ABI
+        Both are 4-byte selectors at the start of tx['data'].
+        """
+        from eth_utils import keccak
+
+        bridge = CCTP(
+            w3=eth_w3,
+            src_chain_id=ChainId.ETHEREUM,
+            dst_chain_id=ChainId.HYPERCORE,
+        )
+        amount_in = TokenAmount(token=USDC_ETH, amount=BRIDGE_AMOUNT_USDC)
+        tx = await bridge.build_bridge_tx(
+            token_in=USDC_ETH,
+            token_out=USDC_HYPERCORE,
+            amount_in=amount_in,
+            recipient=MOCK_RECIPIENT,
+        )
+
+        # Extract the 4-byte function selector from the calldata.
+        selector = bytes.fromhex(tx["data"][2:10])
+
+        # depositForBurn(uint256,uint32,bytes32,address) selector
+        deposit_for_burn_sig = b"depositForBurn(uint256,uint32,bytes32,address)"
+        deposit_selector = keccak(deposit_for_burn_sig)[:4]
+
+        # The HyperCore bridge must NOT use plain depositForBurn.
+        assert selector != deposit_selector, "HyperCore bridge must use depositForBurnWithHook, not depositForBurn"

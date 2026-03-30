@@ -107,9 +107,10 @@ SEND_TO_EVM_WITH_DATA_SIGN_TYPES: list[dict[str, str]] = [
     {"name": "nonce", "type": "uint64"},
 ]
 
-# Signature chain ID used by all user-signed actions.
+# Signature chain ID used by standard Hyperliquid L1 EIP-712 actions
+# (excluding sendToEvmWithData, which uses the destination EVM chain ID).
 # Hyperliquid uses Arbitrum Sepolia (chainId 421614 = 0x66eee) as the
-# canonical chain ID for signing, regardless of the actual destination.
+# canonical chain ID for signing these actions.
 _SIGNATURE_CHAIN_ID: str = "0x66eee"  # 421614 — Arbitrum Sepolia
 
 # ---------------------------------------------------------------------------
@@ -222,7 +223,7 @@ def sign_inner(wallet: Account, data: dict[str, Any]) -> dict[str, str | int]:
     """
     structured_data = encode_typed_data(full_message=data)
     signed = wallet.sign_message(structured_data)
-    return {"r": to_hex(signed["r"]), "s": to_hex(signed["s"]), "v": signed["v"]}
+    return {"r": to_hex(signed.r), "s": to_hex(signed.s), "v": signed.v}
 
 
 # ---------------------------------------------------------------------------
