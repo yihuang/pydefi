@@ -174,6 +174,7 @@ two separate destinations using arithmetic and composition::
 
 from __future__ import annotations
 
+import os
 import struct
 
 from pydefi.vm.program import (
@@ -243,18 +244,16 @@ class Patch:
 
     ``call_contract_abi`` automatically:
 
-    1. Generates a unique 32-byte sentinel ("needle") value that is valid for
-       the declared Solidity type and distinguishable in the encoded calldata.
-    2. Encodes the full ABI calldata using the sentinel in place of the
-       patched argument.
+    1. Generates a unique 32-byte sentinel ("needle") value for the parameter.
+    2. Encodes the full ABI calldata using the sentinel in place of the patched
+       argument.
     3. Locates each sentinel's byte offset within the encoded calldata.
     4. Delegates to :meth:`~Program.call_with_patches` with ``kind="u256"``
        patches at the discovered offsets.
 
-    This mechanism works for any Solidity parameter type whose ABI encoding
-    occupies a single 32-byte slot (``uint<N>``, ``int<N>``, ``address``,
-    ``bytes<N>``, ``bool``).  Dynamic types (``bytes``, ``string``, arrays)
-    and tuple types are *not* supported.
+    Supported parameter types: ``uint<N>`` and ``int<N>`` with N ≥ 96
+    (need at least 12 bytes to embed the random needle marker).  :class:`Patch`
+    instances may also appear inside nested tuple arguments.
 
     Args:
         opcodes: Raw DeFiVM bytecode that, when executed, pushes the runtime
@@ -267,12 +266,12 @@ class Patch:
         from pydefi.vm import Program, Patch
         from pydefi.vm.program import load_reg, ret_u256
 
-        # Patch uint256 amountIn from register 1, address recipient from register 2
+        # Patch uint256 amountIn from register 1
         bytecode = (
             Program()
             .call_contract_abi(
                 ROUTER,
-                "function swap(uint256 amountIn, address recipient)",
+                "function swap(uint256 amountIn, uint256 minOut)",
                 Patch(load_reg(1)),
                 Patch(load_reg(2)),
             )
@@ -289,76 +288,36 @@ class Patch:
 # Needle helpers — used by call_contract_abi to auto-locate patch offsets
 # ---------------------------------------------------------------------------
 
-#: 8 distinctive bytes used as a sentinel prefix in generated needle values.
-#: Chosen to be extremely unlikely to appear in real contract arguments.
-_NEEDLE_MARKER: bytes = b"\xde\xad\xbe\xef\xca\xfe\xba\xbe"
 
+def _make_needle(type_str: str, idx: int, marker: bytes) -> tuple[object, bytes]:
+    """Return *(python_value, abi_encoded_32bytes)* for a unique integer sentinel.
 
-def _make_needle(type_str: str, idx: int) -> tuple[object, bytes]:
-    """Return *(python_value, abi_encoded_32bytes)* for a unique sentinel.
+    The sentinel's 32-byte ABI encoding is
+    ``b"\\x00" * 20 + marker + (idx + 1).to_bytes(4, "big")``.
+    *marker* is 8 bytes generated fresh per ``call_contract_abi`` invocation so
+    the needle is vanishingly unlikely to collide with real calldata.
 
-    The sentinel is designed so that its 32-byte ABI encoding is
-    ``b"\\x00" * 20 + _NEEDLE_MARKER + (idx + 1).to_bytes(4, "big")``,
-    which is the same pattern for both ``uint<N>`` and ``address`` types,
-    making offset discovery trivial.
+    Only ``uint<N>`` and ``int<N>`` with N ≥ 96 are supported; narrower types
+    cannot hold a 12-byte tail (8-byte marker + 4-byte counter).
 
     Args:
-        type_str: Solidity canonical type string, e.g. ``"uint256"``,
-            ``"address"``, ``"bytes32"``.
-        idx: Zero-based index of this patch among all patches in the call;
-            ensures each needle is unique.
-
-    Returns:
-        A *(python_value, 32_byte_abi_encoding)* pair.
+        type_str: Solidity canonical type, e.g. ``"uint256"``.
+        idx: Zero-based index among all patches in the call.
+        marker: 8 random bytes generated once per ``call_contract_abi`` call.
 
     Raises:
-        ValueError: If *type_str* is a dynamic or unsupported type, or if
-            the integer type is too narrow to hold a unique needle.
+        ValueError: If *type_str* is not a supported integer type or is too narrow.
     """
-    tail: bytes = _NEEDLE_MARKER + (idx + 1).to_bytes(4, "big")  # 12 bytes
+    tail: bytes = marker + (idx + 1).to_bytes(4, "big")  # 12 bytes
     abi_enc: bytes = b"\x00" * 20 + tail  # 32-byte ABI slot pattern
 
     type_str = type_str.strip()
 
-    if type_str == "address":
-        # ABI-encoding of an address is b'\x00'*12 + addr(20 bytes).
-        # With addr = b'\x00'*8 + tail, the full 32-byte slot is abi_enc. ✓
-        addr_bytes = b"\x00" * 8 + tail  # 20 bytes
-        return "0x" + addr_bytes.hex(), abi_enc
-
-    if type_str == "bool":
-        # bool only encodes to 0 or 1 — cannot hold a unique needle.
-        raise ValueError(
-            "Patch: type 'bool' cannot hold a unique needle value; "
-            "use a static Python bool argument instead."
-        )
-
-    if type_str.startswith("bytes"):
-        suffix = type_str[5:]
-        if suffix == "" or not suffix.isdigit():
-            raise ValueError(
-                f"Patch: dynamic type {type_str!r} is not supported; "
-                "only fixed-size 32-byte-slot types are allowed."
-            )
-        n = int(suffix)  # bytesN, N in 1..32
-        # The needle tail is 12 bytes (8 marker + 4 counter), so the bytesN value
-        # must be at least 12 bytes wide to embed the full distinctive tail.
-        if n < 12:
-            raise ValueError(
-                f"Patch: type {type_str!r} is too small to hold a unique needle "
-                f"(need at least bytes12)."
-            )
-        # ABI encoding of bytesN is left-aligned, right-padded with zeros to 32 bytes.
-        # Use the first n bytes of abi_enc as the value so the ABI-encoded form is abi_enc.
-        val_bytes = abi_enc[:n]
-        return val_bytes, abi_enc
-
     if type_str.startswith("uint") or type_str.startswith("int"):
         base = "uint" if type_str.startswith("uint") else "int"
-        bits_str = type_str[len(base) :]
+        bits_str = type_str[len(base):]
         bits = int(bits_str) if bits_str.isdigit() else 256
-        # The needle tail is 12 bytes = 96 bits, so the integer type must be at
-        # least 96 bits wide to represent the full distinctive value.
+        # Need at least 96 bits (12 bytes) to embed the full marker+idx tail.
         if bits < 96:
             raise ValueError(
                 f"Patch: type {type_str!r} is too small to hold a unique needle "
@@ -369,8 +328,87 @@ def _make_needle(type_str: str, idx: int) -> tuple[object, bytes]:
 
     raise ValueError(
         f"Patch: type {type_str!r} is not supported for automatic offset detection. "
-        "Only uint<N>, int<N>, address, and bytesN (N≥12) are supported."
+        "Only uint<N> and int<N> (N ≥ 96) are supported."
     )
+
+
+def _parse_tuple_component_types(tuple_type: str) -> list[str]:
+    """Split a canonical tuple type string into its component type strings.
+
+    Example: ``"(uint256,address,(bytes32,uint128))"``
+    → ``["uint256", "address", "(bytes32,uint128)"]``
+    """
+    if not (tuple_type.startswith("(") and tuple_type.endswith(")")):
+        raise ValueError(f"_parse_tuple_component_types: expected a tuple type, got {tuple_type!r}")
+    inner = tuple_type[1:-1]  # strip outer parens
+    if not inner:
+        return []  # empty tuple ()
+    components: list[str] = []
+    depth = 0
+    start = 0
+    for i, ch in enumerate(inner):
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            components.append(inner[start:i].strip())
+            start = i + 1
+    tail = inner[start:].strip()
+    if tail:
+        components.append(tail)
+    return components
+
+
+def _has_patch(arg: object) -> bool:
+    """Return ``True`` if *arg* or any element nested inside it is a :class:`Patch`."""
+    if isinstance(arg, Patch):
+        return True
+    if isinstance(arg, tuple):
+        return any(_has_patch(a) for a in arg)
+    return False
+
+
+def _replace_patches(
+    arg: object,
+    type_str: str,
+    patch_counter: list[int],
+    needle_patterns: list[tuple[bytes, "Patch"]],
+    marker: bytes,
+) -> object:
+    """Recursively replace :class:`Patch` instances with unique needle values.
+
+    Works for top-level arguments and for :class:`Patch` instances nested inside
+    tuple arguments.
+
+    Args:
+        arg: The argument value (may be a :class:`Patch`, a ``tuple`` containing
+            :class:`Patch` instances, or any other value that is left unchanged).
+        type_str: The Solidity canonical type string for *arg*.
+        patch_counter: Single-element list used as a mutable counter shared
+            across recursive calls to ensure each needle is unique.
+        needle_patterns: Accumulator list; each resolved patch appends a
+            ``(32_byte_pattern, Patch)`` entry.
+        marker: 8 random bytes from the enclosing ``call_contract_abi`` call.
+
+    Returns:
+        *arg* with every :class:`Patch` replaced by its needle Python value.
+    """
+    if isinstance(arg, Patch):
+        python_val, abi_enc = _make_needle(type_str.strip(), patch_counter[0], marker)
+        needle_patterns.append((abi_enc, arg))
+        patch_counter[0] += 1
+        return python_val
+
+    type_str = type_str.strip()
+    if type_str.startswith("(") and isinstance(arg, tuple):
+        component_types = _parse_tuple_component_types(type_str)
+        return tuple(
+            _replace_patches(sub_arg, sub_type, patch_counter, needle_patterns, marker)
+            for sub_arg, sub_type in zip(arg, component_types)
+        )
+
+    return arg
 
 
 # ---------------------------------------------------------------------------
@@ -672,12 +710,12 @@ class Program:
             from pydefi.vm import Program, Patch
             from pydefi.vm.program import load_reg
 
-            # Patch uint256 amountIn from register 1, address recipient from register 2
+            # Patch uint256 amountIn from register 1 and uint256 minOut from register 2
             bytecode = (
                 Program()
                 .call_contract_abi(
                     ROUTER,
-                    "function swap(uint256 amountIn, address recipient)",
+                    "function swap(uint256 amountIn, uint256 minOut)",
                     Patch(load_reg(1)),
                     Patch(load_reg(2)),
                 )
@@ -688,15 +726,15 @@ class Program:
         from eth_contract.contract import ContractFunction
 
         normalised = abi_sig if abi_sig.lstrip().startswith("function ") else "function " + abi_sig
-
-        # Fast path: no Patch objects — encode directly and delegate to call_contract.
-        if not any(isinstance(a, Patch) for a in args):
-            calldata = bytes(ContractFunction.from_abi(normalised)(*args).data)
-            return self.call_contract(to, calldata, value=value, gas=gas, require_success=require_success)
-
-        # Slow path: replace each Patch arg with a unique needle, encode the
-        # calldata template, locate each needle's offset, then call_with_patches.
         fn = ContractFunction.from_abi(normalised)
+
+        # Fast path: no Patch objects anywhere in the argument tree.
+        if not any(_has_patch(a) for a in args):
+            return self.call_contract(to, fn(*args).data, value=value, gas=gas, require_success=require_success)
+
+        # Slow path: replace each Patch (including those nested inside tuples)
+        # with a unique needle value, encode the calldata template, locate each
+        # needle's byte offset, then delegate to call_with_patches.
         param_types: list[str] = fn.input_types
 
         if len(args) != len(param_types):
@@ -705,20 +743,15 @@ class Program:
                 f"for signature {abi_sig!r}, got {len(args)}."
             )
 
+        marker = os.urandom(8)
         concrete_args: list[object] = []
         needle_patterns: list[tuple[bytes, Patch]] = []  # (32-byte pattern, Patch)
-        patch_counter = 0
+        patch_counter: list[int] = [0]
 
-        for i, (arg, ptype) in enumerate(zip(args, param_types)):
-            if isinstance(arg, Patch):
-                python_val, abi_enc = _make_needle(ptype, patch_counter)
-                concrete_args.append(python_val)
-                needle_patterns.append((abi_enc, arg))
-                patch_counter += 1
-            else:
-                concrete_args.append(arg)
+        for arg, ptype in zip(args, param_types):
+            concrete_args.append(_replace_patches(arg, ptype, patch_counter, needle_patterns, marker))
 
-        calldata = bytes(fn(*concrete_args).data)
+        calldata = fn(*concrete_args).data
 
         patches: list[PatchSpec] = []
         for idx, (pattern, patch_obj) in enumerate(needle_patterns):

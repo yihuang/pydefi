@@ -1048,12 +1048,11 @@ class TestPatch:
         via_manual = Program().call_contract(ADDR_A, calldata).build()
         assert via_patch_path == via_manual
 
-    def test_all_patch_args_uint256_address(self):
-        """Both args as Patch: correct offsets and opcodes are found and used."""
+    def test_all_patch_args_uint256(self):
+        """Two uint256 Patch args: opcodes appear in the built bytecode."""
         from pydefi.vm import Patch
-        from eth_contract.contract import ContractFunction
 
-        sig = "function t(uint256 input1, address input2)"
+        sig = "function t(uint256 input1, uint256 input2)"
         p1 = Patch(load_reg(1))
         p2 = Patch(load_reg(2))
 
@@ -1090,8 +1089,6 @@ class TestPatch:
     def test_patch_value_and_gas_forwarded(self):
         """ETH value and gas are forwarded through the patched call."""
         from pydefi.vm import Patch
-        from eth_contract.contract import ContractFunction
-        from pydefi.vm.builder import _make_needle
 
         sig = "function foo(uint256 x)"
         p = Patch(load_reg(0))
@@ -1122,16 +1119,16 @@ class TestPatch:
         """Passing the wrong number of args raises ValueError."""
         from pydefi.vm import Patch
 
-        sig = "function foo(uint256 x, address y)"
+        sig = "function foo(uint256 x, uint256 y)"
         with pytest.raises(ValueError, match="expected 2 argument"):
             Program().call_contract_abi(ADDR_A, sig, Patch(load_reg(0))).build()
 
     def test_bool_type_raises(self):
-        """Patching a bool parameter raises ValueError."""
+        """Patching a non-int parameter (bool) raises ValueError."""
         from pydefi.vm import Patch
 
         sig = "function foo(bool flag)"
-        with pytest.raises(ValueError, match="bool"):
+        with pytest.raises(ValueError, match="not supported"):
             Program().call_contract_abi(ADDR_A, sig, Patch(load_reg(0))).build()
 
     def test_small_uint_raises(self):
@@ -1150,14 +1147,37 @@ class TestPatch:
         bytecode = Program().call_contract_abi(ADDR_A, sig, Patch(load_reg(0)), Patch(load_reg(1))).build()
         assert len(bytecode) > 0
 
-    def test_patch_address_arg(self):
-        """Patching an address parameter works correctly."""
+    def test_patch_address_arg_raises(self):
+        """Patching an address parameter raises ValueError (only int types supported)."""
         from pydefi.vm import Patch
 
         sig = "function setRecipient(address recipient)"
         p = Patch(load_reg(3))
-        bytecode = Program().call_contract_abi(ADDR_A, sig, p).build()
+        with pytest.raises(ValueError, match="not supported"):
+            Program().call_contract_abi(ADDR_A, sig, p).build()
+
+    def test_patch_in_nested_tuple(self):
+        """Patch inside a tuple argument is located and applied correctly."""
+        from pydefi.vm import Patch
+
+        sig = "function foo((uint256 amount, uint256 minOut) params)"
+        p1 = Patch(load_reg(1))
+        p2 = Patch(load_reg(2))
+        bytecode = Program().call_contract_abi(ADDR_A, sig, (p1, p2)).build()
         assert len(bytecode) > 0
-        # The patch opcode must appear in the output
-        assert load_reg(3) in bytecode
+        assert load_reg(1) in bytecode
+        assert load_reg(2) in bytecode
+
+    def test_patch_in_nested_tuple_mixed(self):
+        """Patch mixed with a static value inside a tuple works correctly."""
+        from pydefi.vm import Patch
+
+        sig = "function foo((uint256 amount, uint256 minOut) params)"
+        p = Patch(load_reg(1))
+        bytecode = Program().call_contract_abi(ADDR_A, sig, (p, 999_999_999_999)).build()
+        assert len(bytecode) > 0
+        assert load_reg(1) in bytecode
+        # The static value must be baked in; use a distinctive large value to
+        # minimise the chance of the byte pattern appearing elsewhere in the bytecode.
+        assert (999_999_999_999).to_bytes(32, "big") in bytecode
 
