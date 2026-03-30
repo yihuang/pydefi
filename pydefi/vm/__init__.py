@@ -26,7 +26,9 @@ Two complementary interfaces are provided:
         bytecode = (
             Program()
             .call_contract(TOKEN, erc20_approve(ROUTER, amount_in))
+            .pop()  # consume CALL success flag
             .call_contract(ROUTER, swap_calldata)
+            .pop()  # consume CALL success flag
             .push_addr(RECIPIENT)
             .push_addr(TOKEN)
             .push_u256(min_out)

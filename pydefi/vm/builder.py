@@ -31,8 +31,10 @@ Basic usage::
         Program()
         # approve router to spend tokens
         .call_contract(TOKEN, erc20_approve(ROUTER, AMOUNT))
+        .pop()  # consume CALL success flag
         # swap (pre-built calldata)
         .call_contract(ROUTER, swap_calldata, value=0, gas=0)
+        .pop()  # consume CALL success flag
         # check minimum output
         .push_addr(RECIPIENT)
         .push_addr(TOKEN)
@@ -355,6 +357,12 @@ class Program:
 
         The caller must have pushed (top to bottom):
         ``gasLimit``, ``to``, ``value``, ``calldataBufIdx``.
+
+        After execution, CALL pushes a single success flag (``1`` on success,
+        ``0`` on failure) onto the stack.  Callers that do not rely on an
+        automatic revert (for example, when ``require_success=False``) must
+        explicitly :meth:`pop` or otherwise consume this flag to avoid stack
+        mismanagement.
         """
         return self._emit(call(require_success))
 
@@ -649,13 +657,16 @@ class Program:
         Returns:
             ``self`` for chaining.
         """
-        offset = len(self._buf)
-        self._buf.extend(other._buf)
-        for name, pos in other._labels.items():
+        # Pre-validate label collisions before mutating internal state to
+        # avoid leaving this Program instance in a partially-updated state.
+        for name in other._labels:
             if name in self._labels:
                 raise ValueError(
                     f"Program: duplicate label {name!r} during extend"
                 )
+        offset = len(self._buf)
+        self._buf.extend(other._buf)
+        for name, pos in other._labels.items():
             self._labels[name] = pos + offset
         for fixup_off, name in other._fixups:
             self._fixups.append((fixup_off + offset, name))
@@ -706,13 +717,18 @@ class Program:
         """Resolve label fixups and return the final bytecode.
 
         Raises :exc:`ValueError` if any label referenced in a jump has not
-        been defined.
+        been defined, or if a label's target offset does not fit in 16 bits.
         """
         buf = bytearray(self._buf)
         for fixup_offset, name in self._fixups:
             if name not in self._labels:
                 raise ValueError(f"Program: undefined label {name!r}")
             target = self._labels[name]
+            if not 0 <= target <= 0xFFFF:
+                raise ValueError(
+                    f"Program: label {name!r} target offset {target} "
+                    "out of range for 16-bit jump"
+                )
             struct.pack_into(">H", buf, fixup_offset, target)
         return bytes(buf)
 
