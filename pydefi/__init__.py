@@ -57,6 +57,7 @@ from pydefi.exceptions import (
     SlippageExceededError,
 )
 from pydefi.pool_data.base import BasePoolDataProvider, PoolData
+from pydefi.rpc import MultiRpcProvider, fetch_chain_rpcs, get_w3
 from pydefi.types import (
     BridgeQuote,
     ChainId,
@@ -81,6 +82,10 @@ __all__ = [
     # Pool data
     "PoolData",
     "BasePoolDataProvider",
+    # RPC
+    "MultiRpcProvider",
+    "fetch_chain_rpcs",
+    "get_w3",
     # Exceptions
     "PydefiError",
     "InsufficientLiquidityError",
