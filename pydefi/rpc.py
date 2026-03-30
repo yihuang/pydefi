@@ -136,16 +136,21 @@ class MultiRpcProvider(AsyncJSONBaseProvider):
             raise ValueError("MultiRpcProvider requires at least one endpoint")
         super().__init__(**kwargs)
         self._endpoints: list[str] = list(endpoints)
-        # Index of the provider that succeeded last (start from the first one).
+        # Index of the currently active endpoint.
         self._current_index: int = 0
-        # Lazily-instantiated providers – created only when first needed.
-        self._provider_cache: dict[int, AsyncWeb3.AsyncHTTPProvider] = {}
+        # The single cached provider for the active endpoint; None until first use.
+        self._current_provider: AsyncWeb3.AsyncHTTPProvider | None = None
 
-    def _get_provider(self, index: int) -> AsyncWeb3.AsyncHTTPProvider:
-        """Return (and lazily create) the :class:`AsyncHTTPProvider` at *index*."""
-        if index not in self._provider_cache:
-            self._provider_cache[index] = AsyncWeb3.AsyncHTTPProvider(self._endpoints[index])
-        return self._provider_cache[index]
+    def _build_provider(self, url: str) -> AsyncWeb3.AsyncHTTPProvider:
+        """Create a new :class:`AsyncHTTPProvider` for *url*."""
+        return AsyncWeb3.AsyncHTTPProvider(url)
+
+    async def _close_provider(self, provider: AsyncWeb3.AsyncHTTPProvider) -> None:
+        """Best-effort close of a provider that is no longer needed."""
+        try:
+            await provider.disconnect()
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # AsyncBaseProvider interface
@@ -156,15 +161,28 @@ class MultiRpcProvider(AsyncJSONBaseProvider):
         n = len(self._endpoints)
         for i in range(n):
             index = (self._current_index + i) % n
-            provider = self._get_provider(index)
+            # Reuse the cached provider on the first iteration; create a fresh
+            # temporary one for every fallback so unused endpoint objects are
+            # never retained.
+            is_current = i == 0 and self._current_provider is not None
+            candidate = (
+                self._current_provider
+                if is_current
+                else self._build_provider(self._endpoints[index])
+            )
             try:
-                response = await provider.make_request(method, params)
-                # Remember the working endpoint for the next request.
-                # asyncio is single-threaded so this assignment is safe from
-                # data races; concurrent coroutines that both succeed will each
-                # set _current_index to their own successful endpoint, which is
-                # an acceptable last-write-wins outcome.
-                self._current_index = index
+                response = await candidate.make_request(method, params)
+                # Success – adopt this provider as the new current one and drop the old.
+                if not is_current:
+                    old = self._current_provider
+                    self._current_provider = candidate
+                    # asyncio is single-threaded so this assignment is safe from
+                    # data races; concurrent coroutines that both succeed will each
+                    # set _current_index to their own successful endpoint, which is
+                    # an acceptable last-write-wins outcome.
+                    self._current_index = index
+                    if old is not None:
+                        await self._close_provider(old)
                 return response
             except Exception as exc:
                 logger.debug(
@@ -174,14 +192,32 @@ class MultiRpcProvider(AsyncJSONBaseProvider):
                     exc,
                 )
                 last_exc = exc
+                # Release temporary providers that won't be cached.
+                if not is_current:
+                    await self._close_provider(candidate)
 
         assert last_exc is not None  # guaranteed: self._endpoints is non-empty
         raise last_exc
 
     async def is_connected(self, show_traceback: bool = False) -> bool:
         """Return ``True`` if *any* endpoint is reachable."""
-        for i in range(len(self._endpoints)):
-            if await self._get_provider(i).is_connected(show_traceback=False):
+        n = len(self._endpoints)
+        for i in range(n):
+            index = (self._current_index + i) % n
+            is_current = i == 0 and self._current_provider is not None
+            p = (
+                self._current_provider
+                if is_current
+                else self._build_provider(self._endpoints[index])
+            )
+            try:
+                connected = await p.is_connected(show_traceback=show_traceback)
+            except Exception:
+                connected = False
+            finally:
+                if not is_current:
+                    await self._close_provider(p)
+            if connected:
                 return True
         return False
 

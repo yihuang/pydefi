@@ -137,8 +137,21 @@ class TestMultiRpcProvider:
             MultiRpcProvider()
 
     def _inject(self, provider: MultiRpcProvider, index: int, mock: Any) -> None:
-        """Pre-populate the provider cache at *index* with a mock."""
-        provider._provider_cache[index] = mock
+        """Register *mock* as the provider built for endpoint at *index*.
+
+        Patches ``_build_provider`` on the instance so that the mock is returned
+        when the provider for the given endpoint index is first created.
+        """
+        if not hasattr(provider, "_mock_map"):
+            provider._mock_map: dict[int, Any] = {}  # type: ignore[attr-defined]
+            endpoints = provider._endpoints
+
+            def _patched_build(url: str) -> Any:
+                idx = endpoints.index(url)
+                return provider._mock_map[idx]  # type: ignore[attr-defined]
+
+            provider._build_provider = _patched_build  # type: ignore[method-assign]
+        provider._mock_map[index] = mock  # type: ignore[attr-defined]
 
     async def test_succeeds_on_first_provider(self):
         provider = MultiRpcProvider(
@@ -249,11 +262,37 @@ class TestMultiRpcProvider:
         # First call falls back to endpoint-2
         await provider.make_request(RPCEndpoint("eth_blockNumber"), [])
         assert provider._current_index == 1
+        assert provider._current_provider is m1
 
         # Second call should start from endpoint-2 directly (not endpoint-1)
         await provider.make_request(RPCEndpoint("eth_blockNumber"), [])
         assert m0.make_request.call_count == 1  # still only called once
         assert m1.make_request.call_count == 2  # called for both requests
+
+    async def test_old_provider_closed_on_fallback(self):
+        """When falling back, the previously active provider is closed."""
+        provider = MultiRpcProvider(
+            "https://endpoint-1.example.com",
+            "https://endpoint-2.example.com",
+        )
+        # Seed a "current" provider at index 0 that will fail
+        m0 = MagicMock()
+        m0.make_request = AsyncMock(side_effect=ConnectionError("down"))
+        m0.disconnect = AsyncMock()
+        provider._current_provider = m0
+        provider._current_index = 0
+
+        m1 = MagicMock()
+        m1.make_request = AsyncMock(return_value=_make_rpc_response("0x2"))
+        self._inject(provider, 1, m1)
+
+        await provider.make_request(RPCEndpoint("eth_blockNumber"), [])
+
+        # The old provider should have been disconnected
+        m0.disconnect.assert_called_once()
+        # The new current provider is m1
+        assert provider._current_provider is m1
+        assert provider._current_index == 1
 
     async def test_lazy_provider_instantiation(self):
         """No AsyncHTTPProvider is created until a request is made."""
@@ -261,19 +300,21 @@ class TestMultiRpcProvider:
             "https://endpoint-1.example.com",
             "https://endpoint-2.example.com",
         )
-        # No providers should be created yet
-        assert len(provider._provider_cache) == 0
+        # No provider should be held yet
+        assert provider._current_provider is None
 
-        # Inject a mock so we don't hit the network
+        # Inject a mock for endpoint-1 only; endpoint-2 is not registered so
+        # accessing it via _build_provider would raise KeyError – confirming it
+        # is never instantiated when endpoint-1 succeeds.
         m0 = MagicMock()
         m0.make_request = AsyncMock(return_value=_make_rpc_response("0x1"))
         self._inject(provider, 0, m0)
 
         await provider.make_request(RPCEndpoint("eth_blockNumber"), [])
 
-        # Only the one that was actually used is in the cache
-        assert 0 in provider._provider_cache
-        assert 1 not in provider._provider_cache
+        # The successful provider is now the cached current one
+        assert provider._current_provider is m0
+        assert provider._current_index == 0
 
 
 # ---------------------------------------------------------------------------
