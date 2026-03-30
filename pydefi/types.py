@@ -23,6 +23,8 @@ class ChainId(IntEnum):
     ARBITRUM = 42161
     AVALANCHE = 43114
     LINEA = 59144
+    HYPERCORE = 1337  # Hyperliquid L1 (HyperCore); CCTP routes through HyperEVM (domain 19)
+    HYPEREVM = 999
     BLAST = 81457
     SCROLL = 534352
     ZKSYNC = 324
