@@ -95,8 +95,6 @@ class AlchemyFaucet(BaseFaucet):
             ) as resp:
                 if resp.status not in (200, 201):
                     text = await resp.text()
-                    raise FaucetError(
-                        f"Alchemy faucet error ({resp.status}): {text[:200]}"
-                    )
+                    raise FaucetError(f"Alchemy faucet error ({resp.status}): {text[:200]}")
                 data = await resp.json(content_type=None)
         return data.get("txHash") or data.get("requestId")

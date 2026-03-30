@@ -89,6 +89,5 @@ class BaseFaucet(ABC):
             await asyncio.sleep(poll_interval)
 
         raise TimeoutError(
-            f"Timed out waiting for faucet funds: "
-            f"address={address} balance={balance} min_balance={min_balance}"
+            f"Timed out waiting for faucet funds: address={address} balance={balance} min_balance={min_balance}"
         )

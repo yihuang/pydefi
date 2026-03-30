@@ -86,18 +86,12 @@ class TestFaucetTestnet:
     auto-funding and skipping.
     """
 
-    async def test_funded_testnet_account_has_balance(
-        self, funded_testnet_account, sepolia_w3
-    ):
+    async def test_funded_testnet_account_has_balance(self, funded_testnet_account, sepolia_w3):
         """After the faucet fixture runs the wallet must have ≥ 0.01 ETH."""
         balance = await sepolia_w3.eth.get_balance(funded_testnet_account.address)
-        assert balance >= 10**16, (
-            f"Expected ≥ 0.01 ETH on Sepolia, got {balance / 10**18:.6f} ETH"
-        )
+        assert balance >= 10**16, f"Expected ≥ 0.01 ETH on Sepolia, got {balance / 10**18:.6f} ETH"
 
-    async def test_faucet_ensure_funded_no_op_when_rich(
-        self, testnet_faucet, sepolia_w3, funded_testnet_account
-    ):
+    async def test_faucet_ensure_funded_no_op_when_rich(self, testnet_faucet, sepolia_w3, funded_testnet_account):
         """ensure_funded() must be a no-op when the balance already meets the threshold.
 
         After :func:`funded_testnet_account` has topped up the wallet we call

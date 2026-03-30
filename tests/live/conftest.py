@@ -333,6 +333,7 @@ async def surfpool_rpc():
         except subprocess.TimeoutExpired:
             pass
 
+
 # ---------------------------------------------------------------------------
 # Testnet (Sepolia) fixtures
 # ---------------------------------------------------------------------------
@@ -365,8 +366,7 @@ def testnet_faucet():
     if QUICKNODE_TOKEN:
         return QuickNodeFaucet(token=QUICKNODE_TOKEN, chain_id=ChainId.SEPOLIA)
     pytest.skip(
-        "No testnet faucet configured — set ALCHEMY_API_KEY or QUICKNODE_TOKEN "
-        "to enable automatic wallet funding"
+        "No testnet faucet configured — set ALCHEMY_API_KEY or QUICKNODE_TOKEN to enable automatic wallet funding"
     )
 
 
