@@ -29,6 +29,7 @@ from web3 import AsyncWeb3
 from pydefi.hyperliquid.signing import (
     sign_l1_action,
     sign_send_asset_action,
+    sign_send_to_evm_with_data_action,
     sign_spot_transfer_action,
     sign_usd_class_transfer_action,
     sign_usd_transfer_action,
@@ -422,18 +423,22 @@ class HyperliquidClient:
     ) -> Any:
         """Transfer tokens between perp DEXes, spot balances, users, or sub-accounts.
 
-        Use the system address ``0x2000...{index:08x}`` as *destination* to
-        bridge tokens from HyperCore to HyperEVM.
+        To bridge USDC from HyperCore to HyperEVM, set *destination* to the
+        USDC system address ``0x2000000000000000000000000000000000000000``
+        and *destination_dex* to ``"spot"``.
 
         Args:
             private_key: Sender's hex-encoded private key.
-            destination: Recipient address or system address for HyperEVM
-                bridging.
-            token: Token identifier (e.g. ``"USDC:0x..."``).
+            destination: Recipient address, or the USDC system address
+                ``0x2000000000000000000000000000000000000000`` to bridge to
+                HyperEVM.
+            token: Token identifier (e.g. ``"USDC"``).
             amount: Amount as a decimal string.
-            source_dex: Source DEX name (``""`` for default USDC perp).
-            destination_dex: Destination DEX name (``""`` for default USDC perp,
-                ``"spot"`` for spot balance).
+            source_dex: Source DEX name.  Use ``""`` for the perp balance or
+                ``"spot"`` for the spot balance.
+            destination_dex: Destination DEX name.  Use ``""`` for the perp
+                balance or ``"spot"`` for the spot balance.  When bridging to
+                HyperEVM use ``"spot"`` so USDC lands in the EVM wallet.
             from_sub_account: Sub-account address to transfer from, or ``""``
                 for the master account.
             nonce: Millisecond timestamp nonce.  Defaults to current time.
@@ -456,3 +461,83 @@ class HyperliquidClient:
         }
         signature = sign_send_asset_action(private_key, action, self.is_mainnet)
         return await self._post_user_signed_exchange({"action": action, "nonce": nonce, "signature": signature})
+
+    async def send_to_evm_with_data(
+        self,
+        private_key: str,
+        destination_recipient: str,
+        amount: str,
+        destination_chain_id: int,
+        signature_chain_id: str,
+        token: str = "USDC",
+        source_dex: str = "",
+        address_encoding: str = "hex",
+        gas_limit: int = 200_000,
+        data: str = "0x",
+        nonce: int | None = None,
+    ) -> Any:
+        """Withdraw USDC from HyperCore to an EVM chain via CCTP.
+
+        Initiates a CCTP-backed withdrawal from a HyperCore account to a
+        recipient address on a supported EVM chain.  Circle's CCTP relayer
+        mints USDC on the destination chain after the withdrawal is processed.
+
+        The ``signatureChainId`` is the **destination** chain's EVM chain ID
+        (e.g. ``"0xa4b1"`` for Arbitrum mainnet, ``"0x1"`` for Ethereum), not
+        the fixed Arbitrum Sepolia ID used by other user-signed actions.
+
+        Args:
+            private_key: Sender's hex-encoded private key.
+            destination_recipient: Recipient EVM address on the destination
+                chain (e.g. ``"0x1234..."``) as a hex string.
+            amount: Amount of USDC as a decimal string (e.g. ``"10"`` for
+                10 USDC).
+            destination_chain_id: CCTP domain ID of the destination chain
+                (e.g. ``3`` for Arbitrum, ``0`` for Ethereum).  See
+                https://developers.circle.com/cctp/concepts/supported-chains-and-domains
+            signature_chain_id: EVM chain ID of the destination chain as a hex
+                string (e.g. ``"0xa4b1"`` for Arbitrum).  Used for EIP-712
+                replay protection.
+            token: Token to withdraw.  Defaults to ``"USDC"``.
+            source_dex: Source balance.  Use ``""`` (default) to withdraw from
+                the perp balance, or ``"spot"`` for the spot balance.
+            address_encoding: Address encoding format.  Defaults to ``"hex"``.
+            gas_limit: Gas limit for the destination chain mint transaction.
+                Defaults to 200,000.
+            data: Optional calldata to pass to the destination contract.
+                Defaults to ``"0x"`` (no calldata, direct ERC-20 transfer).
+            nonce: Millisecond timestamp nonce.  Defaults to current time.
+
+        Returns:
+            API response dict.
+
+        Example::
+
+            # Withdraw 10 USDC from HyperCore perp to Arbitrum mainnet
+            await client.send_to_evm_with_data(
+                private_key=pk,
+                destination_recipient="0xYourAddress",
+                amount="10",
+                destination_chain_id=3,        # Arbitrum CCTP domain
+                signature_chain_id="0xa4b1",   # Arbitrum EVM chain ID
+            )
+        """
+        if nonce is None:
+            nonce = int(time.time() * 1000)
+
+        action: dict[str, Any] = {
+            "type": "sendToEvmWithData",
+            "signatureChainId": signature_chain_id,
+            "token": token,
+            "amount": amount,
+            "sourceDex": source_dex,
+            "destinationRecipient": destination_recipient,
+            "addressEncoding": address_encoding,
+            "destinationChainId": destination_chain_id,
+            "gasLimit": gas_limit,
+            "data": data,
+            "nonce": nonce,
+        }
+        signature = sign_send_to_evm_with_data_action(private_key, action, self.is_mainnet)
+        return await self._post_user_signed_exchange({"action": action, "nonce": nonce, "signature": signature})
+

@@ -91,6 +91,22 @@ APPROVE_BUILDER_FEE_SIGN_TYPES: list[dict[str, str]] = [
     {"name": "nonce", "type": "uint64"},
 ]
 
+# EIP-712 type for sendToEvmWithData — withdraw USDC from HyperCore to an EVM chain via CCTP.
+# Note: signatureChainId is the destination EVM chain ID (NOT the fixed Arbitrum Sepolia).
+# Docs: https://developers.circle.com/cctp/howtos/withdraw-usdc-from-hypercore-to-evm
+SEND_TO_EVM_WITH_DATA_SIGN_TYPES: list[dict[str, str]] = [
+    {"name": "hyperliquidChain", "type": "string"},
+    {"name": "token", "type": "string"},
+    {"name": "amount", "type": "string"},
+    {"name": "sourceDex", "type": "string"},
+    {"name": "destinationRecipient", "type": "string"},
+    {"name": "addressEncoding", "type": "string"},
+    {"name": "destinationChainId", "type": "uint32"},
+    {"name": "gasLimit", "type": "uint64"},
+    {"name": "data", "type": "bytes"},
+    {"name": "nonce", "type": "uint64"},
+]
+
 # Signature chain ID used by all user-signed actions.
 # Hyperliquid uses Arbitrum Sepolia (chainId 421614 = 0x66eee) as the
 # canonical chain ID for signing, regardless of the actual destination.
@@ -106,6 +122,11 @@ _EIP712_DOMAIN_TYPES: list[dict[str, str]] = [
     {"name": "chainId", "type": "uint256"},
     {"name": "verifyingContract", "type": "address"},
 ]
+
+
+def _hyperliquid_chain_name(is_mainnet: bool) -> str:
+    """Return the ``hyperliquidChain`` value for EIP-712 signing."""
+    return "Mainnet" if is_mainnet else "Testnet"
 
 
 def action_hash(
@@ -264,7 +285,7 @@ def sign_user_signed_action(
         ``{"r": "0x...", "s": "0x...", "v": 27|28}``
     """
     action["signatureChainId"] = _SIGNATURE_CHAIN_ID
-    action["hyperliquidChain"] = "Mainnet" if is_mainnet else "Testnet"
+    action["hyperliquidChain"] = _hyperliquid_chain_name(is_mainnet)
     data = _user_signed_payload(primary_type, payload_types, action)
     wallet = Account.from_key(private_key)
     return sign_inner(wallet, data)
@@ -373,3 +394,37 @@ def sign_approve_builder_fee_action(
         "HyperliquidTransaction:ApproveBuilderFee",
         is_mainnet,
     )
+
+
+def sign_send_to_evm_with_data_action(
+    private_key: str,
+    action: dict[str, Any],
+    is_mainnet: bool = True,
+) -> dict[str, str | int]:
+    """Sign a ``sendToEvmWithData`` action (withdraw USDC from HyperCore to EVM).
+
+    Unlike other user-signed actions, the ``signatureChainId`` for
+    ``sendToEvmWithData`` is the **destination** EVM chain ID (e.g.
+    ``"0xa4b1"`` for Arbitrum mainnet), not the fixed Arbitrum Sepolia ID.
+    The caller is responsible for setting ``action["signatureChainId"]`` to
+    the correct destination chain ID before calling this function.
+
+    Args:
+        private_key: Hex-encoded private key.
+        action: The ``sendToEvmWithData`` action dict.  Must already contain
+            ``signatureChainId`` (destination chain ID in hex, e.g.
+            ``"0xa4b1"``).  The ``hyperliquidChain`` field will be set
+            automatically.
+        is_mainnet: ``True`` for mainnet, ``False`` for testnet.
+
+    Returns:
+        ``{"r": "0x...", "s": "0x...", "v": 27|28}``
+    """
+    action["hyperliquidChain"] = _hyperliquid_chain_name(is_mainnet)
+    data = _user_signed_payload(
+        "HyperliquidTransaction:SendToEvmWithData",
+        SEND_TO_EVM_WITH_DATA_SIGN_TYPES,
+        action,
+    )
+    wallet = Account.from_key(private_key)
+    return sign_inner(wallet, data)
