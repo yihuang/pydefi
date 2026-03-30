@@ -16,6 +16,7 @@ from web3.exceptions import ContractLogicError
 
 from pydefi.bridge.cctp import CCTP, HYPERCORE_DEX_SPOT
 from pydefi.hyperliquid import HyperliquidClient
+from pydefi.rpc import get_w3
 from pydefi.types import ChainId, Token, TokenAmount
 
 # ---------------------------------------------------------------------------
@@ -251,13 +252,13 @@ class TestCCTPHyperCoreLive:
 
     async def test_cctp_domain_hypercore(self):
         """CCTP: HyperCore (1337) is mapped to CCTP domain 19 (HyperEVM)."""
-        w3 = AsyncWeb3(AsyncWeb3.AsyncHTTPProvider("https://eth.drpc.org"))
+        w3 = await get_w3(ChainId.ETHEREUM)
         bridge = CCTP(w3=w3, src_chain_id=ChainId.ETHEREUM, dst_chain_id=ChainId.HYPERCORE)
         assert bridge._cctp_domain(ChainId.HYPERCORE) == 19
 
     async def test_cctp_domain_matches_hyperevm(self):
         """HyperCore and HyperEVM map to the same CCTP domain (19)."""
-        w3 = AsyncWeb3(AsyncWeb3.AsyncHTTPProvider("https://eth.drpc.org"))
+        w3 = await get_w3(ChainId.ETHEREUM)
         bridge = CCTP(w3=w3, src_chain_id=ChainId.ETHEREUM, dst_chain_id=ChainId.HYPERCORE)
         assert bridge._cctp_domain(ChainId.HYPERCORE) == bridge._cctp_domain(ChainId.HYPEREVM)
 
@@ -314,7 +315,7 @@ class TestCCTPHyperEVMLive:
 
     async def test_cctp_domain_hyperevm(self):
         """CCTP: HyperEVM is mapped to domain 19."""
-        w3 = AsyncWeb3(AsyncWeb3.AsyncHTTPProvider("https://eth.drpc.org"))
+        w3 = await get_w3(ChainId.ETHEREUM)
         bridge = CCTP(w3=w3, src_chain_id=ChainId.ETHEREUM, dst_chain_id=ChainId.HYPEREVM)
         assert bridge._cctp_domain(ChainId.HYPEREVM) == 19
 

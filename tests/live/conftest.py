@@ -36,6 +36,7 @@ import aiohttp
 import pytest
 from web3 import AsyncWeb3
 
+from pydefi.rpc import get_w3
 from pydefi.types import ChainId, Token
 
 # ---------------------------------------------------------------------------
@@ -86,9 +87,10 @@ USDT = Token(
 
 
 @pytest.fixture
-def eth_w3() -> AsyncWeb3:
-    """Return an :class:`~web3.AsyncWeb3` instance backed by a public RPC."""
-    return AsyncWeb3(AsyncWeb3.AsyncHTTPProvider(ETH_RPC_URL))
+async def eth_w3() -> AsyncWeb3:
+    """Return an :class:`~web3.AsyncWeb3` instance backed by public RPC endpoints
+    auto-discovered via chainlist.org, with automatic failover."""
+    return await get_w3(ChainId.ETHEREUM)
 
 
 @pytest.fixture(autouse=True)
