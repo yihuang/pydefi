@@ -135,7 +135,17 @@ class MultiRpcProvider(AsyncJSONBaseProvider):
         if not endpoints:
             raise ValueError("MultiRpcProvider requires at least one endpoint")
         super().__init__(**kwargs)
-        self._providers = [AsyncWeb3.AsyncHTTPProvider(ep) for ep in endpoints]
+        self._endpoints: list[str] = list(endpoints)
+        # Index of the provider that succeeded last (start from the first one).
+        self._current_index: int = 0
+        # Lazily-instantiated providers – created only when first needed.
+        self._provider_cache: dict[int, AsyncWeb3.AsyncHTTPProvider] = {}
+
+    def _get_provider(self, index: int) -> AsyncWeb3.AsyncHTTPProvider:
+        """Return (and lazily create) the :class:`AsyncHTTPProvider` at *index*."""
+        if index not in self._provider_cache:
+            self._provider_cache[index] = AsyncWeb3.AsyncHTTPProvider(self._endpoints[index])
+        return self._provider_cache[index]
 
     # ------------------------------------------------------------------
     # AsyncBaseProvider interface
@@ -143,26 +153,35 @@ class MultiRpcProvider(AsyncJSONBaseProvider):
 
     async def make_request(self, method: RPCEndpoint, params: Any) -> RPCResponse:
         last_exc: Exception | None = None
-        for provider in self._providers:
+        n = len(self._endpoints)
+        for i in range(n):
+            index = (self._current_index + i) % n
+            provider = self._get_provider(index)
             try:
                 response = await provider.make_request(method, params)
+                # Remember the working endpoint for the next request.
+                # asyncio is single-threaded so this assignment is safe from
+                # data races; concurrent coroutines that both succeed will each
+                # set _current_index to their own successful endpoint, which is
+                # an acceptable last-write-wins outcome.
+                self._current_index = index
                 return response
             except Exception as exc:
                 logger.debug(
                     "RPC endpoint %s failed for %s: %s – trying next",
-                    provider.endpoint_uri,
+                    self._endpoints[index],
                     method,
                     exc,
                 )
                 last_exc = exc
 
-        assert last_exc is not None  # guaranteed: self._providers is non-empty
+        assert last_exc is not None  # guaranteed: self._endpoints is non-empty
         raise last_exc
 
     async def is_connected(self, show_traceback: bool = False) -> bool:
         """Return ``True`` if *any* endpoint is reachable."""
-        for provider in self._providers:
-            if await provider.is_connected(show_traceback=False):
+        for i in range(len(self._endpoints)):
+            if await self._get_provider(i).is_connected(show_traceback=False):
                 return True
         return False
 

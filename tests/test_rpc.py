@@ -136,20 +136,28 @@ class TestMultiRpcProvider:
         with pytest.raises(ValueError, match="at least one endpoint"):
             MultiRpcProvider()
 
+    def _inject(self, provider: MultiRpcProvider, index: int, mock: Any) -> None:
+        """Pre-populate the provider cache at *index* with a mock."""
+        provider._provider_cache[index] = mock
+
     async def test_succeeds_on_first_provider(self):
         provider = MultiRpcProvider(
             "https://endpoint-1.example.com",
             "https://endpoint-2.example.com",
         )
         expected = _make_rpc_response("0x42")
-        provider._providers[0].make_request = AsyncMock(return_value=expected)
-        provider._providers[1].make_request = AsyncMock(return_value=_make_rpc_response("0x99"))
+        m0 = MagicMock()
+        m0.make_request = AsyncMock(return_value=expected)
+        m1 = MagicMock()
+        m1.make_request = AsyncMock(return_value=_make_rpc_response("0x99"))
+        self._inject(provider, 0, m0)
+        self._inject(provider, 1, m1)
 
         response = await provider.make_request(RPCEndpoint("eth_blockNumber"), [])
 
         assert response == expected
-        provider._providers[0].make_request.assert_called_once()
-        provider._providers[1].make_request.assert_not_called()
+        m0.make_request.assert_called_once()
+        m1.make_request.assert_not_called()
 
     async def test_falls_back_to_second_provider_on_exception(self):
         provider = MultiRpcProvider(
@@ -157,8 +165,12 @@ class TestMultiRpcProvider:
             "https://endpoint-2.example.com",
         )
         expected = _make_rpc_response("0x42")
-        provider._providers[0].make_request = AsyncMock(side_effect=ConnectionError("timeout"))
-        provider._providers[1].make_request = AsyncMock(return_value=expected)
+        m0 = MagicMock()
+        m0.make_request = AsyncMock(side_effect=ConnectionError("timeout"))
+        m1 = MagicMock()
+        m1.make_request = AsyncMock(return_value=expected)
+        self._inject(provider, 0, m0)
+        self._inject(provider, 1, m1)
 
         response = await provider.make_request(RPCEndpoint("eth_blockNumber"), [])
 
@@ -169,8 +181,12 @@ class TestMultiRpcProvider:
             "https://endpoint-1.example.com",
             "https://endpoint-2.example.com",
         )
-        provider._providers[0].make_request = AsyncMock(side_effect=ConnectionError("fail-1"))
-        provider._providers[1].make_request = AsyncMock(side_effect=ConnectionError("fail-2"))
+        m0 = MagicMock()
+        m0.make_request = AsyncMock(side_effect=ConnectionError("fail-1"))
+        m1 = MagicMock()
+        m1.make_request = AsyncMock(side_effect=ConnectionError("fail-2"))
+        self._inject(provider, 0, m0)
+        self._inject(provider, 1, m1)
 
         with pytest.raises(ConnectionError, match="fail-2"):
             await provider.make_request(RPCEndpoint("eth_blockNumber"), [])
@@ -180,14 +196,20 @@ class TestMultiRpcProvider:
             "https://endpoint-1.example.com",
             "https://endpoint-2.example.com",
         )
-        provider._providers[0].is_connected = AsyncMock(return_value=False)
-        provider._providers[1].is_connected = AsyncMock(return_value=True)
+        m0 = MagicMock()
+        m0.is_connected = AsyncMock(return_value=False)
+        m1 = MagicMock()
+        m1.is_connected = AsyncMock(return_value=True)
+        self._inject(provider, 0, m0)
+        self._inject(provider, 1, m1)
 
         assert await provider.is_connected() is True
 
     async def test_is_connected_returns_false_if_all_down(self):
         provider = MultiRpcProvider("https://endpoint-1.example.com")
-        provider._providers[0].is_connected = AsyncMock(return_value=False)
+        m0 = MagicMock()
+        m0.is_connected = AsyncMock(return_value=False)
+        self._inject(provider, 0, m0)
 
         assert await provider.is_connected() is False
 
@@ -197,14 +219,61 @@ class TestMultiRpcProvider:
             "https://endpoint-2.example.com",
             "https://endpoint-3.example.com",
         )
-        for p in provider._providers:
-            p.make_request = AsyncMock(side_effect=OSError("down"))
+        mocks = []
+        for i in range(3):
+            m = MagicMock()
+            m.make_request = AsyncMock(side_effect=OSError("down"))
+            self._inject(provider, i, m)
+            mocks.append(m)
 
         with pytest.raises(OSError):
             await provider.make_request(RPCEndpoint("eth_chainId"), [])
 
-        for p in provider._providers:
-            p.make_request.assert_called_once()
+        for m in mocks:
+            m.make_request.assert_called_once()
+
+    async def test_caches_successful_provider(self):
+        """Subsequent requests start from the last successful provider."""
+        provider = MultiRpcProvider(
+            "https://endpoint-1.example.com",
+            "https://endpoint-2.example.com",
+        )
+        expected = _make_rpc_response("0x42")
+        m0 = MagicMock()
+        m0.make_request = AsyncMock(side_effect=ConnectionError("down"))
+        m1 = MagicMock()
+        m1.make_request = AsyncMock(return_value=expected)
+        self._inject(provider, 0, m0)
+        self._inject(provider, 1, m1)
+
+        # First call falls back to endpoint-2
+        await provider.make_request(RPCEndpoint("eth_blockNumber"), [])
+        assert provider._current_index == 1
+
+        # Second call should start from endpoint-2 directly (not endpoint-1)
+        await provider.make_request(RPCEndpoint("eth_blockNumber"), [])
+        assert m0.make_request.call_count == 1  # still only called once
+        assert m1.make_request.call_count == 2  # called for both requests
+
+    async def test_lazy_provider_instantiation(self):
+        """No AsyncHTTPProvider is created until a request is made."""
+        provider = MultiRpcProvider(
+            "https://endpoint-1.example.com",
+            "https://endpoint-2.example.com",
+        )
+        # No providers should be created yet
+        assert len(provider._provider_cache) == 0
+
+        # Inject a mock so we don't hit the network
+        m0 = MagicMock()
+        m0.make_request = AsyncMock(return_value=_make_rpc_response("0x1"))
+        self._inject(provider, 0, m0)
+
+        await provider.make_request(RPCEndpoint("eth_blockNumber"), [])
+
+        # Only the one that was actually used is in the cache
+        assert 0 in provider._provider_cache
+        assert 1 not in provider._provider_cache
 
 
 # ---------------------------------------------------------------------------
