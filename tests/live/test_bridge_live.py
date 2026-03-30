@@ -18,6 +18,7 @@ from pydefi.bridge.gaszip import GasZip
 from pydefi.bridge.layerzero_oft import LayerZeroOFT
 from pydefi.bridge.mayan import Mayan
 from pydefi.bridge.relay import Relay
+from pydefi.exceptions import BridgeError
 from pydefi.types import ChainId, Token, TokenAmount
 
 from .conftest import USDC
@@ -71,6 +72,10 @@ MAX_USDC_OUT = 1_100 * 10**6
 
 # Sanity bounds for ETH gas bridge (0.1 ETH in, expect > 0 ETH out)
 BRIDGE_AMOUNT_ETH = 10**17  # 0.1 ETH
+
+
+def _skip_on_temporary_gaszip_error(exc: BridgeError) -> None:
+    pytest.skip(f"GasZip live quote unavailable: {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -145,7 +150,10 @@ class TestGasZipLive:
             contract_address=GASZIP_CONTRACT_ETH,
         )
         amount_in = TokenAmount(token=ETH_NATIVE, amount=BRIDGE_AMOUNT_ETH)
-        quote = await client.get_quote(ETH_NATIVE, ETH_NATIVE_ARB, amount_in)
+        try:
+            quote = await client.get_quote(ETH_NATIVE, ETH_NATIVE_ARB, amount_in)
+        except BridgeError as exc:
+            _skip_on_temporary_gaszip_error(exc)
 
         assert quote.protocol == "GasZip"
         assert quote.token_in == ETH_NATIVE
@@ -162,7 +170,10 @@ class TestGasZipLive:
             contract_address=GASZIP_CONTRACT_ETH,
         )
         amount_in = TokenAmount(token=ETH_NATIVE, amount=BRIDGE_AMOUNT_ETH)
-        quote = await client.get_quote(ETH_NATIVE, ETH_NATIVE_ARB, amount_in)
+        try:
+            quote = await client.get_quote(ETH_NATIVE, ETH_NATIVE_ARB, amount_in)
+        except BridgeError as exc:
+            _skip_on_temporary_gaszip_error(exc)
 
         assert quote.bridge_fee.amount >= 0
 
