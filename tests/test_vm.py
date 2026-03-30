@@ -27,20 +27,29 @@ from pydefi.vm import (
     erc20_transfer_from,
 )
 from pydefi.vm.program import (
+    OP_ADD,
     OP_CALL,
+    OP_DIV,
     OP_JUMP,
     OP_JUMPI,
+    OP_MOD,
+    OP_MUL,
     OP_PUSH_ADDR,
     OP_PUSH_BYTES,
     OP_PUSH_U256,
+    OP_SUB,
+    add,
     assert_ge,
     assert_le,
     balance_of,
     call,
+    div,
     dup,
     jump,
     jumpi,
     load_reg,
+    mod,
+    mul,
     patch_addr,
     patch_u256,
     pop,
@@ -125,6 +134,18 @@ class TestProgramInstructionEmission:
 
     def test_sub(self):
         assert Program().sub().build() == sub()
+
+    def test_add(self):
+        assert Program().add().build() == add()
+
+    def test_mul(self):
+        assert Program().mul().build() == mul()
+
+    def test_div(self):
+        assert Program().div().build() == div()
+
+    def test_mod(self):
+        assert Program().mod().build() == mod()
 
     def test_patch_u256(self):
         assert Program().patch_u256(4).build() == patch_u256(4)
@@ -748,3 +769,169 @@ class TestCallWithPatches:
         bytecode = combined.build()
         assert len(bytecode) > 0
         assert bytecode[0] == OP_PUSH_BYTES
+
+
+# ---------------------------------------------------------------------------
+# Arithmetic opcodes
+# ---------------------------------------------------------------------------
+
+
+class TestArithmeticOpcodes:
+    """Verify bytecode emitted by arithmetic helpers and the Program builder."""
+
+    def test_add_emitter(self):
+        assert add() == bytes([OP_ADD])
+
+    def test_mul_emitter(self):
+        assert mul() == bytes([OP_MUL])
+
+    def test_div_emitter(self):
+        assert div() == bytes([OP_DIV])
+
+    def test_mod_emitter(self):
+        assert mod() == bytes([OP_MOD])
+
+    def test_builder_add(self):
+        assert Program().add().build() == add()
+
+    def test_builder_mul(self):
+        assert Program().mul().build() == mul()
+
+    def test_builder_div(self):
+        assert Program().div().build() == div()
+
+    def test_builder_mod(self):
+        assert Program().mod().build() == mod()
+
+    def test_arithmetic_chain(self):
+        """push(100) MUL push(60) DIV push(100) emits the correct byte sequence."""
+        expected = push_u256(100) + push_u256(60) + mul() + push_u256(100) + div()
+        actual = (
+            Program()
+            .push_u256(100)
+            .push_u256(60)
+            .mul()
+            .push_u256(100)
+            .div()
+            .build()
+        )
+        assert actual == expected
+
+
+# ---------------------------------------------------------------------------
+# Integration: split-swap composition example
+# ---------------------------------------------------------------------------
+
+
+class TestSplitSwapComposition:
+    """Verify the split-swap pattern builds valid bytecode via Program.compose."""
+
+    # Fake calldata templates (4-byte selector + 64 bytes placeholders)
+    _SWAP01 = bytes.fromhex("aabbccdd") + b"\x00" * 64
+    _SWAP12 = bytes.fromhex("11223344") + b"\x00" * 64
+    _SWAP13 = bytes.fromhex("55667788") + b"\x00" * 64
+
+    AMOUNT_OFFSET = 4  # first ABI slot after 4-byte selector
+
+    def _build_split_swap(self, numerator: int, denominator: int) -> bytes:
+        """
+        Build a split-swap program:
+          1. Call SWAP01; store output in reg[0]
+          2. Compute share0 = output * numerator / denominator → reg[1]
+          3. Compute share1 = output - share0 → reg[2]
+          4. Call SWAP12 with share0 from reg[1]
+          5. Call SWAP13 with share1 from reg[2]
+        """
+        step1 = (
+            Program()
+            .call_with_patches(ADDR_A, self._SWAP01, []).pop()
+            .ret_u256(0)
+            .store_reg(0)
+        )
+
+        split = (
+            Program()
+            .load_reg(0)
+            .push_u256(numerator)
+            .mul()
+            .push_u256(denominator)
+            .div()
+            .store_reg(1)
+            .load_reg(0)
+            .load_reg(1)
+            .sub()
+            .store_reg(2)
+        )
+
+        step4 = (
+            Program()
+            .call_with_patches(
+                ADDR_B,
+                self._SWAP12,
+                [("u256", self.AMOUNT_OFFSET, ("reg", 1))],
+            )
+            .pop()
+        )
+
+        step5 = (
+            Program()
+            .call_with_patches(
+                ADDR_B,
+                self._SWAP13,
+                [("u256", self.AMOUNT_OFFSET, ("reg", 2))],
+            )
+            .pop()
+        )
+
+        return Program.compose([step1, split, step4, step5]).build()
+
+    def test_split_swap_builds_without_error(self):
+        bytecode = self._build_split_swap(60, 100)
+        assert len(bytecode) > 0
+
+    def test_split_swap_starts_with_push_bytes(self):
+        bytecode = self._build_split_swap(60, 100)
+        assert bytecode[0] == OP_PUSH_BYTES
+
+    def test_split_swap_contains_mul_and_div(self):
+        bytecode = self._build_split_swap(60, 100)
+        assert OP_MUL in bytecode
+        assert OP_DIV in bytecode
+
+    def test_split_swap_contains_sub(self):
+        bytecode = self._build_split_swap(60, 100)
+        assert OP_SUB in bytecode
+
+    def test_split_swap_50_50(self):
+        """50/50 split also builds correctly."""
+        bytecode = self._build_split_swap(50, 100)
+        assert OP_MUL in bytecode
+        assert OP_DIV in bytecode
+
+    def test_split_swap_equals_manual_compose(self):
+        """Program.compose([A, B]) == A + B for the split-swap sub-programs."""
+        numerator, denominator = 60, 100
+
+        step1 = (
+            Program()
+            .call_with_patches(ADDR_A, self._SWAP01, []).pop()
+            .ret_u256(0)
+            .store_reg(0)
+        )
+        split = (
+            Program()
+            .load_reg(0)
+            .push_u256(numerator)
+            .mul()
+            .push_u256(denominator)
+            .div()
+            .store_reg(1)
+            .load_reg(0)
+            .load_reg(1)
+            .sub()
+            .store_reg(2)
+        )
+
+        via_compose = Program.compose([step1, split]).build()
+        via_add = (step1 + split).build()
+        assert via_compose == via_add

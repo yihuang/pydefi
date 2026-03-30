@@ -98,6 +98,68 @@ Calldata surgery with a register source::
         .pop()
         .build()
     )
+
+Split-swap example — swap token0 → token1, then split the output and route to
+two separate destinations using arithmetic and composition::
+
+    # Prerequisite: swap01_template produces token1 from token0 (amount in reg 1 from
+    # the CCTPComposer / OFTComposer prologue, or a prior STORE_REG).
+    #
+    # Program structure:
+    #   1. swap token0→token1, store amount1 in reg 0
+    #   2. share0 = amount1 * NUMERATOR / DENOMINATOR  (60% example)
+    #   3. share1 = amount1 - share0
+    #   4. swap token1 → token2 using share0
+    #   5. swap token1 → token3 using share1
+
+    NUMERATOR   = 60
+    DENOMINATOR = 100
+
+    # ── Step 1: swap token0 → token1 ────────────────────────────────────────
+    step1 = (
+        Program()
+        # call swap adapter; retdata[0] = amount1
+        .call_with_patches(SWAP01, swap01_template, []).pop()
+        .ret_u256(0)          # push amount1
+        .store_reg(0)         # reg[0] = amount1
+    )
+
+    # ── Step 2-3: compute shares ─────────────────────────────────────────────
+    split = (
+        Program()
+        .load_reg(0)          # [amount1]
+        .push_u256(NUMERATOR) # [amount1, 60]
+        .mul()                # [amount1 * 60]
+        .push_u256(DENOMINATOR)
+        .div()                # [share0 = amount1*60//100]
+        .store_reg(1)         # reg[1] = share0
+        .load_reg(0)          # [amount1]
+        .load_reg(1)          # [amount1, share0]
+        .sub()                # [share1 = amount1 - share0]
+        .store_reg(2)         # reg[2] = share1
+    )
+
+    # ── Step 4: swap token1 → token2 (share0 from reg 1) ────────────────────
+    step4 = (
+        Program()
+        .call_with_patches(
+            SWAP12, swap12_template,
+            patches=[("u256", AMOUNT_OFFSET, ("reg", 1))],
+        )
+        .pop()
+    )
+
+    # ── Step 5: swap token1 → token3 (share1 from reg 2) ────────────────────
+    step5 = (
+        Program()
+        .call_with_patches(
+            SWAP13, swap13_template,
+            patches=[("u256", AMOUNT_OFFSET, ("reg", 2))],
+        )
+        .pop()
+    )
+
+    bytecode = Program.compose([step1, split, step4, step5]).build()
 """
 
 from __future__ import annotations
@@ -107,14 +169,18 @@ import struct
 from pydefi.vm.program import (
     OP_JUMP,
     OP_JUMPI,
+    add,
     assert_ge,
     assert_le,
     balance_of,
     call,
+    div,
     dup,
     jump,
     jumpi,
     load_reg,
+    mod,
+    mul,
     patch_addr,
     patch_u256,
     pop,
@@ -303,6 +369,22 @@ class Program:
     def sub(self) -> "Program":
         """Emit SUB — pop ``a`` (top), ``b``; push ``a - b`` (saturates to 0)."""
         return self._emit(sub())
+
+    def add(self) -> "Program":
+        """Emit ADD — pop ``a`` (top), ``b``; push ``a + b`` (wrapping uint256)."""
+        return self._emit(add())
+
+    def mul(self) -> "Program":
+        """Emit MUL — pop ``a`` (top), ``b``; push ``a * b`` (wrapping uint256)."""
+        return self._emit(mul())
+
+    def div(self) -> "Program":
+        """Emit DIV — pop ``a`` (top), ``b``; push ``a / b`` (0 if ``b == 0``)."""
+        return self._emit(div())
+
+    def mod(self) -> "Program":
+        """Emit MOD — pop ``a`` (top), ``b``; push ``a % b`` (0 if ``b == 0``)."""
+        return self._emit(mod())
 
     # ------------------------------------------------------------------
     # ABI / data instructions

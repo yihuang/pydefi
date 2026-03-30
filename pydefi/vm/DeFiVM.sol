@@ -46,6 +46,10 @@ pragma solidity ^0.8.24;
  *   0x31  BALANCE_OF                     pop: token (0x0=ETH), account -> push balance
  *   0x32  SELF_ADDR                      push address(this)
  *   0x33  SUB                            pop a, b -> push a - b  (saturates to 0 if a < b)
+ *   0x34  ADD                            pop a, b -> push a + b  (wrapping uint256)
+ *   0x35  MUL                            pop a, b -> push a * b  (wrapping uint256)
+ *   0x36  DIV                            pop a, b -> push a / b  (0 if b == 0)
+ *   0x37  MOD                            pop a, b -> push a % b  (0 if b == 0)
  *
  * ABI / data
  *   0x40  PATCH_U256 <2-byte offset>     pop: value, bufIdx -> patch 32-byte word in buffer
@@ -80,6 +84,10 @@ contract DeFiVM {
     uint8 private constant OP_BALANCE_OF  = 0x31;
     uint8 private constant OP_SELF_ADDR   = 0x32;
     uint8 private constant OP_SUB         = 0x33;
+    uint8 private constant OP_ADD         = 0x34;
+    uint8 private constant OP_MUL         = 0x35;
+    uint8 private constant OP_DIV         = 0x36;
+    uint8 private constant OP_MOD         = 0x37;
     uint8 private constant OP_PATCH_U256  = 0x40;
     uint8 private constant OP_PATCH_ADDR  = 0x41;
     uint8 private constant OP_RET_U256    = 0x42;
@@ -361,6 +369,54 @@ contract DeFiVM {
                 uint256 b = uint256(s.stack[s.sp]);
 
                 _push(s, bytes32(a >= b ? a - b : 0));
+
+            } else if (op == OP_ADD) {
+                // pop a (top), pop b -> push a + b (wrapping uint256)
+                require(s.sp >= 2, "DeFiVM: ADD needs 2 items");
+
+                s.sp--;
+                uint256 a = uint256(s.stack[s.sp]);
+
+                s.sp--;
+                uint256 b = uint256(s.stack[s.sp]);
+
+                unchecked { _push(s, bytes32(a + b)); }
+
+            } else if (op == OP_MUL) {
+                // pop a (top), pop b -> push a * b (wrapping uint256)
+                require(s.sp >= 2, "DeFiVM: MUL needs 2 items");
+
+                s.sp--;
+                uint256 a = uint256(s.stack[s.sp]);
+
+                s.sp--;
+                uint256 b = uint256(s.stack[s.sp]);
+
+                unchecked { _push(s, bytes32(a * b)); }
+
+            } else if (op == OP_DIV) {
+                // pop a (top), pop b -> push a / b (0 if b == 0)
+                require(s.sp >= 2, "DeFiVM: DIV needs 2 items");
+
+                s.sp--;
+                uint256 a = uint256(s.stack[s.sp]);
+
+                s.sp--;
+                uint256 b = uint256(s.stack[s.sp]);
+
+                _push(s, bytes32(b == 0 ? 0 : a / b));
+
+            } else if (op == OP_MOD) {
+                // pop a (top), pop b -> push a % b (0 if b == 0)
+                require(s.sp >= 2, "DeFiVM: MOD needs 2 items");
+
+                s.sp--;
+                uint256 a = uint256(s.stack[s.sp]);
+
+                s.sp--;
+                uint256 b = uint256(s.stack[s.sp]);
+
+                _push(s, bytes32(b == 0 ? 0 : a % b));
 
             // ------------------------------------------------------------------
             // ABI / data patching

@@ -41,6 +41,10 @@ External / introspection
   0x31  BALANCE_OF            (pop: token, account → push balance)
   0x32  SELF_ADDR             (push address(this))
   0x33  SUB                   (pop a, b → push a - b, saturates to 0 if a < b)
+  0x34  ADD                   (pop a, b → push a + b, wrapping uint256)
+  0x35  MUL                   (pop a, b → push a * b, wrapping uint256)
+  0x36  DIV                   (pop a, b → push a / b, 0 if b == 0)
+  0x37  MOD                   (pop a, b → push a % b, 0 if b == 0)
 
 ABI / data
   0x40  PATCH_U256 <2-byte offset>
@@ -74,6 +78,10 @@ OP_CALL: int = 0x30
 OP_BALANCE_OF: int = 0x31
 OP_SELF_ADDR: int = 0x32
 OP_SUB: int = 0x33
+OP_ADD: int = 0x34
+OP_MUL: int = 0x35
+OP_DIV: int = 0x36
+OP_MOD: int = 0x37
 OP_PATCH_U256: int = 0x40
 OP_PATCH_ADDR: int = 0x41
 OP_RET_U256: int = 0x42
@@ -255,6 +263,32 @@ def sub() -> bytes:
         + sub()               # post - pre
     """
     return bytes([OP_SUB])
+
+
+def add() -> bytes:
+    """Emit ADD — pop ``a`` (top) then ``b``; push ``a + b`` (wrapping uint256)."""
+    return bytes([OP_ADD])
+
+
+def mul() -> bytes:
+    """Emit MUL — pop ``a`` (top) then ``b``; push ``a * b`` (wrapping uint256)."""
+    return bytes([OP_MUL])
+
+
+def div() -> bytes:
+    """Emit DIV — pop ``a`` (top) then ``b``; push ``a / b`` (0 if ``b == 0``).
+
+    Matches EVM ``DIV`` semantics — integer (floor) division, no revert on zero.
+    """
+    return bytes([OP_DIV])
+
+
+def mod() -> bytes:
+    """Emit MOD — pop ``a`` (top) then ``b``; push ``a % b`` (0 if ``b == 0``).
+
+    Matches EVM ``MOD`` semantics — no revert on zero denominator.
+    """
+    return bytes([OP_MOD])
 
 
 # ---------------------------------------------------------------------------
