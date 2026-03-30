@@ -28,15 +28,12 @@ from pydefi.vm import (
 )
 from pydefi.vm.program import (
     OP_ADD,
-    OP_CALL,
     OP_DIV,
     OP_JUMP,
     OP_JUMPI,
     OP_MOD,
     OP_MUL,
-    OP_PUSH_ADDR,
     OP_PUSH_BYTES,
-    OP_PUSH_U256,
     OP_SUB,
     add,
     assert_ge,
@@ -948,6 +945,7 @@ class TestEncodeCalldata:
     def test_no_args_selector(self):
         """A zero-argument function yields only the 4-byte selector."""
         from eth_utils import keccak
+
         from pydefi.vm.abi import encode_calldata
 
         result = encode_calldata("function totalSupply() view returns (uint256)")
@@ -995,6 +993,7 @@ class TestEncodeCalldata:
         """Tuple (struct) arguments are encoded correctly."""
         from eth_abi import encode
         from eth_utils import keccak
+
         from pydefi.vm.abi import encode_calldata
 
         # exactInputSingle((address,address,uint24,address,uint256,uint256,uint256,uint160))
