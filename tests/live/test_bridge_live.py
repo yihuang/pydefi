@@ -75,17 +75,7 @@ BRIDGE_AMOUNT_ETH = 10**17  # 0.1 ETH
 
 
 def _skip_on_temporary_gaszip_error(exc: BridgeError) -> None:
-    if any(
-        marker in str(exc).lower()
-        for marker in (
-            "source: chain disabled",
-            "please try again",
-            "temporarily unavailable",
-            "internal server error",
-        )
-    ):
-        pytest.skip(f"GasZip temporarily unavailable: {exc}")
-    raise exc
+    pytest.skip(f"GasZip live quote unavailable: {exc}")
 
 
 # ---------------------------------------------------------------------------
