@@ -1,19 +1,47 @@
 """DeFiVM — minimal register-based macro-assembler for on-chain DeFi flows.
 
-The :mod:`pydefi.vm.program` module provides a Python DSL for building DeFiVM
-bytecode programs::
+Two complementary interfaces are provided:
 
-    from pydefi.vm.program import push_u256, push_addr, push_bytes, call, assert_ge
+**Functional (low-level)**
+    Import individual instruction builders from :mod:`pydefi.vm.program` and
+    concatenate them with ``+``::
 
-    program = (
-        push_bytes(swap_calldata)
-        + push_u256(0)
-        + push_addr(SWAP_ADAPTER)
-        + push_u256(0)
-        + call()
-    )
+        from pydefi.vm.program import push_u256, push_addr, push_bytes, call, assert_ge
+
+        program = (
+            push_bytes(swap_calldata)
+            + push_u256(0)
+            + push_addr(SWAP_ADAPTER)
+            + push_u256(0)
+            + call()
+        )
+
+**Fluent builder (high-level)**
+    Use :class:`~pydefi.vm.builder.Program` for method chaining, label-based
+    jumps, and the :meth:`~pydefi.vm.builder.Program.call_contract` helper::
+
+        from pydefi.vm import Program
+        from pydefi.vm.abi import erc20_approve
+
+        bytecode = (
+            Program()
+            .call_contract(TOKEN, erc20_approve(ROUTER, amount_in))
+            .call_contract(ROUTER, swap_calldata)
+            .push_addr(RECIPIENT)
+            .push_addr(TOKEN)
+            .push_u256(min_out)
+            .assert_ge("slippage: amount_out too low")
+            .build()
+        )
 """
 
+from pydefi.vm.abi import (
+    erc20_approve,
+    erc20_balance_of,
+    erc20_transfer,
+    erc20_transfer_from,
+)
+from pydefi.vm.builder import Program
 from pydefi.vm.program import (
     OP_ASSERT_GE,
     OP_ASSERT_LE,
@@ -60,6 +88,13 @@ from pydefi.vm.program import (
 )
 
 __all__ = [
+    # Fluent builder
+    "Program",
+    # ABI helpers
+    "erc20_transfer",
+    "erc20_approve",
+    "erc20_transfer_from",
+    "erc20_balance_of",
     # Opcode constants
     "OP_PUSH_U256",
     "OP_PUSH_ADDR",
