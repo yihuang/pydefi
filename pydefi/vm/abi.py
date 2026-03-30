@@ -65,7 +65,7 @@ def _abi_type_to_str(inp: dict) -> str:
     """
     type_ = inp["type"]
     if type_.startswith("tuple"):
-        suffix = type_[len("tuple"):]          # e.g. "" | "[]" | "[5]"
+        suffix = type_[len("tuple") :]  # e.g. "" | "[]" | "[5]"
         components = inp.get("components", [])
         inner = ",".join(_abi_type_to_str(c) for c in components)
         return f"({inner}){suffix}"

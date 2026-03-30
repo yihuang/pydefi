@@ -201,14 +201,7 @@ class TestProgramLabels:
     def test_jumpi_label_resolves_to_correct_offset(self):
         # push_u256(1) [33 bytes] then JUMPI -> label "skip" [3 bytes] then push_u256(99) [33]
         # label "skip" placed after the JUMPI
-        p = (
-            Program()
-            .push_u256(1)
-            .jumpi("skip")
-            .push_u256(99)
-            .label("skip")
-            .push_u256(0)
-        )
+        p = Program().push_u256(1).jumpi("skip").push_u256(99).label("skip").push_u256(0)
         bytecode = p.build()
         # JUMPI instruction starts at byte 33
         assert bytecode[33] == OP_JUMPI
@@ -223,7 +216,7 @@ class TestProgramLabels:
         p = (
             Program()
             .jump("end")
-            .push_u256(99)     # would be skipped at runtime
+            .push_u256(99)  # would be skipped at runtime
             .label("end")
             .push_u256(1)
         )
@@ -242,15 +235,7 @@ class TestProgramLabels:
             Program().jump("nowhere").build()
 
     def test_multiple_jumps_to_same_label(self):
-        p = (
-            Program()
-            .push_u256(0)
-            .jumpi("end")
-            .push_u256(1)
-            .jump("end")
-            .label("end")
-            .push_u256(2)
-        )
+        p = Program().push_u256(0).jumpi("end").push_u256(1).jump("end").label("end").push_u256(2)
         bytecode = p.build()
         # Both jumps should resolve to the same target
         # Layout: push_u256(0)[33] + JUMPI[3] + push_u256(1)[33] + JUMP[3] + push_u256(2)[33]
@@ -270,46 +255,22 @@ class TestProgramLabels:
 class TestCallContractHelper:
     def test_call_contract_matches_manual_sequence(self):
         calldata = bytes.fromhex("a9059cbb" + "00" * 12 + "bb" * 20 + "00" * 31 + "64")
-        expected = (
-            push_bytes(calldata)
-            + push_u256(0)
-            + push_addr(ADDR_A)
-            + push_u256(0)
-            + call(require_success=True)
-        )
+        expected = push_bytes(calldata) + push_u256(0) + push_addr(ADDR_A) + push_u256(0) + call(require_success=True)
         actual = Program().call_contract(ADDR_A, calldata).build()
         assert actual == expected
 
     def test_call_contract_with_value_and_gas(self):
         calldata = b"\x12\x34\x56\x78"
         expected = (
-            push_bytes(calldata)
-            + push_u256(10**18)
-            + push_addr(ADDR_B)
-            + push_u256(50000)
-            + call(require_success=True)
+            push_bytes(calldata) + push_u256(10**18) + push_addr(ADDR_B) + push_u256(50000) + call(require_success=True)
         )
-        actual = (
-            Program()
-            .call_contract(ADDR_B, calldata, value=10**18, gas=50000)
-            .build()
-        )
+        actual = Program().call_contract(ADDR_B, calldata, value=10**18, gas=50000).build()
         assert actual == expected
 
     def test_call_contract_no_require_success(self):
         calldata = b"\xab\xcd"
-        expected = (
-            push_bytes(calldata)
-            + push_u256(0)
-            + push_addr(ADDR_A)
-            + push_u256(0)
-            + call(require_success=False)
-        )
-        actual = (
-            Program()
-            .call_contract(ADDR_A, calldata, require_success=False)
-            .build()
-        )
+        expected = push_bytes(calldata) + push_u256(0) + push_addr(ADDR_A) + push_u256(0) + call(require_success=False)
+        actual = Program().call_contract(ADDR_A, calldata, require_success=False).build()
         assert actual == expected
 
     def test_call_contract_push_bytes_opcode(self):
@@ -419,9 +380,9 @@ class TestIntegration:
         """Verify label resolution in a real conditional flow."""
         p = (
             Program()
-            .push_u256(0)          # condition = false
+            .push_u256(0)  # condition = false
             .jumpi("skip")
-            .push_u256(99)         # unreachable path
+            .push_u256(99)  # unreachable path
             .label("skip")
             .push_u256(1)
         )
@@ -599,14 +560,12 @@ class TestCallWithPatches:
             push_bytes(cd)
             + push_u256(42)
             + patch_u256(4)
-            + push_u256(0)      # value
+            + push_u256(0)  # value
             + push_addr(ADDR_A)
-            + push_u256(0)      # gas
+            + push_u256(0)  # gas
             + call(True)
         )
-        actual = Program().call_with_patches(
-            ADDR_A, cd, [("u256", 4, 42)]
-        ).build()
+        actual = Program().call_with_patches(ADDR_A, cd, [("u256", 4, 42)]).build()
         assert actual == expected
 
     def test_static_addr_patch(self):
@@ -621,60 +580,34 @@ class TestCallWithPatches:
             + push_u256(0)
             + call(True)
         )
-        actual = Program().call_with_patches(
-            ADDR_A, cd, [("addr", 16, ADDR_B)]
-        ).build()
+        actual = Program().call_with_patches(ADDR_A, cd, [("addr", 16, ADDR_B)]).build()
         assert actual == expected
 
     def test_ret_u256_patch(self):
         """('ret_u256', offset) source emits ret_u256 + patch_u256."""
         cd = self._template()
         expected = (
-            push_bytes(cd)
-            + ret_u256(0)
-            + patch_u256(4)
-            + push_u256(0)
-            + push_addr(ADDR_A)
-            + push_u256(0)
-            + call(True)
+            push_bytes(cd) + ret_u256(0) + patch_u256(4) + push_u256(0) + push_addr(ADDR_A) + push_u256(0) + call(True)
         )
-        actual = Program().call_with_patches(
-            ADDR_A, cd, [("u256", 4, ("ret_u256", 0))]
-        ).build()
+        actual = Program().call_with_patches(ADDR_A, cd, [("u256", 4, ("ret_u256", 0))]).build()
         assert actual == expected
 
     def test_reg_patch(self):
         """('reg', idx) source emits load_reg + patch_u256."""
         cd = self._template()
         expected = (
-            push_bytes(cd)
-            + load_reg(3)
-            + patch_u256(4)
-            + push_u256(0)
-            + push_addr(ADDR_A)
-            + push_u256(0)
-            + call(True)
+            push_bytes(cd) + load_reg(3) + patch_u256(4) + push_u256(0) + push_addr(ADDR_A) + push_u256(0) + call(True)
         )
-        actual = Program().call_with_patches(
-            ADDR_A, cd, [("u256", 4, ("reg", 3))]
-        ).build()
+        actual = Program().call_with_patches(ADDR_A, cd, [("u256", 4, ("reg", 3))]).build()
         assert actual == expected
 
     def test_reg_patch_addr(self):
         """('reg', idx) with kind='addr' emits load_reg + patch_addr."""
         cd = self._template()
         expected = (
-            push_bytes(cd)
-            + load_reg(5)
-            + patch_addr(16)
-            + push_u256(0)
-            + push_addr(ADDR_A)
-            + push_u256(0)
-            + call(True)
+            push_bytes(cd) + load_reg(5) + patch_addr(16) + push_u256(0) + push_addr(ADDR_A) + push_u256(0) + call(True)
         )
-        actual = Program().call_with_patches(
-            ADDR_A, cd, [("addr", 16, ("reg", 5))]
-        ).build()
+        actual = Program().call_with_patches(ADDR_A, cd, [("addr", 16, ("reg", 5))]).build()
         assert actual == expected
 
     def test_multiple_patches(self):
@@ -691,14 +624,18 @@ class TestCallWithPatches:
             + push_u256(0)
             + call(True)
         )
-        actual = Program().call_with_patches(
-            ADDR_A,
-            cd,
-            [
-                ("u256", 4, 100),
-                ("addr", 4 + 32 + 12, ADDR_B),
-            ],
-        ).build()
+        actual = (
+            Program()
+            .call_with_patches(
+                ADDR_A,
+                cd,
+                [
+                    ("u256", 4, 100),
+                    ("addr", 4 + 32 + 12, ADDR_B),
+                ],
+            )
+            .build()
+        )
         assert actual == expected
 
     def test_value_and_gas_forwarded(self):
@@ -711,57 +648,37 @@ class TestCallWithPatches:
             + push_u256(50_000)  # gas
             + call(True)
         )
-        actual = Program().call_with_patches(
-            ADDR_A, cd, [], value=10**18, gas=50_000
-        ).build()
+        actual = Program().call_with_patches(ADDR_A, cd, [], value=10**18, gas=50_000).build()
         assert actual == expected
 
     def test_require_success_false(self):
         """require_success=False emits CALL with flags=0x00."""
         cd = self._template()
-        expected = (
-            push_bytes(cd)
-            + push_u256(0)
-            + push_addr(ADDR_A)
-            + push_u256(0)
-            + call(False)
-        )
-        actual = Program().call_with_patches(
-            ADDR_A, cd, [], require_success=False
-        ).build()
+        expected = push_bytes(cd) + push_u256(0) + push_addr(ADDR_A) + push_u256(0) + call(False)
+        actual = Program().call_with_patches(ADDR_A, cd, [], require_success=False).build()
         assert actual == expected
 
     def test_unknown_source_type_raises(self):
         with pytest.raises(ValueError, match="unknown source type"):
-            Program().call_with_patches(
-                ADDR_A, self._template(), [("u256", 4, ("badtype", 0))]
-            ).build()
+            Program().call_with_patches(ADDR_A, self._template(), [("u256", 4, ("badtype", 0))]).build()
 
     def test_wrong_kind_for_int_source_raises(self):
         with pytest.raises(ValueError, match="kind='u256'"):
-            Program().call_with_patches(
-                ADDR_A, self._template(), [("addr", 4, 99)]
-            ).build()
+            Program().call_with_patches(ADDR_A, self._template(), [("addr", 4, 99)]).build()
 
     def test_wrong_kind_for_str_source_raises(self):
         with pytest.raises(ValueError, match="kind='addr'"):
-            Program().call_with_patches(
-                ADDR_A, self._template(), [("u256", 4, ADDR_B)]
-            ).build()
+            Program().call_with_patches(ADDR_A, self._template(), [("u256", 4, ADDR_B)]).build()
 
     def test_unknown_patch_kind_raises(self):
         with pytest.raises(ValueError, match="unknown patch kind"):
-            Program().call_with_patches(
-                ADDR_A, self._template(), [("bytes32", 4, 0)]
-            ).build()
+            Program().call_with_patches(ADDR_A, self._template(), [("bytes32", 4, 0)]).build()
 
     def test_chained_with_composition(self):
         """call_with_patches works correctly when composed with other programs."""
         cd = self._template()
         step1 = Program().call_contract(ADDR_A, cd).pop()
-        step2 = Program().call_with_patches(
-            ADDR_A, cd, [("u256", 4, ("ret_u256", 0))]
-        ).pop()
+        step2 = Program().call_with_patches(ADDR_A, cd, [("u256", 4, ("ret_u256", 0))]).pop()
         combined = step1 + step2
         bytecode = combined.build()
         assert len(bytecode) > 0
@@ -803,15 +720,7 @@ class TestArithmeticOpcodes:
     def test_arithmetic_chain(self):
         """push(100) MUL push(60) DIV push(100) emits the correct byte sequence."""
         expected = push_u256(100) + push_u256(60) + mul() + push_u256(100) + div()
-        actual = (
-            Program()
-            .push_u256(100)
-            .push_u256(60)
-            .mul()
-            .push_u256(100)
-            .div()
-            .build()
-        )
+        actual = Program().push_u256(100).push_u256(60).mul().push_u256(100).div().build()
         assert actual == expected
 
 
@@ -839,12 +748,7 @@ class TestSplitSwapComposition:
           4. Call SWAP12 with share0 from reg[1]
           5. Call SWAP13 with share1 from reg[2]
         """
-        step1 = (
-            Program()
-            .call_with_patches(ADDR_A, self._SWAP01, []).pop()
-            .ret_u256(0)
-            .store_reg(0)
-        )
+        step1 = Program().call_with_patches(ADDR_A, self._SWAP01, []).pop().ret_u256(0).store_reg(0)
 
         split = (
             Program()
@@ -909,12 +813,7 @@ class TestSplitSwapComposition:
         """Program.compose([A, B]) == A + B for the split-swap sub-programs."""
         numerator, denominator = 60, 100
 
-        step1 = (
-            Program()
-            .call_with_patches(ADDR_A, self._SWAP01, []).pop()
-            .ret_u256(0)
-            .store_reg(0)
-        )
+        step1 = Program().call_with_patches(ADDR_A, self._SWAP01, []).pop().ret_u256(0).store_reg(0)
         split = (
             Program()
             .load_reg(0)
@@ -968,10 +867,10 @@ class TestEncodeCalldata:
 
         calldata = encode_calldata(
             "function approve(address spender, uint256 amount) external returns (bool)",
-            [ADDR_B, 2 ** 256 - 1],
+            [ADDR_B, 2**256 - 1],
         )
         assert calldata[:4].hex() == "095ea7b3"
-        assert calldata == erc20_approve(ADDR_B, 2 ** 256 - 1)
+        assert calldata == erc20_approve(ADDR_B, 2**256 - 1)
 
     def test_function_keyword_optional(self):
         """Both bare and 'function'-prefixed signatures yield identical calldata."""
@@ -1004,7 +903,7 @@ class TestEncodeCalldata:
             " uint160 sqrtPriceLimitX96) params"
             ")"
         )
-        params = (ADDR_A, ADDR_B, 3000, ADDR_A, 9999, 10 ** 18, 0, 0)
+        params = (ADDR_A, ADDR_B, 3000, ADDR_A, 9999, 10**18, 0, 0)
         calldata = encode_calldata(sig, [params])
 
         # Verify selector
@@ -1049,12 +948,7 @@ class TestCallContractAbi:
 
     def test_selector_in_bytecode(self):
         """The ERC-20 transfer selector 0xa9059cbb appears inside the built bytecode."""
-        bytecode = (
-            Program()
-            .call_contract_abi(ADDR_A, "transfer(address,uint256)", ADDR_B, 1000)
-            .pop()
-            .build()
-        )
+        bytecode = Program().call_contract_abi(ADDR_A, "transfer(address,uint256)", ADDR_B, 1000).pop().build()
         # The selector bytes should be somewhere inside the push_bytes payload
         assert bytes.fromhex("a9059cbb") in bytecode
 
@@ -1066,12 +960,7 @@ class TestCallContractAbi:
 
     def test_no_args_function(self):
         """call_contract_abi works for a zero-argument function."""
-        bytecode = (
-            Program()
-            .call_contract_abi(ADDR_A, "function totalSupply() view returns (uint256)")
-            .pop()
-            .build()
-        )
+        bytecode = Program().call_contract_abi(ADDR_A, "function totalSupply() view returns (uint256)").pop().build()
         assert len(bytecode) > 0
 
     def test_value_and_gas_forwarded(self):

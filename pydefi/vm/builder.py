@@ -590,13 +590,11 @@ class Program:
         Returns:
             ``self`` for chaining.
         """
-        self._emit(push_bytes(calldata))   # [bufIdx]
+        self._emit(push_bytes(calldata))  # [bufIdx]
 
         for kind, offset, source in patches:
             if kind not in ("u256", "addr"):
-                raise ValueError(
-                    f"call_with_patches: unknown patch kind {kind!r}; expected 'u256' or 'addr'"
-                )
+                raise ValueError(f"call_with_patches: unknown patch kind {kind!r}; expected 'u256' or 'addr'")
 
             if isinstance(source, tuple):
                 src_type = source[0]
@@ -608,25 +606,18 @@ class Program:
                     self._emit(load_reg(reg_idx))
                 else:
                     raise ValueError(
-                        f"call_with_patches: unknown source type {src_type!r}; "
-                        "expected 'ret_u256' or 'reg'"
+                        f"call_with_patches: unknown source type {src_type!r}; expected 'ret_u256' or 'reg'"
                     )
             elif isinstance(source, int):
                 if kind != "u256":
-                    raise ValueError(
-                        f"call_with_patches: int source requires kind='u256', got {kind!r}"
-                    )
+                    raise ValueError(f"call_with_patches: int source requires kind='u256', got {kind!r}")
                 self._emit(push_u256(source))
             elif isinstance(source, str):
                 if kind != "addr":
-                    raise ValueError(
-                        f"call_with_patches: str source requires kind='addr', got {kind!r}"
-                    )
+                    raise ValueError(f"call_with_patches: str source requires kind='addr', got {kind!r}")
                 self._emit(push_addr(source))
             else:
-                raise TypeError(
-                    f"call_with_patches: unsupported source type {type(source).__name__!r}"
-                )
+                raise TypeError(f"call_with_patches: unsupported source type {type(source).__name__!r}")
 
             if kind == "u256":
                 self._emit(patch_u256(offset))
@@ -661,9 +652,7 @@ class Program:
         # avoid leaving this Program instance in a partially-updated state.
         for name in other._labels:
             if name in self._labels:
-                raise ValueError(
-                    f"Program: duplicate label {name!r} during extend"
-                )
+                raise ValueError(f"Program: duplicate label {name!r} during extend")
         offset = len(self._buf)
         self._buf.extend(other._buf)
         for name, pos in other._labels.items():
@@ -725,10 +714,7 @@ class Program:
                 raise ValueError(f"Program: undefined label {name!r}")
             target = self._labels[name]
             if not 0 <= target <= 0xFFFF:
-                raise ValueError(
-                    f"Program: label {name!r} target offset {target} "
-                    "out of range for 16-bit jump"
-                )
+                raise ValueError(f"Program: label {name!r} target offset {target} out of range for 16-bit jump")
             struct.pack_into(">H", buf, fixup_offset, target)
         return bytes(buf)
 
