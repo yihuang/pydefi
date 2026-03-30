@@ -165,11 +165,7 @@ class MultiRpcProvider(AsyncJSONBaseProvider):
             # temporary one for every fallback so unused endpoint objects are
             # never retained.
             is_current = i == 0 and self._current_provider is not None
-            candidate = (
-                self._current_provider
-                if is_current
-                else self._build_provider(self._endpoints[index])
-            )
+            candidate = self._current_provider if is_current else self._build_provider(self._endpoints[index])
             try:
                 response = await candidate.make_request(method, params)
                 # Success – adopt this provider as the new current one and drop the old.
@@ -205,11 +201,7 @@ class MultiRpcProvider(AsyncJSONBaseProvider):
         for i in range(n):
             index = (self._current_index + i) % n
             is_current = i == 0 and self._current_provider is not None
-            p = (
-                self._current_provider
-                if is_current
-                else self._build_provider(self._endpoints[index])
-            )
+            p = self._current_provider if is_current else self._build_provider(self._endpoints[index])
             try:
                 connected = await p.is_connected(show_traceback=show_traceback)
             except Exception:
