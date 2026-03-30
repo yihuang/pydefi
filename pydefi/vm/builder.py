@@ -232,6 +232,147 @@ PatchSource = bytes
 #: - *opcodes*: :data:`PatchSource` — raw bytecode that pushes the patch value.
 PatchSpec = tuple[str, int, PatchSource]
 
+
+class Patch:
+    """Marks a runtime-patched argument for :meth:`Program.call_contract_abi`.
+
+    Wrap a :data:`PatchSource` (DeFiVM opcode bytes that push exactly one
+    value onto the stack) in a :class:`Patch` to signal that the corresponding
+    positional argument in ``call_contract_abi`` should be filled at runtime
+    rather than baked into the calldata template.
+
+    ``call_contract_abi`` automatically:
+
+    1. Generates a unique 32-byte sentinel ("needle") value that is valid for
+       the declared Solidity type and distinguishable in the encoded calldata.
+    2. Encodes the full ABI calldata using the sentinel in place of the
+       patched argument.
+    3. Locates each sentinel's byte offset within the encoded calldata.
+    4. Delegates to :meth:`~Program.call_with_patches` with ``kind="u256"``
+       patches at the discovered offsets.
+
+    This mechanism works for any Solidity parameter type whose ABI encoding
+    occupies a single 32-byte slot (``uint<N>``, ``int<N>``, ``address``,
+    ``bytes<N>``, ``bool``).  Dynamic types (``bytes``, ``string``, arrays)
+    and tuple types are *not* supported.
+
+    Args:
+        opcodes: Raw DeFiVM bytecode that, when executed, pushes the runtime
+            value onto the stack.  Any instruction sequence that leaves a
+            single item on the stack is valid — for example
+            ``load_reg(1)``, ``ret_u256(0)``, or ``push_u256(42)``.
+
+    Example::
+
+        from pydefi.vm import Program, Patch
+        from pydefi.vm.program import load_reg, ret_u256
+
+        # Patch uint256 amountIn from register 1, address recipient from register 2
+        bytecode = (
+            Program()
+            .call_contract_abi(
+                ROUTER,
+                "function swap(uint256 amountIn, address recipient)",
+                Patch(load_reg(1)),
+                Patch(load_reg(2)),
+            )
+            .pop()
+            .build()
+        )
+    """
+
+    def __init__(self, opcodes: PatchSource) -> None:
+        self.opcodes: bytes = bytes(opcodes)
+
+
+# ---------------------------------------------------------------------------
+# Needle helpers — used by call_contract_abi to auto-locate patch offsets
+# ---------------------------------------------------------------------------
+
+#: 8 distinctive bytes used as a sentinel prefix in generated needle values.
+#: Chosen to be extremely unlikely to appear in real contract arguments.
+_NEEDLE_MARKER: bytes = b"\xde\xad\xbe\xef\xca\xfe\xba\xbe"
+
+
+def _make_needle(type_str: str, idx: int) -> tuple[object, bytes]:
+    """Return *(python_value, abi_encoded_32bytes)* for a unique sentinel.
+
+    The sentinel is designed so that its 32-byte ABI encoding is
+    ``b"\\x00" * 20 + _NEEDLE_MARKER + (idx + 1).to_bytes(4, "big")``,
+    which is the same pattern for both ``uint<N>`` and ``address`` types,
+    making offset discovery trivial.
+
+    Args:
+        type_str: Solidity canonical type string, e.g. ``"uint256"``,
+            ``"address"``, ``"bytes32"``.
+        idx: Zero-based index of this patch among all patches in the call;
+            ensures each needle is unique.
+
+    Returns:
+        A *(python_value, 32_byte_abi_encoding)* pair.
+
+    Raises:
+        ValueError: If *type_str* is a dynamic or unsupported type, or if
+            the integer type is too narrow to hold a unique needle.
+    """
+    tail: bytes = _NEEDLE_MARKER + (idx + 1).to_bytes(4, "big")  # 12 bytes
+    abi_enc: bytes = b"\x00" * 20 + tail  # 32-byte ABI slot pattern
+
+    type_str = type_str.strip()
+
+    if type_str == "address":
+        # ABI-encoding of an address is b'\x00'*12 + addr(20 bytes).
+        # With addr = b'\x00'*8 + tail, the full 32-byte slot is abi_enc. ✓
+        addr_bytes = b"\x00" * 8 + tail  # 20 bytes
+        return "0x" + addr_bytes.hex(), abi_enc
+
+    if type_str == "bool":
+        # bool only encodes to 0 or 1 — cannot hold a unique needle.
+        raise ValueError(
+            "Patch: type 'bool' cannot hold a unique needle value; "
+            "use a static Python bool argument instead."
+        )
+
+    if type_str.startswith("bytes"):
+        suffix = type_str[5:]
+        if suffix == "" or not suffix.isdigit():
+            raise ValueError(
+                f"Patch: dynamic type {type_str!r} is not supported; "
+                "only fixed-size 32-byte-slot types are allowed."
+            )
+        n = int(suffix)  # bytesN, N in 1..32
+        # The needle tail is 12 bytes (8 marker + 4 counter), so the bytesN value
+        # must be at least 12 bytes wide to embed the full distinctive tail.
+        if n < 12:
+            raise ValueError(
+                f"Patch: type {type_str!r} is too small to hold a unique needle "
+                f"(need at least bytes12)."
+            )
+        # ABI encoding of bytesN is left-aligned, right-padded with zeros to 32 bytes.
+        # Use the first n bytes of abi_enc as the value so the ABI-encoded form is abi_enc.
+        val_bytes = abi_enc[:n]
+        return val_bytes, abi_enc
+
+    if type_str.startswith("uint") or type_str.startswith("int"):
+        base = "uint" if type_str.startswith("uint") else "int"
+        bits_str = type_str[len(base) :]
+        bits = int(bits_str) if bits_str.isdigit() else 256
+        # The needle tail is 12 bytes = 96 bits, so the integer type must be at
+        # least 96 bits wide to represent the full distinctive value.
+        if bits < 96:
+            raise ValueError(
+                f"Patch: type {type_str!r} is too small to hold a unique needle "
+                f"(need at least uint96 / int96)."
+            )
+        val = int.from_bytes(abi_enc, "big")
+        return val, abi_enc
+
+    raise ValueError(
+        f"Patch: type {type_str!r} is not supported for automatic offset detection. "
+        "Only uint<N>, int<N>, address, and bytesN (N≥12) are supported."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Program builder
 # ---------------------------------------------------------------------------
@@ -485,14 +626,30 @@ class Program:
         All Solidity primitive types as well as nested tuples and arrays are
         supported (anything that :func:`eth_abi.encode` can handle).
 
+        When one or more positional arguments are :class:`Patch` instances the
+        method automatically:
+
+        1. Generates a unique 32-byte sentinel ("needle") for each patched
+           argument that is valid for its declared Solidity type.
+        2. Encodes the full ABI calldata using those sentinels.
+        3. Locates each sentinel's byte offset inside the encoded calldata.
+        4. Delegates to :meth:`call_with_patches` with ``kind="u256"`` patches
+           at the discovered offsets and the :attr:`~Patch.opcodes` as the source.
+
+        This works for any parameter type whose ABI encoding occupies a single
+        32-byte slot: ``uint<N>``, ``int<N>`` (≥ 96 bits), ``address``, and
+        ``bytes<N>`` (N ≥ 12).  Dynamic types (``bytes``, ``string``, arrays)
+        and tuple types cannot be patched.
+
         Args:
             to: Target contract address (hex string with ``0x`` prefix).
             abi_sig: Human-readable function signature, e.g.
                 ``"transfer(address,uint256)"`` or
                 ``"function exactInputSingle((address,address,uint24,...) params)"``.
             *args: Positional arguments matching the signature's input parameters.
-                Addresses must be ``str``; numbers must be ``int``.
-                Tuple parameters are passed as Python ``tuple`` (or ``NamedTuple``).
+                Plain values (``int``, ``str`` address, ``tuple``, …) are encoded
+                statically.  :class:`Patch` instances are replaced with unique
+                sentinel values; their offsets are resolved automatically.
             value: ETH value to forward with the call (wei), default 0.
             gas: Gas limit for the sub-call (0 = forward all remaining gas).
             require_success: If ``True`` (default), revert if the sub-call fails.
@@ -500,7 +657,7 @@ class Program:
         Returns:
             ``self`` for chaining.
 
-        Example::
+        Example (static args)::
 
             # ERC-20 transfer — no need to pre-build calldata
             bytecode = (
@@ -510,18 +667,19 @@ class Program:
                 .build()
             )
 
-            # Uniswap V3 exactInputSingle with a struct argument
+        Example with :class:`Patch`::
+
+            from pydefi.vm import Program, Patch
+            from pydefi.vm.program import load_reg
+
+            # Patch uint256 amountIn from register 1, address recipient from register 2
             bytecode = (
                 Program()
                 .call_contract_abi(
                     ROUTER,
-                    "function exactInputSingle("
-                    "  (address tokenIn, address tokenOut, uint24 fee,"
-                    "   address recipient, uint256 deadline,"
-                    "   uint256 amountIn, uint256 amountOutMinimum,"
-                    "   uint160 sqrtPriceLimitX96) params"
-                    ")",
-                    (TOKEN_IN, TOKEN_OUT, 3000, RECIPIENT, deadline, amount_in, 0, 0),
+                    "function swap(uint256 amountIn, address recipient)",
+                    Patch(load_reg(1)),
+                    Patch(load_reg(2)),
                 )
                 .pop()
                 .build()
@@ -530,8 +688,50 @@ class Program:
         from eth_contract.contract import ContractFunction
 
         normalised = abi_sig if abi_sig.lstrip().startswith("function ") else "function " + abi_sig
-        calldata = bytes(ContractFunction.from_abi(normalised)(*args).data)
-        return self.call_contract(to, calldata, value=value, gas=gas, require_success=require_success)
+
+        # Fast path: no Patch objects — encode directly and delegate to call_contract.
+        if not any(isinstance(a, Patch) for a in args):
+            calldata = bytes(ContractFunction.from_abi(normalised)(*args).data)
+            return self.call_contract(to, calldata, value=value, gas=gas, require_success=require_success)
+
+        # Slow path: replace each Patch arg with a unique needle, encode the
+        # calldata template, locate each needle's offset, then call_with_patches.
+        fn = ContractFunction.from_abi(normalised)
+        param_types: list[str] = fn.input_types
+
+        if len(args) != len(param_types):
+            raise ValueError(
+                f"call_contract_abi: expected {len(param_types)} argument(s) "
+                f"for signature {abi_sig!r}, got {len(args)}."
+            )
+
+        concrete_args: list[object] = []
+        needle_patterns: list[tuple[bytes, Patch]] = []  # (32-byte pattern, Patch)
+        patch_counter = 0
+
+        for i, (arg, ptype) in enumerate(zip(args, param_types)):
+            if isinstance(arg, Patch):
+                python_val, abi_enc = _make_needle(ptype, patch_counter)
+                concrete_args.append(python_val)
+                needle_patterns.append((abi_enc, arg))
+                patch_counter += 1
+            else:
+                concrete_args.append(arg)
+
+        calldata = bytes(fn(*concrete_args).data)
+
+        patches: list[PatchSpec] = []
+        for idx, (pattern, patch_obj) in enumerate(needle_patterns):
+            offset = calldata.find(pattern)
+            if offset == -1:
+                raise RuntimeError(
+                    f"call_contract_abi: needle for patch argument {idx} "
+                    "not found in encoded calldata. "
+                    "This is an internal error — please report it."
+                )
+            patches.append(("u256", offset, patch_obj.opcodes))
+
+        return self.call_with_patches(to, calldata, patches, value=value, gas=gas, require_success=require_success)
 
     def call_with_patches(
         self,

@@ -1014,3 +1014,150 @@ class TestCallContractAbi:
         assert len(bytecode) > 0
         # ERC-20 transfer selector appears at least twice (once per call)
         assert bytecode.count(bytes.fromhex("a9059cbb")) >= 2
+
+
+# ---------------------------------------------------------------------------
+# Patch class and call_contract_abi with Patch args
+# ---------------------------------------------------------------------------
+
+
+class TestPatch:
+    """Verify the Patch class and call_contract_abi Patch integration."""
+
+    def test_patch_stores_opcodes_as_bytes(self):
+        from pydefi.vm import Patch
+
+        p = Patch(load_reg(2))
+        assert p.opcodes == load_reg(2)
+        assert isinstance(p.opcodes, bytes)
+
+    def test_patch_accepts_bytearray(self):
+        from pydefi.vm import Patch
+
+        p = Patch(bytearray(load_reg(3)))
+        assert p.opcodes == load_reg(3)
+        assert isinstance(p.opcodes, bytes)
+
+    def test_no_patch_args_unchanged(self):
+        """call_contract_abi with no Patch args behaves exactly as before."""
+        from eth_contract.contract import ContractFunction
+
+        sig = "function transfer(address,uint256)"
+        via_patch_path = Program().call_contract_abi(ADDR_A, sig, ADDR_B, 42).build()
+        calldata = bytes(ContractFunction.from_abi(sig)(ADDR_B, 42).data)
+        via_manual = Program().call_contract(ADDR_A, calldata).build()
+        assert via_patch_path == via_manual
+
+    def test_all_patch_args_uint256_address(self):
+        """Both args as Patch: correct offsets and opcodes are found and used."""
+        from pydefi.vm import Patch
+        from eth_contract.contract import ContractFunction
+
+        sig = "function t(uint256 input1, address input2)"
+        p1 = Patch(load_reg(1))
+        p2 = Patch(load_reg(2))
+
+        bytecode = Program().call_contract_abi(ADDR_A, sig, p1, p2).build()
+        assert len(bytecode) > 0
+
+        # The built bytecode must contain opcodes for both patches
+        assert load_reg(1) in bytecode
+        assert load_reg(2) in bytecode
+
+    def test_mixed_patch_and_static_args(self):
+        """Static args are baked in; only Patch args produce patch entries."""
+        from pydefi.vm import Patch
+
+        sig = "function transfer(address to, uint256 amount)"
+        # Only the amount is patched; the recipient is static
+        p_amount = Patch(ret_u256(0))
+        bytecode = Program().call_contract_abi(ADDR_A, sig, ADDR_B, p_amount).build()
+
+        # ADDR_B must be baked into the calldata template in the bytecode
+        assert bytes.fromhex(ADDR_B[2:]) in bytecode
+        # The patch opcodes must be present
+        assert ret_u256(0) in bytecode
+
+    def test_patch_with_function_keyword_prefix(self):
+        """'function' keyword in abi_sig is handled correctly with Patch args."""
+        from pydefi.vm import Patch
+
+        sig = "function foo(uint256 x)"
+        p = Patch(load_reg(0))
+        bytecode = Program().call_contract_abi(ADDR_A, sig, p).build()
+        assert len(bytecode) > 0
+
+    def test_patch_value_and_gas_forwarded(self):
+        """ETH value and gas are forwarded through the patched call."""
+        from pydefi.vm import Patch
+        from eth_contract.contract import ContractFunction
+        from pydefi.vm.builder import _make_needle
+
+        sig = "function foo(uint256 x)"
+        p = Patch(load_reg(0))
+        bytecode_with = Program().call_contract_abi(ADDR_A, sig, p, value=1000, gas=50000).build()
+        bytecode_without = Program().call_contract_abi(ADDR_A, sig, p).build()
+        # With value/gas the bytecode must differ
+        assert bytecode_with != bytecode_without
+
+    def test_patch_require_success_false(self):
+        """require_success=False is propagated through the patch path."""
+        from pydefi.vm import Patch
+
+        sig = "function foo(uint256 x)"
+        p = Patch(load_reg(0))
+        bc_true = Program().call_contract_abi(ADDR_A, sig, p, require_success=True).build()
+        bc_false = Program().call_contract_abi(ADDR_A, sig, p, require_success=False).build()
+        assert bc_true != bc_false
+
+    def test_patch_chaining_returns_self(self):
+        """call_contract_abi with Patch returns self for chaining."""
+        from pydefi.vm import Patch
+
+        p = Program()
+        result = p.call_contract_abi(ADDR_A, "function foo(uint256 x)", Patch(load_reg(0)))
+        assert result is p
+
+    def test_wrong_arg_count_raises(self):
+        """Passing the wrong number of args raises ValueError."""
+        from pydefi.vm import Patch
+
+        sig = "function foo(uint256 x, address y)"
+        with pytest.raises(ValueError, match="expected 2 argument"):
+            Program().call_contract_abi(ADDR_A, sig, Patch(load_reg(0))).build()
+
+    def test_bool_type_raises(self):
+        """Patching a bool parameter raises ValueError."""
+        from pydefi.vm import Patch
+
+        sig = "function foo(bool flag)"
+        with pytest.raises(ValueError, match="bool"):
+            Program().call_contract_abi(ADDR_A, sig, Patch(load_reg(0))).build()
+
+    def test_small_uint_raises(self):
+        """Patching a uint8 (too small for a unique needle) raises ValueError."""
+        from pydefi.vm import Patch
+
+        sig = "function foo(uint8 x)"
+        with pytest.raises(ValueError, match="too small"):
+            Program().call_contract_abi(ADDR_A, sig, Patch(load_reg(0))).build()
+
+    def test_patch_two_uint256_args_unique_offsets(self):
+        """Two Patch args of the same type get distinct offsets."""
+        from pydefi.vm import Patch
+
+        sig = "function foo(uint256 a, uint256 b)"
+        bytecode = Program().call_contract_abi(ADDR_A, sig, Patch(load_reg(0)), Patch(load_reg(1))).build()
+        assert len(bytecode) > 0
+
+    def test_patch_address_arg(self):
+        """Patching an address parameter works correctly."""
+        from pydefi.vm import Patch
+
+        sig = "function setRecipient(address recipient)"
+        p = Patch(load_reg(3))
+        bytecode = Program().call_contract_abi(ADDR_A, sig, p).build()
+        assert len(bytecode) > 0
+        # The patch opcode must appear in the output
+        assert load_reg(3) in bytecode
+

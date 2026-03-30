@@ -37,7 +37,7 @@ Two complementary interfaces are provided:
         )
 """
 
-from pydefi.vm.builder import PatchSource, PatchSpec, Program
+from pydefi.vm.builder import Patch, PatchSource, PatchSpec, Program
 from pydefi.vm.program import (
     OP_ADD,
     OP_ASSERT_GE,
@@ -94,7 +94,8 @@ from pydefi.vm.program import (
 __all__ = [
     # Fluent builder
     "Program",
-    # Patch type aliases
+    # Patch type aliases and Patch class
+    "Patch",
     "PatchSource",
     "PatchSpec",
     # Opcode constants
