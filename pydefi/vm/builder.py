@@ -30,7 +30,7 @@ Basic usage::
     bytecode = (
         Program()
         # approve router to spend tokens
-        .call_contract(TOKEN, bytes(ERC20.fns.approve(ROUTER, AMOUNT).data))
+        .call_contract(TOKEN, ERC20.fns.approve(ROUTER, AMOUNT).data)
         .pop()  # consume CALL success flag
         # swap (pre-built calldata)
         .call_contract(ROUTER, swap_calldata, value=0, gas=0)
@@ -61,7 +61,7 @@ Composition example::
 
     from eth_contract.erc20 import ERC20
 
-    approve = Program().call_contract(TOKEN, bytes(ERC20.fns.approve(ROUTER, MAX_U256).data)).pop()
+    approve = Program().call_contract(TOKEN, ERC20.fns.approve(ROUTER, MAX_U256).data).pop()
     swap    = Program().call_contract(ROUTER, swap_calldata).pop()
 
     full = approve + swap            # returns a new Program

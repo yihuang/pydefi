@@ -25,7 +25,7 @@ Two complementary interfaces are provided:
 
         bytecode = (
             Program()
-            .call_contract(TOKEN, bytes(ERC20.fns.approve(ROUTER, amount_in).data))
+            .call_contract(TOKEN, ERC20.fns.approve(ROUTER, amount_in).data)
             .pop()  # consume CALL success flag
             .call_contract(ROUTER, swap_calldata)
             .pop()  # consume CALL success flag
@@ -37,7 +37,6 @@ Two complementary interfaces are provided:
         )
 """
 
-from pydefi.vm.abi import encode_calldata
 from pydefi.vm.builder import PatchSource, PatchSpec, Program
 from pydefi.vm.program import (
     OP_ADD,
@@ -98,8 +97,6 @@ __all__ = [
     # Patch type aliases
     "PatchSource",
     "PatchSpec",
-    # ABI helpers
-    "encode_calldata",
     # Opcode constants
     "OP_PUSH_U256",
     "OP_PUSH_ADDR",

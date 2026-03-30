@@ -855,72 +855,64 @@ class TestSplitSwapComposition:
 
 
 # ---------------------------------------------------------------------------
-# encode_calldata and call_contract_abi
+# call_contract_abi and ContractFunction.from_abi integration
 # ---------------------------------------------------------------------------
 
 
 class TestEncodeCalldata:
-    """Verify encode_calldata produces correct selectors and ABI-encoded args."""
+    """Verify that ContractFunction.from_abi encodes calldata correctly."""
 
     def test_no_args_selector(self):
         """A zero-argument function yields only the 4-byte selector."""
+        from eth_contract.contract import ContractFunction
         from eth_utils import keccak
 
-        from pydefi.vm.abi import encode_calldata
-
-        result = encode_calldata("function totalSupply() view returns (uint256)")
+        result = ContractFunction.from_abi("function totalSupply() view returns (uint256)")().data
         expected_selector = keccak(text="totalSupply()")[:4]
         assert result == expected_selector
 
     def test_transfer_selector_and_encoding(self):
         """transfer(address,uint256) matches the known ERC-20 selector."""
+        from eth_contract.contract import ContractFunction
         from eth_contract.erc20 import ERC20
 
-        from pydefi.vm.abi import encode_calldata
-
-        calldata = encode_calldata("transfer(address,uint256)", [ADDR_A, 1000])
-        # First 4 bytes must be the well-known ERC-20 transfer selector
+        calldata = ContractFunction.from_abi("function transfer(address,uint256)")(ADDR_A, 1000).data
         assert calldata[:4].hex() == "a9059cbb"
-        # Encoding must match the eth-contract library output
-        assert calldata == bytes(ERC20.fns.transfer(ADDR_A, 1000).data)
+        assert calldata == ERC20.fns.transfer(ADDR_A, 1000).data
 
     def test_approve_selector_and_encoding(self):
         """approve(address,uint256) matches the known ERC-20 selector."""
+        from eth_contract.contract import ContractFunction
         from eth_contract.erc20 import ERC20
 
-        from pydefi.vm.abi import encode_calldata
-
-        calldata = encode_calldata(
-            "function approve(address spender, uint256 amount) external returns (bool)",
-            [ADDR_B, 2**256 - 1],
-        )
+        calldata = ContractFunction.from_abi(
+            "function approve(address spender, uint256 amount) external returns (bool)"
+        )(ADDR_B, 2**256 - 1).data
         assert calldata[:4].hex() == "095ea7b3"
-        assert calldata == bytes(ERC20.fns.approve(ADDR_B, 2**256 - 1).data)
+        assert calldata == ERC20.fns.approve(ADDR_B, 2**256 - 1).data
 
     def test_function_keyword_optional(self):
         """Both bare and 'function'-prefixed signatures yield identical calldata."""
-        from pydefi.vm.abi import encode_calldata
+        from eth_contract.contract import ContractFunction
 
-        bare = encode_calldata("transfer(address,uint256)", [ADDR_A, 42])
-        full = encode_calldata("function transfer(address to, uint256 amount)", [ADDR_A, 42])
+        bare = ContractFunction.from_abi("function transfer(address,uint256)")(ADDR_A, 42).data
+        full = ContractFunction.from_abi("function transfer(address to, uint256 amount)")(ADDR_A, 42).data
         assert bare == full
 
     def test_param_names_optional(self):
         """Signatures with and without parameter names are equivalent."""
-        from pydefi.vm.abi import encode_calldata
+        from eth_contract.contract import ContractFunction
 
-        with_names = encode_calldata("transfer(address to, uint256 amount)", [ADDR_A, 7])
-        without_names = encode_calldata("transfer(address,uint256)", [ADDR_A, 7])
+        with_names = ContractFunction.from_abi("function transfer(address to, uint256 amount)")(ADDR_A, 7).data
+        without_names = ContractFunction.from_abi("function transfer(address,uint256)")(ADDR_A, 7).data
         assert with_names == without_names
 
     def test_tuple_type_encoding(self):
         """Tuple (struct) arguments are encoded correctly."""
         from eth_abi import encode
+        from eth_contract.contract import ContractFunction
         from eth_utils import keccak
 
-        from pydefi.vm.abi import encode_calldata
-
-        # exactInputSingle((address,address,uint24,address,uint256,uint256,uint256,uint160))
         sig = (
             "function exactInputSingle("
             "(address tokenIn, address tokenOut, uint24 fee, address recipient,"
@@ -929,30 +921,28 @@ class TestEncodeCalldata:
             ")"
         )
         params = (ADDR_A, ADDR_B, 3000, ADDR_A, 9999, 10**18, 0, 0)
-        calldata = encode_calldata(sig, [params])
+        calldata = ContractFunction.from_abi(sig)(params).data
 
-        # Verify selector
         canonical = "exactInputSingle((address,address,uint24,address,uint256,uint256,uint256,uint160))"
         expected_selector = keccak(text=canonical)[:4]
         assert calldata[:4] == expected_selector
 
-        # Verify payload
         abi_type = "(address,address,uint24,address,uint256,uint256,uint256,uint160)"
         expected_payload = encode([abi_type], [params])
         assert calldata[4:] == expected_payload
 
     def test_result_starts_with_selector_length(self):
-        """The result is at least 4 bytes (selector) for any input."""
-        from pydefi.vm.abi import encode_calldata
+        """The result is at least 4 bytes (selector) for any function."""
+        from eth_contract.contract import ContractFunction
 
-        result = encode_calldata("function fallback_()")
+        result = ContractFunction.from_abi("function fallback_()")().data
         assert len(result) == 4  # only selector, no args
 
     def test_uint256_arg(self):
         """A uint256 argument is encoded as a 32-byte big-endian word."""
-        from pydefi.vm.abi import encode_calldata
+        from eth_contract.contract import ContractFunction
 
-        result = encode_calldata("function foo(uint256 x)", [0xDEAD])
+        result = ContractFunction.from_abi("function foo(uint256 x)")(0xDEAD).data
         assert len(result) == 4 + 32
         assert int.from_bytes(result[4:], "big") == 0xDEAD
 
@@ -961,14 +951,14 @@ class TestCallContractAbi:
     """Verify that Program.call_contract_abi delegates correctly."""
 
     def test_produces_same_bytecode_as_call_contract(self):
-        """call_contract_abi(to, sig, *args) == call_contract(to, encode_calldata(sig, args))."""
-        from pydefi.vm.abi import encode_calldata
+        """call_contract_abi(to, sig, *args) == call_contract(to, ContractFunction.from_abi(sig)(*args).data)."""
+        from eth_contract.contract import ContractFunction
 
-        sig = "transfer(address,uint256)"
+        sig = "function transfer(address,uint256)"
         args = [ADDR_B, 500]
 
         via_abi = Program().call_contract_abi(ADDR_A, sig, *args).build()
-        via_manual = Program().call_contract(ADDR_A, encode_calldata(sig, args)).build()
+        via_manual = Program().call_contract(ADDR_A, ContractFunction.from_abi(sig)(*args).data).build()
         assert via_abi == via_manual
 
     def test_selector_in_bytecode(self):
@@ -990,24 +980,28 @@ class TestCallContractAbi:
 
     def test_value_and_gas_forwarded(self):
         """ETH value and gas limit are forwarded to the underlying call_contract."""
-        from pydefi.vm.abi import encode_calldata
+        from eth_contract.contract import ContractFunction
 
-        sig = "transfer(address,uint256)"
+        sig = "function transfer(address,uint256)"
         args = [ADDR_B, 42]
 
         via_abi = Program().call_contract_abi(ADDR_A, sig, *args, value=100, gas=50000).build()
-        via_manual = Program().call_contract(ADDR_A, encode_calldata(sig, args), value=100, gas=50000).build()
+        via_manual = (
+            Program().call_contract(ADDR_A, ContractFunction.from_abi(sig)(*args).data, value=100, gas=50000).build()
+        )
         assert via_abi == via_manual
 
     def test_require_success_false(self):
         """require_success=False is forwarded correctly."""
-        from pydefi.vm.abi import encode_calldata
+        from eth_contract.contract import ContractFunction
 
-        sig = "transfer(address,uint256)"
+        sig = "function transfer(address,uint256)"
         args = [ADDR_B, 1]
 
         via_abi = Program().call_contract_abi(ADDR_A, sig, *args, require_success=False).build()
-        via_manual = Program().call_contract(ADDR_A, encode_calldata(sig, args), require_success=False).build()
+        via_manual = (
+            Program().call_contract(ADDR_A, ContractFunction.from_abi(sig)(*args).data, require_success=False).build()
+        )
         assert via_abi == via_manual
 
     def test_compose_with_other_programs(self):
