@@ -289,40 +289,45 @@ class Patch:
 # ---------------------------------------------------------------------------
 
 
-def _make_needle(type_str: str, idx: int, marker: bytes) -> tuple[object, bytes]:
+def _make_needle(type_str: str, idx: int) -> tuple[object, bytes]:
     """Return *(python_value, abi_encoded_32bytes)* for a unique integer sentinel.
 
-    The sentinel's 32-byte ABI encoding is
-    ``b"\\x00" * 20 + marker + (idx + 1).to_bytes(4, "big")``.
-    *marker* is 8 bytes generated fresh per ``call_contract_abi`` invocation so
-    the needle is vanishingly unlikely to collide with real calldata.
+    Uses as much entropy as the type allows: ``(N/8 - 4)`` fresh random bytes
+    followed by a 4-byte index counter, forming an ``N/8``-byte value that is
+    left-padded with zeros to produce the 32-byte ABI slot.
+
+    For the common ``uint256`` case this gives 28 random bytes + 4 index bytes,
+    filling almost the entire 256-bit slot with entropy.
 
     Only ``uint<N>`` and ``int<N>`` with N ≥ 96 are supported; narrower types
-    cannot hold a 12-byte tail (8-byte marker + 4-byte counter).
+    cannot hold even the 4-byte index plus a meaningful random prefix.
 
     Args:
         type_str: Solidity canonical type, e.g. ``"uint256"``.
         idx: Zero-based index among all patches in the call.
-        marker: 8 random bytes generated once per ``call_contract_abi`` call.
 
     Raises:
         ValueError: If *type_str* is not a supported integer type or is too narrow.
     """
-    tail: bytes = marker + (idx + 1).to_bytes(4, "big")  # 12 bytes
-    abi_enc: bytes = b"\x00" * 20 + tail  # 32-byte ABI slot pattern
-
     type_str = type_str.strip()
 
     if type_str.startswith("uint") or type_str.startswith("int"):
         base = "uint" if type_str.startswith("uint") else "int"
         bits_str = type_str[len(base):]
         bits = int(bits_str) if bits_str.isdigit() else 256
-        # Need at least 96 bits (12 bytes) to embed the full marker+idx tail.
+        # Need at least 96 bits (12 bytes) so there are ≥ 8 random bytes
+        # in addition to the 4-byte index.
         if bits < 96:
             raise ValueError(
                 f"Patch: type {type_str!r} is too small to hold a unique needle "
                 f"(need at least uint96 / int96)."
             )
+        byte_width = bits // 8          # e.g. 32 for uint256
+        rand_len = byte_width - 4       # e.g. 28 for uint256
+        rand_bytes = os.urandom(rand_len)
+        idx_bytes = (idx + 1).to_bytes(4, "big")
+        payload = rand_bytes + idx_bytes  # byte_width bytes
+        abi_enc = b"\x00" * (32 - byte_width) + payload  # 32-byte ABI slot
         val = int.from_bytes(abi_enc, "big")
         return val, abi_enc
 
@@ -374,7 +379,6 @@ def _replace_patches(
     type_str: str,
     patch_counter: list[int],
     needle_patterns: list[tuple[bytes, "Patch"]],
-    marker: bytes,
 ) -> object:
     """Recursively replace :class:`Patch` instances with unique needle values.
 
@@ -389,13 +393,12 @@ def _replace_patches(
             across recursive calls to ensure each needle is unique.
         needle_patterns: Accumulator list; each resolved patch appends a
             ``(32_byte_pattern, Patch)`` entry.
-        marker: 8 random bytes from the enclosing ``call_contract_abi`` call.
 
     Returns:
         *arg* with every :class:`Patch` replaced by its needle Python value.
     """
     if isinstance(arg, Patch):
-        python_val, abi_enc = _make_needle(type_str.strip(), patch_counter[0], marker)
+        python_val, abi_enc = _make_needle(type_str.strip(), patch_counter[0])
         needle_patterns.append((abi_enc, arg))
         patch_counter[0] += 1
         return python_val
@@ -404,7 +407,7 @@ def _replace_patches(
     if type_str.startswith("(") and isinstance(arg, tuple):
         component_types = _parse_tuple_component_types(type_str)
         return tuple(
-            _replace_patches(sub_arg, sub_type, patch_counter, needle_patterns, marker)
+            _replace_patches(sub_arg, sub_type, patch_counter, needle_patterns)
             for sub_arg, sub_type in zip(arg, component_types)
         )
 
@@ -743,13 +746,12 @@ class Program:
                 f"for signature {abi_sig!r}, got {len(args)}."
             )
 
-        marker = os.urandom(8)
         concrete_args: list[object] = []
         needle_patterns: list[tuple[bytes, Patch]] = []  # (32-byte pattern, Patch)
         patch_counter: list[int] = [0]
 
         for arg, ptype in zip(args, param_types):
-            concrete_args.append(_replace_patches(arg, ptype, patch_counter, needle_patterns, marker))
+            concrete_args.append(_replace_patches(arg, ptype, patch_counter, needle_patterns))
 
         calldata = fn(*concrete_args).data
 
