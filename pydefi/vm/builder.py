@@ -360,7 +360,7 @@ def _validate_patch_type(type_str: str) -> None:
         bits = int(bits_str) if bits_str.isdigit() else 256
         if bits < 96:
             raise ValueError(
-                f"Patch: type {type_str!r} is too small to hold a unique needle "
+                f"Patch: type {type_str!r} is too narrow for offset detection "
                 f"(need at least {'int' if is_signed else 'uint'}96)."
             )
         return

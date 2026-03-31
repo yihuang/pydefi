@@ -1132,11 +1132,11 @@ class TestPatch:
             Program().call_contract_abi(ADDR_A, sig, Patch(load_reg(0))).build()
 
     def test_small_uint_raises(self):
-        """Patching a uint8 (too small for a unique needle) raises ValueError."""
+        """Patching a uint8 (too narrow for offset detection) raises ValueError."""
         from pydefi.vm import Patch
 
         sig = "function foo(uint8 x)"
-        with pytest.raises(ValueError, match="too small"):
+        with pytest.raises(ValueError, match="too narrow"):
             Program().call_contract_abi(ADDR_A, sig, Patch(load_reg(0))).build()
 
     def test_patch_two_uint256_args_unique_offsets(self):
