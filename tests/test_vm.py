@@ -1148,13 +1148,29 @@ class TestPatch:
         assert len(bytecode) > 0
 
     def test_patch_address_arg_raises(self):
-        """Patching an address parameter raises ValueError (only int types supported)."""
+        """Patching an address parameter raises ValueError (only uint<N> types supported)."""
         from pydefi.vm import Patch
 
         sig = "function setRecipient(address recipient)"
         p = Patch(load_reg(3))
         with pytest.raises(ValueError, match="not supported"):
             Program().call_contract_abi(ADDR_A, sig, p).build()
+
+    def test_patch_int_type_raises(self):
+        """Patching a signed int parameter raises ValueError (only uint<N> is supported)."""
+        from pydefi.vm import Patch
+
+        sig = "function foo(int256 x)"
+        with pytest.raises(ValueError, match="not supported"):
+            Program().call_contract_abi(ADDR_A, sig, Patch(load_reg(0))).build()
+
+    def test_patch_inside_list_raises(self):
+        """Patch inside an ABI array argument (list) raises a clear ValueError."""
+        from pydefi.vm import Patch
+
+        sig = "function foo(uint256[] amounts)"
+        with pytest.raises(ValueError, match="array"):
+            Program().call_contract_abi(ADDR_A, sig, [Patch(load_reg(0)), 42]).build()
 
     def test_patch_in_nested_tuple(self):
         """Patch inside a tuple argument is located and applied correctly."""

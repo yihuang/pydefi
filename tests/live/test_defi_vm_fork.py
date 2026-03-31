@@ -24,6 +24,7 @@ import pytest
 from web3 import AsyncWeb3
 from web3.exceptions import ContractLogicError, Web3RPCError
 
+from pydefi.vm import Patch, Program
 from pydefi.vm.program import (
     assert_ge,
     assert_le,
@@ -750,3 +751,111 @@ class TestDeFiVMFork:
         program = b"".join(push_u256(i) for i in range(33))
         with pytest.raises((ContractLogicError, Web3RPCError)):
             await vm.functions.execute(program).transact({"from": deployer})
+
+    # ------------------------------------------------------------------
+    # call_contract_abi with Patch (high-level ABI builder)
+    # ------------------------------------------------------------------
+
+    async def test_call_contract_abi_patch_single_uint256(self, ctx):
+        """call_contract_abi with a single Patch arg auto-detects the calldata offset.
+
+        Stores the input value (7) in register 0, then calls double(7) via the
+        high-level ABI builder with a Patch sourced from register 0.  Verifies
+        the on-chain result equals 14.
+        """
+        w3 = ctx["w3"]
+        vm = ctx["vm"]
+        deployer = ctx["deployer"]
+        adapter = ctx["adapter_address"]
+
+        program = (
+            push_u256(7)
+            + store_reg(0)
+            + Program()
+            .call_contract_abi(
+                adapter,
+                "function double(uint256 x) external pure returns (uint256)",
+                Patch(load_reg(0)),
+            )
+            .pop()
+            .build()
+            + push_u256(14)
+            + ret_u256(0)
+            + assert_ge("result below 14")
+            + push_u256(14)
+            + ret_u256(0)
+            + assert_le("result above 14")
+        )
+        tx = await vm.functions.execute(program).transact({"from": deployer})
+        receipt = await w3.eth.get_transaction_receipt(tx)
+        assert receipt["status"] == 1
+
+    async def test_call_contract_abi_patch_two_uint256_args(self, ctx):
+        """call_contract_abi with two Patch args patches both calldata slots.
+
+        Stores 11 in register 0 and 6 in register 1, then calls addInputs(11, 6)
+        via the high-level ABI builder with both args as Patch instances.
+        Verifies the on-chain result equals 17.
+        """
+        w3 = ctx["w3"]
+        vm = ctx["vm"]
+        deployer = ctx["deployer"]
+        adapter = ctx["adapter_address"]
+
+        program = (
+            push_u256(11)
+            + store_reg(0)
+            + push_u256(6)
+            + store_reg(1)
+            + Program()
+            .call_contract_abi(
+                adapter,
+                "function addInputs(uint256 a, uint256 b) external pure returns (uint256)",
+                Patch(load_reg(0)),
+                Patch(load_reg(1)),
+            )
+            .pop()
+            .build()
+            + push_u256(17)
+            + ret_u256(0)
+            + assert_ge("result below 17")
+            + push_u256(17)
+            + ret_u256(0)
+            + assert_le("result above 17")
+        )
+        tx = await vm.functions.execute(program).transact({"from": deployer})
+        receipt = await w3.eth.get_transaction_receipt(tx)
+        assert receipt["status"] == 1
+
+    async def test_call_contract_abi_patch_chained(self, ctx):
+        """Chain two calls: first via static call_contract_abi, second with a Patch.
+
+        double(5) → 10 stored in register 0, then double(10) via call_contract_abi
+        with Patch(load_reg(0)).  Verifies the final result equals 20.
+        """
+        w3 = ctx["w3"]
+        vm = ctx["vm"]
+        deployer = ctx["deployer"]
+        adapter = ctx["adapter_address"]
+
+        double_sig = "function double(uint256 x) external pure returns (uint256)"
+
+        program = (
+            # Call 1: double(5) → result in retdata
+            Program().call_contract_abi(adapter, double_sig, 5).pop().build()
+            # Store result from retdata into register 0
+            + ret_u256(0)
+            + store_reg(0)
+            # Call 2: double(reg0) using Patch
+            + Program().call_contract_abi(adapter, double_sig, Patch(load_reg(0))).pop().build()
+            # Verify result == 20
+            + push_u256(20)
+            + ret_u256(0)
+            + assert_ge("result below 20")
+            + push_u256(20)
+            + ret_u256(0)
+            + assert_le("result above 20")
+        )
+        tx = await vm.functions.execute(program).transact({"from": deployer})
+        receipt = await w3.eth.get_transaction_receipt(tx)
+        assert receipt["status"] == 1
