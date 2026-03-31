@@ -299,31 +299,41 @@ def _make_needle(type_str: str) -> tuple[object, bytes]:
     For the common ``uint256`` case the full 32 bytes are random, giving maximum
     possible entropy.
 
-    Only ``uint<N>`` with N ≥ 96 is supported.  ``int<N>`` is excluded because
-    ``os.urandom`` may produce a value with the high bit set, which would be
-    out of range for a signed type and cause ABI encoding to fail.
+    Both ``uint<N>`` and ``int<N>`` with N ≥ 96 are supported.  For ``int<N>``
+    the sign bit of the random payload is masked to zero, guaranteeing a
+    non-negative value that fits within the signed type's range and is ABI-encoded
+    identically to the equivalent ``uint<N>`` value.
 
     Args:
-        type_str: Solidity canonical type, e.g. ``"uint256"``.
+        type_str: Solidity canonical type, e.g. ``"uint256"`` or ``"int128"``.
 
     Raises:
-        ValueError: If *type_str* is not a supported unsigned integer type or is too narrow.
+        ValueError: If *type_str* is not a supported integer type or is too narrow.
     """
     type_str = type_str.strip()
 
-    if type_str.startswith("uint"):
-        bits_str = type_str[4:]
+    is_signed = type_str.startswith("int") and not type_str.startswith("uint")
+    if type_str.startswith("uint") or is_signed:
+        base = "int" if is_signed else "uint"
+        bits_str = type_str[len(base) :]
         bits = int(bits_str) if bits_str.isdigit() else 256
         if bits < 96:
-            raise ValueError(f"Patch: type {type_str!r} is too small to hold a unique needle (need at least uint96).")
-        byte_width = bits // 8  # e.g. 32 for uint256
+            raise ValueError(
+                f"Patch: type {type_str!r} is too small to hold a unique needle "
+                f"(need at least {'int' if is_signed else 'uint'}96)."
+            )
+        byte_width = bits // 8  # e.g. 32 for uint256 / int256
         payload = os.urandom(byte_width)
+        if is_signed:
+            # Mask the sign bit to guarantee a non-negative value within int<N> range.
+            payload = bytes([payload[0] & 0x7F]) + payload[1:]
         abi_enc = b"\x00" * (32 - byte_width) + payload  # 32-byte ABI slot
         val = int.from_bytes(abi_enc, "big")
         return val, abi_enc
 
     raise ValueError(
-        f"Patch: type {type_str!r} is not supported for automatic offset detection. Only uint<N> (N ≥ 96) is supported."
+        f"Patch: type {type_str!r} is not supported for automatic offset detection. "
+        "Only uint<N> and int<N> (N ≥ 96) are supported."
     )
 
 
@@ -353,6 +363,27 @@ def _parse_tuple_component_types(tuple_type: str) -> list[str]:
     if tail:
         components.append(tail)
     return components
+
+
+def _strip_array_suffix(type_str: str) -> str | None:
+    """Return the element type if *type_str* is an array type, else ``None``.
+
+    Strips only the **outermost** array suffix (``[]`` or ``[N]``), so
+    multi-dimensional arrays are handled by recursive calls.
+
+    Examples::
+
+        _strip_array_suffix("uint256[]")       # → "uint256"
+        _strip_array_suffix("uint256[3]")      # → "uint256"
+        _strip_array_suffix("uint256[][]")     # → "uint256[]"
+        _strip_array_suffix("(address,uint256)[]")  # → "(address,uint256)"
+    """
+    if not type_str.endswith("]"):
+        return None
+    open_idx = type_str.rfind("[")
+    if open_idx == -1:
+        return None
+    return type_str[:open_idx]
 
 
 def _has_patch(arg: object) -> bool:
@@ -391,13 +422,12 @@ def _replace_patches(
 
     type_str = type_str.strip()
 
-    # Reject Patch inside ABI array arguments (list) with a clear message.
-    if isinstance(arg, list) and any(_has_patch(a) for a in arg):
-        raise ValueError(
-            f"Patch: Patch instances inside ABI array arguments (type {type_str!r}) are not supported. "
-            "Patch is only supported for scalar uint<N> (N ≥ 96) parameters or as leaf components "
-            "inside tuple arguments."
-        )
+    # Handle ABI array arguments (list): recurse into each element.
+    if isinstance(arg, list):
+        elem_type = _strip_array_suffix(type_str)
+        if elem_type is not None:
+            return [_replace_patches(a, elem_type, needle_patterns) for a in arg]
+        return arg
 
     if type_str.startswith("(") and isinstance(arg, tuple):
         component_types = _parse_tuple_component_types(type_str)
@@ -671,11 +701,14 @@ class Program:
         4. Delegates to :meth:`call_with_patches` with ``kind="u256"`` patches
            at the discovered offsets and the :attr:`~Patch.opcodes` as the source.
 
-        This works for ``uint<N>`` parameters with N ≥ 96 bits.  :class:`Patch`
-        may also appear as a leaf element *inside* a tuple argument, as long as
-        that leaf component is itself a ``uint<N>`` type (N ≥ 96).  All other
-        types — ``int<N>``, ``address``, ``bytes<N>``, ``bytes``, ``string``,
-        and array types — are not supported for patching.
+        This works for ``uint<N>`` and ``int<N>`` parameters with N ≥ 96 bits.
+        For ``int<N>`` the needle is always a non-negative value (sign bit
+        cleared) so it fits within the signed type's range.
+        :class:`Patch` may also appear as a leaf element *inside* a tuple
+        argument or inside an array argument (list), as long as each patched
+        leaf is a supported ``uint<N>`` or ``int<N>`` type (N ≥ 96).
+        All other types — ``address``, ``bytes<N>``, ``bytes``, ``string`` —
+        are not supported for patching.
 
         Args:
             to: Target contract address (hex string with ``0x`` prefix).

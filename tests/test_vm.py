@@ -1156,21 +1156,25 @@ class TestPatch:
         with pytest.raises(ValueError, match="not supported"):
             Program().call_contract_abi(ADDR_A, sig, p).build()
 
-    def test_patch_int_type_raises(self):
-        """Patching a signed int parameter raises ValueError (only uint<N> is supported)."""
+    def test_patch_int_type_works(self):
+        """Patching a signed int256 parameter works (sign bit is masked to zero)."""
         from pydefi.vm import Patch
 
         sig = "function foo(int256 x)"
-        with pytest.raises(ValueError, match="not supported"):
-            Program().call_contract_abi(ADDR_A, sig, Patch(load_reg(0))).build()
+        bytecode = Program().call_contract_abi(ADDR_A, sig, Patch(load_reg(0))).build()
+        assert len(bytecode) > 0
+        assert load_reg(0) in bytecode
 
-    def test_patch_inside_list_raises(self):
-        """Patch inside an ABI array argument (list) raises a clear ValueError."""
+    def test_patch_inside_list_works(self):
+        """Patch inside an ABI array argument (list) is located and applied correctly."""
         from pydefi.vm import Patch
 
         sig = "function foo(uint256[] amounts)"
-        with pytest.raises(ValueError, match="array"):
-            Program().call_contract_abi(ADDR_A, sig, [Patch(load_reg(0)), 42]).build()
+        p = Patch(load_reg(0))
+        bytecode = Program().call_contract_abi(ADDR_A, sig, [p, 999_999_999_999]).build()
+        assert len(bytecode) > 0
+        assert load_reg(0) in bytecode
+        assert (999_999_999_999).to_bytes(32, "big") in bytecode
 
     def test_patch_in_nested_tuple(self):
         """Patch inside a tuple argument is located and applied correctly."""
