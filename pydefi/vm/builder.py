@@ -390,11 +390,6 @@ def _replace_patches(
         return python_val
 
     type_str = type_str.strip()
-    if type_str.startswith("(") and isinstance(arg, tuple):
-        component_types = _parse_tuple_component_types(type_str)
-        return tuple(
-            _replace_patches(sub_arg, sub_type, needle_patterns) for sub_arg, sub_type in zip(arg, component_types)
-        )
 
     # Reject Patch inside ABI array arguments (list) with a clear message.
     if isinstance(arg, list) and any(_has_patch(a) for a in arg):
@@ -402,6 +397,12 @@ def _replace_patches(
             f"Patch: Patch instances inside ABI array arguments (type {type_str!r}) are not supported. "
             "Patch is only supported for scalar uint<N> (N ≥ 96) parameters or as leaf components "
             "inside tuple arguments."
+        )
+
+    if type_str.startswith("(") and isinstance(arg, tuple):
+        component_types = _parse_tuple_component_types(type_str)
+        return tuple(
+            _replace_patches(sub_arg, sub_type, needle_patterns) for sub_arg, sub_type in zip(arg, component_types)
         )
 
     return arg
