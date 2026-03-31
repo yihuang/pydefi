@@ -1180,4 +1180,3 @@ class TestPatch:
         # The static value must be baked in; use a distinctive large value to
         # minimise the chance of the byte pattern appearing elsewhere in the bytecode.
         assert (999_999_999_999).to_bytes(32, "big") in bytecode
-
