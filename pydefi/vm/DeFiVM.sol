@@ -3,84 +3,33 @@ pragma solidity ^0.8.24;
 
 /**
  * @title DeFiVM
- * @notice A minimal, register-based macro-assembler / interpreter for composable DeFi flows.
+ * @notice A minimal, stateless executor for composable DeFi flows expressed as raw EVM bytecode.
  *
  * Design principles
  * -----------------
  *  * Atomic execution  - a "program" runs all-at-once; any revert undoes everything.
- *  * Register-based    - 16 named registers (R0-R15) plus a temporary 32-element stack.
- *  * Fully stateless   - no owner, no whitelist; the CALL opcode can reach any address.
+ *  * Native EVM stack  - programs ARE raw EVM bytecode; the EVM stack is the program stack.
+ *  * Fully stateless   - no owner, no whitelist; execute() can run any bytecode.
  *
- * Implementation notes
- * --------------------
- *  The interpreter is written entirely in Yul (inline assembly).  All execution
- *  state (stack, registers, buffer table) lives in raw memory regions managed
- *  through direct MSTORE/MLOAD.  Every opcode delegates to the corresponding
- *  native EVM opcode (add, mul, lt, call, ...) so there is no emulation overhead.
+ * How it works
+ * ------------
+ *  ``execute()`` takes a raw EVM bytecode blob, deploys it as a one-shot contract via
+ *  CREATE, then calls it forwarding all ETH.  Because programs run as real EVM bytecode,
+ *  every arithmetic, comparison, bitwise, and shift operation compiles to a single EVM
+ *  opcode — no interpreter overhead.
  *
- * Memory layout (allocated once at the start of execute())
- * ---------------------------------------------------------
- *  [stackBase .. stackBase + 0x400)  - VM stack: 32 x 32-byte slots
- *  [regsBase  .. regsBase  + 0x200)  - VM registers: 16 x 32-byte slots
- *  [bufsBase  .. bufsBase  + 0x200)  - Buffer pointer table: 16 x 32-byte slots
- *                                      Each slot holds a memory pointer to a
- *                                      length-prefixed byte buffer: [len][data...]
+ * Memory conventions (inside the deployed program)
+ * -------------------------------------------------
+ *  Registers  : memory[0x80 + i*32] for i in 0..15  (16 x 32-byte slots)
+ *  Free memory: memory[0x40] tracks the next free byte (initialised to 0x280 on first use)
+ *  Dynamic buf: allocated starting from memory[0x280] upward
  *
  * Security assumptions
  * --------------------
  *  1. Never approve tokens directly to this contract.  Approvals can be drained by
- *     any caller because `execute` is permissionless.  Use permit signatures instead
- *     (approve and spend atomically inside the program).
+ *     any caller because ``execute`` is permissionless.  Use permit signatures instead.
  *  2. Do not leave token or ETH balances in this contract between transactions.
- *     Any residual balance is accessible to arbitrary programs.
- *  3. Users must verify every adapter address they include in a program and simulate
- *     the full transaction off-chain before broadcasting.
- *
- * Instruction set
- * ---------------
- * Stack / Register
- *   0x01  PUSH_U256  <32 bytes>          push uint256
- *   0x02  PUSH_ADDR  <20 bytes>          push address
- *   0x03  PUSH_BYTES <2-byte len> <data> push bytes blob (stored in buffer array)
- *   0x04  DUP                            duplicate top of stack
- *   0x05  SWAP                           swap top two items
- *   0x06  POP                            discard top
- *   0x10  LOAD_REG   <1-byte i>          push register[i]
- *   0x11  STORE_REG  <1-byte i>          pop -> register[i]
- *
- * Control flow
- *   0x20  JUMP       <2-byte target>     unconditional jump
- *   0x21  JUMPI      <2-byte target>     jump if top-of-stack != 0
- *   0x22  REVERT_IF  <1-byte msgLen>     revert with msg if top != 0
- *   0x23  ASSERT_GE  <1-byte msgLen>     pop a, b -> revert if a < b  (a >= b required)
- *   0x24  ASSERT_LE  <1-byte msgLen>     pop a, b -> revert if a > b  (a <= b required)
- *
- * External / introspection
- *   0x30  CALL       <1-byte flags>      pop: gasLimit, to, value, calldataBufIdx -> push success
- *                                        flags bit-0: require success
- *   0x31  BALANCE_OF                     pop: token (0x0=ETH), account -> push balance
- *   0x32  SELF_ADDR                      push address(this)
- *   0x33  SUB                            pop a, b -> push a - b  (saturates to 0 if a < b)
- *   0x34  ADD                            pop a, b -> push a + b  (wrapping uint256)
- *   0x35  MUL                            pop a, b -> push a * b  (wrapping uint256)
- *   0x36  DIV                            pop a, b -> push a / b  (0 if b == 0)
- *   0x37  MOD                            pop a, b -> push a % b  (0 if b == 0)
- *   0x38  LT                             pop a (TOS), b -> push 1 if a < b else 0
- *   0x39  GT                             pop a (TOS), b -> push 1 if a > b else 0
- *   0x3a  EQ                             pop a (TOS), b -> push 1 if a == b else 0
- *   0x3b  ISZERO                         pop a -> push 1 if a == 0 else 0
- *   0x3c  AND                            pop a (TOS), b -> push a & b
- *   0x3d  OR                             pop a (TOS), b -> push a | b
- *   0x3e  XOR                            pop a (TOS), b -> push a ^ b
- *   0x3f  NOT                            pop a -> push ~a
- *   0x44  SHL                            pop shift (TOS), value -> push value << shift (EVM SHL)
- *   0x45  SHR                            pop shift (TOS), value -> push value >> shift (EVM SHR)
- *
- * ABI / data
- *   0x40  PATCH_U256 <2-byte offset>     pop: value, bufIdx -> patch 32-byte word in buffer
- *   0x41  PATCH_ADDR <2-byte offset>     pop: addr,  bufIdx -> patch 20-byte word in buffer
- *   0x42  RET_U256   <2-byte offset>     push uint256 from last returndata at offset
- *   0x43  RET_SLICE  <2-byte off> <2-byte len>  push bytes slice from last returndata
+ *  3. Verify every address in a program and simulate off-chain before broadcasting.
  */
 contract DeFiVM {
     /// @notice Allow the VM to receive ETH (needed for value-bearing calls).
