@@ -7,9 +7,24 @@ pragma solidity ^0.8.24;
  *
  * Design principles
  * -----------------
- *  • Atomic execution – a "program" runs all-at-once; any revert undoes everything.
- *  • Register-based   – 16 named registers (R0-R15) plus a temporary 32-element stack.
- *  • Fully stateless  – no owner, no whitelist; the CALL opcode can reach any address.
+ *  * Atomic execution  - a "program" runs all-at-once; any revert undoes everything.
+ *  * Register-based    - 16 named registers (R0-R15) plus a temporary 32-element stack.
+ *  * Fully stateless   - no owner, no whitelist; the CALL opcode can reach any address.
+ *
+ * Implementation notes
+ * --------------------
+ *  The interpreter is written entirely in Yul (inline assembly).  All execution
+ *  state (stack, registers, buffer table) lives in raw memory regions managed
+ *  through direct MSTORE/MLOAD.  Every opcode delegates to the corresponding
+ *  native EVM opcode (add, mul, lt, call, ...) so there is no emulation overhead.
+ *
+ * Memory layout (allocated once at the start of execute())
+ * ---------------------------------------------------------
+ *  [stackBase .. stackBase + 0x400)  - VM stack: 32 x 32-byte slots
+ *  [regsBase  .. regsBase  + 0x200)  - VM registers: 16 x 32-byte slots
+ *  [bufsBase  .. bufsBase  + 0x200)  - Buffer pointer table: 16 x 32-byte slots
+ *                                      Each slot holds a memory pointer to a
+ *                                      length-prefixed byte buffer: [len][data...]
  *
  * Security assumptions
  * --------------------
@@ -68,73 +83,8 @@ pragma solidity ^0.8.24;
  *   0x43  RET_SLICE  <2-byte off> <2-byte len>  push bytes slice from last returndata
  */
 contract DeFiVM {
-    // -------------------------------------------------------------------------
-    // Constants
-    // -------------------------------------------------------------------------
-
-    uint8  private constant MAX_STACK   = 32;
-    uint8  private constant MAX_REGS    = 16;
-    uint8  private constant MAX_BUFFERS = 16;
-
-    // Opcodes
-    uint8 private constant OP_PUSH_U256   = 0x01;
-    uint8 private constant OP_PUSH_ADDR   = 0x02;
-    uint8 private constant OP_PUSH_BYTES  = 0x03;
-    uint8 private constant OP_DUP         = 0x04;
-    uint8 private constant OP_SWAP        = 0x05;
-    uint8 private constant OP_POP         = 0x06;
-    uint8 private constant OP_LOAD_REG    = 0x10;
-    uint8 private constant OP_STORE_REG   = 0x11;
-    uint8 private constant OP_JUMP        = 0x20;
-    uint8 private constant OP_JUMPI       = 0x21;
-    uint8 private constant OP_REVERT_IF   = 0x22;
-    uint8 private constant OP_ASSERT_GE   = 0x23;
-    uint8 private constant OP_ASSERT_LE   = 0x24;
-    uint8 private constant OP_CALL        = 0x30;
-    uint8 private constant OP_BALANCE_OF  = 0x31;
-    uint8 private constant OP_SELF_ADDR   = 0x32;
-    uint8 private constant OP_SUB         = 0x33;
-    uint8 private constant OP_ADD         = 0x34;
-    uint8 private constant OP_MUL         = 0x35;
-    uint8 private constant OP_DIV         = 0x36;
-    uint8 private constant OP_MOD         = 0x37;
-    uint8 private constant OP_LT          = 0x38;
-    uint8 private constant OP_GT          = 0x39;
-    uint8 private constant OP_EQ          = 0x3a;
-    uint8 private constant OP_ISZERO      = 0x3b;
-    uint8 private constant OP_AND         = 0x3c;
-    uint8 private constant OP_OR          = 0x3d;
-    uint8 private constant OP_XOR         = 0x3e;
-    uint8 private constant OP_NOT         = 0x3f;
-    uint8 private constant OP_PATCH_U256  = 0x40;
-    uint8 private constant OP_PATCH_ADDR  = 0x41;
-    uint8 private constant OP_RET_U256    = 0x42;
-    uint8 private constant OP_RET_SLICE   = 0x43;
-    uint8 private constant OP_SHL         = 0x44;
-    uint8 private constant OP_SHR         = 0x45;
-
     /// @notice Allow the VM to receive ETH (needed for value-bearing calls).
     receive() external payable {}
-
-    // -------------------------------------------------------------------------
-    // Execution state (kept entirely in memory)
-    // -------------------------------------------------------------------------
-
-    struct VMState {
-        // Stack (up to MAX_STACK = 32 entries)
-        bytes32[32] stack;
-        uint8       sp;           // sp == 0 means empty
-
-        // Registers (16)
-        bytes32[16] regs;
-
-        // Byte buffer store (for calldata templates and return-data slices)
-        bytes[16]   buffers;
-        uint8       numBufs;
-
-        // Last external call returndata
-        bytes       retdata;
-    }
 
     // -------------------------------------------------------------------------
     // Public entry point
@@ -144,542 +94,506 @@ contract DeFiVM {
      * @notice Execute a DeFiVM program atomically.
      * @param program  Bytecode stream (packed instructions).
      *
-     * Any revert undoes all side-effects.
+     * The entire interpreter runs in a single Yul assembly block.
+     * The VM stack, register file, and buffer pointer table are contiguous
+     * memory regions addressed directly with MSTORE/MLOAD.  Every arithmetic,
+     * comparison, and logic opcode delegates straight to the corresponding EVM
+     * opcode - no emulation overhead.  External calls use the native EVM CALL
+     * instruction.  Any revert undoes all side-effects.
      */
     function execute(bytes calldata program) external payable {
-        // Copy calldata to memory once; all subsequent reads use memory ops.
+        // Copy calldata to memory once so every read is a cheap MLOAD.
         bytes memory prog = program;
-        VMState memory s;
 
-        uint256 pc = 0;
-        uint256 plen = prog.length;
-
-        while (pc < plen) {
-            uint8 op = uint8(prog[pc]);
-            pc++;
-
-            // ------------------------------------------------------------------
-            // Stack / data
-            // ------------------------------------------------------------------
-            if (op == OP_PUSH_U256) {
-                require(pc + 32 <= plen, "DeFiVM: truncated PUSH_U256");
-                bytes32 v;
-                uint256 moff = pc;
-                assembly {
-                    v := mload(add(add(prog, 32), moff))
-                }
-                _push(s, v);
-                pc += 32;
-
-            } else if (op == OP_PUSH_ADDR) {
-                require(pc + 20 <= plen, "DeFiVM: truncated PUSH_ADDR");
-                // Addresses are stored big-endian, 20 bytes.
-                // Read into the high 20 bytes of a bytes32 then shift right 12 bytes.
-                bytes32 raw;
-                uint256 moff = pc;
-                assembly {
-                    raw := mload(add(add(prog, 32), moff))
-                }
-                address a = address(uint160(uint256(raw >> 96)));
-                _push(s, bytes32(uint256(uint160(a))));
-                pc += 20;
-
-            } else if (op == OP_PUSH_BYTES) {
-                require(pc + 2 <= plen, "DeFiVM: truncated PUSH_BYTES length");
-                uint16 blen = _read_u16(prog, pc);
-                pc += 2;
-                require(pc + blen <= plen, "DeFiVM: truncated PUSH_BYTES data");
-                require(s.numBufs < MAX_BUFFERS, "DeFiVM: buffer limit");
-                bytes memory buf = new bytes(blen);
-                for (uint256 i = 0; i < blen; i++) {
-                    buf[i] = prog[pc + i];
-                }
-                uint8 idx = s.numBufs;
-                s.buffers[idx] = buf;
-                s.numBufs++;
-                _push(s, bytes32(uint256(idx)));
-                pc += blen;
-
-            } else if (op == OP_DUP) {
-                require(s.sp > 0, "DeFiVM: DUP on empty stack");
-                uint8 top = s.sp - 1;
-                _push(s, s.stack[top]);
-
-            } else if (op == OP_SWAP) {
-                require(s.sp >= 2, "DeFiVM: SWAP needs 2 items");
-                uint8 a = s.sp - 1;
-                uint8 b = s.sp - 2;
-                (s.stack[a], s.stack[b]) = (s.stack[b], s.stack[a]);
-
-            } else if (op == OP_POP) {
-                require(s.sp > 0, "DeFiVM: POP on empty stack");
-                s.sp--;
-
-            // ------------------------------------------------------------------
-            // Register load / store
-            // ------------------------------------------------------------------
-            } else if (op == OP_LOAD_REG) {
-                require(pc + 1 <= plen, "DeFiVM: truncated LOAD_REG");
-                uint8 i = uint8(prog[pc]);
-                pc++;
-                require(i < MAX_REGS, "DeFiVM: bad register");
-                _push(s, s.regs[i]);
-
-            } else if (op == OP_STORE_REG) {
-                require(pc + 1 <= plen, "DeFiVM: truncated STORE_REG");
-                uint8 i = uint8(prog[pc]);
-                pc++;
-                require(i < MAX_REGS, "DeFiVM: bad register");
-                require(s.sp > 0, "DeFiVM: STORE_REG empty stack");
-                s.sp--;
-                s.regs[i] = s.stack[s.sp];
-
-            // ------------------------------------------------------------------
-            // Control flow
-            // ------------------------------------------------------------------
-            } else if (op == OP_JUMP) {
-                require(pc + 2 <= plen, "DeFiVM: truncated JUMP");
-                uint16 target = _read_u16(prog, pc);
-                pc += 2;
-                require(target <= plen, "DeFiVM: JUMP out of bounds");
-                pc = target;
-
-            } else if (op == OP_JUMPI) {
-                require(pc + 2 <= plen, "DeFiVM: truncated JUMPI");
-                uint16 target = _read_u16(prog, pc);
-                pc += 2;
-                require(s.sp > 0, "DeFiVM: JUMPI empty stack");
-                s.sp--;
-                bytes32 cond = s.stack[s.sp];
-                if (cond != bytes32(0)) {
-                    require(target <= plen, "DeFiVM: JUMPI out of bounds");
-                    pc = target;
-                }
-
-            } else if (op == OP_REVERT_IF) {
-                require(pc + 1 <= plen, "DeFiVM: truncated REVERT_IF");
-                uint8 msgLen = uint8(prog[pc]);
-                pc++;
-                require(pc + msgLen <= plen, "DeFiVM: truncated REVERT_IF msg");
-                require(s.sp > 0, "DeFiVM: REVERT_IF empty stack");
-                s.sp--;
-                if (s.stack[s.sp] != bytes32(0)) {
-                    bytes memory msg_ = new bytes(msgLen);
-                    for (uint8 k = 0; k < msgLen; k++) {
-                        msg_[k] = prog[pc + k];
-                    }
-                    revert(string(msg_));
-                }
-                pc += msgLen;
-
-            } else if (op == OP_ASSERT_GE) {
-                // pop a (top), pop b (below) -> require a >= b
-                require(pc + 1 <= plen, "DeFiVM: truncated ASSERT_GE");
-                uint8 msgLen = uint8(prog[pc]);
-                pc++;
-                require(pc + msgLen <= plen, "DeFiVM: truncated ASSERT_GE msg");
-                require(s.sp >= 2, "DeFiVM: ASSERT_GE needs 2 items");
-                s.sp--;
-                uint256 a = uint256(s.stack[s.sp]);
-                s.sp--;
-                uint256 b = uint256(s.stack[s.sp]);
-                if (a < b) {
-                    bytes memory msg_ = new bytes(msgLen);
-                    for (uint8 k = 0; k < msgLen; k++) {
-                        msg_[k] = prog[pc + k];
-                    }
-                    revert(string(msg_));
-                }
-                pc += msgLen;
-
-            } else if (op == OP_ASSERT_LE) {
-                // pop a (top), pop b (below) -> require a <= b
-                require(pc + 1 <= plen, "DeFiVM: truncated ASSERT_LE");
-                uint8 msgLen = uint8(prog[pc]);
-                pc++;
-                require(pc + msgLen <= plen, "DeFiVM: truncated ASSERT_LE msg");
-                require(s.sp >= 2, "DeFiVM: ASSERT_LE needs 2 items");
-                s.sp--;
-                uint256 a = uint256(s.stack[s.sp]);
-                s.sp--;
-                uint256 b = uint256(s.stack[s.sp]);
-                if (a > b) {
-                    bytes memory msg_ = new bytes(msgLen);
-                    for (uint8 k = 0; k < msgLen; k++) {
-                        msg_[k] = prog[pc + k];
-                    }
-                    revert(string(msg_));
-                }
-                pc += msgLen;
-
-            // ------------------------------------------------------------------
-            // External / introspection
-            // ------------------------------------------------------------------
-            } else if (op == OP_CALL) {
-                require(pc + 1 <= plen, "DeFiVM: truncated CALL flags");
-                uint8 flags = uint8(prog[pc]);
-                pc++;
-                bool requireSuccess = (flags & 0x01) != 0;
-
-                // Stack order (top to bottom): gasLimit, to, value, calldataBufIdx
-                require(s.sp >= 4, "DeFiVM: CALL needs 4 items");
-
-                s.sp--;
-                uint256 gasLimit = uint256(s.stack[s.sp]);
-
-                s.sp--;
-                address to = address(uint160(uint256(s.stack[s.sp])));
-
-                s.sp--;
-                uint256 callValue = uint256(s.stack[s.sp]);
-
-                s.sp--;
-                uint8 bufIdx = uint8(uint256(s.stack[s.sp]));
-                require(bufIdx < s.numBufs, "DeFiVM: CALL invalid buffer");
-                bytes memory calldata_ = s.buffers[bufIdx];
-
-                bool ok;
-                bytes memory ret;
-                if (gasLimit == 0) {
-                    (ok, ret) = to.call{value: callValue}(calldata_);
-                } else {
-                    (ok, ret) = to.call{value: callValue, gas: gasLimit}(calldata_);
-                }
-                s.retdata = ret;
-
-                if (requireSuccess) {
-                    require(ok, "DeFiVM: adapter call failed");
-                }
-                _push(s, ok ? bytes32(uint256(1)) : bytes32(0));
-
-            } else if (op == OP_BALANCE_OF) {
-                // pop: token (address, 0x0=ETH), account (address) -> push balance (uint256)
-                require(s.sp >= 2, "DeFiVM: BALANCE_OF needs 2 items");
-
-                s.sp--;
-                address token = address(uint160(uint256(s.stack[s.sp])));
-
-                s.sp--;
-                address account = address(uint160(uint256(s.stack[s.sp])));
-
-                uint256 bal;
-                if (token == address(0)) {
-                    bal = account.balance;
-                } else {
-                    // balanceOf(address) selector: 0x70a08231
-                    (bool ok, bytes memory res) = token.staticcall(
-                        abi.encodeWithSelector(0x70a08231, account)
-                    );
-                    require(ok, "DeFiVM: balanceOf failed");
-                    bal = abi.decode(res, (uint256));
-                }
-                _push(s, bytes32(bal));
-
-            } else if (op == OP_SELF_ADDR) {
-                _push(s, bytes32(uint256(uint160(address(this)))));
-
-            } else if (op == OP_SUB) {
-                // pop a (top), pop b -> push (a - b), saturates to 0
-                require(s.sp >= 2, "DeFiVM: SUB needs 2 items");
-
-                s.sp--;
-                uint256 a = uint256(s.stack[s.sp]);
-
-                s.sp--;
-                uint256 b = uint256(s.stack[s.sp]);
-
-                _push(s, bytes32(a >= b ? a - b : 0));
-
-            } else if (op == OP_ADD) {
-                // pop a (top), pop b -> push a + b (wrapping uint256, delegates to EVM ADD)
-                require(s.sp >= 2, "DeFiVM: ADD needs 2 items");
-
-                s.sp--;
-                uint256 a = uint256(s.stack[s.sp]);
-
-                s.sp--;
-                uint256 b = uint256(s.stack[s.sp]);
-
-                uint256 result;
-                assembly { result := add(a, b) }
-                _push(s, bytes32(result));
-
-            } else if (op == OP_MUL) {
-                // pop a (top), pop b -> push a * b (wrapping uint256, delegates to EVM MUL)
-                require(s.sp >= 2, "DeFiVM: MUL needs 2 items");
-
-                s.sp--;
-                uint256 a = uint256(s.stack[s.sp]);
-
-                s.sp--;
-                uint256 b = uint256(s.stack[s.sp]);
-
-                uint256 result;
-                assembly { result := mul(a, b) }
-                _push(s, bytes32(result));
-
-            } else if (op == OP_DIV) {
-                // pop a (top), pop b -> push a / b (0 if b == 0, delegates to EVM DIV)
-                require(s.sp >= 2, "DeFiVM: DIV needs 2 items");
-
-                s.sp--;
-                uint256 a = uint256(s.stack[s.sp]);
-
-                s.sp--;
-                uint256 b = uint256(s.stack[s.sp]);
-
-                uint256 result;
-                assembly { result := div(a, b) }
-                _push(s, bytes32(result));
-
-            } else if (op == OP_MOD) {
-                // pop a (top), pop b -> push a % b (0 if b == 0, delegates to EVM MOD)
-                require(s.sp >= 2, "DeFiVM: MOD needs 2 items");
-
-                s.sp--;
-                uint256 a = uint256(s.stack[s.sp]);
-
-                s.sp--;
-                uint256 b = uint256(s.stack[s.sp]);
-
-                uint256 result;
-                assembly { result := mod(a, b) }
-                _push(s, bytes32(result));
-
-            } else if (op == OP_LT) {
-                // pop a (top), pop b -> push 1 if a < b else 0 (delegates to EVM LT)
-                require(s.sp >= 2, "DeFiVM: LT needs 2 items");
-
-                s.sp--;
-                uint256 a = uint256(s.stack[s.sp]);
-
-                s.sp--;
-                uint256 b = uint256(s.stack[s.sp]);
-
-                uint256 result;
-                assembly { result := lt(a, b) }
-                _push(s, bytes32(result));
-
-            } else if (op == OP_GT) {
-                // pop a (top), pop b -> push 1 if a > b else 0 (delegates to EVM GT)
-                require(s.sp >= 2, "DeFiVM: GT needs 2 items");
-
-                s.sp--;
-                uint256 a = uint256(s.stack[s.sp]);
-
-                s.sp--;
-                uint256 b = uint256(s.stack[s.sp]);
-
-                uint256 result;
-                assembly { result := gt(a, b) }
-                _push(s, bytes32(result));
-
-            } else if (op == OP_EQ) {
-                // pop a (top), pop b -> push 1 if a == b else 0 (delegates to EVM EQ)
-                require(s.sp >= 2, "DeFiVM: EQ needs 2 items");
-
-                s.sp--;
-                uint256 a = uint256(s.stack[s.sp]);
-
-                s.sp--;
-                uint256 b = uint256(s.stack[s.sp]);
-
-                uint256 result;
-                assembly { result := eq(a, b) }
-                _push(s, bytes32(result));
-
-            } else if (op == OP_ISZERO) {
-                // pop a -> push 1 if a == 0 else 0 (delegates to EVM ISZERO)
-                require(s.sp > 0, "DeFiVM: ISZERO needs 1 item");
-
-                s.sp--;
-                uint256 a = uint256(s.stack[s.sp]);
-
-                uint256 result;
-                assembly { result := iszero(a) }
-                _push(s, bytes32(result));
-
-            } else if (op == OP_AND) {
-                // pop a (top), pop b -> push a & b (delegates to EVM AND)
-                require(s.sp >= 2, "DeFiVM: AND needs 2 items");
-
-                s.sp--;
-                uint256 a = uint256(s.stack[s.sp]);
-
-                s.sp--;
-                uint256 b = uint256(s.stack[s.sp]);
-
-                uint256 result;
-                assembly { result := and(a, b) }
-                _push(s, bytes32(result));
-
-            } else if (op == OP_OR) {
-                // pop a (top), pop b -> push a | b (delegates to EVM OR)
-                require(s.sp >= 2, "DeFiVM: OR needs 2 items");
-
-                s.sp--;
-                uint256 a = uint256(s.stack[s.sp]);
-
-                s.sp--;
-                uint256 b = uint256(s.stack[s.sp]);
-
-                uint256 result;
-                assembly { result := or(a, b) }
-                _push(s, bytes32(result));
-
-            } else if (op == OP_XOR) {
-                // pop a (top), pop b -> push a ^ b (delegates to EVM XOR)
-                require(s.sp >= 2, "DeFiVM: XOR needs 2 items");
-
-                s.sp--;
-                uint256 a = uint256(s.stack[s.sp]);
-
-                s.sp--;
-                uint256 b = uint256(s.stack[s.sp]);
-
-                uint256 result;
-                assembly { result := xor(a, b) }
-                _push(s, bytes32(result));
-
-            } else if (op == OP_NOT) {
-                // pop a -> push ~a (delegates to EVM NOT)
-                require(s.sp > 0, "DeFiVM: NOT needs 1 item");
-
-                s.sp--;
-                uint256 a = uint256(s.stack[s.sp]);
-
-                uint256 result;
-                assembly { result := not(a) }
-                _push(s, bytes32(result));
-
-            // ------------------------------------------------------------------
-            // ABI / data patching
-            // ------------------------------------------------------------------
-            } else if (op == OP_PATCH_U256) {
-                // <2-byte offset>  |  pop: value (uint256), bufIdx (bytes)
-                require(pc + 2 <= plen, "DeFiVM: truncated PATCH_U256");
-                uint16 offset = _read_u16(prog, pc);
-                pc += 2;
-                require(s.sp >= 2, "DeFiVM: PATCH_U256 needs 2 items");
-
-                s.sp--;
-                uint256 pval = uint256(s.stack[s.sp]);
-
-                s.sp--;
-                uint8 bidx = uint8(uint256(s.stack[s.sp]));
-                require(bidx < s.numBufs, "DeFiVM: PATCH_U256 invalid buffer");
-                require(uint256(offset) + 32 <= s.buffers[bidx].length, "DeFiVM: PATCH_U256 out of bounds");
-                bytes memory b = s.buffers[bidx];
-                uint256 moff = offset;
-                assembly {
-                    mstore(add(add(b, 32), moff), pval)
-                }
-                // Push the (now-modified) buffer index back
-                _push(s, bytes32(uint256(bidx)));
-
-            } else if (op == OP_PATCH_ADDR) {
-                // <2-byte offset>  |  pop: addr (address), bufIdx (bytes)
-                require(pc + 2 <= plen, "DeFiVM: truncated PATCH_ADDR");
-                uint16 offset = _read_u16(prog, pc);
-                pc += 2;
-                require(s.sp >= 2, "DeFiVM: PATCH_ADDR needs 2 items");
-
-                s.sp--;
-                address paddr = address(uint160(uint256(s.stack[s.sp])));
-
-                s.sp--;
-                uint8 bidx = uint8(uint256(s.stack[s.sp]));
-                require(bidx < s.numBufs, "DeFiVM: PATCH_ADDR invalid buffer");
-                require(uint256(offset) + 20 <= s.buffers[bidx].length, "DeFiVM: PATCH_ADDR out of bounds");
-                // Patch 20 bytes starting exactly at `offset` (raw byte-wise copy).
-                bytes memory b = s.buffers[bidx];
-                bytes memory addrBytes = abi.encodePacked(paddr);
-                for (uint256 i = 0; i < 20; i++) {
-                    b[uint256(offset) + i] = addrBytes[i];
-                }
-                _push(s, bytes32(uint256(bidx)));
-
-            } else if (op == OP_RET_U256) {
-                // <2-byte offset>  -> push uint256 from last returndata
-                require(pc + 2 <= plen, "DeFiVM: truncated RET_U256");
-                uint16 offset = _read_u16(prog, pc);
-                pc += 2;
-                require(uint256(offset) + 32 <= s.retdata.length, "DeFiVM: RET_U256 out of bounds");
-                bytes32 word;
-                bytes memory rd = s.retdata;
-                uint256 moff = offset;
-                assembly {
-                    word := mload(add(add(rd, 32), moff))
-                }
-                _push(s, word);
-
-            } else if (op == OP_RET_SLICE) {
-                // <2-byte offset> <2-byte len>  -> push bytes slice from last returndata
-                require(pc + 4 <= plen, "DeFiVM: truncated RET_SLICE");
-                uint16 offset = _read_u16(prog, pc);
-                pc += 2;
-                uint16 slen = _read_u16(prog, pc);
-                pc += 2;
-                require(uint256(offset) + slen <= s.retdata.length, "DeFiVM: RET_SLICE out of bounds");
-                require(s.numBufs < MAX_BUFFERS, "DeFiVM: buffer limit (RET_SLICE)");
-                bytes memory slice = new bytes(slen);
-                for (uint256 k = 0; k < slen; k++) {
-                    slice[k] = s.retdata[offset + k];
-                }
-                uint8 idx = s.numBufs;
-                s.buffers[idx] = slice;
-                s.numBufs++;
-                _push(s, bytes32(uint256(idx)));
-
-            } else if (op == OP_SHL) {
-                // pop shift (top), pop value -> push value << shift (delegates to EVM SHL)
-                require(s.sp >= 2, "DeFiVM: SHL needs 2 items");
-
-                s.sp--;
-                uint256 shift = uint256(s.stack[s.sp]);
-
-                s.sp--;
-                uint256 value = uint256(s.stack[s.sp]);
-
-                uint256 result;
-                assembly { result := shl(shift, value) }
-                _push(s, bytes32(result));
-
-            } else if (op == OP_SHR) {
-                // pop shift (top), pop value -> push value >> shift (delegates to EVM SHR)
-                require(s.sp >= 2, "DeFiVM: SHR needs 2 items");
-
-                s.sp--;
-                uint256 shift = uint256(s.stack[s.sp]);
-
-                s.sp--;
-                uint256 value = uint256(s.stack[s.sp]);
-
-                uint256 result;
-                assembly { result := shr(shift, value) }
-                _push(s, bytes32(result));
-
-            } else {
-                revert("DeFiVM: unknown opcode");
-            }
-        }
-    }
-
-    // -------------------------------------------------------------------------
-    // Internal helpers
-    // -------------------------------------------------------------------------
-
-    /// @dev Push a value onto the VM stack.
-    function _push(VMState memory s, bytes32 val) private pure {
-        require(s.sp < MAX_STACK, "DeFiVM: stack overflow");
-        s.stack[s.sp] = val;
-        s.sp++;
-    }
-
-    /// @dev Read a big-endian uint16 from a memory bytes array at position `pos`.
-    function _read_u16(bytes memory b, uint256 pos) private pure returns (uint16 v) {
         assembly {
-            v := shr(240, mload(add(add(b, 32), pos)))
+            // ----------------------------------------------------------------
+            // Memory layout
+            // ----------------------------------------------------------------
+            //  stackBase : 32 slots x 32 bytes  (0x400 bytes)
+            //  regsBase  : 16 slots x 32 bytes  (0x200 bytes)
+            //  bufsBase  : 16 slots x 32 bytes  (0x200 bytes)
+            //              each slot = pointer to [len (32B)][data...]
+            let stackBase := mload(0x40)
+            let regsBase  := add(stackBase, 0x400)
+            let bufsBase  := add(regsBase,  0x200)
+            mstore(0x40,  add(bufsBase, 0x200))
+
+            let progData  := add(prog, 32)   // pointer to first program byte
+            let plen      := mload(prog)      // total program length
+
+            // Interpreter state kept on the native EVM stack as Yul variables
+            let pc       := 0
+            let sp       := 0   // VM stack depth (items)
+            let numBufs  := 0   // allocated byte buffer count
+            let retPtr   := 0   // pointer to last returndata: [len (32B)][data...]
+
+            // ----------------------------------------------------------------
+            // Helper: encode Error(string) and revert
+            // msgSrc: pointer to raw bytes; msgLen: length in bytes
+            // ----------------------------------------------------------------
+            function revertWithMsg(msgSrc, msgLen) {
+                let base := mload(0x40)
+                // Error(string) selector = 0x08c379a0
+                mstore(base,
+                    0x08c379a000000000000000000000000000000000000000000000000000000000)
+                mstore(add(base, 4),  32)
+                mstore(add(base, 36), msgLen)
+                let dst := add(base, 68)
+                for { let i := 0 } lt(i, msgLen) { i := add(i, 32) } {
+                    mstore(add(dst, i), mload(add(msgSrc, i)))
+                }
+                revert(base, add(68, msgLen))
+            }
+
+            // ----------------------------------------------------------------
+            // Helper: revert with a static string literal (<=32 bytes)
+            // word: right-zero-padded 32-byte value; len: byte count
+            // ----------------------------------------------------------------
+            function revertStatic(word, len) {
+                let base := mload(0x40)
+                mstore(base,
+                    0x08c379a000000000000000000000000000000000000000000000000000000000)
+                mstore(add(base, 4),  32)
+                mstore(add(base, 36), len)
+                mstore(add(base, 68), word)
+                revert(base, 100)
+            }
+
+            // ----------------------------------------------------------------
+            // Helper: allocate a length-prefixed buffer [len][data] in free memory
+            // Returns: pointer to the start of the buffer.
+            // The allocation is padded to a 32-byte boundary so word-copy loops
+            // (used in PUSH_BYTES, RET_SLICE) can safely over-read the last
+            // partial word without writing into unrelated allocations.
+            //
+            // Alignment math:
+            //   raw end = bufPtr + 32 (length word) + dataLen
+            //   round up to 32 = (raw end + 31) & ~31
+            // ----------------------------------------------------------------
+            function allocBuf(dataLen) -> bufPtr {
+                bufPtr := mload(0x40)
+                // (bufPtr + 32 + dataLen + 31) & ~31  → next 32-byte boundary
+                mstore(0x40, and(add(add(bufPtr, add(dataLen, 32)), 31), not(31)))
+                mstore(bufPtr, dataLen)
+            }
+
+            // ----------------------------------------------------------------
+            // Main dispatch loop
+            // ----------------------------------------------------------------
+            for {} lt(pc, plen) {} {
+                let op := byte(0, mload(add(progData, pc)))
+                pc     := add(pc, 1)
+
+                switch op
+
+                // ── 0x01  PUSH_U256 ─────────────────────────────────────
+                case 0x01 {
+                    let v := mload(add(progData, pc))
+                    pc    := add(pc, 32)
+                    mstore(add(stackBase, shl(5, sp)), v)
+                    sp    := add(sp, 1)
+                }
+
+                // ── 0x02  PUSH_ADDR ─────────────────────────────────────
+                // Address is stored big-endian in 20 bytes.  Reading 32 bytes
+                // puts those 20 bytes in the HIGH 20 bytes of the word; shifting
+                // right by 96 bits (12 bytes) leaves the address in the low 20.
+                case 0x02 {
+                    let raw := mload(add(progData, pc))
+                    pc      := add(pc, 20)
+                    mstore(add(stackBase, shl(5, sp)), shr(96, raw))
+                    sp      := add(sp, 1)
+                }
+
+                // ── 0x03  PUSH_BYTES ────────────────────────────────────
+                case 0x03 {
+                    let blen   := shr(240, mload(add(progData, pc)))
+                    pc         := add(pc, 2)
+                    let bufPtr := allocBuf(blen)
+                    let src    := add(progData, pc)
+                    let dst    := add(bufPtr, 32)
+                    // Word-by-word copy; allocBuf padded the region so the
+                    // final over-read word writes into reserved space only.
+                    for { let i := 0 } lt(i, blen) { i := add(i, 32) } {
+                        mstore(add(dst, i), mload(add(src, i)))
+                    }
+                    pc := add(pc, blen)
+                    mstore(add(bufsBase, shl(5, numBufs)), bufPtr)
+                    mstore(add(stackBase, shl(5, sp)), numBufs)
+                    sp      := add(sp, 1)
+                    numBufs := add(numBufs, 1)
+                }
+
+                // ── 0x04  DUP ───────────────────────────────────────────
+                case 0x04 {
+                    let v := mload(add(stackBase, shl(5, sub(sp, 1))))
+                    mstore(add(stackBase, shl(5, sp)), v)
+                    sp := add(sp, 1)
+                }
+
+                // ── 0x05  SWAP ──────────────────────────────────────────
+                case 0x05 {
+                    let ai := shl(5, sub(sp, 1))
+                    let bi := shl(5, sub(sp, 2))
+                    let av := mload(add(stackBase, ai))
+                    let bv := mload(add(stackBase, bi))
+                    mstore(add(stackBase, ai), bv)
+                    mstore(add(stackBase, bi), av)
+                }
+
+                // ── 0x06  POP ───────────────────────────────────────────
+                case 0x06 {
+                    sp := sub(sp, 1)
+                }
+
+                // ── 0x10  LOAD_REG ──────────────────────────────────────
+                case 0x10 {
+                    let i := byte(0, mload(add(progData, pc)))
+                    pc    := add(pc, 1)
+                    let v := mload(add(regsBase, shl(5, i)))
+                    mstore(add(stackBase, shl(5, sp)), v)
+                    sp    := add(sp, 1)
+                }
+
+                // ── 0x11  STORE_REG ─────────────────────────────────────
+                case 0x11 {
+                    let i := byte(0, mload(add(progData, pc)))
+                    pc    := add(pc, 1)
+                    sp    := sub(sp, 1)
+                    let v := mload(add(stackBase, shl(5, sp)))
+                    mstore(add(regsBase, shl(5, i)), v)
+                }
+
+                // ── 0x20  JUMP ──────────────────────────────────────────
+                case 0x20 {
+                    pc := shr(240, mload(add(progData, pc)))
+                }
+
+                // ── 0x21  JUMPI ─────────────────────────────────────────
+                case 0x21 {
+                    let target := shr(240, mload(add(progData, pc)))
+                    pc         := add(pc, 2)
+                    sp         := sub(sp, 1)
+                    let cond   := mload(add(stackBase, shl(5, sp)))
+                    if cond { pc := target }
+                }
+
+                // ── 0x22  REVERT_IF ─────────────────────────────────────
+                case 0x22 {
+                    let msgLen := byte(0, mload(add(progData, pc)))
+                    pc         := add(pc, 1)
+                    sp         := sub(sp, 1)
+                    if mload(add(stackBase, shl(5, sp))) {
+                        revertWithMsg(add(progData, pc), msgLen)
+                    }
+                    pc := add(pc, msgLen)
+                }
+
+                // ── 0x23  ASSERT_GE ─────────────────────────────────────
+                // pop a (TOS), pop b; revert if a < b  (require a >= b)
+                case 0x23 {
+                    let msgLen := byte(0, mload(add(progData, pc)))
+                    pc         := add(pc, 1)
+                    sp         := sub(sp, 2)
+                    let a      := mload(add(stackBase, shl(5, add(sp, 1))))
+                    let b      := mload(add(stackBase, shl(5, sp)))
+                    if lt(a, b) { revertWithMsg(add(progData, pc), msgLen) }
+                    pc := add(pc, msgLen)
+                }
+
+                // ── 0x24  ASSERT_LE ─────────────────────────────────────
+                // pop a (TOS), pop b; revert if a > b  (require a <= b)
+                case 0x24 {
+                    let msgLen := byte(0, mload(add(progData, pc)))
+                    pc         := add(pc, 1)
+                    sp         := sub(sp, 2)
+                    let a      := mload(add(stackBase, shl(5, add(sp, 1))))
+                    let b      := mload(add(stackBase, shl(5, sp)))
+                    if gt(a, b) { revertWithMsg(add(progData, pc), msgLen) }
+                    pc := add(pc, msgLen)
+                }
+
+                // ── 0x30  CALL ──────────────────────────────────────────
+                // pop: gasLimit (TOS), to, value, calldataBufIdx
+                // push: 1 on success, 0 on failure
+                // Uses the native EVM CALL opcode directly.
+                case 0x30 {
+                    let flags    := byte(0, mload(add(progData, pc)))
+                    pc           := add(pc, 1)
+                    sp           := sub(sp, 4)
+                    let gasLimit := mload(add(stackBase, shl(5, add(sp, 3))))
+                    let toAddr   := mload(add(stackBase, shl(5, add(sp, 2))))
+                    let callVal  := mload(add(stackBase, shl(5, add(sp, 1))))
+                    let bufIdx   := mload(add(stackBase, shl(5, sp)))
+                    let bufPtr   := mload(add(bufsBase, shl(5, bufIdx)))
+                    let bufLen   := mload(bufPtr)
+                    let bufData  := add(bufPtr, 32)
+
+                    // Native EVM CALL: no calldata copy, returndata via RETURNDATACOPY
+                    let callOk := 0
+                    switch iszero(gasLimit)
+                    case 1  { callOk := call(gas(),    toAddr, callVal, bufData, bufLen, 0, 0) }
+                    default { callOk := call(gasLimit, toAddr, callVal, bufData, bufLen, 0, 0) }
+
+                    // Capture returndata into a fresh buffer
+                    let rdLen := returndatasize()
+                    let rdBuf := allocBuf(rdLen)
+                    returndatacopy(add(rdBuf, 32), 0, rdLen)
+                    retPtr := rdBuf
+
+                    if and(flags, 1) {
+                        if iszero(callOk) {
+                            revertStatic(
+                                "DeFiVM: adapter call failed",
+                                27
+                            )
+                        }
+                    }
+
+                    mstore(add(stackBase, shl(5, sp)), callOk)
+                    sp := add(sp, 1)
+                }
+
+                // ── 0x31  BALANCE_OF ────────────────────────────────────
+                // pop: token (TOS, 0x0 = ETH), account; push balance
+                case 0x31 {
+                    sp          := sub(sp, 2)
+                    let token   := mload(add(stackBase, shl(5, add(sp, 1))))
+                    let account := mload(add(stackBase, shl(5, sp)))
+
+                    let bal := 0
+                    switch iszero(token)
+                    case 1 { bal := balance(account) }
+                    default {
+                        // balanceOf(address) selector: 0x70a08231
+                        let tmp := mload(0x40)
+                        mstore(tmp,
+                            0x70a0823100000000000000000000000000000000000000000000000000000000)
+                        mstore(add(tmp, 4), account)
+                        let ok := staticcall(gas(), token, tmp, 36, tmp, 32)
+                        if iszero(ok) {
+                            revertStatic("DeFiVM: balanceOf failed", 24)
+                        }
+                        bal := mload(tmp)
+                    }
+                    mstore(add(stackBase, shl(5, sp)), bal)
+                    sp := add(sp, 1)
+                }
+
+                // ── 0x32  SELF_ADDR ─────────────────────────────────────
+                case 0x32 {
+                    mstore(add(stackBase, shl(5, sp)), address())
+                    sp := add(sp, 1)
+                }
+
+                // ── 0x33  SUB (saturating) ──────────────────────────────
+                case 0x33 {
+                    sp    := sub(sp, 2)
+                    let a := mload(add(stackBase, shl(5, add(sp, 1))))
+                    let b := mload(add(stackBase, shl(5, sp)))
+                    let r := 0
+                    if iszero(lt(a, b)) { r := sub(a, b) }
+                    mstore(add(stackBase, shl(5, sp)), r)
+                    sp := add(sp, 1)
+                }
+
+                // ── 0x34  ADD ───────────────────────────────────────────
+                case 0x34 {
+                    sp    := sub(sp, 2)
+                    let a := mload(add(stackBase, shl(5, add(sp, 1))))
+                    let b := mload(add(stackBase, shl(5, sp)))
+                    mstore(add(stackBase, shl(5, sp)), add(a, b))
+                    sp    := add(sp, 1)
+                }
+
+                // ── 0x35  MUL ───────────────────────────────────────────
+                case 0x35 {
+                    sp    := sub(sp, 2)
+                    let a := mload(add(stackBase, shl(5, add(sp, 1))))
+                    let b := mload(add(stackBase, shl(5, sp)))
+                    mstore(add(stackBase, shl(5, sp)), mul(a, b))
+                    sp    := add(sp, 1)
+                }
+
+                // ── 0x36  DIV ───────────────────────────────────────────
+                case 0x36 {
+                    sp    := sub(sp, 2)
+                    let a := mload(add(stackBase, shl(5, add(sp, 1))))
+                    let b := mload(add(stackBase, shl(5, sp)))
+                    mstore(add(stackBase, shl(5, sp)), div(a, b))
+                    sp    := add(sp, 1)
+                }
+
+                // ── 0x37  MOD ───────────────────────────────────────────
+                case 0x37 {
+                    sp    := sub(sp, 2)
+                    let a := mload(add(stackBase, shl(5, add(sp, 1))))
+                    let b := mload(add(stackBase, shl(5, sp)))
+                    mstore(add(stackBase, shl(5, sp)), mod(a, b))
+                    sp    := add(sp, 1)
+                }
+
+                // ── 0x38  LT ────────────────────────────────────────────
+                case 0x38 {
+                    sp    := sub(sp, 2)
+                    let a := mload(add(stackBase, shl(5, add(sp, 1))))
+                    let b := mload(add(stackBase, shl(5, sp)))
+                    mstore(add(stackBase, shl(5, sp)), lt(a, b))
+                    sp    := add(sp, 1)
+                }
+
+                // ── 0x39  GT ────────────────────────────────────────────
+                case 0x39 {
+                    sp    := sub(sp, 2)
+                    let a := mload(add(stackBase, shl(5, add(sp, 1))))
+                    let b := mload(add(stackBase, shl(5, sp)))
+                    mstore(add(stackBase, shl(5, sp)), gt(a, b))
+                    sp    := add(sp, 1)
+                }
+
+                // ── 0x3a  EQ ────────────────────────────────────────────
+                case 0x3a {
+                    sp    := sub(sp, 2)
+                    let a := mload(add(stackBase, shl(5, add(sp, 1))))
+                    let b := mload(add(stackBase, shl(5, sp)))
+                    mstore(add(stackBase, shl(5, sp)), eq(a, b))
+                    sp    := add(sp, 1)
+                }
+
+                // ── 0x3b  ISZERO ────────────────────────────────────────
+                case 0x3b {
+                    sp    := sub(sp, 1)
+                    let a := mload(add(stackBase, shl(5, sp)))
+                    mstore(add(stackBase, shl(5, sp)), iszero(a))
+                    sp    := add(sp, 1)
+                }
+
+                // ── 0x3c  AND ───────────────────────────────────────────
+                case 0x3c {
+                    sp    := sub(sp, 2)
+                    let a := mload(add(stackBase, shl(5, add(sp, 1))))
+                    let b := mload(add(stackBase, shl(5, sp)))
+                    mstore(add(stackBase, shl(5, sp)), and(a, b))
+                    sp    := add(sp, 1)
+                }
+
+                // ── 0x3d  OR ────────────────────────────────────────────
+                case 0x3d {
+                    sp    := sub(sp, 2)
+                    let a := mload(add(stackBase, shl(5, add(sp, 1))))
+                    let b := mload(add(stackBase, shl(5, sp)))
+                    mstore(add(stackBase, shl(5, sp)), or(a, b))
+                    sp    := add(sp, 1)
+                }
+
+                // ── 0x3e  XOR ───────────────────────────────────────────
+                case 0x3e {
+                    sp    := sub(sp, 2)
+                    let a := mload(add(stackBase, shl(5, add(sp, 1))))
+                    let b := mload(add(stackBase, shl(5, sp)))
+                    mstore(add(stackBase, shl(5, sp)), xor(a, b))
+                    sp    := add(sp, 1)
+                }
+
+                // ── 0x3f  NOT ───────────────────────────────────────────
+                case 0x3f {
+                    sp    := sub(sp, 1)
+                    let a := mload(add(stackBase, shl(5, sp)))
+                    mstore(add(stackBase, shl(5, sp)), not(a))
+                    sp    := add(sp, 1)
+                }
+
+                // ── 0x40  PATCH_U256 ────────────────────────────────────
+                // pop: value (TOS), bufIdx; overwrite 32-byte word at offset; push bufIdx
+                case 0x40 {
+                    let offset := shr(240, mload(add(progData, pc)))
+                    pc         := add(pc, 2)
+                    sp         := sub(sp, 2)
+                    let pval   := mload(add(stackBase, shl(5, add(sp, 1))))
+                    let bufIdx := mload(add(stackBase, shl(5, sp)))
+                    let bufPtr := mload(add(bufsBase, shl(5, bufIdx)))
+                    mstore(add(add(bufPtr, 32), offset), pval)
+                    mstore(add(stackBase, shl(5, sp)), bufIdx)
+                    sp := add(sp, 1)
+                }
+
+                // ── 0x41  PATCH_ADDR ────────────────────────────────────
+                // pop: addr (TOS), bufIdx; overwrite 20-byte address at offset; push bufIdx
+                // The address value lives in the LOW 20 bytes of the 256-bit stack word.
+                // Left-shift by 96 bits moves those 20 bytes to the HIGH positions so
+                // BYTE(k, shifted) for k=0..19 yields the raw address bytes in order.
+                //
+                // We use MSTORE8 to write exactly 20 bytes because the offset may not be
+                // 32-byte aligned, and using MSTORE would overwrite adjacent buffer bytes
+                // (12 bytes before or after the address field) which could corrupt
+                // the calldata template.  The 20-iteration loop is cheap relative to the
+                // surrounding CALL cost.
+                case 0x41 {
+                    let offset := shr(240, mload(add(progData, pc)))
+                    pc         := add(pc, 2)
+                    sp         := sub(sp, 2)
+                    let paddr  := mload(add(stackBase, shl(5, add(sp, 1))))
+                    let bufIdx := mload(add(stackBase, shl(5, sp)))
+                    let bufPtr := mload(add(bufsBase, shl(5, bufIdx)))
+                    let dst    := add(add(bufPtr, 32), offset)
+                    let hi     := shl(96, paddr)
+                    for { let k := 0 } lt(k, 20) { k := add(k, 1) } {
+                        mstore8(add(dst, k), byte(k, hi))
+                    }
+                    mstore(add(stackBase, shl(5, sp)), bufIdx)
+                    sp := add(sp, 1)
+                }
+
+                // ── 0x42  RET_U256 ──────────────────────────────────────
+                case 0x42 {
+                    let offset := shr(240, mload(add(progData, pc)))
+                    pc         := add(pc, 2)
+                    let v      := mload(add(add(retPtr, 32), offset))
+                    mstore(add(stackBase, shl(5, sp)), v)
+                    sp := add(sp, 1)
+                }
+
+                // ── 0x43  RET_SLICE ─────────────────────────────────────
+                case 0x43 {
+                    let offset := shr(240, mload(add(progData, pc)))
+                    pc         := add(pc, 2)
+                    let slen   := shr(240, mload(add(progData, pc)))
+                    pc         := add(pc, 2)
+                    let bufPtr := allocBuf(slen)
+                    let src    := add(add(retPtr, 32), offset)
+                    let dst    := add(bufPtr, 32)
+                    for { let i := 0 } lt(i, slen) { i := add(i, 32) } {
+                        mstore(add(dst, i), mload(add(src, i)))
+                    }
+                    mstore(add(bufsBase, shl(5, numBufs)), bufPtr)
+                    mstore(add(stackBase, shl(5, sp)), numBufs)
+                    sp      := add(sp, 1)
+                    numBufs := add(numBufs, 1)
+                }
+
+                // ── 0x44  SHL ───────────────────────────────────────────
+                case 0x44 {
+                    sp        := sub(sp, 2)
+                    let shift := mload(add(stackBase, shl(5, add(sp, 1))))
+                    let value := mload(add(stackBase, shl(5, sp)))
+                    mstore(add(stackBase, shl(5, sp)), shl(shift, value))
+                    sp := add(sp, 1)
+                }
+
+                // ── 0x45  SHR ───────────────────────────────────────────
+                case 0x45 {
+                    sp        := sub(sp, 2)
+                    let shift := mload(add(stackBase, shl(5, add(sp, 1))))
+                    let value := mload(add(stackBase, shl(5, sp)))
+                    mstore(add(stackBase, shl(5, sp)), shr(shift, value))
+                    sp := add(sp, 1)
+                }
+
+                // ── Unknown opcode ──────────────────────────────────────
+                default {
+                    revertStatic("DeFiVM: unknown opcode", 22)
+                }
+            }
         }
     }
 }
