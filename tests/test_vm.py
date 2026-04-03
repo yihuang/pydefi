@@ -22,23 +22,41 @@ import pytest
 from pydefi.vm import Program
 from pydefi.vm.program import (
     OP_ADD,
+    OP_AND,
     OP_DIV,
+    OP_EQ,
+    OP_GT,
+    OP_ISZERO,
     OP_JUMP,
     OP_JUMPI,
+    OP_LT,
     OP_MOD,
     OP_MUL,
+    OP_NOT,
+    OP_OR,
     OP_PUSH_BYTES,
+    OP_SHL,
+    OP_SHR,
     OP_SUB,
+    OP_XOR,
     add,
     assert_ge,
     assert_le,
     balance_of,
+    bitwise_and,
+    bitwise_not,
+    bitwise_or,
+    bitwise_xor,
     call,
     div,
     dup,
+    eq,
+    gt,
+    iszero,
     jump,
     jumpi,
     load_reg,
+    lt,
     mod,
     mul,
     patch_addr,
@@ -51,6 +69,8 @@ from pydefi.vm.program import (
     ret_u256,
     revert_if,
     self_addr,
+    shl,
+    shr,
     store_reg,
     sub,
     swap,
@@ -1014,3 +1034,124 @@ class TestCallContractAbi:
         assert len(bytecode) > 0
         # ERC-20 transfer selector appears at least twice (once per call)
         assert bytecode.count(bytes.fromhex("a9059cbb")) >= 2
+
+
+# ---------------------------------------------------------------------------
+# EVM-native opcodes: comparison, bitwise, and shift
+# ---------------------------------------------------------------------------
+
+
+class TestEvmNativeOpcodes:
+    """Verify bytecode emitted by EVM-native opcode helpers and the Program builder."""
+
+    # -- Emitter correctness ---------------------------------------------------
+
+    def test_lt_emitter(self):
+        assert lt() == bytes([OP_LT])
+
+    def test_gt_emitter(self):
+        assert gt() == bytes([OP_GT])
+
+    def test_eq_emitter(self):
+        assert eq() == bytes([OP_EQ])
+
+    def test_iszero_emitter(self):
+        assert iszero() == bytes([OP_ISZERO])
+
+    def test_and_emitter(self):
+        assert bitwise_and() == bytes([OP_AND])
+
+    def test_or_emitter(self):
+        assert bitwise_or() == bytes([OP_OR])
+
+    def test_xor_emitter(self):
+        assert bitwise_xor() == bytes([OP_XOR])
+
+    def test_not_emitter(self):
+        assert bitwise_not() == bytes([OP_NOT])
+
+    def test_shl_emitter(self):
+        assert shl() == bytes([OP_SHL])
+
+    def test_shr_emitter(self):
+        assert shr() == bytes([OP_SHR])
+
+    # -- Program builder methods -----------------------------------------------
+
+    def test_builder_lt(self):
+        assert Program().lt().build() == lt()
+
+    def test_builder_gt(self):
+        assert Program().gt().build() == gt()
+
+    def test_builder_eq(self):
+        assert Program().eq().build() == eq()
+
+    def test_builder_iszero(self):
+        assert Program().iszero().build() == iszero()
+
+    def test_builder_bitwise_and(self):
+        assert Program().bitwise_and().build() == bitwise_and()
+
+    def test_builder_bitwise_or(self):
+        assert Program().bitwise_or().build() == bitwise_or()
+
+    def test_builder_bitwise_xor(self):
+        assert Program().bitwise_xor().build() == bitwise_xor()
+
+    def test_builder_bitwise_not(self):
+        assert Program().bitwise_not().build() == bitwise_not()
+
+    def test_builder_shl(self):
+        assert Program().shl().build() == shl()
+
+    def test_builder_shr(self):
+        assert Program().shr().build() == shr()
+
+    # -- Opcode constant values ------------------------------------------------
+
+    def test_opcode_values(self):
+        assert OP_LT == 0x38
+        assert OP_GT == 0x39
+        assert OP_EQ == 0x3a
+        assert OP_ISZERO == 0x3b
+        assert OP_AND == 0x3c
+        assert OP_OR == 0x3d
+        assert OP_XOR == 0x3e
+        assert OP_NOT == 0x3f
+        assert OP_SHL == 0x44
+        assert OP_SHR == 0x45
+
+    # -- Bytecode composition --------------------------------------------------
+
+    def test_comparison_chain(self):
+        """push(5) push(10) LT emits the correct byte sequence."""
+        expected = push_u256(5) + push_u256(10) + lt()
+        actual = Program().push_u256(5).push_u256(10).lt().build()
+        assert actual == expected
+
+    def test_bitwise_chain(self):
+        """push(0xFF) push(0x0F) AND XOR emits the correct byte sequence."""
+        expected = push_u256(0xFF) + push_u256(0x0F) + bitwise_and() + push_u256(0xAA) + bitwise_xor()
+        actual = (
+            Program()
+            .push_u256(0xFF)
+            .push_u256(0x0F)
+            .bitwise_and()
+            .push_u256(0xAA)
+            .bitwise_xor()
+            .build()
+        )
+        assert actual == expected
+
+    def test_shift_chain(self):
+        """push(1) push(8) SHL emits the correct byte sequence (shift value left by 8)."""
+        expected = push_u256(1) + push_u256(8) + shl()
+        actual = Program().push_u256(1).push_u256(8).shl().build()
+        assert actual == expected
+
+    def test_iszero_after_eq(self):
+        """EQ followed by ISZERO implements != comparison."""
+        expected = push_u256(5) + push_u256(5) + eq() + iszero()
+        actual = Program().push_u256(5).push_u256(5).eq().iszero().build()
+        assert actual == expected

@@ -183,12 +183,20 @@ from pydefi.vm.program import (
     assert_ge,
     assert_le,
     balance_of,
+    bitwise_and,
+    bitwise_not,
+    bitwise_or,
+    bitwise_xor,
     call,
     div,
     dup,
+    eq,
+    gt,
+    iszero,
     jump,
     jumpi,
     load_reg,
+    lt,
     mod,
     mul,
     patch_addr,
@@ -201,6 +209,8 @@ from pydefi.vm.program import (
     ret_u256,
     revert_if,
     self_addr,
+    shl,
+    shr,
     store_reg,
     sub,
     swap,
@@ -398,6 +408,46 @@ class Program:
     def mod(self) -> "Program":
         """Emit MOD — pop ``a`` (top), ``b``; push ``a % b`` (0 if ``b == 0``)."""
         return self._emit(mod())
+
+    def lt(self) -> "Program":
+        """Emit LT — pop ``a`` (top), ``b``; push ``1`` if ``a < b`` else ``0``."""
+        return self._emit(lt())
+
+    def gt(self) -> "Program":
+        """Emit GT — pop ``a`` (top), ``b``; push ``1`` if ``a > b`` else ``0``."""
+        return self._emit(gt())
+
+    def eq(self) -> "Program":
+        """Emit EQ — pop ``a`` (top), ``b``; push ``1`` if ``a == b`` else ``0``."""
+        return self._emit(eq())
+
+    def iszero(self) -> "Program":
+        """Emit ISZERO — pop ``a``; push ``1`` if ``a == 0`` else ``0``."""
+        return self._emit(iszero())
+
+    def bitwise_and(self) -> "Program":
+        """Emit AND — pop ``a`` (top), ``b``; push ``a & b``."""
+        return self._emit(bitwise_and())
+
+    def bitwise_or(self) -> "Program":
+        """Emit OR — pop ``a`` (top), ``b``; push ``a | b``."""
+        return self._emit(bitwise_or())
+
+    def bitwise_xor(self) -> "Program":
+        """Emit XOR — pop ``a`` (top), ``b``; push ``a ^ b``."""
+        return self._emit(bitwise_xor())
+
+    def bitwise_not(self) -> "Program":
+        """Emit NOT — pop ``a``; push ``~a`` (bitwise complement)."""
+        return self._emit(bitwise_not())
+
+    def shl(self) -> "Program":
+        """Emit SHL — pop ``shift`` (top), ``value``; push ``value << shift``."""
+        return self._emit(shl())
+
+    def shr(self) -> "Program":
+        """Emit SHR — pop ``shift`` (top), ``value``; push ``value >> shift``."""
+        return self._emit(shr())
 
     # ------------------------------------------------------------------
     # ABI / data instructions

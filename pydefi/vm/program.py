@@ -45,6 +45,16 @@ External / introspection
   0x35  MUL                   (pop a, b → push a * b, wrapping uint256)
   0x36  DIV                   (pop a, b → push a / b, 0 if b == 0)
   0x37  MOD                   (pop a, b → push a % b, 0 if b == 0)
+  0x38  LT                    (pop a (TOS), pop b → push 1 if a < b else 0)
+  0x39  GT                    (pop a (TOS), pop b → push 1 if a > b else 0)
+  0x3a  EQ                    (pop a (TOS), pop b → push 1 if a == b else 0)
+  0x3b  ISZERO                (pop a → push 1 if a == 0 else 0)
+  0x3c  AND                   (pop a (TOS), pop b → push a & b)
+  0x3d  OR                    (pop a (TOS), pop b → push a | b)
+  0x3e  XOR                   (pop a (TOS), pop b → push a ^ b)
+  0x3f  NOT                   (pop a → push ~a)
+  0x44  SHL                   (pop shift (TOS), pop value → push value << shift)
+  0x45  SHR                   (pop shift (TOS), pop value → push value >> shift)
 
 ABI / data
   0x40  PATCH_U256 <2-byte offset>
@@ -82,10 +92,20 @@ OP_ADD: int = 0x34
 OP_MUL: int = 0x35
 OP_DIV: int = 0x36
 OP_MOD: int = 0x37
+OP_LT: int = 0x38
+OP_GT: int = 0x39
+OP_EQ: int = 0x3a
+OP_ISZERO: int = 0x3b
+OP_AND: int = 0x3c
+OP_OR: int = 0x3d
+OP_XOR: int = 0x3e
+OP_NOT: int = 0x3f
 OP_PATCH_U256: int = 0x40
 OP_PATCH_ADDR: int = 0x41
 OP_RET_U256: int = 0x42
 OP_RET_SLICE: int = 0x43
+OP_SHL: int = 0x44
+OP_SHR: int = 0x45
 
 # ---------------------------------------------------------------------------
 # Low-level encoding helpers
@@ -289,6 +309,88 @@ def mod() -> bytes:
     Matches EVM ``MOD`` semantics — no revert on zero denominator.
     """
     return bytes([OP_MOD])
+
+
+def lt() -> bytes:
+    """Emit LT — pop ``a`` (top) then ``b``; push ``1`` if ``a < b`` else ``0``.
+
+    Delegates directly to the EVM ``LT`` opcode via inline assembly.
+    """
+    return bytes([OP_LT])
+
+
+def gt() -> bytes:
+    """Emit GT — pop ``a`` (top) then ``b``; push ``1`` if ``a > b`` else ``0``.
+
+    Delegates directly to the EVM ``GT`` opcode via inline assembly.
+    """
+    return bytes([OP_GT])
+
+
+def eq() -> bytes:
+    """Emit EQ — pop ``a`` (top) then ``b``; push ``1`` if ``a == b`` else ``0``.
+
+    Delegates directly to the EVM ``EQ`` opcode via inline assembly.
+    """
+    return bytes([OP_EQ])
+
+
+def iszero() -> bytes:
+    """Emit ISZERO — pop ``a``; push ``1`` if ``a == 0`` else ``0``.
+
+    Delegates directly to the EVM ``ISZERO`` opcode via inline assembly.
+    """
+    return bytes([OP_ISZERO])
+
+
+def bitwise_and() -> bytes:
+    """Emit AND — pop ``a`` (top) then ``b``; push ``a & b``.
+
+    Delegates directly to the EVM ``AND`` opcode via inline assembly.
+    """
+    return bytes([OP_AND])
+
+
+def bitwise_or() -> bytes:
+    """Emit OR — pop ``a`` (top) then ``b``; push ``a | b``.
+
+    Delegates directly to the EVM ``OR`` opcode via inline assembly.
+    """
+    return bytes([OP_OR])
+
+
+def bitwise_xor() -> bytes:
+    """Emit XOR — pop ``a`` (top) then ``b``; push ``a ^ b``.
+
+    Delegates directly to the EVM ``XOR`` opcode via inline assembly.
+    """
+    return bytes([OP_XOR])
+
+
+def bitwise_not() -> bytes:
+    """Emit NOT — pop ``a``; push ``~a`` (bitwise complement).
+
+    Delegates directly to the EVM ``NOT`` opcode via inline assembly.
+    """
+    return bytes([OP_NOT])
+
+
+def shl() -> bytes:
+    """Emit SHL — pop ``shift`` (top) then ``value``; push ``value << shift``.
+
+    Delegates directly to the EVM ``SHL`` opcode via inline assembly.
+    Shift amounts >= 256 produce zero.
+    """
+    return bytes([OP_SHL])
+
+
+def shr() -> bytes:
+    """Emit SHR — pop ``shift`` (top) then ``value``; push ``value >> shift``.
+
+    Delegates directly to the EVM ``SHR`` opcode via inline assembly (logical shift).
+    Shift amounts >= 256 produce zero.
+    """
+    return bytes([OP_SHR])
 
 
 # ---------------------------------------------------------------------------

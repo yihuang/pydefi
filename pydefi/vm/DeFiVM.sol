@@ -50,6 +50,16 @@ pragma solidity ^0.8.24;
  *   0x35  MUL                            pop a, b -> push a * b  (wrapping uint256)
  *   0x36  DIV                            pop a, b -> push a / b  (0 if b == 0)
  *   0x37  MOD                            pop a, b -> push a % b  (0 if b == 0)
+ *   0x38  LT                             pop a (TOS), b -> push 1 if a < b else 0
+ *   0x39  GT                             pop a (TOS), b -> push 1 if a > b else 0
+ *   0x3a  EQ                             pop a (TOS), b -> push 1 if a == b else 0
+ *   0x3b  ISZERO                         pop a -> push 1 if a == 0 else 0
+ *   0x3c  AND                            pop a (TOS), b -> push a & b
+ *   0x3d  OR                             pop a (TOS), b -> push a | b
+ *   0x3e  XOR                            pop a (TOS), b -> push a ^ b
+ *   0x3f  NOT                            pop a -> push ~a
+ *   0x44  SHL                            pop shift (TOS), value -> push value << shift (EVM SHL)
+ *   0x45  SHR                            pop shift (TOS), value -> push value >> shift (EVM SHR)
  *
  * ABI / data
  *   0x40  PATCH_U256 <2-byte offset>     pop: value, bufIdx -> patch 32-byte word in buffer
@@ -88,10 +98,20 @@ contract DeFiVM {
     uint8 private constant OP_MUL         = 0x35;
     uint8 private constant OP_DIV         = 0x36;
     uint8 private constant OP_MOD         = 0x37;
+    uint8 private constant OP_LT          = 0x38;
+    uint8 private constant OP_GT          = 0x39;
+    uint8 private constant OP_EQ          = 0x3a;
+    uint8 private constant OP_ISZERO      = 0x3b;
+    uint8 private constant OP_AND         = 0x3c;
+    uint8 private constant OP_OR          = 0x3d;
+    uint8 private constant OP_XOR         = 0x3e;
+    uint8 private constant OP_NOT         = 0x3f;
     uint8 private constant OP_PATCH_U256  = 0x40;
     uint8 private constant OP_PATCH_ADDR  = 0x41;
     uint8 private constant OP_RET_U256    = 0x42;
     uint8 private constant OP_RET_SLICE   = 0x43;
+    uint8 private constant OP_SHL         = 0x44;
+    uint8 private constant OP_SHR         = 0x45;
 
     /// @notice Allow the VM to receive ETH (needed for value-bearing calls).
     receive() external payable {}
@@ -371,7 +391,7 @@ contract DeFiVM {
                 _push(s, bytes32(a >= b ? a - b : 0));
 
             } else if (op == OP_ADD) {
-                // pop a (top), pop b -> push a + b (wrapping uint256)
+                // pop a (top), pop b -> push a + b (wrapping uint256, delegates to EVM ADD)
                 require(s.sp >= 2, "DeFiVM: ADD needs 2 items");
 
                 s.sp--;
@@ -380,10 +400,12 @@ contract DeFiVM {
                 s.sp--;
                 uint256 b = uint256(s.stack[s.sp]);
 
-                unchecked { _push(s, bytes32(a + b)); }
+                uint256 result;
+                assembly { result := add(a, b) }
+                _push(s, bytes32(result));
 
             } else if (op == OP_MUL) {
-                // pop a (top), pop b -> push a * b (wrapping uint256)
+                // pop a (top), pop b -> push a * b (wrapping uint256, delegates to EVM MUL)
                 require(s.sp >= 2, "DeFiVM: MUL needs 2 items");
 
                 s.sp--;
@@ -392,10 +414,12 @@ contract DeFiVM {
                 s.sp--;
                 uint256 b = uint256(s.stack[s.sp]);
 
-                unchecked { _push(s, bytes32(a * b)); }
+                uint256 result;
+                assembly { result := mul(a, b) }
+                _push(s, bytes32(result));
 
             } else if (op == OP_DIV) {
-                // pop a (top), pop b -> push a / b (0 if b == 0)
+                // pop a (top), pop b -> push a / b (0 if b == 0, delegates to EVM DIV)
                 require(s.sp >= 2, "DeFiVM: DIV needs 2 items");
 
                 s.sp--;
@@ -404,10 +428,12 @@ contract DeFiVM {
                 s.sp--;
                 uint256 b = uint256(s.stack[s.sp]);
 
-                _push(s, bytes32(b == 0 ? 0 : a / b));
+                uint256 result;
+                assembly { result := div(a, b) }
+                _push(s, bytes32(result));
 
             } else if (op == OP_MOD) {
-                // pop a (top), pop b -> push a % b (0 if b == 0)
+                // pop a (top), pop b -> push a % b (0 if b == 0, delegates to EVM MOD)
                 require(s.sp >= 2, "DeFiVM: MOD needs 2 items");
 
                 s.sp--;
@@ -416,7 +442,115 @@ contract DeFiVM {
                 s.sp--;
                 uint256 b = uint256(s.stack[s.sp]);
 
-                _push(s, bytes32(b == 0 ? 0 : a % b));
+                uint256 result;
+                assembly { result := mod(a, b) }
+                _push(s, bytes32(result));
+
+            } else if (op == OP_LT) {
+                // pop a (top), pop b -> push 1 if a < b else 0 (delegates to EVM LT)
+                require(s.sp >= 2, "DeFiVM: LT needs 2 items");
+
+                s.sp--;
+                uint256 a = uint256(s.stack[s.sp]);
+
+                s.sp--;
+                uint256 b = uint256(s.stack[s.sp]);
+
+                uint256 result;
+                assembly { result := lt(a, b) }
+                _push(s, bytes32(result));
+
+            } else if (op == OP_GT) {
+                // pop a (top), pop b -> push 1 if a > b else 0 (delegates to EVM GT)
+                require(s.sp >= 2, "DeFiVM: GT needs 2 items");
+
+                s.sp--;
+                uint256 a = uint256(s.stack[s.sp]);
+
+                s.sp--;
+                uint256 b = uint256(s.stack[s.sp]);
+
+                uint256 result;
+                assembly { result := gt(a, b) }
+                _push(s, bytes32(result));
+
+            } else if (op == OP_EQ) {
+                // pop a (top), pop b -> push 1 if a == b else 0 (delegates to EVM EQ)
+                require(s.sp >= 2, "DeFiVM: EQ needs 2 items");
+
+                s.sp--;
+                uint256 a = uint256(s.stack[s.sp]);
+
+                s.sp--;
+                uint256 b = uint256(s.stack[s.sp]);
+
+                uint256 result;
+                assembly { result := eq(a, b) }
+                _push(s, bytes32(result));
+
+            } else if (op == OP_ISZERO) {
+                // pop a -> push 1 if a == 0 else 0 (delegates to EVM ISZERO)
+                require(s.sp > 0, "DeFiVM: ISZERO needs 1 item");
+
+                s.sp--;
+                uint256 a = uint256(s.stack[s.sp]);
+
+                uint256 result;
+                assembly { result := iszero(a) }
+                _push(s, bytes32(result));
+
+            } else if (op == OP_AND) {
+                // pop a (top), pop b -> push a & b (delegates to EVM AND)
+                require(s.sp >= 2, "DeFiVM: AND needs 2 items");
+
+                s.sp--;
+                uint256 a = uint256(s.stack[s.sp]);
+
+                s.sp--;
+                uint256 b = uint256(s.stack[s.sp]);
+
+                uint256 result;
+                assembly { result := and(a, b) }
+                _push(s, bytes32(result));
+
+            } else if (op == OP_OR) {
+                // pop a (top), pop b -> push a | b (delegates to EVM OR)
+                require(s.sp >= 2, "DeFiVM: OR needs 2 items");
+
+                s.sp--;
+                uint256 a = uint256(s.stack[s.sp]);
+
+                s.sp--;
+                uint256 b = uint256(s.stack[s.sp]);
+
+                uint256 result;
+                assembly { result := or(a, b) }
+                _push(s, bytes32(result));
+
+            } else if (op == OP_XOR) {
+                // pop a (top), pop b -> push a ^ b (delegates to EVM XOR)
+                require(s.sp >= 2, "DeFiVM: XOR needs 2 items");
+
+                s.sp--;
+                uint256 a = uint256(s.stack[s.sp]);
+
+                s.sp--;
+                uint256 b = uint256(s.stack[s.sp]);
+
+                uint256 result;
+                assembly { result := xor(a, b) }
+                _push(s, bytes32(result));
+
+            } else if (op == OP_NOT) {
+                // pop a -> push ~a (delegates to EVM NOT)
+                require(s.sp > 0, "DeFiVM: NOT needs 1 item");
+
+                s.sp--;
+                uint256 a = uint256(s.stack[s.sp]);
+
+                uint256 result;
+                assembly { result := not(a) }
+                _push(s, bytes32(result));
 
             // ------------------------------------------------------------------
             // ABI / data patching
@@ -496,6 +630,34 @@ contract DeFiVM {
                 s.buffers[idx] = slice;
                 s.numBufs++;
                 _push(s, bytes32(uint256(idx)));
+
+            } else if (op == OP_SHL) {
+                // pop shift (top), pop value -> push value << shift (delegates to EVM SHL)
+                require(s.sp >= 2, "DeFiVM: SHL needs 2 items");
+
+                s.sp--;
+                uint256 shift = uint256(s.stack[s.sp]);
+
+                s.sp--;
+                uint256 value = uint256(s.stack[s.sp]);
+
+                uint256 result;
+                assembly { result := shl(shift, value) }
+                _push(s, bytes32(result));
+
+            } else if (op == OP_SHR) {
+                // pop shift (top), pop value -> push value >> shift (delegates to EVM SHR)
+                require(s.sp >= 2, "DeFiVM: SHR needs 2 items");
+
+                s.sp--;
+                uint256 shift = uint256(s.stack[s.sp]);
+
+                s.sp--;
+                uint256 value = uint256(s.stack[s.sp]);
+
+                uint256 result;
+                assembly { result := shr(shift, value) }
+                _push(s, bytes32(result));
 
             } else {
                 revert("DeFiVM: unknown opcode");
