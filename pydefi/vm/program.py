@@ -57,6 +57,13 @@ OP_PATCH_U256: int = 0x81  # first byte of patch_u256 sequence (DUP2)
 OP_PATCH_ADDR: int = 0x81  # first byte of patch_addr sequence (DUP2)
 OP_RET_U256: int = 0x60   # first byte of ret_u256 sequence (PUSH1)
 OP_RET_SLICE: int = 0x60  # first byte of ret_slice sequence (PUSH1)
+# Aliases for compound instruction sequences (first byte of the sequence)
+OP_REVERT_IF: int = 0x15   # ISZERO (first byte of revert_if sequence)
+OP_ASSERT_GE: int = 0x81   # DUP2 (first byte of assert_ge sequence)
+OP_ASSERT_LE: int = 0x81   # DUP2 (first byte of assert_le sequence)
+OP_CALL: int = 0xF1        # CALL (first byte of call sequence)
+OP_BALANCE_OF: int = 0x80  # DUP1 (first byte of balance_of sequence)
+OP_SELF_ADDR: int = 0x30   # ADDRESS
 
 # ---------------------------------------------------------------------------
 # Stack instructions
@@ -110,8 +117,8 @@ def push_bytes(data: bytes) -> bytes:
         0x61, blen >> 8, blen & 0xFF,
         # byte 18: SWAP2  → [max_fp, data_ptr, blen, max_fp]
         0x91,                    # SWAP2
-        # byte 19: CODECOPY  → [max_fp]
-        0x39,                    # CODECOPY
+        # byte 19: CALLDATACOPY  → [max_fp]
+        0x37,                    # CALLDATACOPY
         # byte 20: DUP1  → [max_fp, max_fp]
         0x80,                    # DUP1
         # bytes 21-23: PUSH2 blen_padded

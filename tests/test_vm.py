@@ -203,30 +203,28 @@ class TestProgramChaining:
 
 class TestProgramLabels:
     def test_jump_label_resolves_to_correct_offset(self):
-        # Layout: JUMP(3 bytes) | target instruction (push_u256 = 33 bytes)
-        # Label "start" placed at byte 3 (after JUMP)
+        # Layout: jump("start")[4 bytes: PUSH2 hi lo JUMP] | JUMPDEST[1] | push_u256(0)[33]
+        # JUMPDEST at byte 4 — that is the jump target
         p = Program().jump("start").label("start").push_u256(0)
         bytecode = p.build()
-        # The JUMP target (bytes 1-2) should be 3
+        # First byte is PUSH2 (0x61) which is OP_JUMP in the new scheme
         assert bytecode[0] == OP_JUMP
         target = struct.unpack(">H", bytecode[1:3])[0]
-        assert target == 3  # one JUMP instruction = 3 bytes
+        assert target == 4  # JUMPDEST is at byte 4
 
     def test_jumpi_label_resolves_to_correct_offset(self):
-        # push_u256(1) [33 bytes] then JUMPI -> label "skip" [3 bytes] then push_u256(99) [33]
-        # label "skip" placed after the JUMPI
+        # push_u256(1) [33 bytes] then jumpi("skip") [4 bytes] then push_u256(99) [33]
+        # then JUMPDEST [1] then push_u256(0) [33]
         p = Program().push_u256(1).jumpi("skip").push_u256(99).label("skip").push_u256(0)
         bytecode = p.build()
-        # JUMPI instruction starts at byte 33
+        # jumpi sequence starts at byte 33: PUSH2(1) hi(1) lo(1) JUMPI(1)
         assert bytecode[33] == OP_JUMPI
         target = struct.unpack(">H", bytecode[34:36])[0]
-        # label "skip" is placed after: push_u256(1)[33] + JUMPI[3] + push_u256(99)[33] = 69
-        assert target == 69
+        # JUMPDEST at: push_u256(1)[33] + jumpi[4] + push_u256(99)[33] = 70
+        assert target == 70
 
     def test_forward_jump_skips_instruction(self):
-        # Build: JUMP("end") | push_u256(99) | <label end> | push_u256(1)
-        # After jump, push_u256(99) is unreachable; the resolved bytecode is just
-        # the three concatenated instructions with correct target offset embedded.
+        # Build: jump("end")[4] | push_u256(99)[33] | JUMPDEST[1] | push_u256(1)[33]
         p = (
             Program()
             .jump("end")
@@ -237,8 +235,8 @@ class TestProgramLabels:
         bytecode = p.build()
         assert bytecode[0] == OP_JUMP
         target = struct.unpack(">H", bytecode[1:3])[0]
-        # jump(3 bytes) + push_u256(99)(33 bytes) = 36 bytes before label
-        assert target == 36
+        # JUMPDEST at: jump[4] + push_u256(99)[33] = 37
+        assert target == 37
 
     def test_duplicate_label_raises(self):
         with pytest.raises(ValueError, match="duplicate label"):
@@ -252,13 +250,13 @@ class TestProgramLabels:
         p = Program().push_u256(0).jumpi("end").push_u256(1).jump("end").label("end").push_u256(2)
         bytecode = p.build()
         # Both jumps should resolve to the same target
-        # Layout: push_u256(0)[33] + JUMPI[3] + push_u256(1)[33] + JUMP[3] + push_u256(2)[33]
-        # label "end" is at offset 33+3+33+3 = 72
+        # Layout: push_u256(0)[33] + jumpi[4] + push_u256(1)[33] + jump[4] + JUMPDEST[1] + push_u256(2)[33]
+        # JUMPDEST (label "end") is at offset 33+4+33+4 = 74
         assert bytecode[33] == OP_JUMPI
         t1 = struct.unpack(">H", bytecode[34:36])[0]
-        assert bytecode[69] == OP_JUMP
-        t2 = struct.unpack(">H", bytecode[70:72])[0]
-        assert t1 == t2 == 72
+        assert bytecode[70] == OP_JUMP
+        t2 = struct.unpack(">H", bytecode[71:73])[0]
+        assert t1 == t2 == 74
 
 
 # ---------------------------------------------------------------------------
@@ -269,28 +267,35 @@ class TestProgramLabels:
 class TestCallContractHelper:
     def test_call_contract_matches_manual_sequence(self):
         calldata = bytes.fromhex("a9059cbb" + "00" * 12 + "bb" * 20 + "00" * 31 + "64")
-        expected = push_bytes(calldata) + push_u256(0) + push_addr(ADDR_A) + push_u256(0) + call(require_success=True)
+        expected = (
+            push_u256(0) + push_u256(0)
+            + push_bytes(calldata) + push_u256(0) + push_addr(ADDR_A) + push_u256(0) + call(require_success=True)
+        )
         actual = Program().call_contract(ADDR_A, calldata).build()
         assert actual == expected
 
     def test_call_contract_with_value_and_gas(self):
         calldata = b"\x12\x34\x56\x78"
         expected = (
-            push_bytes(calldata) + push_u256(10**18) + push_addr(ADDR_B) + push_u256(50000) + call(require_success=True)
+            push_u256(0) + push_u256(0)
+            + push_bytes(calldata) + push_u256(10**18) + push_addr(ADDR_B) + push_u256(50000) + call(require_success=True)
         )
         actual = Program().call_contract(ADDR_B, calldata, value=10**18, gas=50000).build()
         assert actual == expected
 
     def test_call_contract_no_require_success(self):
         calldata = b"\xab\xcd"
-        expected = push_bytes(calldata) + push_u256(0) + push_addr(ADDR_A) + push_u256(0) + call(require_success=False)
+        expected = (
+            push_u256(0) + push_u256(0)
+            + push_bytes(calldata) + push_u256(0) + push_addr(ADDR_A) + push_u256(0) + call(require_success=False)
+        )
         actual = Program().call_contract(ADDR_A, calldata, require_success=False).build()
         assert actual == expected
 
     def test_call_contract_push_bytes_opcode(self):
-        # First byte of the output should be OP_PUSH_BYTES
+        # push_u256(0) for retSize comes first; push_bytes appears later in bytecode
         bytecode = Program().call_contract(ADDR_A, b"\x00").build()
-        assert bytecode[0] == OP_PUSH_BYTES
+        assert OP_PUSH_BYTES in bytecode
 
     def test_call_contract_address_embedded(self):
         # The address should be present in the bytecode
@@ -408,9 +413,9 @@ class TestIntegration:
             .assert_ge("balance too low")
             .build()
         )
-        # Verify it's non-empty and starts with PUSH_BYTES
+        # Verify it's non-empty and contains PUSH_BYTES somewhere
         assert len(bytecode) > 0
-        assert bytecode[0] == OP_PUSH_BYTES
+        assert OP_PUSH_BYTES in bytecode
 
     def test_conditional_skip_with_label(self):
         """Verify label resolution in a real conditional flow."""
@@ -424,10 +429,10 @@ class TestIntegration:
         )
         bytecode = p.build()
         # The JUMPI target should point past the push_u256(99)
-        # push_u256(0)=33 bytes, JUMPI=3 bytes => label at 33+3+33=69
+        # push_u256(0)=33 bytes, jumpi=4 bytes, push_u256(99)=33 => JUMPDEST at 33+4+33=70
         assert bytecode[33] == OP_JUMPI
         target = struct.unpack(">H", bytecode[34:36])[0]
-        assert target == 69
+        assert target == 70
 
     def test_multi_call_program(self):
         """Three sequential calls produce a valid byte sequence."""
@@ -447,8 +452,8 @@ class TestIntegration:
             .build()
         )
         assert len(bytecode) > 0
-        # Starts with PUSH_BYTES
-        assert bytecode[0] == OP_PUSH_BYTES
+        # Contains PUSH_BYTES somewhere (push_u256 for retSize comes first)
+        assert OP_PUSH_BYTES in bytecode
 
 
 # ---------------------------------------------------------------------------
@@ -494,19 +499,19 @@ class TestProgramComposition:
 
     def test_extend_label_offset_adjusted(self):
         """Labels in the appended program have their positions shifted correctly."""
-        # Layout: JUMP("here")[3 bytes] from p1 | label("here") + push_u256(1) from p2
-        # After extend, "here" should resolve to offset 3 (right after the JUMP).
+        # Layout: jump("here")[4 bytes: PUSH2+hi+lo+JUMP] | JUMPDEST[1] + push_u256(1) from p2
+        # After extend, "here" should resolve to offset 4 (JUMPDEST right after the jump).
         p1 = Program().jump("here")
         p2 = Program().label("here").push_u256(1)
         p1.extend(p2)
         bytecode = p1.build()
         assert bytecode[0] == OP_JUMP
         target = struct.unpack(">H", bytecode[1:3])[0]
-        assert target == 3  # JUMP(3 bytes) → label right after
+        assert target == 4  # jump(4 bytes) → JUMPDEST right after
 
     def test_extend_fixup_offset_adjusted(self):
         """JUMP fixup offsets in appended program are shifted correctly."""
-        # p2 has a forward jump: JUMP(3 bytes) | label "done" | push_u256(0)
+        # p2 has a forward jump: jump[4 bytes] | JUMPDEST[1] | push_u256(0)
         p2 = Program().jump("done").label("done").push_u256(0)
 
         p1_size = len(Program().push_u256(999))  # 33 bytes
@@ -514,11 +519,11 @@ class TestProgramComposition:
         p1.extend(p2)
 
         bytecode = p1.build()
-        # The JUMP instruction is at byte p1_size (33)
+        # The PUSH2 (start of jump sequence) is at byte p1_size (33)
         assert bytecode[p1_size] == OP_JUMP
         target = struct.unpack(">H", bytecode[p1_size + 1 : p1_size + 3])[0]
-        # label "done" should be at p1_size + 3 (after JUMP instruction)
-        assert target == p1_size + 3
+        # JUMPDEST is at p1_size + 4 (after PUSH2+hi+lo+JUMP)
+        assert target == p1_size + 4
 
     def test_extend_cross_program_label_resolution(self):
         """Jump in p1 to label defined in p2 resolves correctly."""
@@ -526,9 +531,9 @@ class TestProgramComposition:
         p2 = Program().push_u256(1).label("end").push_u256(2)
         p1.extend(p2)
         bytecode = p1.build()
-        # "end" is at: JUMP(3) + push_u256(1)(33) = offset 36
+        # "end" is at: jump[4] + push_u256(1)[33] = offset 37
         target = struct.unpack(">H", bytecode[1:3])[0]
-        assert target == 36
+        assert target == 37
 
     def test_extend_duplicate_label_raises(self):
         p1 = Program().label("x")
@@ -553,8 +558,8 @@ class TestProgramComposition:
 
     def test_compose_with_labels(self):
         """Labels from multiple sub-programs are correctly resolved after compose."""
-        # Layout: push_u256(1)[33] | JUMP("end")[3] | label("end") + push_u256(2)[33]
-        # "end" is at offset 33+3 = 36
+        # Layout: push_u256(1)[33] | jump("end")[4: PUSH2+hi+lo+JUMP] | JUMPDEST[1] + push_u256(2)[33]
+        # "end" (JUMPDEST) is at offset 33+4 = 37
         p1 = Program().push_u256(1)
         p2 = Program().jump("end")
         p3 = Program().label("end").push_u256(2)
@@ -562,7 +567,7 @@ class TestProgramComposition:
         bytecode = result.build()
         assert bytecode[33] == OP_JUMP
         target = struct.unpack(">H", bytecode[34:36])[0]
-        assert target == 36
+        assert target == 37
 
     def test_sub_programs_independent(self):
         """Combining programs via + does not mutate the originals."""
@@ -595,7 +600,8 @@ class TestCallWithPatches:
         cd = self._template()
         # Manually build equivalent low-level sequence
         expected = (
-            push_bytes(cd)
+            push_u256(0) + push_u256(0)  # retSize, retOffset
+            + push_bytes(cd)
             + push_u256(42)
             + patch_u256(4)
             + push_u256(0)  # value
@@ -610,7 +616,8 @@ class TestCallWithPatches:
         """Bytes opcodes for addr patch: emits opcodes + patch_addr."""
         cd = self._template()
         expected = (
-            push_bytes(cd)
+            push_u256(0) + push_u256(0)  # retSize, retOffset
+            + push_bytes(cd)
             + push_addr(ADDR_B)
             + patch_addr(16)
             + push_u256(0)
@@ -625,7 +632,8 @@ class TestCallWithPatches:
         """ret_u256(offset) bytes emits ret_u256 + patch_u256."""
         cd = self._template()
         expected = (
-            push_bytes(cd) + ret_u256(0) + patch_u256(4) + push_u256(0) + push_addr(ADDR_A) + push_u256(0) + call(True)
+            push_u256(0) + push_u256(0)  # retSize, retOffset
+            + push_bytes(cd) + ret_u256(0) + patch_u256(4) + push_u256(0) + push_addr(ADDR_A) + push_u256(0) + call(True)
         )
         actual = Program().call_with_patches(ADDR_A, cd, [("u256", 4, ret_u256(0))]).build()
         assert actual == expected
@@ -634,7 +642,8 @@ class TestCallWithPatches:
         """load_reg(idx) bytes emits load_reg + patch_u256."""
         cd = self._template()
         expected = (
-            push_bytes(cd) + load_reg(3) + patch_u256(4) + push_u256(0) + push_addr(ADDR_A) + push_u256(0) + call(True)
+            push_u256(0) + push_u256(0)  # retSize, retOffset
+            + push_bytes(cd) + load_reg(3) + patch_u256(4) + push_u256(0) + push_addr(ADDR_A) + push_u256(0) + call(True)
         )
         actual = Program().call_with_patches(ADDR_A, cd, [("u256", 4, load_reg(3))]).build()
         assert actual == expected
@@ -643,7 +652,8 @@ class TestCallWithPatches:
         """load_reg(idx) with kind='addr' emits load_reg + patch_addr."""
         cd = self._template()
         expected = (
-            push_bytes(cd) + load_reg(5) + patch_addr(16) + push_u256(0) + push_addr(ADDR_A) + push_u256(0) + call(True)
+            push_u256(0) + push_u256(0)  # retSize, retOffset
+            + push_bytes(cd) + load_reg(5) + patch_addr(16) + push_u256(0) + push_addr(ADDR_A) + push_u256(0) + call(True)
         )
         actual = Program().call_with_patches(ADDR_A, cd, [("addr", 16, load_reg(5))]).build()
         assert actual == expected
@@ -652,7 +662,8 @@ class TestCallWithPatches:
         """Multiple patches are applied in order."""
         cd = self._template()
         expected = (
-            push_bytes(cd)
+            push_u256(0) + push_u256(0)  # retSize, retOffset
+            + push_bytes(cd)
             + push_u256(100)
             + patch_u256(4)
             + push_addr(ADDR_B)
@@ -680,7 +691,8 @@ class TestCallWithPatches:
         """value and gas parameters are reflected in CALL prologue."""
         cd = self._template()
         expected = (
-            push_bytes(cd)
+            push_u256(0) + push_u256(0)  # retSize, retOffset
+            + push_bytes(cd)
             + push_u256(10**18)  # value
             + push_addr(ADDR_A)
             + push_u256(50_000)  # gas
@@ -690,9 +702,11 @@ class TestCallWithPatches:
         assert actual == expected
 
     def test_require_success_false(self):
-        """require_success=False emits CALL with flags=0x00."""
+        """require_success=False emits CALL without the success-check block."""
         cd = self._template()
-        expected = push_bytes(cd) + push_u256(0) + push_addr(ADDR_A) + push_u256(0) + call(False)
+        expected = (
+            push_u256(0) + push_u256(0) + push_bytes(cd) + push_u256(0) + push_addr(ADDR_A) + push_u256(0) + call(False)
+        )
         actual = Program().call_with_patches(ADDR_A, cd, [], require_success=False).build()
         assert actual == expected
 
@@ -723,7 +737,7 @@ class TestCallWithPatches:
         combined = step1 + step2
         bytecode = combined.build()
         assert len(bytecode) > 0
-        assert bytecode[0] == OP_PUSH_BYTES
+        assert OP_PUSH_BYTES in bytecode
 
 
 # ---------------------------------------------------------------------------
@@ -833,7 +847,7 @@ class TestSplitSwapComposition:
 
     def test_split_swap_starts_with_push_bytes(self):
         bytecode = self._build_split_swap(60, 100)
-        assert bytecode[0] == OP_PUSH_BYTES
+        assert OP_PUSH_BYTES in bytecode
 
     def test_split_swap_contains_mul_and_div(self):
         bytecode = self._build_split_swap(60, 100)
@@ -1111,16 +1125,17 @@ class TestEvmNativeOpcodes:
     # -- Opcode constant values ------------------------------------------------
 
     def test_opcode_values(self):
-        assert OP_LT == 0x38
-        assert OP_GT == 0x39
-        assert OP_EQ == 0x3a
-        assert OP_ISZERO == 0x3b
-        assert OP_AND == 0x3c
-        assert OP_OR == 0x3d
-        assert OP_XOR == 0x3e
-        assert OP_NOT == 0x3f
-        assert OP_SHL == 0x44
-        assert OP_SHR == 0x45
+        # Native EVM opcode values
+        assert OP_LT == 0x10
+        assert OP_GT == 0x11
+        assert OP_EQ == 0x14
+        assert OP_ISZERO == 0x15
+        assert OP_AND == 0x16
+        assert OP_OR == 0x17
+        assert OP_XOR == 0x18
+        assert OP_NOT == 0x19
+        assert OP_SHL == 0x1B
+        assert OP_SHR == 0x1C
 
     # -- Bytecode composition --------------------------------------------------
 

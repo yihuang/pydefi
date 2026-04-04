@@ -272,7 +272,7 @@ class Program:
     # ------------------------------------------------------------------
 
     def label(self, name: str) -> "Program":
-        """Mark the current program position with *name*.
+        """Mark the current program position with *name* and emit a JUMPDEST.
 
         Use the same name as the target in :meth:`jump` or :meth:`jumpi`
         to create a labelled branch without computing byte offsets.
@@ -282,6 +282,7 @@ class Program:
         if name in self._labels:
             raise ValueError(f"Program: duplicate label {name!r}")
         self._labels[name] = len(self._buf)
+        self._buf.append(0x5B)  # JUMPDEST
         return self
 
     # ------------------------------------------------------------------
@@ -332,9 +333,10 @@ class Program:
         """
         if isinstance(target, int):
             return self._emit(jump(target))
-        self._buf.append(OP_JUMP)
+        self._buf.append(0x61)          # PUSH2
         self._fixups.append((len(self._buf), target))
-        self._buf.extend(b"\x00\x00")
+        self._buf.extend(b"\x00\x00")   # 2-byte placeholder
+        self._buf.append(0x56)          # JUMP
         return self
 
     def jumpi(self, target: str | int) -> "Program":
@@ -346,9 +348,10 @@ class Program:
         """
         if isinstance(target, int):
             return self._emit(jumpi(target))
-        self._buf.append(OP_JUMPI)
+        self._buf.append(0x61)          # PUSH2
         self._fixups.append((len(self._buf), target))
-        self._buf.extend(b"\x00\x00")
+        self._buf.extend(b"\x00\x00")   # 2-byte placeholder
+        self._buf.append(0x57)          # JUMPI
         return self
 
     def revert_if(self, msg: str) -> "Program":
@@ -484,10 +487,12 @@ class Program:
     ) -> "Program":
         """Emit a complete external-call sequence for a pre-built calldata buffer.
 
-        This is a convenience wrapper that pushes the four items required by
-        the ``CALL`` opcode in the correct stack order::
+        Pushes the seven items required by the EVM ``CALL`` opcode in the correct
+        stack order::
 
-            push_bytes(calldata)   # calldataBufIdx (bottom)
+            push_u256(0)           # retSize  (deepest)
+            push_u256(0)           # retOffset
+            push_bytes(calldata)   # argsOffset (TOS after push_bytes), argsLen (below)
             push_u256(value)
             push_addr(to)
             push_u256(gas)         # gasLimit (top)
@@ -495,7 +500,7 @@ class Program:
 
         Args:
             to: Target contract address (checksummed or lowercase hex).
-            calldata: Pre-encoded ABI calldata (use :mod:`pydefi.vm.abi` helpers).
+            calldata: Pre-encoded ABI calldata.
             value: ETH value to forward with the call (wei), default 0.
             gas: Gas limit for the sub-call (0 = forward all remaining gas).
             require_success: If ``True`` (default), revert if the sub-call fails.
@@ -504,7 +509,9 @@ class Program:
             ``self`` for chaining.
         """
         return (
-            self._emit(push_bytes(calldata))
+            self._emit(push_u256(0))        # retSize
+            ._emit(push_u256(0))            # retOffset
+            ._emit(push_bytes(calldata))    # argsOffset (TOS), argsLen
             ._emit(push_u256(value))
             ._emit(push_addr(to))
             ._emit(push_u256(gas))
@@ -646,7 +653,9 @@ class Program:
         Returns:
             ``self`` for chaining.
         """
-        self._emit(push_bytes(calldata))  # [bufIdx]
+        self._emit(push_u256(0))           # retSize
+        self._emit(push_u256(0))           # retOffset
+        self._emit(push_bytes(calldata))   # argsOffset (TOS), argsLen
 
         for kind, offset, opcodes in patches:
             if kind not in ("u256", "addr"):
@@ -663,7 +672,7 @@ class Program:
             else:  # kind == "addr"
                 self._emit(patch_addr(offset))
 
-        # Stack now: [bufIdx] — ready for CALL prologue
+        # Stack now: [argsOffset(TOS), argsLen, retOffset, retSize] — ready for CALL prologue
         self._emit(push_u256(value))
         self._emit(push_addr(to))
         self._emit(push_u256(gas))
