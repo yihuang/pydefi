@@ -109,12 +109,13 @@ def push_bytes(data: bytes) -> bytes:
                   19:    CALLDATACOPY → [max_fp]
                   20-31: update free-memory pointer, leave [argsOffset, argsLen]
                   32:    PC  (value = instr_start + 32)
-                  33-36: PUSH3 (39+blen)  → JUMPDEST at instr_start+71+blen
-                  37:    ADD → destination
-                  38:    JUMP → skip over inline data
+                  33-36: PUSH3 (blen+39)  → destination = 32 + blen + 39 = 71 + blen
+                  37:    ADD → destination = instr_start + 71 + blen = JUMPDEST
+                  38:    JUMP → skip over inline data + zero wall
         39-38+blen  inline data (blen bytes, read by CALLDATACOPY above)
-        39+blen..   32 zero-byte wall (protects JUMPDEST from PUSH absorption)
-        71+blen     JUMPDEST
+        39+blen..   32 zero-byte wall (blen+39 bytes from PC; protects JUMPDEST
+                    from being absorbed as a PUSH immediate)
+        71+blen     JUMPDEST  (= instr_start + blen + 32 + 39 = 71 + blen)
     """
     if len(data) > 0xFFFF:
         raise ValueError(f"push_bytes: data too large ({len(data)} bytes, max 65535)")

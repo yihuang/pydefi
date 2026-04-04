@@ -59,6 +59,10 @@ _MINIMAL_INTERPRETER_SOL = """\
 pragma solidity ^0.8.24;
 
 /// @dev Minimal EVM interpreter for DeFiVM testing.
+/// Deploys program bytecode via CREATE (using a 14-byte init wrapper that
+/// returns it as runtime code) then delegatecalls it with the original
+/// program as calldata.  PC and CALLDATACOPY both reference the program
+/// bytes, matching the Analog-Labs interpreter's execution semantics.
 contract TestInterpreter {
     fallback() external payable {
         bytes memory wrapper = hex"38600e0380600e600039600090f3";
