@@ -25,45 +25,35 @@ Usage example::
 from __future__ import annotations
 
 # ---------------------------------------------------------------------------
-# Opcode constants — first byte of each instruction sequence
+# Opcode constants — single EVM opcode identifiers
 # ---------------------------------------------------------------------------
 
-OP_PUSH_U256: int = 0x7F  # PUSH32
-OP_PUSH_ADDR: int = 0x73  # PUSH20
-OP_PUSH_BYTES: int = 0x60  # first byte of push_bytes sequence (PUSH1)
-OP_DUP: int = 0x80  # DUP1
-OP_SWAP: int = 0x90  # SWAP1
-OP_POP: int = 0x50  # POP
-OP_LOAD_REG: int = 0x61  # PUSH2 (first byte of load_reg sequence)
-OP_STORE_REG: int = 0x61  # PUSH2 (first byte of store_reg sequence)
-OP_JUMP: int = 0x61  # PUSH2 (first byte: PUSH2 target JUMP)
-OP_JUMPI: int = 0x61  # PUSH2 (first byte: PUSH2 target JUMPI)
-OP_ADD: int = 0x01
-OP_MUL: int = 0x02
-OP_SUB: int = 0x81  # first byte of saturating-sub sequence (DUP2)
-OP_DIV: int = 0x04
-OP_MOD: int = 0x06
-OP_LT: int = 0x10
-OP_GT: int = 0x11
-OP_EQ: int = 0x14
-OP_ISZERO: int = 0x15
-OP_AND: int = 0x16
-OP_OR: int = 0x17
-OP_XOR: int = 0x18
-OP_NOT: int = 0x19
-OP_SHL: int = 0x1B
-OP_SHR: int = 0x1C
-OP_PATCH_U256: int = 0x81  # first byte of patch_u256 sequence (DUP2)
-OP_PATCH_ADDR: int = 0x81  # first byte of patch_addr sequence (DUP2)
-OP_RET_U256: int = 0x60  # first byte of ret_u256 sequence (PUSH1)
-OP_RET_SLICE: int = 0x60  # first byte of ret_slice sequence (PUSH1)
-# Aliases for compound instruction sequences (first byte of the sequence)
-OP_REVERT_IF: int = 0x15  # ISZERO (first byte of revert_if sequence)
-OP_ASSERT_GE: int = 0x81  # DUP2 (first byte of assert_ge sequence)
-OP_ASSERT_LE: int = 0x81  # DUP2 (first byte of assert_le sequence)
-OP_CALL: int = 0xF1  # CALL (first byte of call sequence)
-OP_BALANCE_OF: int = 0x80  # DUP1 (first byte of balance_of sequence)
-OP_SELF_ADDR: int = 0x30  # ADDRESS
+OP_PUSH_U256: int = 0x7F  # PUSH32 — emitted by push_u256()
+OP_PUSH_ADDR: int = 0x73  # PUSH20 — emitted by push_addr()
+OP_DUP: int = 0x80  # DUP1 — emitted by dup()
+OP_SWAP: int = 0x90  # SWAP1 — emitted by swap()
+OP_POP: int = 0x50  # POP — emitted by pop()
+# NOTE: OP_JUMP and OP_JUMPI share the PUSH2 prefix (0x61) with load_reg/store_reg.
+# They identify the first byte of the 4-byte PUSH2 target + JUMP/JUMPI sequence.
+OP_JUMP: int = 0x61  # first byte of jump() sequence (PUSH2 target JUMP)
+OP_JUMPI: int = 0x61  # first byte of jumpi() sequence (PUSH2 target JUMPI)
+OP_ADD: int = 0x01  # ADD — emitted by add()
+OP_MUL: int = 0x02  # MUL — emitted by mul()
+OP_SUB: int = 0x81  # DUP2 — first byte of saturating sub() sequence
+OP_DIV: int = 0x04  # DIV — emitted by div()
+OP_MOD: int = 0x06  # MOD — emitted by mod()
+OP_LT: int = 0x10  # LT — emitted by lt()
+OP_GT: int = 0x11  # GT — emitted by gt()
+OP_EQ: int = 0x14  # EQ — emitted by eq()
+OP_ISZERO: int = 0x15  # ISZERO — emitted by iszero()
+OP_AND: int = 0x16  # AND — emitted by bitwise_and()
+OP_OR: int = 0x17  # OR — emitted by bitwise_or()
+OP_XOR: int = 0x18  # XOR — emitted by bitwise_xor()
+OP_NOT: int = 0x19  # NOT — emitted by bitwise_not()
+OP_SHL: int = 0x1B  # SHL — emitted by shl()
+OP_SHR: int = 0x1C  # SHR — emitted by shr()
+OP_CALL: int = 0xF1  # CALL — core opcode in the call() sequence
+OP_SELF_ADDR: int = 0x30  # ADDRESS — emitted by self_addr()
 
 # ---------------------------------------------------------------------------
 # Stack instructions
