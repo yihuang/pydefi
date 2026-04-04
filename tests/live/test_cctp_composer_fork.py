@@ -51,6 +51,33 @@ DEFI_VM_SOL_FILE = REPO_ROOT / "pydefi" / "vm" / "DeFiVM.sol"
 INTERPRETER_ADDR = "0x0000000000001e3F4F615cd5e20c681Cf7d85e8D"
 
 # ---------------------------------------------------------------------------
+# Minimal fallback interpreter (compiled + deployed when Analog-Labs one absent)
+# ---------------------------------------------------------------------------
+
+_MINIMAL_INTERPRETER_SOL = """\
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+
+/// @dev Minimal EVM interpreter for DeFiVM testing.
+contract TestInterpreter {
+    fallback() external payable {
+        bytes memory wrapper = hex"38600e0380600e600039600090f3";
+        bytes memory deployCode = bytes.concat(wrapper, msg.data);
+        address prog;
+        assembly {
+            prog := create(0, add(deployCode, 0x20), mload(deployCode))
+        }
+        require(prog != address(0));
+        (bool ok, bytes memory ret) = prog.delegatecall(msg.data);
+        if (!ok) {
+            assembly { revert(add(ret, 0x20), mload(ret)) }
+        }
+        assembly { return(add(ret, 0x20), mload(ret)) }
+    }
+}
+"""
+
+# ---------------------------------------------------------------------------
 # Mock contracts (inline Solidity)
 # ---------------------------------------------------------------------------
 
@@ -318,6 +345,24 @@ async def _deploy(w3: AsyncWeb3, compiled: dict, deployer: str, *args) -> str:
     return receipt["contractAddress"]
 
 
+async def _ensure_interpreter(w3: AsyncWeb3, deployer: str) -> str:
+    """Return a working EVM interpreter address, deploying a fallback if needed."""
+    code = await w3.eth.get_code(INTERPRETER_ADDR)
+    if code and len(code) > 1:
+        return INTERPRETER_ADDR
+
+    _ensure_solc("0.8.24")
+    compiled = solcx.compile_source(
+        _MINIMAL_INTERPRETER_SOL,
+        output_values=["abi", "bin"],
+        solc_version="0.8.24",
+        optimize=True,
+        optimize_runs=200,
+    )
+    key = "<stdin>:TestInterpreter"
+    return await _deploy(w3, compiled[key], deployer)
+
+
 def _abidata(hex_or_bytes: str | bytes) -> bytes:
     """Convert encode_abi() hex output to raw bytes."""
     if isinstance(hex_or_bytes, bytes):
@@ -368,16 +413,10 @@ async def ctx(cctp_fork_w3, compiled_cctp_composer, compiled_mocks, compiled_def
     # Deploy mock MessageTransmitterV2 (mints USDC on receiveMessage).
     transmitter_address = await _deploy(w3, compiled_mocks["MockMessageTransmitterV2"], deployer, usdc_address)
 
-    # Verify the Analog-Labs EVM interpreter is deployed on this fork.
-    interpreter_code = await w3.eth.get_code(INTERPRETER_ADDR)
-    if not interpreter_code or interpreter_code in (b"", b"\x00"):
-        pytest.skip(
-            f"Analog-Labs EVM interpreter not found at {INTERPRETER_ADDR}; "
-            "fork Ethereum mainnet to run these tests"
-        )
+    interpreter_addr = await _ensure_interpreter(w3, deployer)
 
     # Deploy DeFiVM.
-    vm_address = await _deploy(w3, compiled_defi_vm, deployer, INTERPRETER_ADDR)
+    vm_address = await _deploy(w3, compiled_defi_vm, deployer, interpreter_addr)
 
     # Deploy CCTPComposer.
     composer_address = await _deploy(
@@ -474,7 +513,8 @@ class TestCCTPComposerBasic:
         program = (
             store_reg(0)  # R0 = sourceDomain (top of stack after prologue)
             + store_reg(1)  # R1 = amountReceived
-            + push_u256(0) + push_u256(0)  # retLen=0, retOffset=0 for CALL
+            + push_u256(0)
+            + push_u256(0)  # retLen=0, retOffset=0 for CALL
             + push_bytes(target_calldata)
             + push_u256(0)  # value = 0 ETH
             + push_addr(target_address)
@@ -518,11 +558,12 @@ class TestCCTPComposerBasic:
         program = (
             store_reg(0)  # R0 = sourceDomain
             + store_reg(1)  # R1 = amountReceived (should be amount - fee)
-            + push_u256(0) + push_u256(0)  # retLen=0, retOffset=0 for CALL
+            + push_u256(0)
+            + push_u256(0)  # retLen=0, retOffset=0 for CALL
             + push_bytes(target_calldata)
             + push_u256(0)
             + push_addr(target_address)
-            + push_u256(0)
+            + bytes([0x5A])
             + call()
             + pop()
         )
@@ -556,11 +597,12 @@ class TestCCTPComposerBasic:
         program = (
             store_reg(0)
             + store_reg(1)
-            + push_u256(0) + push_u256(0)  # retLen=0, retOffset=0 for CALL
+            + push_u256(0)
+            + push_u256(0)  # retLen=0, retOffset=0 for CALL
             + push_bytes(target_calldata)
             + push_u256(eth_value)  # value = 0.01 ETH
             + push_addr(target_address)
-            + push_u256(0)
+            + bytes([0x5A])
             + call()
             + pop()
         )
@@ -590,11 +632,12 @@ class TestCCTPComposerBasic:
         program = (
             store_reg(0)
             + store_reg(1)
-            + push_u256(0) + push_u256(0)  # retLen=0, retOffset=0 for CALL
+            + push_u256(0)
+            + push_u256(0)  # retLen=0, retOffset=0 for CALL
             + push_bytes(target_calldata)
             + push_u256(0)
             + push_addr(target_address)
-            + push_u256(0)
+            + bytes([0x5A])
             + call()
             + pop()
         )
@@ -625,11 +668,12 @@ class TestCCTPComposerBasic:
         program = (
             store_reg(0)
             + store_reg(1)
-            + push_u256(0) + push_u256(0)  # retLen=0, retOffset=0 for CALL
+            + push_u256(0)
+            + push_u256(0)  # retLen=0, retOffset=0 for CALL
             + push_bytes(target_calldata)
             + push_u256(0)
             + push_addr(target_address)
-            + push_u256(0)
+            + bytes([0x5A])
             + call()
             + pop()
         )
@@ -668,11 +712,12 @@ class TestCCTPComposerBasic:
         program = (
             store_reg(0)
             + store_reg(1)
-            + push_u256(0) + push_u256(0)  # retLen=0, retOffset=0 for CALL
+            + push_u256(0)
+            + push_u256(0)  # retLen=0, retOffset=0 for CALL
             + push_bytes(transfer_calldata)
             + push_u256(0)
             + push_addr(usdc_address)
-            + push_u256(0)
+            + bytes([0x5A])
             + call()
             + pop()
         )
@@ -707,11 +752,12 @@ class TestCCTPComposerErrors:
         program = (
             store_reg(0)
             + store_reg(1)
-            + push_u256(0) + push_u256(0)  # retLen=0, retOffset=0 for CALL
+            + push_u256(0)
+            + push_u256(0)  # retLen=0, retOffset=0 for CALL
             + push_bytes(target_calldata)
             + push_u256(0)
             + push_addr(target_address)
-            + push_u256(0)
+            + bytes([0x5A])
             + call()
             + pop()
         )
@@ -748,7 +794,7 @@ class TestCCTPComposerErrors:
             + push_bytes(b"\xde\xad")
             + push_u256(0)
             + push_addr(reverting_address)
-            + push_u256(0)
+            + bytes([0x5A])
             + call(require_success=True)
             + pop()
         )

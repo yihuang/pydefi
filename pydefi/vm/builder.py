@@ -189,6 +189,7 @@ from pydefi.vm.program import (
     div,
     dup,
     eq,
+    gas_opcode,
     gt,
     iszero,
     jump,
@@ -331,10 +332,10 @@ class Program:
         """
         if isinstance(target, int):
             return self._emit(jump(target))
-        self._buf.append(0x61)          # PUSH2
+        self._buf.append(0x61)  # PUSH2
         self._fixups.append((len(self._buf), target))
-        self._buf.extend(b"\x00\x00")   # 2-byte placeholder
-        self._buf.append(0x56)          # JUMP
+        self._buf.extend(b"\x00\x00")  # 2-byte placeholder
+        self._buf.append(0x56)  # JUMP
         return self
 
     def jumpi(self, target: str | int) -> "Program":
@@ -346,10 +347,10 @@ class Program:
         """
         if isinstance(target, int):
             return self._emit(jumpi(target))
-        self._buf.append(0x61)          # PUSH2
+        self._buf.append(0x61)  # PUSH2
         self._fixups.append((len(self._buf), target))
-        self._buf.extend(b"\x00\x00")   # 2-byte placeholder
-        self._buf.append(0x57)          # JUMPI
+        self._buf.extend(b"\x00\x00")  # 2-byte placeholder
+        self._buf.append(0x57)  # JUMPI
         return self
 
     def revert_if(self, msg: str) -> "Program":
@@ -493,7 +494,7 @@ class Program:
             push_bytes(calldata)   # argsOffset (TOS after push_bytes), argsLen (below)
             push_u256(value)
             push_addr(to)
-            push_u256(gas)         # gasLimit (top)
+            push_u256(gas) or gas_opcode()  # gasLimit (top); gas_opcode() when gas==0
             CALL
 
         Args:
@@ -507,12 +508,12 @@ class Program:
             ``self`` for chaining.
         """
         return (
-            self._emit(push_u256(0))        # retSize
-            ._emit(push_u256(0))            # retOffset
-            ._emit(push_bytes(calldata))    # argsOffset (TOS), argsLen
+            self._emit(push_u256(0))  # retSize
+            ._emit(push_u256(0))  # retOffset
+            ._emit(push_bytes(calldata))  # argsOffset (TOS), argsLen
             ._emit(push_u256(value))
             ._emit(push_addr(to))
-            ._emit(push_u256(gas))
+            ._emit(gas_opcode() if gas == 0 else push_u256(gas))
             ._emit(call(require_success))
         )
 
@@ -651,9 +652,9 @@ class Program:
         Returns:
             ``self`` for chaining.
         """
-        self._emit(push_u256(0))           # retSize
-        self._emit(push_u256(0))           # retOffset
-        self._emit(push_bytes(calldata))   # argsOffset (TOS), argsLen
+        self._emit(push_u256(0))  # retSize
+        self._emit(push_u256(0))  # retOffset
+        self._emit(push_bytes(calldata))  # argsOffset (TOS), argsLen
 
         for kind, offset, opcodes in patches:
             if kind not in ("u256", "addr"):
@@ -673,7 +674,7 @@ class Program:
         # Stack now: [argsOffset(TOS), argsLen, retOffset, retSize] — ready for CALL prologue
         self._emit(push_u256(value))
         self._emit(push_addr(to))
-        self._emit(push_u256(gas))
+        self._emit(gas_opcode() if gas == 0 else push_u256(gas))
         self._emit(call(require_success))
         return self
 

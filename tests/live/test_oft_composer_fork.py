@@ -54,6 +54,33 @@ DEFI_VM_SOL_FILE = REPO_ROOT / "pydefi" / "vm" / "DeFiVM.sol"
 INTERPRETER_ADDR = "0x0000000000001e3F4F615cd5e20c681Cf7d85e8D"
 
 # ---------------------------------------------------------------------------
+# Minimal fallback interpreter (compiled + deployed when Analog-Labs one absent)
+# ---------------------------------------------------------------------------
+
+_MINIMAL_INTERPRETER_SOL = """\
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+
+/// @dev Minimal EVM interpreter for DeFiVM testing.
+contract TestInterpreter {
+    fallback() external payable {
+        bytes memory wrapper = hex"38600e0380600e600039600090f3";
+        bytes memory deployCode = bytes.concat(wrapper, msg.data);
+        address prog;
+        assembly {
+            prog := create(0, add(deployCode, 0x20), mload(deployCode))
+        }
+        require(prog != address(0));
+        (bool ok, bytes memory ret) = prog.delegatecall(msg.data);
+        if (!ok) {
+            assembly { revert(add(ret, 0x20), mload(ret)) }
+        }
+        assembly { return(add(ret, 0x20), mload(ret)) }
+    }
+}
+"""
+
+# ---------------------------------------------------------------------------
 # Compile + deploy helpers
 # ---------------------------------------------------------------------------
 
@@ -98,6 +125,24 @@ async def _deploy(w3: AsyncWeb3, compiled: dict, deployer: str, *args) -> str:
     tx_hash = await contract.constructor(*args).transact({"from": deployer})
     receipt = await w3.eth.get_transaction_receipt(tx_hash)
     return receipt["contractAddress"]
+
+
+async def _ensure_interpreter(w3: AsyncWeb3, deployer: str) -> str:
+    """Return a working EVM interpreter address, deploying a fallback if needed."""
+    code = await w3.eth.get_code(INTERPRETER_ADDR)
+    if code and len(code) > 1:
+        return INTERPRETER_ADDR
+
+    _ensure_solc("0.8.24")
+    compiled = solcx.compile_source(
+        _MINIMAL_INTERPRETER_SOL,
+        output_values=["abi", "bin"],
+        solc_version="0.8.24",
+        optimize=True,
+        optimize_runs=200,
+    )
+    key = "<stdin>:TestInterpreter"
+    return await _deploy(w3, compiled[key], deployer)
 
 
 # ---------------------------------------------------------------------------
@@ -300,16 +345,10 @@ async def ctx(oft_fork_w3, compiled_oft_composer, compiled_mocks, compiled_defi_
     # Deploy mock endpoint (controls which address may call lzCompose).
     endpoint_address = await _deploy(w3, compiled_mocks["MockEndpoint"], deployer)
 
-    # Verify the Analog-Labs EVM interpreter is deployed on this fork.
-    interpreter_code = await w3.eth.get_code(INTERPRETER_ADDR)
-    if not interpreter_code or interpreter_code in (b"", b"\x00"):
-        pytest.skip(
-            f"Analog-Labs EVM interpreter not found at {INTERPRETER_ADDR}; "
-            "fork Ethereum mainnet to run these tests"
-        )
+    interpreter_addr = await _ensure_interpreter(w3, deployer)
 
     # Deploy DeFiVM (pass interpreter address via constructor).
-    vm_address = await _deploy(w3, compiled_defi_vm, deployer, INTERPRETER_ADDR)
+    vm_address = await _deploy(w3, compiled_defi_vm, deployer, interpreter_addr)
 
     # Deploy OFT composer pointing it at the mock endpoint and DeFiVM.
     composer_address = await _deploy(
@@ -373,7 +412,8 @@ class TestOFTComposerFork:
     def _call_target(target_address: str, calldata: bytes, value: int = 0) -> bytes:
         """Return DeFiVM instructions for one external call (discards success flag)."""
         return (
-            push_u256(0) + push_u256(0)  # retLen=0, retOffset=0 for CALL
+            push_u256(0)
+            + push_u256(0)  # retLen=0, retOffset=0 for CALL
             + push_bytes(calldata)
             + push_u256(value)
             + push_addr(target_address)
@@ -490,7 +530,8 @@ class TestOFTComposerFork:
         program = (
             store_reg(0)
             + store_reg(1)
-            + push_u256(0) + push_u256(0)  # retLen=0, retOffset=0 for CALL
+            + push_u256(0)
+            + push_u256(0)  # retLen=0, retOffset=0 for CALL
             + push_bytes(calldata)
             + push_u256(eth_amount)  # value for sub-call
             + push_addr(target_address)
@@ -594,7 +635,8 @@ class TestOFTComposerFork:
         program = (
             store_reg(0)  # R0 = _from
             + store_reg(1)  # R1 = amountLD
-            + push_u256(0) + push_u256(0)  # retLen=0, retOffset=0 for CALL
+            + push_u256(0)
+            + push_u256(0)  # retLen=0, retOffset=0 for CALL
             + push_bytes(template)  # argsOffset, argsLen above retOffset/retLen
             + load_reg(1)  # push amountLD
             + patch_u256(68)  # patch amountLD at offset 68; leaves [argsOffset, argsLen, retOffset, retLen]
@@ -651,7 +693,8 @@ class TestOFTComposerFork:
         program = (
             store_reg(0)  # R0 = _from
             + store_reg(1)  # R1 = amountLD
-            + push_u256(0) + push_u256(0)  # retLen=0, retOffset=0 for CALL
+            + push_u256(0)
+            + push_u256(0)  # retLen=0, retOffset=0 for CALL
             + push_bytes(template)  # argsOffset, argsLen above retOffset/retLen
             + load_reg(0)  # push _from
             + patch_addr(68)  # write 20 bytes of _from at offset 68; leaves [argsOffset, argsLen, retOffset, retLen]
@@ -731,11 +774,12 @@ class TestOFTComposerFork:
             store_reg(0)
             + store_reg(1)
             + self._call_target(target_address, calldata_ok)  # succeeds, pops success
-            + push_u256(0) + push_u256(0)  # retLen=0, retOffset=0 for CALL
+            + push_u256(0)
+            + push_u256(0)  # retLen=0, retOffset=0 for CALL
             + push_bytes(b"")  # empty calldata for fallback
             + push_u256(0)
             + push_addr(reverting_address)
-            + push_u256(0)
+            + bytes([0x5A])
             + call()  # requireSuccess=True; target reverts -> DeFiVM reverts
         )
         amount_ld = 10**18
@@ -910,7 +954,8 @@ class TestOFTComposerFork:
         program = (
             store_reg(0)  # R0 = _from (OFT address)
             + store_reg(1)  # R1 = amountLD
-            + push_u256(0) + push_u256(0)  # retLen=0, retOffset=0 for CALL
+            + push_u256(0)
+            + push_u256(0)  # retLen=0, retOffset=0 for CALL
             + push_bytes(vm_forward_calldata)  # push calldata buffer
             + push_u256(0)  # value = 0 ETH
             + push_addr(oft_address)  # call the OFT token contract
@@ -980,7 +1025,8 @@ class TestOFTComposerFork:
         program = (
             store_reg(0)  # R0 = _from (adapter address)
             + store_reg(1)  # R1 = amountLD
-            + push_u256(0) + push_u256(0)  # retLen=0, retOffset=0 for CALL
+            + push_u256(0)
+            + push_u256(0)  # retLen=0, retOffset=0 for CALL
             + push_bytes(vm_forward_calldata)  # push calldata buffer
             + push_u256(0)  # value = 0 ETH
             + push_addr(token_address)  # call the underlying ERC-20 contract

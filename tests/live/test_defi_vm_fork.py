@@ -67,6 +67,37 @@ WHALE = "0x77134cbC06cB00b66F4c7e623D5fdBF6777635EC"
 INTERPRETER_ADDR = "0x0000000000001e3F4F615cd5e20c681Cf7d85e8D"
 
 # ---------------------------------------------------------------------------
+# Minimal fallback interpreter (compiled + deployed when Analog-Labs one absent)
+# ---------------------------------------------------------------------------
+
+_MINIMAL_INTERPRETER_SOL = """\
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+
+/// @dev Minimal EVM interpreter for DeFiVM testing.
+/// Deploys program bytecode via CREATE (using a 14-byte init wrapper that
+/// returns it as runtime code) then delegatecalls it with the original
+/// program as calldata.  PC and CALLDATACOPY both reference the program
+/// bytes, matching the Analog-Labs interpreter's execution semantics.
+contract TestInterpreter {
+    fallback() external payable {
+        bytes memory wrapper = hex"38600e0380600e600039600090f3";
+        bytes memory deployCode = bytes.concat(wrapper, msg.data);
+        address prog;
+        assembly {
+            prog := create(0, add(deployCode, 0x20), mload(deployCode))
+        }
+        require(prog != address(0));
+        (bool ok, bytes memory ret) = prog.delegatecall(msg.data);
+        if (!ok) {
+            assembly { revert(add(ret, 0x20), mload(ret)) }
+        }
+        assembly { return(add(ret, 0x20), mload(ret)) }
+    }
+}
+"""
+
+# ---------------------------------------------------------------------------
 # Compile + deploy helpers
 # ---------------------------------------------------------------------------
 
@@ -99,6 +130,30 @@ async def _deploy(w3: AsyncWeb3, compiled: dict, deployer: str, *args) -> str:
     tx_hash = await contract.constructor(*args).transact({"from": deployer})
     receipt = await w3.eth.get_transaction_receipt(tx_hash)
     return receipt["contractAddress"]
+
+
+async def _ensure_interpreter(w3: AsyncWeb3, deployer: str) -> str:
+    """Return a working EVM interpreter address, deploying a fallback if needed.
+
+    If the Analog-Labs interpreter is already deployed on this fork, return its
+    address.  Otherwise compile and deploy ``TestInterpreter`` at a fresh
+    address and return that instead so tests can always run.
+    """
+    code = await w3.eth.get_code(INTERPRETER_ADDR)
+    if code and len(code) > 1:
+        return INTERPRETER_ADDR
+
+    # Interpreter not present on this fork — deploy our minimal fallback.
+    _ensure_solc("0.8.24")
+    compiled = solcx.compile_source(
+        _MINIMAL_INTERPRETER_SOL,
+        output_values=["abi", "bin"],
+        solc_version="0.8.24",
+        optimize=True,
+        optimize_runs=200,
+    )
+    key = "<stdin>:TestInterpreter"
+    return await _deploy(w3, compiled[key], deployer)
 
 
 # ---------------------------------------------------------------------------
@@ -193,16 +248,9 @@ async def ctx(vm_fork_w3, compiled_vm, compiled_adapter):
     accounts = await w3.eth.accounts
     deployer = accounts[0]
 
-    # Verify the Analog-Labs EVM interpreter is deployed on this fork.
-    # When forking Ethereum mainnet it should always be present; skip otherwise.
-    interpreter_code = await w3.eth.get_code(INTERPRETER_ADDR)
-    if not interpreter_code or interpreter_code in (b"", b"\x00"):
-        pytest.skip(
-            f"Analog-Labs EVM interpreter not found at {INTERPRETER_ADDR}; "
-            "fork Ethereum mainnet to run these tests"
-        )
+    interpreter_addr = await _ensure_interpreter(w3, deployer)
 
-    vm_address = await _deploy(w3, compiled_vm, deployer, INTERPRETER_ADDR)
+    vm_address = await _deploy(w3, compiled_vm, deployer, interpreter_addr)
     adapter_address = await _deploy(w3, compiled_adapter, deployer)
 
     vm = w3.eth.contract(address=vm_address, abi=compiled_vm["abi"])
@@ -266,9 +314,9 @@ class TestDeFiVMFork:
         vm = ctx["vm"]
         deployer = ctx["deployer"]
 
-        push_part = push_u256(1)   # 33 bytes (value stays on stack; consumed by pop_part)
-        bad_byte = bytes([0xFF])   # unknown opcode — would revert if reached
-        jumpdest = bytes([0x5B])   # JUMPDEST required by EVM at every jump target
+        push_part = push_u256(1)  # 33 bytes (value stays on stack; consumed by pop_part)
+        bad_byte = bytes([0xFF])  # unknown opcode — would revert if reached
+        jumpdest = bytes([0x5B])  # JUMPDEST required by EVM at every jump target
         pop_part = pop()
 
         # Target must point to the JUMPDEST byte that follows the bad opcode.
@@ -286,9 +334,9 @@ class TestDeFiVMFork:
         vm = ctx["vm"]
         deployer = ctx["deployer"]
 
-        push_part = push_u256(1)   # 33 bytes — non-zero condition
+        push_part = push_u256(1)  # 33 bytes — non-zero condition
         bad_byte = bytes([0xFF])
-        jumpdest = bytes([0x5B])   # JUMPDEST required at jump target
+        jumpdest = bytes([0x5B])  # JUMPDEST required at jump target
 
         # Target must point to the JUMPDEST byte that follows the bad opcode.
         target = len(push_part) + self._JUMP_INSTR_SIZE + len(bad_byte)  # 33 + 4 + 1 = 38
@@ -441,8 +489,14 @@ class TestDeFiVMFork:
         calldata = bytes(selector)
 
         program = (
-            push_u256(0) + push_u256(0)  # retLen=0, retOffset=0 for CALL
-            + push_bytes(calldata) + push_u256(0) + push_addr(adapter) + push_u256(0) + call(require_success=True) + pop()
+            push_u256(0)
+            + push_u256(0)  # retLen=0, retOffset=0 for CALL
+            + push_bytes(calldata)
+            + push_u256(0)
+            + push_addr(adapter)
+            + bytes([0x5A])
+            + call(require_success=True)
+            + pop()
         )
         tx = await vm.functions.execute(program).transact({"from": deployer})
         receipt = await w3.eth.get_transaction_receipt(tx)
@@ -461,11 +515,12 @@ class TestDeFiVMFork:
         calldata = bytes(selector)
 
         program = (
-            push_u256(0) + push_u256(0)  # retLen=0, retOffset=0 for CALL
+            push_u256(0)
+            + push_u256(0)  # retLen=0, retOffset=0 for CALL
             + push_bytes(calldata)
             + push_u256(0)
             + push_addr(adapter)
-            + push_u256(0)
+            + bytes([0x5A])
             + call(require_success=True)
             + pop()
             + ret_u256(0)
@@ -488,11 +543,12 @@ class TestDeFiVMFork:
         calldata = bytes(selector)
 
         program = (
-            push_u256(0) + push_u256(0)  # retLen=0, retOffset=0 for CALL
+            push_u256(0)
+            + push_u256(0)  # retLen=0, retOffset=0 for CALL
             + push_bytes(calldata)
             + push_u256(0)
             + push_addr(adapter)
-            + push_u256(0)
+            + bytes([0x5A])
             + call(require_success=True)
             + pop()
             + ret_slice(0, 32)
@@ -521,13 +577,14 @@ class TestDeFiVMFork:
         template = bytearray(selector + b"\x00" * 32)
 
         program = (
-            push_u256(0) + push_u256(0)  # retLen=0, retOffset=0 for CALL
+            push_u256(0)
+            + push_u256(0)  # retLen=0, retOffset=0 for CALL
             + push_bytes(bytes(template))
             + push_u256(0xABCD)
             + patch_u256(4)
             + push_u256(0)
             + push_addr(adapter)
-            + push_u256(0)
+            + bytes([0x5A])
             + call(require_success=True)
             + pop()
         )
@@ -570,13 +627,14 @@ class TestDeFiVMFork:
         patch_offset = 4 + 12
 
         program = (
-            push_u256(0) + push_u256(0)  # retLen=0, retOffset=0 for CALL
+            push_u256(0)
+            + push_u256(0)  # retLen=0, retOffset=0 for CALL
             + push_bytes(bytes(template))
             + push_addr(adapter)
             + patch_addr(patch_offset)
             + push_u256(0)
             + push_addr(adapter)
-            + push_u256(0)
+            + bytes([0x5A])
             + call(require_success=True)
             + pop()
         )
@@ -624,23 +682,25 @@ class TestDeFiVMFork:
 
         program = (
             # --- Call 1: double(5) → retdata = abi.encode(10) ---
-            push_u256(0) + push_u256(0)  # retLen=0, retOffset=0
+            push_u256(0)
+            + push_u256(0)  # retLen=0, retOffset=0
             + push_bytes(calldata1)
             + push_u256(0)
             + push_addr(adapter)
-            + push_u256(0)
+            + bytes([0x5A])
             + call(require_success=True)
             + pop()
             # --- Calldata surgery: embed call-1 output into call-2 template ---
             # Push retLen/retOffset first so they sit below the call-2 buffer on stack
-            + push_u256(0) + push_u256(0)  # retLen=0, retOffset=0 for call 2
+            + push_u256(0)
+            + push_u256(0)  # retLen=0, retOffset=0 for call 2
             + push_bytes(template2)  # argsOffset, argsLen above retOffset/retLen
             + ret_u256(0)  # push 10 from retdata
             + patch_u256(4)  # patch template2[4..36] = 10; leaves [argsOffset, argsLen, retOffset, retLen]
             # --- Call 2: double(10) → retdata = abi.encode(20) ---
             + push_u256(0)
             + push_addr(adapter)
-            + push_u256(0)
+            + bytes([0x5A])
             + call(require_success=True)
             + pop()
             # --- In-program assertion: result == 20 ---
@@ -677,23 +737,25 @@ class TestDeFiVMFork:
 
         program = (
             # --- Call 1: double(7) → retdata = abi.encode(14) ---
-            push_u256(0) + push_u256(0)  # retLen=0, retOffset=0
+            push_u256(0)
+            + push_u256(0)  # retLen=0, retOffset=0
             + push_bytes(calldata1)
             + push_u256(0)
             + push_addr(adapter)
-            + push_u256(0)
+            + bytes([0x5A])
             + call(require_success=True)
             + pop()
             # --- Calldata surgery: embed call-1 output into the first arg of call-2 ---
             # Push retLen/retOffset first so they sit below the call-2 buffer on stack
-            + push_u256(0) + push_u256(0)  # retLen=0, retOffset=0 for call 2
+            + push_u256(0)
+            + push_u256(0)  # retLen=0, retOffset=0 for call 2
             + push_bytes(template2)  # argsOffset, argsLen above retOffset/retLen
             + ret_u256(0)  # push 14
             + patch_u256(4)  # patch template2[4..36] = 14; leaves [argsOffset, argsLen, retOffset, retLen]
             # --- Call 2: addInputs(14, 3) → retdata = abi.encode(17) ---
             + push_u256(0)
             + push_addr(adapter)
-            + push_u256(0)
+            + bytes([0x5A])
             + call(require_success=True)
             + pop()
             # --- In-program assertion: result == 17 ---
@@ -733,22 +795,24 @@ class TestDeFiVMFork:
 
         program = (
             # --- Call 1: encodeDouble(5) → retdata carries calldata for double(5) ---
-            push_u256(0) + push_u256(0)  # retLen=0, retOffset=0
+            push_u256(0)
+            + push_u256(0)  # retLen=0, retOffset=0
             + push_bytes(calldata1)
             + push_u256(0)
             + push_addr(adapter)
-            + push_u256(0)
+            + bytes([0x5A])
             + call(require_success=True)
             + pop()
             # --- Surgery: extract the inner bytes as a new buffer ---
             # Push retLen/retOffset first so they sit below the slice buffer on stack
-            + push_u256(0) + push_u256(0)  # retLen=0, retOffset=0 for call 2
+            + push_u256(0)
+            + push_u256(0)  # retLen=0, retOffset=0 for call 2
             # retdata[64..100] = selector(4) + abi.encode(5) = calldata for double(5)
             + ret_slice(64, 36)  # argsOffset, argsLen above retOffset/retLen
             # --- Call 2: double(5) using the slice from call-1's returndata ---
             + push_u256(0)
             + push_addr(adapter)
-            + push_u256(0)
+            + bytes([0x5A])
             + call(require_success=True)
             + pop()
             # --- In-program assertion: result == 10 ---

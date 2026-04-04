@@ -17,7 +17,7 @@ Usage example::
     program = (
         push_u256(0) + push_u256(0)          # retLen, retOffset
         + push_bytes(swap_calldata)
-        + push_u256(0) + push_addr(SWAP_ADAPTER) + push_u256(0)
+        + push_u256(0) + push_addr(SWAP_ADAPTER) + gas_opcode()
         + call()
     )
 """
@@ -28,19 +28,19 @@ from __future__ import annotations
 # Opcode constants — first byte of each instruction sequence
 # ---------------------------------------------------------------------------
 
-OP_PUSH_U256: int = 0x7F   # PUSH32
-OP_PUSH_ADDR: int = 0x73   # PUSH20
+OP_PUSH_U256: int = 0x7F  # PUSH32
+OP_PUSH_ADDR: int = 0x73  # PUSH20
 OP_PUSH_BYTES: int = 0x60  # first byte of push_bytes sequence (PUSH1)
-OP_DUP: int = 0x80   # DUP1
+OP_DUP: int = 0x80  # DUP1
 OP_SWAP: int = 0x90  # SWAP1
-OP_POP: int = 0x50   # POP
-OP_LOAD_REG: int = 0x61   # PUSH2 (first byte of load_reg sequence)
+OP_POP: int = 0x50  # POP
+OP_LOAD_REG: int = 0x61  # PUSH2 (first byte of load_reg sequence)
 OP_STORE_REG: int = 0x61  # PUSH2 (first byte of store_reg sequence)
-OP_JUMP: int = 0x61   # PUSH2 (first byte: PUSH2 target JUMP)
+OP_JUMP: int = 0x61  # PUSH2 (first byte: PUSH2 target JUMP)
 OP_JUMPI: int = 0x61  # PUSH2 (first byte: PUSH2 target JUMPI)
 OP_ADD: int = 0x01
 OP_MUL: int = 0x02
-OP_SUB: int = 0x81   # first byte of saturating-sub sequence (DUP2)
+OP_SUB: int = 0x81  # first byte of saturating-sub sequence (DUP2)
 OP_DIV: int = 0x04
 OP_MOD: int = 0x06
 OP_LT: int = 0x10
@@ -55,15 +55,15 @@ OP_SHL: int = 0x1B
 OP_SHR: int = 0x1C
 OP_PATCH_U256: int = 0x81  # first byte of patch_u256 sequence (DUP2)
 OP_PATCH_ADDR: int = 0x81  # first byte of patch_addr sequence (DUP2)
-OP_RET_U256: int = 0x60   # first byte of ret_u256 sequence (PUSH1)
+OP_RET_U256: int = 0x60  # first byte of ret_u256 sequence (PUSH1)
 OP_RET_SLICE: int = 0x60  # first byte of ret_slice sequence (PUSH1)
 # Aliases for compound instruction sequences (first byte of the sequence)
-OP_REVERT_IF: int = 0x15   # ISZERO (first byte of revert_if sequence)
-OP_ASSERT_GE: int = 0x81   # DUP2 (first byte of assert_ge sequence)
-OP_ASSERT_LE: int = 0x81   # DUP2 (first byte of assert_le sequence)
-OP_CALL: int = 0xF1        # CALL (first byte of call sequence)
+OP_REVERT_IF: int = 0x15  # ISZERO (first byte of revert_if sequence)
+OP_ASSERT_GE: int = 0x81  # DUP2 (first byte of assert_ge sequence)
+OP_ASSERT_LE: int = 0x81  # DUP2 (first byte of assert_le sequence)
+OP_CALL: int = 0xF1  # CALL (first byte of call sequence)
 OP_BALANCE_OF: int = 0x80  # DUP1 (first byte of balance_of sequence)
-OP_SELF_ADDR: int = 0x30   # ADDRESS
+OP_SELF_ADDR: int = 0x30  # ADDRESS
 
 # ---------------------------------------------------------------------------
 # Stack instructions
@@ -85,57 +85,105 @@ def push_addr(a: str) -> bytes:
     return bytes([0x73]) + raw
 
 
+def gas_opcode() -> bytes:
+    """Emit GAS — push the remaining gas onto the stack."""
+    return bytes([0x5A])
+
+
 def push_bytes(data: bytes) -> bytes:
     """Emit a PC-relative data-load sequence.
 
     Copies *data* into free memory and leaves ``[argsOffset(TOS), argsLen(2nd)]``
     on the stack.  Free memory pointer is initialised to 0x280 minimum.
+
+    Layout (bytes within this instruction)::
+
+        0-38   39-byte preamble
+                  0-9:   max_fp = fp | (0x280 * (fp==0))
+                  10:    DUP1
+                  11:    PC  (value = instr_start + 11)
+                  12-13: PUSH1 28  (data at byte 39; 39 - 11 = 28)
+                  14:    ADD  → data_ptr
+                  15-17: PUSH2 blen
+                  18:    SWAP2  → [max_fp, data_ptr, blen, max_fp]
+                  19:    CALLDATACOPY → [max_fp]
+                  20-31: update free-memory pointer, leave [argsOffset, argsLen]
+                  32:    PC  (value = instr_start + 32)
+                  33-36: PUSH3 (39+blen)  → JUMPDEST at instr_start+71+blen
+                  37:    ADD → destination
+                  38:    JUMP → skip over inline data
+        39-38+blen  inline data (blen bytes, read by CALLDATACOPY above)
+        39+blen..   32 zero-byte wall (protects JUMPDEST from PUSH absorption)
+        71+blen     JUMPDEST
     """
     if len(data) > 0xFFFF:
         raise ValueError(f"push_bytes: data too large ({len(data)} bytes, max 65535)")
     blen = len(data)
     blen_padded = (blen + 31) & ~31
-    # 32-byte code preamble; data is embedded at byte 32.
-    code = bytes([
-        # bytes 0-9: max_fp = fp | (0x280 * (fp == 0))
-        0x60, 0x40,              # PUSH1 0x40
-        0x51,                    # MLOAD            → [fp]
-        0x61, 0x02, 0x80,        # PUSH2 0x0280     → [0x280, fp]
-        0x81,                    # DUP2             → [fp, 0x280, fp]
-        0x15,                    # ISZERO           → [fp==0, 0x280, fp]
-        0x02,                    # MUL              → [0x280*(fp==0), fp]
-        0x17,                    # OR               → [max_fp]
-        # byte 10: DUP1
-        0x80,                    # DUP1             → [max_fp, max_fp]
-        # byte 11: PC  (value = instr_start + 11)
-        0x58,                    # PC
-        # bytes 12-13: PUSH1 21  (data at byte 32; 32 - 11 = 21)
-        0x60, 21,                # PUSH1 21
-        # byte 14: ADD  → [data_ptr, max_fp, max_fp]
-        0x01,                    # ADD
-        # bytes 15-17: PUSH2 blen
-        0x61, blen >> 8, blen & 0xFF,
-        # byte 18: SWAP2  → [max_fp, data_ptr, blen, max_fp]
-        0x91,                    # SWAP2
-        # byte 19: CALLDATACOPY  → [max_fp]
-        0x37,                    # CALLDATACOPY
-        # byte 20: DUP1  → [max_fp, max_fp]
-        0x80,                    # DUP1
-        # bytes 21-23: PUSH2 blen_padded
-        0x61, blen_padded >> 8, blen_padded & 0xFF,
-        # byte 24: ADD  → [new_fp, max_fp]
-        0x01,                    # ADD
-        # bytes 25-26: PUSH1 0x40
-        0x60, 0x40,
-        # byte 27: MSTORE  → mem[0x40] = new_fp; [max_fp]
-        0x52,                    # MSTORE
-        # bytes 28-30: PUSH2 blen  → [blen, max_fp]
-        0x61, blen >> 8, blen & 0xFF,
-        # byte 31: SWAP1  → [max_fp=argsOffset, blen=argsLen]
-        0x90,                    # SWAP1
-    ])
-    assert len(code) == 32
-    return code + data
+    # N = distance from PC (byte 32) to JUMPDEST (byte 71+blen)
+    jump_n = 39 + blen
+    code = bytes(
+        [
+            # bytes 0-9: max_fp = fp | (0x280 * (fp == 0))
+            0x60,
+            0x40,  # PUSH1 0x40
+            0x51,  # MLOAD            → [fp]
+            0x61,
+            0x02,
+            0x80,  # PUSH2 0x0280     → [0x280, fp]
+            0x81,  # DUP2             → [fp, 0x280, fp]
+            0x15,  # ISZERO           → [fp==0, 0x280, fp]
+            0x02,  # MUL              → [0x280*(fp==0), fp]
+            0x17,  # OR               → [max_fp]
+            # byte 10: DUP1
+            0x80,  # DUP1             → [max_fp, max_fp]
+            # byte 11: PC  (value = instr_start + 11)
+            0x58,  # PC
+            # bytes 12-13: PUSH1 28  (data at byte 39; 39 - 11 = 28)
+            0x60,
+            28,  # PUSH1 28
+            # byte 14: ADD  → [data_ptr, max_fp, max_fp]
+            0x01,  # ADD
+            # bytes 15-17: PUSH2 blen
+            0x61,
+            blen >> 8,
+            blen & 0xFF,
+            # byte 18: SWAP2  → [max_fp, data_ptr, blen, max_fp]
+            0x91,  # SWAP2
+            # byte 19: CALLDATACOPY  → [max_fp]
+            0x37,  # CALLDATACOPY
+            # byte 20: DUP1  → [max_fp, max_fp]
+            0x80,  # DUP1
+            # bytes 21-23: PUSH2 blen_padded
+            0x61,
+            blen_padded >> 8,
+            blen_padded & 0xFF,
+            # byte 24: ADD  → [new_fp, max_fp]
+            0x01,  # ADD
+            # bytes 25-26: PUSH1 0x40
+            0x60,
+            0x40,
+            # byte 27: MSTORE  → mem[0x40] = new_fp; [max_fp]
+            0x52,  # MSTORE
+            # bytes 28-30: PUSH2 blen  → [blen, max_fp]
+            0x61,
+            blen >> 8,
+            blen & 0xFF,
+            # byte 31: SWAP1  → [max_fp=argsOffset, blen=argsLen]
+            0x90,  # SWAP1
+            # bytes 32-38: JUMP over inline data to JUMPDEST at instr_start+71+blen
+            0x58,  # PC               → [pc, argsOffset, argsLen]
+            0x62,  # PUSH3
+            (jump_n >> 16) & 0xFF,
+            (jump_n >> 8) & 0xFF,
+            jump_n & 0xFF,
+            0x01,  # ADD              → [dest, argsOffset, argsLen]
+            0x56,  # JUMP             → [argsOffset, argsLen]
+        ]
+    )
+    assert len(code) == 39
+    # data + 32 zero bytes (wall protecting JUMPDEST from PUSH absorption) + JUMPDEST
+    return code + data + bytes(32) + bytes([0x5B])
 
 
 def dup() -> bytes:
@@ -197,44 +245,70 @@ def revert_if(msg: str) -> bytes:
     selector_word = 0x08C379A000000000000000000000000000000000000000000000000000000000
 
     # 94-byte revert block: builds Error(string) and reverts
-    revert_block = bytes([
-        0x60, 0x40,   # PUSH1 0x40
-        0x51,         # MLOAD                   → [scratch]
-        0x7F,         # PUSH32 selector
-    ]) + selector_word.to_bytes(32, "big") + bytes([
-        0x81,         # DUP2                    → [scratch, sel, scratch]
-        0x52,         # MSTORE                  → [scratch]
-        0x60, 0x20,   # PUSH1 0x20
-        0x81,         # DUP2                    → [scratch, 32, scratch]
-        0x60, 0x04,   # PUSH1 4
-        0x01,         # ADD                     → [scratch+4, 32, scratch]
-        0x52,         # MSTORE                  → [scratch]
-        0x60, msglen, # PUSH1 msglen
-        0x81,         # DUP2                    → [scratch, msglen, scratch]
-        0x60, 0x24,   # PUSH1 0x24
-        0x01,         # ADD                     → [scratch+0x24, msglen, scratch]
-        0x52,         # MSTORE                  → [scratch]
-        0x7F,         # PUSH32 msg_word
-    ]) + msg_word.to_bytes(32, "big") + bytes([
-        0x81,         # DUP2                    → [scratch, msg_word, scratch]
-        0x60, 0x44,   # PUSH1 0x44
-        0x01,         # ADD                     → [scratch+0x44, msg_word, scratch]
-        0x52,         # MSTORE                  → [scratch]
-        0x60, 0x64,   # PUSH1 0x64 (100)
-        0x90,         # SWAP1                   → [scratch, 100]
-        0xFD,         # REVERT
-    ])
+    revert_block = (
+        bytes(
+            [
+                0x60,
+                0x40,  # PUSH1 0x40
+                0x51,  # MLOAD                   → [scratch]
+                0x7F,  # PUSH32 selector
+            ]
+        )
+        + selector_word.to_bytes(32, "big")
+        + bytes(
+            [
+                0x81,  # DUP2                    → [scratch, sel, scratch]
+                0x52,  # MSTORE                  → [scratch]
+                0x60,
+                0x20,  # PUSH1 0x20
+                0x81,  # DUP2                    → [scratch, 32, scratch]
+                0x60,
+                0x04,  # PUSH1 4
+                0x01,  # ADD                     → [scratch+4, 32, scratch]
+                0x52,  # MSTORE                  → [scratch]
+                0x60,
+                msglen,  # PUSH1 msglen
+                0x81,  # DUP2                    → [scratch, msglen, scratch]
+                0x60,
+                0x24,  # PUSH1 0x24
+                0x01,  # ADD                     → [scratch+0x24, msglen, scratch]
+                0x52,  # MSTORE                  → [scratch]
+                0x7F,  # PUSH32 msg_word
+            ]
+        )
+        + msg_word.to_bytes(32, "big")
+        + bytes(
+            [
+                0x81,  # DUP2                    → [scratch, msg_word, scratch]
+                0x60,
+                0x44,  # PUSH1 0x44
+                0x01,  # ADD                     → [scratch+0x44, msg_word, scratch]
+                0x52,  # MSTORE                  → [scratch]
+                0x60,
+                0x64,  # PUSH1 0x64 (100)
+                0x90,  # SWAP1                   → [scratch, 100]
+                0xFD,  # REVERT
+            ]
+        )
+    )
     assert len(revert_block) == 94
 
     # Full sequence: ISZERO PC PUSH1 99 ADD JUMPI <revert_block> JUMPDEST
     # PC at byte 1; JUMPDEST at byte 100; distance = 99
-    return bytes([
-        0x15,       # ISZERO       byte 0
-        0x58,       # PC           byte 1  (= instr_start + 1)
-        0x60, 99,   # PUSH1 99     bytes 2-3
-        0x01,       # ADD          byte 4
-        0x57,       # JUMPI        byte 5
-    ]) + revert_block + bytes([0x5B])  # JUMPDEST  byte 100
+    return (
+        bytes(
+            [
+                0x15,  # ISZERO       byte 0
+                0x58,  # PC           byte 1  (= instr_start + 1)
+                0x60,
+                99,  # PUSH1 99     bytes 2-3
+                0x01,  # ADD          byte 4
+                0x57,  # JUMPI        byte 5
+            ]
+        )
+        + revert_block
+        + bytes([0x5B])
+    )  # JUMPDEST  byte 100
 
 
 def assert_ge(msg: str = "") -> bytes:
@@ -358,18 +432,22 @@ def call(require_success: bool = True) -> bytes:
         return bytes([0xF1])
     # CALL DUP1 PC PUSH1 9 ADD JUMPI PUSH1 0 DUP1 REVERT JUMPDEST
     # PC at byte 2; JUMPDEST at byte 11; distance = 9
-    return bytes([
-        0xF1,        # CALL          byte 0
-        0x80,        # DUP1          byte 1
-        0x58,        # PC            byte 2  (= instr_start + 2)
-        0x60, 9,     # PUSH1 9       bytes 3-4
-        0x01,        # ADD           byte 5
-        0x57,        # JUMPI         byte 6
-        0x60, 0x00,  # PUSH1 0       bytes 7-8
-        0x80,        # DUP1          byte 9
-        0xFD,        # REVERT        byte 10
-        0x5B,        # JUMPDEST      byte 11
-    ])
+    return bytes(
+        [
+            0xF1,  # CALL          byte 0
+            0x80,  # DUP1          byte 1
+            0x58,  # PC            byte 2  (= instr_start + 2)
+            0x60,
+            9,  # PUSH1 9       bytes 3-4
+            0x01,  # ADD           byte 5
+            0x57,  # JUMPI         byte 6
+            0x60,
+            0x00,  # PUSH1 0       bytes 7-8
+            0x80,  # DUP1          byte 9
+            0xFD,  # REVERT        byte 10
+            0x5B,  # JUMPDEST      byte 11
+        ]
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -389,57 +467,75 @@ def balance_of() -> bytes:
 
     # Preamble (7 bytes): if token==0 jump to ETH path at byte 71
     # PC at byte 2; ETH_PATH_JUMPDEST at byte 71; distance = 69
-    preamble = bytes([
-        0x80,        # DUP1         byte 0
-        0x15,        # ISZERO       byte 1
-        0x58,        # PC           byte 2
-        0x60, 69,    # PUSH1 69     bytes 3-4
-        0x01,        # ADD          byte 5
-        0x57,        # JUMPI        byte 6
-    ])
+    preamble = bytes(
+        [
+            0x80,  # DUP1         byte 0
+            0x15,  # ISZERO       byte 1
+            0x58,  # PC           byte 2
+            0x60,
+            69,  # PUSH1 69     bytes 3-4
+            0x01,  # ADD          byte 5
+            0x57,  # JUMPI        byte 6
+        ]
+    )
 
     # ERC-20 path (64 bytes, bytes 7-70)
     # PC at relative byte 59 → absolute byte 66; END_JUMPDEST at byte 74; distance = 8
-    erc20_path = bytes([
-        0x60, 0x40,   # PUSH1 0x40
-        0x51,         # MLOAD                         → [fp, token, account]
-        0x7F,         # PUSH32 selector
-    ]) + SELECTOR.to_bytes(32, "big") + bytes([
-        0x81,         # DUP2                          → [fp, sel, fp, token, account]
-        0x52,         # MSTORE   mem[fp]=sel          → [fp, token, account]
-        0x82,         # DUP3                          → [account, fp, token, account]
-        0x81,         # DUP2                          → [fp, account, fp, token, account]
-        0x60, 0x04,   # PUSH1 4
-        0x01,         # ADD                           → [fp+4, account, fp, token, account]
-        0x52,         # MSTORE   mem[fp+4]=account    → [fp, token, account]
-        # STATICCALL(gas, token, fp, 36, fp, 32)
-        0x60, 0x20,   # PUSH1 0x20  retLen=32
-        0x81,         # DUP2        retOff=fp
-        0x60, 0x24,   # PUSH1 0x24  argsLen=36
-        0x83,         # DUP4        argsOff=fp
-        0x85,         # DUP6        addr=token
-        0x5A,         # GAS
-        0xFA,         # STATICCALL  → [success, fp, token, account]
-        0x90,         # SWAP1                         → [fp, success, token, account]
-        0x51,         # MLOAD                         → [balance, success, token, account]
-        0x92,         # SWAP3                         → [account, success, token, balance]
-        0x50,         # POP                           → [success, token, balance]
-        0x50,         # POP                           → [token, balance]
-        0x50,         # POP                           → [balance]
-        # Jump to END at byte 74
-        0x58,         # PC    byte 66 (= 7 + 59)
-        0x60, 8,      # PUSH1 8
-        0x01,         # ADD
-        0x56,         # JUMP
-    ])
+    erc20_path = (
+        bytes(
+            [
+                0x60,
+                0x40,  # PUSH1 0x40
+                0x51,  # MLOAD                         → [fp, token, account]
+                0x7F,  # PUSH32 selector
+            ]
+        )
+        + SELECTOR.to_bytes(32, "big")
+        + bytes(
+            [
+                0x81,  # DUP2                          → [fp, sel, fp, token, account]
+                0x52,  # MSTORE   mem[fp]=sel          → [fp, token, account]
+                0x82,  # DUP3                          → [account, fp, token, account]
+                0x81,  # DUP2                          → [fp, account, fp, token, account]
+                0x60,
+                0x04,  # PUSH1 4
+                0x01,  # ADD                           → [fp+4, account, fp, token, account]
+                0x52,  # MSTORE   mem[fp+4]=account    → [fp, token, account]
+                # STATICCALL(gas, token, fp, 36, fp, 32)
+                0x60,
+                0x20,  # PUSH1 0x20  retLen=32
+                0x81,  # DUP2        retOff=fp
+                0x60,
+                0x24,  # PUSH1 0x24  argsLen=36
+                0x83,  # DUP4        argsOff=fp
+                0x85,  # DUP6        addr=token
+                0x5A,  # GAS
+                0xFA,  # STATICCALL  → [success, fp, token, account]
+                0x90,  # SWAP1                         → [fp, success, token, account]
+                0x51,  # MLOAD                         → [balance, success, token, account]
+                0x92,  # SWAP3                         → [account, success, token, balance]
+                0x50,  # POP                           → [success, token, balance]
+                0x50,  # POP                           → [token, balance]
+                0x50,  # POP                           → [balance]
+                # Jump to END at byte 74
+                0x58,  # PC    byte 66 (= 7 + 59)
+                0x60,
+                8,  # PUSH1 8
+                0x01,  # ADD
+                0x56,  # JUMP
+            ]
+        )
+    )
     assert len(erc20_path) == 64
 
     # ETH path (bytes 71-73)
-    eth_path = bytes([
-        0x5B,        # JUMPDEST  byte 71
-        0x50,        # POP       byte 72  (remove token=0)
-        0x31,        # BALANCE   byte 73
-    ])
+    eth_path = bytes(
+        [
+            0x5B,  # JUMPDEST  byte 71
+            0x50,  # POP       byte 72  (remove token=0)
+            0x31,  # BALANCE   byte 73
+        ]
+    )
 
     # END (byte 74)
     end = bytes([0x5B])
@@ -486,15 +582,21 @@ def ret_u256(offset: int) -> bytes:
 
     11-byte sequence.
     """
-    return bytes([
-        0x60, 0x40,                         # PUSH1 0x40
-        0x51,                               # MLOAD         → [fp]
-        0x60, 0x20,                         # PUSH1 0x20    → [32, fp]
-        0x61, offset >> 8, offset & 0xFF,   # PUSH2 offset  → [offset, 32, fp]
-        0x82,                               # DUP3          → [fp, offset, 32, fp]
-        0x3E,                               # RETURNDATACOPY → [fp]
-        0x51,                               # MLOAD         → [value]
-    ])
+    return bytes(
+        [
+            0x60,
+            0x40,  # PUSH1 0x40
+            0x51,  # MLOAD         → [fp]
+            0x60,
+            0x20,  # PUSH1 0x20    → [32, fp]
+            0x61,
+            offset >> 8,
+            offset & 0xFF,  # PUSH2 offset  → [offset, 32, fp]
+            0x82,  # DUP3          → [fp, offset, 32, fp]
+            0x3E,  # RETURNDATACOPY → [fp]
+            0x51,  # MLOAD         → [value]
+        ]
+    )
 
 
 def ret_slice(offset: int, length: int) -> bytes:
@@ -503,18 +605,30 @@ def ret_slice(offset: int, length: int) -> bytes:
     23-byte sequence.
     """
     length_padded = (length + 31) & ~31
-    return bytes([
-        0x60, 0x40,                           # PUSH1 0x40
-        0x51,                                 # MLOAD              → [fp]
-        0x80,                                 # DUP1               → [fp, fp]
-        0x61, length >> 8, length & 0xFF,     # PUSH2 length
-        0x61, offset >> 8, offset & 0xFF,     # PUSH2 offset
-        0x83,                                 # DUP4               → [fp, offset, length, fp, fp]
-        0x3E,                                 # RETURNDATACOPY     → [fp, fp]
-        0x61, length_padded >> 8, length_padded & 0xFF,
-        0x01,                                 # ADD                → [new_fp, fp]
-        0x60, 0x40,                           # PUSH1 0x40
-        0x52,                                 # MSTORE             → [fp]
-        0x61, length >> 8, length & 0xFF,     # PUSH2 length
-        0x90,                                 # SWAP1              → [fp=argsOffset, length=argsLen]
-    ])
+    return bytes(
+        [
+            0x60,
+            0x40,  # PUSH1 0x40
+            0x51,  # MLOAD              → [fp]
+            0x80,  # DUP1               → [fp, fp]
+            0x61,
+            length >> 8,
+            length & 0xFF,  # PUSH2 length
+            0x61,
+            offset >> 8,
+            offset & 0xFF,  # PUSH2 offset
+            0x83,  # DUP4               → [fp, offset, length, fp, fp]
+            0x3E,  # RETURNDATACOPY     → [fp, fp]
+            0x61,
+            length_padded >> 8,
+            length_padded & 0xFF,
+            0x01,  # ADD                → [new_fp, fp]
+            0x60,
+            0x40,  # PUSH1 0x40
+            0x52,  # MSTORE             → [fp]
+            0x61,
+            length >> 8,
+            length & 0xFF,  # PUSH2 length
+            0x90,  # SWAP1              → [fp=argsOffset, length=argsLen]
+        ]
+    )

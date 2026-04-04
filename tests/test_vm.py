@@ -51,6 +51,7 @@ from pydefi.vm.program import (
     div,
     dup,
     eq,
+    gas_opcode,
     gt,
     iszero,
     jump,
@@ -268,8 +269,13 @@ class TestCallContractHelper:
     def test_call_contract_matches_manual_sequence(self):
         calldata = bytes.fromhex("a9059cbb" + "00" * 12 + "bb" * 20 + "00" * 31 + "64")
         expected = (
-            push_u256(0) + push_u256(0)
-            + push_bytes(calldata) + push_u256(0) + push_addr(ADDR_A) + push_u256(0) + call(require_success=True)
+            push_u256(0)
+            + push_u256(0)
+            + push_bytes(calldata)
+            + push_u256(0)
+            + push_addr(ADDR_A)
+            + gas_opcode()
+            + call(require_success=True)
         )
         actual = Program().call_contract(ADDR_A, calldata).build()
         assert actual == expected
@@ -277,8 +283,13 @@ class TestCallContractHelper:
     def test_call_contract_with_value_and_gas(self):
         calldata = b"\x12\x34\x56\x78"
         expected = (
-            push_u256(0) + push_u256(0)
-            + push_bytes(calldata) + push_u256(10**18) + push_addr(ADDR_B) + push_u256(50000) + call(require_success=True)
+            push_u256(0)
+            + push_u256(0)
+            + push_bytes(calldata)
+            + push_u256(10**18)
+            + push_addr(ADDR_B)
+            + push_u256(50000)
+            + call(require_success=True)
         )
         actual = Program().call_contract(ADDR_B, calldata, value=10**18, gas=50000).build()
         assert actual == expected
@@ -286,8 +297,13 @@ class TestCallContractHelper:
     def test_call_contract_no_require_success(self):
         calldata = b"\xab\xcd"
         expected = (
-            push_u256(0) + push_u256(0)
-            + push_bytes(calldata) + push_u256(0) + push_addr(ADDR_A) + push_u256(0) + call(require_success=False)
+            push_u256(0)
+            + push_u256(0)
+            + push_bytes(calldata)
+            + push_u256(0)
+            + push_addr(ADDR_A)
+            + gas_opcode()
+            + call(require_success=False)
         )
         actual = Program().call_contract(ADDR_A, calldata, require_success=False).build()
         assert actual == expected
@@ -600,13 +616,14 @@ class TestCallWithPatches:
         cd = self._template()
         # Manually build equivalent low-level sequence
         expected = (
-            push_u256(0) + push_u256(0)  # retSize, retOffset
+            push_u256(0)
+            + push_u256(0)  # retSize, retOffset
             + push_bytes(cd)
             + push_u256(42)
             + patch_u256(4)
             + push_u256(0)  # value
             + push_addr(ADDR_A)
-            + push_u256(0)  # gas
+            + gas_opcode()  # gas (forward all)
             + call(True)
         )
         actual = Program().call_with_patches(ADDR_A, cd, [("u256", 4, push_u256(42))]).build()
@@ -616,13 +633,14 @@ class TestCallWithPatches:
         """Bytes opcodes for addr patch: emits opcodes + patch_addr."""
         cd = self._template()
         expected = (
-            push_u256(0) + push_u256(0)  # retSize, retOffset
+            push_u256(0)
+            + push_u256(0)  # retSize, retOffset
             + push_bytes(cd)
             + push_addr(ADDR_B)
             + patch_addr(16)
             + push_u256(0)
             + push_addr(ADDR_A)
-            + push_u256(0)
+            + gas_opcode()  # gas (forward all)
             + call(True)
         )
         actual = Program().call_with_patches(ADDR_A, cd, [("addr", 16, push_addr(ADDR_B))]).build()
@@ -632,8 +650,15 @@ class TestCallWithPatches:
         """ret_u256(offset) bytes emits ret_u256 + patch_u256."""
         cd = self._template()
         expected = (
-            push_u256(0) + push_u256(0)  # retSize, retOffset
-            + push_bytes(cd) + ret_u256(0) + patch_u256(4) + push_u256(0) + push_addr(ADDR_A) + push_u256(0) + call(True)
+            push_u256(0)
+            + push_u256(0)  # retSize, retOffset
+            + push_bytes(cd)
+            + ret_u256(0)
+            + patch_u256(4)
+            + push_u256(0)
+            + push_addr(ADDR_A)
+            + gas_opcode()
+            + call(True)
         )
         actual = Program().call_with_patches(ADDR_A, cd, [("u256", 4, ret_u256(0))]).build()
         assert actual == expected
@@ -642,8 +667,15 @@ class TestCallWithPatches:
         """load_reg(idx) bytes emits load_reg + patch_u256."""
         cd = self._template()
         expected = (
-            push_u256(0) + push_u256(0)  # retSize, retOffset
-            + push_bytes(cd) + load_reg(3) + patch_u256(4) + push_u256(0) + push_addr(ADDR_A) + push_u256(0) + call(True)
+            push_u256(0)
+            + push_u256(0)  # retSize, retOffset
+            + push_bytes(cd)
+            + load_reg(3)
+            + patch_u256(4)
+            + push_u256(0)
+            + push_addr(ADDR_A)
+            + gas_opcode()
+            + call(True)
         )
         actual = Program().call_with_patches(ADDR_A, cd, [("u256", 4, load_reg(3))]).build()
         assert actual == expected
@@ -652,8 +684,15 @@ class TestCallWithPatches:
         """load_reg(idx) with kind='addr' emits load_reg + patch_addr."""
         cd = self._template()
         expected = (
-            push_u256(0) + push_u256(0)  # retSize, retOffset
-            + push_bytes(cd) + load_reg(5) + patch_addr(16) + push_u256(0) + push_addr(ADDR_A) + push_u256(0) + call(True)
+            push_u256(0)
+            + push_u256(0)  # retSize, retOffset
+            + push_bytes(cd)
+            + load_reg(5)
+            + patch_addr(16)
+            + push_u256(0)
+            + push_addr(ADDR_A)
+            + gas_opcode()
+            + call(True)
         )
         actual = Program().call_with_patches(ADDR_A, cd, [("addr", 16, load_reg(5))]).build()
         assert actual == expected
@@ -662,7 +701,8 @@ class TestCallWithPatches:
         """Multiple patches are applied in order."""
         cd = self._template()
         expected = (
-            push_u256(0) + push_u256(0)  # retSize, retOffset
+            push_u256(0)
+            + push_u256(0)  # retSize, retOffset
             + push_bytes(cd)
             + push_u256(100)
             + patch_u256(4)
@@ -670,7 +710,7 @@ class TestCallWithPatches:
             + patch_addr(4 + 32 + 12)
             + push_u256(0)
             + push_addr(ADDR_A)
-            + push_u256(0)
+            + gas_opcode()  # gas (forward all)
             + call(True)
         )
         actual = (
@@ -691,7 +731,8 @@ class TestCallWithPatches:
         """value and gas parameters are reflected in CALL prologue."""
         cd = self._template()
         expected = (
-            push_u256(0) + push_u256(0)  # retSize, retOffset
+            push_u256(0)
+            + push_u256(0)  # retSize, retOffset
             + push_bytes(cd)
             + push_u256(10**18)  # value
             + push_addr(ADDR_A)
@@ -705,7 +746,7 @@ class TestCallWithPatches:
         """require_success=False emits CALL without the success-check block."""
         cd = self._template()
         expected = (
-            push_u256(0) + push_u256(0) + push_bytes(cd) + push_u256(0) + push_addr(ADDR_A) + push_u256(0) + call(False)
+            push_u256(0) + push_u256(0) + push_bytes(cd) + push_u256(0) + push_addr(ADDR_A) + gas_opcode() + call(False)
         )
         actual = Program().call_with_patches(ADDR_A, cd, [], require_success=False).build()
         assert actual == expected
@@ -1148,15 +1189,7 @@ class TestEvmNativeOpcodes:
     def test_bitwise_chain(self):
         """push(0xFF) push(0x0F) AND XOR emits the correct byte sequence."""
         expected = push_u256(0xFF) + push_u256(0x0F) + bitwise_and() + push_u256(0xAA) + bitwise_xor()
-        actual = (
-            Program()
-            .push_u256(0xFF)
-            .push_u256(0x0F)
-            .bitwise_and()
-            .push_u256(0xAA)
-            .bitwise_xor()
-            .build()
-        )
+        actual = Program().push_u256(0xFF).push_u256(0x0F).bitwise_and().push_u256(0xAA).bitwise_xor().build()
         assert actual == expected
 
     def test_shift_chain(self):
