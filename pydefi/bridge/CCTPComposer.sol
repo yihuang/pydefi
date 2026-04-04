@@ -95,8 +95,8 @@ interface IDeFiVM {
 // ---------------------------------------------------------------------------
 
 contract CCTPComposer {
-    // DeFiVM PUSH opcode (mirrors DeFiVM.sol)
-    uint8 private constant OP_PUSH_U256 = 0x01;
+    // DeFiVM PUSH opcode — raw EVM PUSH32: opcode + 32-byte immediate.
+    uint8 private constant OP_PUSH_U256 = 0x7F;
 
     // -----------------------------------------------------------------------
     // CCTP v2 message offsets

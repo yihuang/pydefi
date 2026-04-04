@@ -38,8 +38,8 @@ pragma solidity ^0.8.24;
  * Before executing, OFTComposer prepends two PUSH instructions so the DeFiVM
  * program starts with the OFT transfer parameters already on the stack::
  *
- *   PUSH_U256 <amountLD>   ; pushed first  → stack[0] (bottom)
- *   PUSH_ADDR <_from>      ; pushed second → stack[1] (top)
+ *   PUSH32 <amountLD>   ; 0x7F opcode + 32B → stack[0] (bottom)
+ *   PUSH20 <_from>      ; 0x73 opcode + 20B → stack[1] (top)
  *
  * A typical program begins by saving these into registers::
  *
@@ -88,9 +88,9 @@ interface IDeFiVM {
 // ---------------------------------------------------------------------------
 
 contract OFTComposer {
-    // DeFiVM PUSH opcodes (mirrors DeFiVM.sol)
-    uint8 private constant OP_PUSH_U256 = 0x01;
-    uint8 private constant OP_PUSH_ADDR = 0x02;
+    // DeFiVM PUSH opcodes — raw EVM bytecode opcodes used to build the prologue.
+    uint8 private constant OP_PUSH_U256 = 0x7F; // EVM PUSH32: opcode + 32-byte immediate
+    uint8 private constant OP_PUSH_ADDR = 0x73; // EVM PUSH20: opcode + 20-byte immediate
 
     // -----------------------------------------------------------------------
     // Errors
@@ -227,8 +227,8 @@ contract OFTComposer {
         // Build a prologue that pushes the OFT parameters onto the DeFiVM stack
         // before the user program runs:
         //
-        //   PUSH_U256 <amountLD>  (1B opcode + 32B value = 33B)
-        //   PUSH_ADDR <_from>     (1B opcode + 20B value = 21B)
+        //   PUSH32 <amountLD>  (0x7F opcode + 32B value = 33B)
+        //   PUSH20 <_from>     (0x73 opcode + 20B value = 21B)
         //
         // After the prologue, the initial stack layout is:
         //   stack[0] = amountLD  (pushed first, bottom)

@@ -368,7 +368,7 @@ class TestOFTComposerFork:
             + push_bytes(calldata)
             + push_u256(value)
             + push_addr(target_address)
-            + push_u256(0)  # gasLimit=0 (all gas)
+            + bytes([0x5A])  # GAS — forward all remaining gas
             + call()  # requireSuccess=True → reverts on failure; pushes success flag
             + pop()  # discard success flag
         )
@@ -486,7 +486,7 @@ class TestOFTComposerFork:
             + push_bytes(calldata)
             + push_u256(eth_amount)  # value for sub-call
             + push_addr(target_address)
-            + push_u256(0)  # gasLimit=0
+            + bytes([0x5A])  # GAS — forward all remaining gas
             + call()
             + pop()
         )
@@ -593,7 +593,7 @@ class TestOFTComposerFork:
             + patch_u256(68)  # patch amountLD at offset 68; leaves [argsOffset, argsLen, retOffset, retLen]
             + push_u256(0)  # value=0
             + push_addr(target_address)  # to
-            + push_u256(0)  # gasLimit=0
+            + bytes([0x5A])  # GAS — forward all remaining gas
             + call()
             + pop()
         )
@@ -637,9 +637,11 @@ class TestOFTComposerFork:
         # Program:
         #   STORE_REG 0 -> R0 = _from   (pop from top)
         #   STORE_REG 1 -> R1 = amountLD
-        #   PUSH_BYTES template -> buf 0; stack: [0]
-        #   LOAD_REG 0  -> stack: [0, _from]
-        #   PATCH_ADDR 68 -> writes bytes20(_from) at offset 68; stack: [0]
+        #   PUSH_BYTES template -> buf; stack: [argsOffset, argsLen, ...]
+        #   LOAD_REG 0  -> stack: [_from, argsOffset, ...]
+        #   PATCH_ADDR 80 -> MSTORE(argsOffset+68, _from): writes 12 zeros at data[0..11]
+        #                    then 20-byte address at data[12..31]; MSTORE starts at
+        #                    offset 68 (= 80-12), safely past the length field at [36..67]
         #   CALL
         program = (
             store_reg(0)  # R0 = _from
@@ -648,10 +650,10 @@ class TestOFTComposerFork:
             + push_u256(0)  # retLen=0, retOffset=0 for CALL
             + push_bytes(template)  # argsOffset, argsLen above retOffset/retLen
             + load_reg(0)  # push _from
-            + patch_addr(68)  # write 20 bytes of _from at offset 68; leaves [argsOffset, argsLen, retOffset, retLen]
+            + patch_addr(80)  # MSTORE at buf+68: data[0..11]=0x00*12, data[12..31]=_from
             + push_u256(0)  # value=0
             + push_addr(target_address)  # to
-            + push_u256(0)  # gasLimit=0
+            + bytes([0x5A])  # GAS — forward all remaining gas
             + call()
             + pop()
         )
@@ -672,11 +674,12 @@ class TestOFTComposerFork:
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
 
-        # PATCH_ADDR writes exactly 20 bytes at offset 68; the remaining 12 bytes stay zero.
+        # PATCH_ADDR(80) does MSTORE(buf+68, _from): writes 12 leading zeros then
+        # the 20-byte address into data[0..31].
         last_data = await target.functions.lastData().call()
         expected_addr_bytes = bytes.fromhex(oft_address.lower().removeprefix("0x"))
-        assert last_data[:20] == expected_addr_bytes
-        assert last_data[20:] == b"\x00" * 12
+        assert last_data[:12] == b"\x00" * 12
+        assert last_data[12:32] == expected_addr_bytes
 
     # ------------------------------------------------------------------
     # Security: unauthorized endpoint
@@ -910,7 +913,7 @@ class TestOFTComposerFork:
             + push_bytes(vm_forward_calldata)  # push calldata buffer
             + push_u256(0)  # value = 0 ETH
             + push_addr(oft_address)  # call the OFT token contract
-            + push_u256(0)  # gasLimit = 0 (all gas)
+            + bytes([0x5A])  # GAS — forward all remaining gas
             + call()
             + pop()  # discard success flag
         )
@@ -981,7 +984,7 @@ class TestOFTComposerFork:
             + push_bytes(vm_forward_calldata)  # push calldata buffer
             + push_u256(0)  # value = 0 ETH
             + push_addr(token_address)  # call the underlying ERC-20 contract
-            + push_u256(0)  # gasLimit = 0 (all gas)
+            + bytes([0x5A])  # GAS — forward all remaining gas
             + call()
             + pop()  # discard success flag
         )

@@ -469,7 +469,7 @@ class TestCCTPComposerBasic:
             + push_bytes(target_calldata)
             + push_u256(0)  # value = 0 ETH
             + push_addr(target_address)
-            + push_u256(0)  # gasLimit = 0 (all gas)
+            + bytes([0x5A])  # GAS — forward all remaining gas
             + call()
             + pop()  # discard success flag
         )

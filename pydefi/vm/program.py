@@ -91,100 +91,78 @@ def gas_opcode() -> bytes:
 
 
 def push_bytes(data: bytes) -> bytes:
-    """Emit a PC-relative data-load sequence.
+    """Copy *data* into free memory and leave ``[argsOffset(TOS), argsLen(2nd)]``.
 
-    Copies *data* into free memory and leaves ``[argsOffset(TOS), argsLen(2nd)]``
-    on the stack.  Free memory pointer is initialised to 0x280 minimum.
+    Each 32-byte chunk of *data* is embedded as a ``PUSH32`` immediate and
+    stored with ``MSTORE``.  The free memory pointer at ``mem[0x40]`` is
+    initialised to ``0x280`` minimum and advanced after the allocation.
 
-    Layout (bytes within this instruction)::
-
-        0-38   39-byte preamble
-                  0-9:   max_fp = fp | (0x280 * (fp==0))
-                  10:    DUP1
-                  11:    PC  (value = instr_start + 11)
-                  12-13: PUSH1 28  (data at byte 39; 39 - 11 = 28)
-                  14:    ADD  → data_ptr
-                  15-17: PUSH2 blen
-                  18:    SWAP2  → [max_fp, data_ptr, blen, max_fp]
-                  19:    CALLDATACOPY → [max_fp]
-                  20-31: update free-memory pointer, leave [argsOffset, argsLen]
-                  32:    PC  (value = instr_start + 32)
-                  33-36: PUSH3 (blen+39)  → destination = 32 + blen + 39 = 71 + blen
-                  37:    ADD → destination = instr_start + 71 + blen = JUMPDEST
-                  38:    JUMP → skip over inline data + zero wall
-        39-38+blen  inline data (blen bytes, read by CALLDATACOPY above)
-        39+blen..   32 zero-byte wall (blen+39 bytes from PC; protects JUMPDEST
-                    from being absorbed as a PUSH immediate)
-        71+blen     JUMPDEST  (= instr_start + blen + 32 + 39 = 71 + blen)
+    This implementation avoids ``CALLDATACOPY`` (opcode ``0x37``) because the
+    Analog-Labs EVM interpreter's CALLDATACOPY handler ignores the user-supplied
+    source offset and always reads from ``calldatasize`` (past the end of the
+    program calldata), copying zeros instead of the intended bytes.
     """
     if len(data) > 0xFFFF:
         raise ValueError(f"push_bytes: data too large ({len(data)} bytes, max 65535)")
     blen = len(data)
     blen_padded = (blen + 31) & ~31
-    # N = distance from PC (byte 32) to JUMPDEST (byte 71+blen)
-    jump_n = 39 + blen
+
+    def _push_imm(v: int) -> bytes:
+        """Smallest PUSH opcode for non-negative integer *v* (1–3 bytes)."""
+        if v <= 0xFF:
+            return bytes([0x60, v])  # PUSH1
+        elif v <= 0xFFFF:
+            return bytes([0x61, v >> 8, v & 0xFF])  # PUSH2
+        else:
+            n = (v.bit_length() + 7) // 8
+            return bytes([0x5F + n]) + v.to_bytes(n, "big")
+
+    # Compute max_fp = fp | (0x280 * (fp == 0))
     code = bytes(
         [
-            # bytes 0-9: max_fp = fp | (0x280 * (fp == 0))
             0x60,
             0x40,  # PUSH1 0x40
-            0x51,  # MLOAD            → [fp]
+            0x51,  # MLOAD           → [fp]
             0x61,
             0x02,
-            0x80,  # PUSH2 0x0280     → [0x280, fp]
-            0x81,  # DUP2             → [fp, 0x280, fp]
-            0x15,  # ISZERO           → [fp==0, 0x280, fp]
-            0x02,  # MUL              → [0x280*(fp==0), fp]
-            0x17,  # OR               → [max_fp]
-            # byte 10: DUP1
-            0x80,  # DUP1             → [max_fp, max_fp]
-            # byte 11: PC  (value = instr_start + 11)
-            0x58,  # PC
-            # bytes 12-13: PUSH1 28  (data at byte 39; 39 - 11 = 28)
-            0x60,
-            28,  # PUSH1 28
-            # byte 14: ADD  → [data_ptr, max_fp, max_fp]
-            0x01,  # ADD
-            # bytes 15-17: PUSH2 blen
-            0x61,
-            blen >> 8,
-            blen & 0xFF,
-            # byte 18: SWAP2  → [max_fp, data_ptr, blen, max_fp]
-            0x91,  # SWAP2
-            # byte 19: CALLDATACOPY  → [max_fp]
-            0x37,  # CALLDATACOPY
-            # byte 20: DUP1  → [max_fp, max_fp]
-            0x80,  # DUP1
-            # bytes 21-23: PUSH2 blen_padded
-            0x61,
-            blen_padded >> 8,
-            blen_padded & 0xFF,
-            # byte 24: ADD  → [new_fp, max_fp]
-            0x01,  # ADD
-            # bytes 25-26: PUSH1 0x40
-            0x60,
-            0x40,
-            # byte 27: MSTORE  → mem[0x40] = new_fp; [max_fp]
-            0x52,  # MSTORE
-            # bytes 28-30: PUSH2 blen  → [blen, max_fp]
-            0x61,
-            blen >> 8,
-            blen & 0xFF,
-            # byte 31: SWAP1  → [max_fp=argsOffset, blen=argsLen]
-            0x90,  # SWAP1
-            # bytes 32-38: JUMP over inline data to JUMPDEST at instr_start+71+blen
-            0x58,  # PC               → [pc, argsOffset, argsLen]
-            0x62,  # PUSH3
-            (jump_n >> 16) & 0xFF,
-            (jump_n >> 8) & 0xFF,
-            jump_n & 0xFF,
-            0x01,  # ADD              → [dest, argsOffset, argsLen]
-            0x56,  # JUMP             → [argsOffset, argsLen]
+            0x80,  # PUSH2 0x0280    → [0x280, fp]
+            0x81,  # DUP2            → [fp, 0x280, fp]
+            0x15,  # ISZERO          → [fp==0, 0x280, fp]
+            0x02,  # MUL             → [0x280*(fp==0), fp]
+            0x17,  # OR              → [max_fp]
         ]
     )
-    assert len(code) == 39
-    # data + 32 zero bytes (wall protecting JUMPDEST from PUSH absorption) + JUMPDEST
-    return code + data + bytes(32) + bytes([0x5B])
+
+    # Store each 32-byte chunk; max_fp stays at TOS between iterations.
+    for i in range(0, blen_padded, 32):
+        chunk = data[i : i + 32].ljust(32, b"\x00")
+        chunk_val = int.from_bytes(chunk, "big")
+
+        # Duplicate max_fp, then compute store address = max_fp + i.
+        code += bytes([0x80])  # DUP1 → [max_fp, max_fp, ...]
+        if i > 0:
+            code += _push_imm(i)  # [i, max_fp, max_fp]
+            code += bytes([0x01])  # ADD → [max_fp+i, max_fp]
+
+        # Push the 32-byte chunk (use PUSH1 0 for all-zero chunks).
+        if chunk_val == 0:
+            code += bytes([0x60, 0x00])  # PUSH1 0
+        else:
+            code += bytes([0x7F]) + chunk  # PUSH32 chunk
+
+        code += bytes([0x90, 0x52])  # SWAP1, MSTORE → mem[max_fp+i]=chunk; [max_fp]
+
+    # Update free-memory pointer: mem[0x40] = max_fp + blen_padded.
+    code += bytes([0x80])  # DUP1 → [max_fp, max_fp]
+    code += _push_imm(blen_padded)  # [blen_padded, max_fp, max_fp]
+    code += bytes([0x01])  # ADD → [new_fp, max_fp]
+    code += bytes([0x60, 0x40])  # PUSH1 0x40
+    code += bytes([0x52])  # MSTORE → mem[0x40] = new_fp; [max_fp]
+
+    # Leave [argsOffset(TOS), argsLen(2nd)].
+    code += _push_imm(blen)  # [blen, max_fp]
+    code += bytes([0x90])  # SWAP1 → [max_fp=argsOffset, blen=argsLen]
+    return code
 
 
 def dup() -> bytes:
