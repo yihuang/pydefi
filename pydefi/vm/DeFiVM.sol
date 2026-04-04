@@ -40,8 +40,20 @@ pragma solidity ^0.8.24;
  *  4. Programs run via DELEGATECALL and have full access to DeFiVM's storage.
  */
 contract DeFiVM {
-    /// @dev Pre-deployed Analog-Labs EVM interpreter — https://github.com/Analog-Labs/evm-interpreter
-    address private constant INTERPRETER = 0x0000000000001e3F4F615cd5e20c681Cf7d85e8D;
+    /// @dev Well-known Analog-Labs EVM interpreter.
+    address private constant DEFAULT_INTERPRETER = 0x0000000000001e3F4F615cd5e20c681Cf7d85e8D;
+
+    /// @dev Address of the EVM interpreter used for DELEGATECALL execution.
+    address private immutable INTERPRETER;
+
+    /// @param interpreter Address of the EVM interpreter to use.  Pass
+    ///   ``address(0)`` to use the pre-deployed Analog-Labs interpreter at
+    ///   ``0x0000000000001e3F4F615cd5e20c681Cf7d85e8D``.  Supply a custom
+    ///   address for alternative chains or local test environments where the
+    ///   interpreter may not be pre-deployed.
+    constructor(address interpreter) {
+        INTERPRETER = interpreter == address(0) ? DEFAULT_INTERPRETER : interpreter;
+    }
 
     /// @notice Allow the VM to receive ETH (needed for value-bearing calls).
     receive() external payable {}
@@ -59,13 +71,14 @@ contract DeFiVM {
      * stack — no emulation overhead.  Any revert undoes all side-effects.
      */
     function execute(bytes calldata program) external payable {
+        address interpreter = INTERPRETER;
         assembly {
             // Copy the program bytecode to the start of memory so it can be
             // passed as calldata to the interpreter via delegatecall.
             // Inside the interpreted program, CALLDATACOPY reads from these
             // bytes, enabling PC-relative inline data loads.
             calldatacopy(0, program.offset, program.length)
-            let ok := delegatecall(gas(), INTERPRETER, 0, program.length, 0, 0)
+            let ok := delegatecall(gas(), interpreter, 0, program.length, 0, 0)
             returndatacopy(0, 0, returndatasize())
             if iszero(ok) {
                 revert(0, returndatasize())

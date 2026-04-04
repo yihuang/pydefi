@@ -50,6 +50,8 @@ solcx = pytest.importorskip("solcx")
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SOL_FILE = REPO_ROOT / "pydefi" / "bridge" / "OFTComposer.sol"
 DEFI_VM_SOL_FILE = REPO_ROOT / "pydefi" / "vm" / "DeFiVM.sol"
+# Analog-Labs EVM interpreter — pre-deployed on Ethereum mainnet via CREATE2.
+INTERPRETER_ADDR = "0x0000000000001e3F4F615cd5e20c681Cf7d85e8D"
 
 # ---------------------------------------------------------------------------
 # Compile + deploy helpers
@@ -298,8 +300,16 @@ async def ctx(oft_fork_w3, compiled_oft_composer, compiled_mocks, compiled_defi_
     # Deploy mock endpoint (controls which address may call lzCompose).
     endpoint_address = await _deploy(w3, compiled_mocks["MockEndpoint"], deployer)
 
-    # Deploy DeFiVM (no constructor arguments).
-    vm_address = await _deploy(w3, compiled_defi_vm, deployer)
+    # Verify the Analog-Labs EVM interpreter is deployed on this fork.
+    interpreter_code = await w3.eth.get_code(INTERPRETER_ADDR)
+    if not interpreter_code or interpreter_code in (b"", b"\x00"):
+        pytest.skip(
+            f"Analog-Labs EVM interpreter not found at {INTERPRETER_ADDR}; "
+            "fork Ethereum mainnet to run these tests"
+        )
+
+    # Deploy DeFiVM (pass interpreter address via constructor).
+    vm_address = await _deploy(w3, compiled_defi_vm, deployer, INTERPRETER_ADDR)
 
     # Deploy OFT composer pointing it at the mock endpoint and DeFiVM.
     composer_address = await _deploy(
@@ -363,11 +373,12 @@ class TestOFTComposerFork:
     def _call_target(target_address: str, calldata: bytes, value: int = 0) -> bytes:
         """Return DeFiVM instructions for one external call (discards success flag)."""
         return (
-            push_bytes(calldata)  # buf N; stack: [..., N]
-            + push_u256(value)  # stack: [..., N, value]
-            + push_addr(target_address)  # stack: [..., N, value, to]
-            + push_u256(0)  # gasLimit=0 (all gas); stack: [..., N, value, to, 0]
-            + call()  # pops top-4; requireSuccess=True -> reverts on failure; pushes 1
+            push_u256(0) + push_u256(0)  # retLen=0, retOffset=0 for CALL
+            + push_bytes(calldata)
+            + push_u256(value)
+            + push_addr(target_address)
+            + push_u256(0)  # gasLimit=0 (all gas)
+            + call()  # requireSuccess=True → reverts on failure; pushes success flag
             + pop()  # discard success flag
         )
 
@@ -479,6 +490,7 @@ class TestOFTComposerFork:
         program = (
             store_reg(0)
             + store_reg(1)
+            + push_u256(0) + push_u256(0)  # retLen=0, retOffset=0 for CALL
             + push_bytes(calldata)
             + push_u256(eth_amount)  # value for sub-call
             + push_addr(target_address)
@@ -582,9 +594,10 @@ class TestOFTComposerFork:
         program = (
             store_reg(0)  # R0 = _from
             + store_reg(1)  # R1 = amountLD
-            + push_bytes(template)  # buf 0; stack: [0]
-            + load_reg(1)  # stack: [0, amountLD]
-            + patch_u256(68)  # patch amountLD at offset 68; stack: [0]
+            + push_u256(0) + push_u256(0)  # retLen=0, retOffset=0 for CALL
+            + push_bytes(template)  # argsOffset, argsLen above retOffset/retLen
+            + load_reg(1)  # push amountLD
+            + patch_u256(68)  # patch amountLD at offset 68; leaves [argsOffset, argsLen, retOffset, retLen]
             + push_u256(0)  # value=0
             + push_addr(target_address)  # to
             + push_u256(0)  # gasLimit=0
@@ -638,9 +651,10 @@ class TestOFTComposerFork:
         program = (
             store_reg(0)  # R0 = _from
             + store_reg(1)  # R1 = amountLD
-            + push_bytes(template)  # buf 0; stack: [0]
-            + load_reg(0)  # stack: [0, _from]
-            + patch_addr(68)  # write 20 bytes of _from at offset 68; stack: [0]
+            + push_u256(0) + push_u256(0)  # retLen=0, retOffset=0 for CALL
+            + push_bytes(template)  # argsOffset, argsLen above retOffset/retLen
+            + load_reg(0)  # push _from
+            + patch_addr(68)  # write 20 bytes of _from at offset 68; leaves [argsOffset, argsLen, retOffset, retLen]
             + push_u256(0)  # value=0
             + push_addr(target_address)  # to
             + push_u256(0)  # gasLimit=0
@@ -717,6 +731,7 @@ class TestOFTComposerFork:
             store_reg(0)
             + store_reg(1)
             + self._call_target(target_address, calldata_ok)  # succeeds, pops success
+            + push_u256(0) + push_u256(0)  # retLen=0, retOffset=0 for CALL
             + push_bytes(b"")  # empty calldata for fallback
             + push_u256(0)
             + push_addr(reverting_address)
@@ -895,7 +910,8 @@ class TestOFTComposerFork:
         program = (
             store_reg(0)  # R0 = _from (OFT address)
             + store_reg(1)  # R1 = amountLD
-            + push_bytes(vm_forward_calldata)  # push calldata buffer; stack: [buf_idx]
+            + push_u256(0) + push_u256(0)  # retLen=0, retOffset=0 for CALL
+            + push_bytes(vm_forward_calldata)  # push calldata buffer
             + push_u256(0)  # value = 0 ETH
             + push_addr(oft_address)  # call the OFT token contract
             + push_u256(0)  # gasLimit = 0 (all gas)
@@ -964,7 +980,8 @@ class TestOFTComposerFork:
         program = (
             store_reg(0)  # R0 = _from (adapter address)
             + store_reg(1)  # R1 = amountLD
-            + push_bytes(vm_forward_calldata)  # push calldata buffer; stack: [buf_idx]
+            + push_u256(0) + push_u256(0)  # retLen=0, retOffset=0 for CALL
+            + push_bytes(vm_forward_calldata)  # push calldata buffer
             + push_u256(0)  # value = 0 ETH
             + push_addr(token_address)  # call the underlying ERC-20 contract
             + push_u256(0)  # gasLimit = 0 (all gas)

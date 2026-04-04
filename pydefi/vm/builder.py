@@ -177,8 +177,6 @@ from __future__ import annotations
 import struct
 
 from pydefi.vm.program import (
-    OP_JUMP,
-    OP_JUMPI,
     add,
     assert_ge,
     assert_le,

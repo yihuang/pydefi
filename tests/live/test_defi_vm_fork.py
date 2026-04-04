@@ -63,6 +63,8 @@ SOL_FILE = REPO_ROOT / "pydefi" / "vm" / "DeFiVM.sol"
 WETH_MAINNET = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
 # Coinbase 8 — a well-funded address on mainnet (used for introspection only)
 WHALE = "0x77134cbC06cB00b66F4c7e623D5fdBF6777635EC"
+# Analog-Labs EVM interpreter — pre-deployed on Ethereum mainnet via CREATE2.
+INTERPRETER_ADDR = "0x0000000000001e3F4F615cd5e20c681Cf7d85e8D"
 
 # ---------------------------------------------------------------------------
 # Compile + deploy helpers
@@ -91,10 +93,10 @@ def _compile_defi_vm() -> dict:
     return result[key]
 
 
-async def _deploy(w3: AsyncWeb3, compiled: dict, deployer: str) -> str:
+async def _deploy(w3: AsyncWeb3, compiled: dict, deployer: str, *args) -> str:
     """Deploy a contract and return its address."""
     contract = w3.eth.contract(abi=compiled["abi"], bytecode=compiled["bin"])
-    tx_hash = await contract.constructor().transact({"from": deployer})
+    tx_hash = await contract.constructor(*args).transact({"from": deployer})
     receipt = await w3.eth.get_transaction_receipt(tx_hash)
     return receipt["contractAddress"]
 
@@ -191,7 +193,16 @@ async def ctx(vm_fork_w3, compiled_vm, compiled_adapter):
     accounts = await w3.eth.accounts
     deployer = accounts[0]
 
-    vm_address = await _deploy(w3, compiled_vm, deployer)
+    # Verify the Analog-Labs EVM interpreter is deployed on this fork.
+    # When forking Ethereum mainnet it should always be present; skip otherwise.
+    interpreter_code = await w3.eth.get_code(INTERPRETER_ADDR)
+    if not interpreter_code or interpreter_code in (b"", b"\x00"):
+        pytest.skip(
+            f"Analog-Labs EVM interpreter not found at {INTERPRETER_ADDR}; "
+            "fork Ethereum mainnet to run these tests"
+        )
+
+    vm_address = await _deploy(w3, compiled_vm, deployer, INTERPRETER_ADDR)
     adapter_address = await _deploy(w3, compiled_adapter, deployer)
 
     vm = w3.eth.contract(address=vm_address, abi=compiled_vm["abi"])
@@ -246,20 +257,25 @@ class TestDeFiVMFork:
     # Control flow
     # ------------------------------------------------------------------
 
+    # jump() / jumpi() each emit PUSH2 hi lo JUMP/JUMPI = 4 bytes.
+    _JUMP_INSTR_SIZE = 4
+
     async def test_jump_forward(self, ctx):
         """JUMP skips over a subsequent unknown opcode that would otherwise revert."""
         w3 = ctx["w3"]
         vm = ctx["vm"]
         deployer = ctx["deployer"]
 
-        push_part = push_u256(1)  # 33 bytes
-        bad_byte = bytes([0xFF])  # unknown opcode — would revert if reached
+        push_part = push_u256(1)   # 33 bytes (value stays on stack; consumed by pop_part)
+        bad_byte = bytes([0xFF])   # unknown opcode — would revert if reached
+        jumpdest = bytes([0x5B])   # JUMPDEST required by EVM at every jump target
         pop_part = pop()
 
-        target = len(push_part) + 3 + len(bad_byte)
+        # Target must point to the JUMPDEST byte that follows the bad opcode.
+        target = len(push_part) + self._JUMP_INSTR_SIZE + len(bad_byte)  # 33 + 4 + 1 = 38
         jump_part = jump(target)
 
-        program = push_part + jump_part + bad_byte + pop_part
+        program = push_part + jump_part + bad_byte + jumpdest + pop_part
         tx = await vm.functions.execute(program).transact({"from": deployer})
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
@@ -270,13 +286,15 @@ class TestDeFiVMFork:
         vm = ctx["vm"]
         deployer = ctx["deployer"]
 
-        push_part = push_u256(1)  # 33 bytes
+        push_part = push_u256(1)   # 33 bytes — non-zero condition
         bad_byte = bytes([0xFF])
+        jumpdest = bytes([0x5B])   # JUMPDEST required at jump target
 
-        target = len(push_part) + 3 + len(bad_byte)
+        # Target must point to the JUMPDEST byte that follows the bad opcode.
+        target = len(push_part) + self._JUMP_INSTR_SIZE + len(bad_byte)  # 33 + 4 + 1 = 38
         jumpi_part = jumpi(target)
 
-        program = push_part + jumpi_part + bad_byte
+        program = push_part + jumpi_part + bad_byte + jumpdest
         tx = await vm.functions.execute(program).transact({"from": deployer})
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
@@ -287,9 +305,11 @@ class TestDeFiVMFork:
         vm = ctx["vm"]
         deployer = ctx["deployer"]
 
-        push_part = push_u256(0)  # condition = False
-        target = len(push_u256(99)) + len(push_part) + 3 + 1
-        jumpi_part = jumpi(target)
+        push_part = push_u256(0)  # condition = False (33 bytes)
+        # EVM only validates the jump destination when the condition is non-zero;
+        # with condition=0 JUMPI simply falls through.  Any destination is safe here.
+        UNUSED_TARGET = 0
+        jumpi_part = jumpi(UNUSED_TARGET)
         skip_pop = pop()  # pops the dummy 99 when condition is False
 
         program = push_u256(99) + push_part + jumpi_part + skip_pop
@@ -421,7 +441,8 @@ class TestDeFiVMFork:
         calldata = bytes(selector)
 
         program = (
-            push_bytes(calldata) + push_u256(0) + push_addr(adapter) + push_u256(0) + call(require_success=True) + pop()
+            push_u256(0) + push_u256(0)  # retLen=0, retOffset=0 for CALL
+            + push_bytes(calldata) + push_u256(0) + push_addr(adapter) + push_u256(0) + call(require_success=True) + pop()
         )
         tx = await vm.functions.execute(program).transact({"from": deployer})
         receipt = await w3.eth.get_transaction_receipt(tx)
@@ -440,7 +461,8 @@ class TestDeFiVMFork:
         calldata = bytes(selector)
 
         program = (
-            push_bytes(calldata)
+            push_u256(0) + push_u256(0)  # retLen=0, retOffset=0 for CALL
+            + push_bytes(calldata)
             + push_u256(0)
             + push_addr(adapter)
             + push_u256(0)
@@ -466,7 +488,8 @@ class TestDeFiVMFork:
         calldata = bytes(selector)
 
         program = (
-            push_bytes(calldata)
+            push_u256(0) + push_u256(0)  # retLen=0, retOffset=0 for CALL
+            + push_bytes(calldata)
             + push_u256(0)
             + push_addr(adapter)
             + push_u256(0)
@@ -498,7 +521,8 @@ class TestDeFiVMFork:
         template = bytearray(selector + b"\x00" * 32)
 
         program = (
-            push_bytes(bytes(template))
+            push_u256(0) + push_u256(0)  # retLen=0, retOffset=0 for CALL
+            + push_bytes(bytes(template))
             + push_u256(0xABCD)
             + patch_u256(4)
             + push_u256(0)
@@ -546,7 +570,8 @@ class TestDeFiVMFork:
         patch_offset = 4 + 12
 
         program = (
-            push_bytes(bytes(template))
+            push_u256(0) + push_u256(0)  # retLen=0, retOffset=0 for CALL
+            + push_bytes(bytes(template))
             + push_addr(adapter)
             + patch_addr(patch_offset)
             + push_u256(0)
@@ -599,16 +624,19 @@ class TestDeFiVMFork:
 
         program = (
             # --- Call 1: double(5) → retdata = abi.encode(10) ---
-            push_bytes(calldata1)
+            push_u256(0) + push_u256(0)  # retLen=0, retOffset=0
+            + push_bytes(calldata1)
             + push_u256(0)
             + push_addr(adapter)
             + push_u256(0)
             + call(require_success=True)
             + pop()
             # --- Calldata surgery: embed call-1 output into call-2 template ---
-            + push_bytes(template2)  # stack: [buf1]
-            + ret_u256(0)  # push 10 from retdata; stack: [buf1, 10]
-            + patch_u256(4)  # patch buf1[4..36] = abi.encode(10); stack: [buf1]
+            # Push retLen/retOffset first so they sit below the call-2 buffer on stack
+            + push_u256(0) + push_u256(0)  # retLen=0, retOffset=0 for call 2
+            + push_bytes(template2)  # argsOffset, argsLen above retOffset/retLen
+            + ret_u256(0)  # push 10 from retdata
+            + patch_u256(4)  # patch template2[4..36] = 10; leaves [argsOffset, argsLen, retOffset, retLen]
             # --- Call 2: double(10) → retdata = abi.encode(20) ---
             + push_u256(0)
             + push_addr(adapter)
@@ -649,16 +677,19 @@ class TestDeFiVMFork:
 
         program = (
             # --- Call 1: double(7) → retdata = abi.encode(14) ---
-            push_bytes(calldata1)
+            push_u256(0) + push_u256(0)  # retLen=0, retOffset=0
+            + push_bytes(calldata1)
             + push_u256(0)
             + push_addr(adapter)
             + push_u256(0)
             + call(require_success=True)
             + pop()
             # --- Calldata surgery: embed call-1 output into the first arg of call-2 ---
-            + push_bytes(template2)  # stack: [buf1]
-            + ret_u256(0)  # push 14; stack: [buf1, 14]
-            + patch_u256(4)  # patch buf1[4..36] = abi.encode(14); stack: [buf1]
+            # Push retLen/retOffset first so they sit below the call-2 buffer on stack
+            + push_u256(0) + push_u256(0)  # retLen=0, retOffset=0 for call 2
+            + push_bytes(template2)  # argsOffset, argsLen above retOffset/retLen
+            + ret_u256(0)  # push 14
+            + patch_u256(4)  # patch template2[4..36] = 14; leaves [argsOffset, argsLen, retOffset, retLen]
             # --- Call 2: addInputs(14, 3) → retdata = abi.encode(17) ---
             + push_u256(0)
             + push_addr(adapter)
@@ -702,15 +733,18 @@ class TestDeFiVMFork:
 
         program = (
             # --- Call 1: encodeDouble(5) → retdata carries calldata for double(5) ---
-            push_bytes(calldata1)
+            push_u256(0) + push_u256(0)  # retLen=0, retOffset=0
+            + push_bytes(calldata1)
             + push_u256(0)
             + push_addr(adapter)
             + push_u256(0)
             + call(require_success=True)
             + pop()
             # --- Surgery: extract the inner bytes as a new buffer ---
+            # Push retLen/retOffset first so they sit below the slice buffer on stack
+            + push_u256(0) + push_u256(0)  # retLen=0, retOffset=0 for call 2
             # retdata[64..100] = selector(4) + abi.encode(5) = calldata for double(5)
-            + ret_slice(64, 36)  # stack: [buf1]
+            + ret_slice(64, 36)  # argsOffset, argsLen above retOffset/retLen
             # --- Call 2: double(5) using the slice from call-1's returndata ---
             + push_u256(0)
             + push_addr(adapter)
@@ -743,10 +777,11 @@ class TestDeFiVMFork:
             await vm.functions.execute(program).transact({"from": deployer})
 
     async def test_stack_overflow_reverts(self, ctx):
-        """Pushing 33 values onto the 32-element stack must revert."""
+        """Pushing more than 1024 values onto the EVM stack must revert."""
         vm = ctx["vm"]
         deployer = ctx["deployer"]
 
-        program = b"".join(push_u256(i) for i in range(33))
+        # The EVM allows up to 1024 stack items; 1025 PUSH1 instructions overflow it.
+        program = bytes([0x60, 0x00]) * 1025  # 1025x PUSH1 0x00
         with pytest.raises((ContractLogicError, Web3RPCError)):
             await vm.functions.execute(program).transact({"from": deployer})
