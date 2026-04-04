@@ -47,39 +47,6 @@ solcx = pytest.importorskip("solcx")
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SOL_FILE = REPO_ROOT / "pydefi" / "bridge" / "CCTPComposer.sol"
 DEFI_VM_SOL_FILE = REPO_ROOT / "pydefi" / "vm" / "DeFiVM.sol"
-# Analog-Labs EVM interpreter — pre-deployed on Ethereum mainnet via CREATE2.
-INTERPRETER_ADDR = "0x0000000000001e3F4F615cd5e20c681Cf7d85e8D"
-
-# ---------------------------------------------------------------------------
-# Minimal fallback interpreter (compiled + deployed when Analog-Labs one absent)
-# ---------------------------------------------------------------------------
-
-_MINIMAL_INTERPRETER_SOL = """\
-// SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
-
-/// @dev Minimal EVM interpreter for DeFiVM testing.
-/// Deploys program bytecode via CREATE (using a 14-byte init wrapper that
-/// returns it as runtime code) then delegatecalls it with the original
-/// program as calldata.  PC and CALLDATACOPY both reference the program
-/// bytes, matching the Analog-Labs interpreter's execution semantics.
-contract TestInterpreter {
-    fallback() external payable {
-        bytes memory wrapper = hex"38600e0380600e600039600090f3";
-        bytes memory deployCode = bytes.concat(wrapper, msg.data);
-        address prog;
-        assembly {
-            prog := create(0, add(deployCode, 0x20), mload(deployCode))
-        }
-        require(prog != address(0));
-        (bool ok, bytes memory ret) = prog.delegatecall(msg.data);
-        if (!ok) {
-            assembly { revert(add(ret, 0x20), mload(ret)) }
-        }
-        assembly { return(add(ret, 0x20), mload(ret)) }
-    }
-}
-"""
 
 # ---------------------------------------------------------------------------
 # Mock contracts (inline Solidity)
@@ -349,24 +316,6 @@ async def _deploy(w3: AsyncWeb3, compiled: dict, deployer: str, *args) -> str:
     return receipt["contractAddress"]
 
 
-async def _ensure_interpreter(w3: AsyncWeb3, deployer: str) -> str:
-    """Return a working EVM interpreter address, deploying a fallback if needed."""
-    code = await w3.eth.get_code(INTERPRETER_ADDR)
-    if code and len(code) > 1:
-        return INTERPRETER_ADDR
-
-    _ensure_solc("0.8.24")
-    compiled = solcx.compile_source(
-        _MINIMAL_INTERPRETER_SOL,
-        output_values=["abi", "bin"],
-        solc_version="0.8.24",
-        optimize=True,
-        optimize_runs=200,
-    )
-    key = "<stdin>:TestInterpreter"
-    return await _deploy(w3, compiled[key], deployer)
-
-
 def _abidata(hex_or_bytes: str | bytes) -> bytes:
     """Convert encode_abi() hex output to raw bytes."""
     if isinstance(hex_or_bytes, bytes):
@@ -405,7 +354,7 @@ def compiled_defi_vm():
 
 
 @pytest.fixture(scope="module")
-async def ctx(cctp_fork_w3, compiled_cctp_composer, compiled_mocks, compiled_defi_vm):
+async def ctx(cctp_fork_w3, compiled_cctp_composer, compiled_mocks, compiled_defi_vm, interpreter_addr):
     """Deploy CCTPComposer, DeFiVM, and mock contracts once; return shared context."""
     w3 = cctp_fork_w3
     accounts = await w3.eth.accounts
@@ -416,8 +365,6 @@ async def ctx(cctp_fork_w3, compiled_cctp_composer, compiled_mocks, compiled_def
 
     # Deploy mock MessageTransmitterV2 (mints USDC on receiveMessage).
     transmitter_address = await _deploy(w3, compiled_mocks["MockMessageTransmitterV2"], deployer, usdc_address)
-
-    interpreter_addr = await _ensure_interpreter(w3, deployer)
 
     # Deploy DeFiVM.
     vm_address = await _deploy(w3, compiled_defi_vm, deployer, interpreter_addr)

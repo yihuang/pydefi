@@ -63,39 +63,6 @@ SOL_FILE = REPO_ROOT / "pydefi" / "vm" / "DeFiVM.sol"
 WETH_MAINNET = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
 # Coinbase 8 — a well-funded address on mainnet (used for introspection only)
 WHALE = "0x77134cbC06cB00b66F4c7e623D5fdBF6777635EC"
-# Analog-Labs EVM interpreter — pre-deployed on Ethereum mainnet via CREATE2.
-INTERPRETER_ADDR = "0x0000000000001e3F4F615cd5e20c681Cf7d85e8D"
-
-# ---------------------------------------------------------------------------
-# Minimal fallback interpreter (compiled + deployed when Analog-Labs one absent)
-# ---------------------------------------------------------------------------
-
-_MINIMAL_INTERPRETER_SOL = """\
-// SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
-
-/// @dev Minimal EVM interpreter for DeFiVM testing.
-/// Deploys program bytecode via CREATE (using a 14-byte init wrapper that
-/// returns it as runtime code) then delegatecalls it with the original
-/// program as calldata.  PC and CALLDATACOPY both reference the program
-/// bytes, matching the Analog-Labs interpreter's execution semantics.
-contract TestInterpreter {
-    fallback() external payable {
-        bytes memory wrapper = hex"38600e0380600e600039600090f3";
-        bytes memory deployCode = bytes.concat(wrapper, msg.data);
-        address prog;
-        assembly {
-            prog := create(0, add(deployCode, 0x20), mload(deployCode))
-        }
-        require(prog != address(0));
-        (bool ok, bytes memory ret) = prog.delegatecall(msg.data);
-        if (!ok) {
-            assembly { revert(add(ret, 0x20), mload(ret)) }
-        }
-        assembly { return(add(ret, 0x20), mload(ret)) }
-    }
-}
-"""
 
 # ---------------------------------------------------------------------------
 # Compile + deploy helpers
@@ -130,30 +97,6 @@ async def _deploy(w3: AsyncWeb3, compiled: dict, deployer: str, *args) -> str:
     tx_hash = await contract.constructor(*args).transact({"from": deployer})
     receipt = await w3.eth.get_transaction_receipt(tx_hash)
     return receipt["contractAddress"]
-
-
-async def _ensure_interpreter(w3: AsyncWeb3, deployer: str) -> str:
-    """Return a working EVM interpreter address, deploying a fallback if needed.
-
-    If the Analog-Labs interpreter is already deployed on this fork, return its
-    address.  Otherwise compile and deploy ``TestInterpreter`` at a fresh
-    address and return that instead so tests can always run.
-    """
-    code = await w3.eth.get_code(INTERPRETER_ADDR)
-    if code and len(code) > 1:
-        return INTERPRETER_ADDR
-
-    # Interpreter not present on this fork — deploy our minimal fallback.
-    _ensure_solc("0.8.24")
-    compiled = solcx.compile_source(
-        _MINIMAL_INTERPRETER_SOL,
-        output_values=["abi", "bin"],
-        solc_version="0.8.24",
-        optimize=True,
-        optimize_runs=200,
-    )
-    key = "<stdin>:TestInterpreter"
-    return await _deploy(w3, compiled[key], deployer)
 
 
 # ---------------------------------------------------------------------------
@@ -241,14 +184,12 @@ def compiled_adapter():
 
 
 @pytest.fixture(scope="module")
-async def ctx(vm_fork_w3, compiled_vm, compiled_adapter):
+async def ctx(vm_fork_w3, compiled_vm, compiled_adapter, interpreter_addr):
     """Deploy DeFiVM + MockAdapter once and return context dict."""
     w3 = vm_fork_w3
 
     accounts = await w3.eth.accounts
     deployer = accounts[0]
-
-    interpreter_addr = await _ensure_interpreter(w3, deployer)
 
     vm_address = await _deploy(w3, compiled_vm, deployer, interpreter_addr)
     adapter_address = await _deploy(w3, compiled_adapter, deployer)
