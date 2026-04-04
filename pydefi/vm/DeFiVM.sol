@@ -20,8 +20,6 @@ pragma solidity ^0.8.24;
  *  - External ``CALL``s originate from DeFiVM (msg.sender to sub-calls is DeFiVM).
  *  - ETH held by DeFiVM is forwarded via ``callvalue()`` and available to ``CALL``.
  *  - No contract deployment (CREATE) required — no nonce increase.
- *  - Inside the program, ``CALLDATACOPY`` reads from the program bytecode itself,
- *    enabling PC-relative inline data loads (used by the ``push_bytes`` instruction).
  *
  * Memory conventions (inside programs)
  * -------------------------------------

@@ -127,25 +127,33 @@ def _ensure_solc_for_interpreter(version: str = "0.8.24") -> None:
         solcx.install_solc(version, show_progress=False)
 
 
-async def _ensure_interpreter(w3: AsyncWeb3, deployer: str) -> str:
-    """Return EVM interpreter address, compiling + deploying one if needed.
-
-    If the Analog-Labs interpreter is pre-deployed on this fork, returns its
-    well-known address.  Otherwise compiles and deploys a fresh copy of the
-    original ``Interpreter.sol`` so tests can run on any fork network.
-    """
-    code = await w3.eth.get_code(INTERPRETER_ADDR)
-    if code and len(code) > 1:
-        return INTERPRETER_ADDR
-
+def _compile_interpreter_sync() -> dict:
+    """Compile Interpreter.sol synchronously (suitable for asyncio.to_thread)."""
     _ensure_solc_for_interpreter("0.8.24")
-    compiled = solcx.compile_source(
+    return solcx.compile_source(
         _ANALOG_INTERPRETER_SOL,
         output_values=["abi", "bin"],
         solc_version="0.8.24",
         optimize=True,
         optimize_runs=200,
     )
+
+
+async def _ensure_interpreter(w3: AsyncWeb3, deployer: str) -> str:
+    """Return EVM interpreter address, compiling + deploying one if needed.
+
+    If the Analog-Labs interpreter is pre-deployed on this fork, returns its
+    well-known address.  Otherwise compiles and deploys a fresh copy of the
+    original ``Interpreter.sol`` so tests can run on any fork network.
+
+    The blocking solc compile/install step is offloaded to a worker thread via
+    ``asyncio.to_thread`` to avoid stalling the event loop.
+    """
+    code = await w3.eth.get_code(INTERPRETER_ADDR)
+    if code and len(code) > 1:
+        return INTERPRETER_ADDR
+
+    compiled = await asyncio.to_thread(_compile_interpreter_sync)
     key = "<stdin>:Interpreter"
     contract = w3.eth.contract(abi=compiled[key]["abi"], bytecode=compiled[key]["bin"])
     tx_hash = await contract.constructor().transact({"from": deployer})

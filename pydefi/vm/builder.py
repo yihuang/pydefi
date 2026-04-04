@@ -177,6 +177,7 @@ from __future__ import annotations
 import struct
 
 from pydefi.vm.program import (
+    OP_JUMPDEST,
     add,
     assert_ge,
     assert_le,
@@ -281,7 +282,7 @@ class Program:
         if name in self._labels:
             raise ValueError(f"Program: duplicate label {name!r}")
         self._labels[name] = len(self._buf)
-        self._buf.append(0x5B)  # JUMPDEST
+        self._buf.append(OP_JUMPDEST)  # JUMPDEST
         return self
 
     # ------------------------------------------------------------------
