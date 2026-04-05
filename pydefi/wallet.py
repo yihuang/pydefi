@@ -1,25 +1,43 @@
 """
-OpenWallet Standard (OWS) integration for pydefi.
+Wallet signer implementations for pydefi.
 
-Provides a thin wrapper around the ``open-wallet-standard`` (``ows``) Python
-package so that pydefi signing functions can use OWS-managed wallets instead
-of raw private-key hex strings.
+Provides two EIP-712 signing back-ends that share a common
+:class:`WalletSigner` interface:
 
-``open-wallet-standard`` keeps key material encrypted at rest and applies a
-policy engine before every signing operation.  Install it with::
+1. :class:`EthKeystoreSigner` — built on the Ethereum Web3 Secret Storage
+   standard (EIP-55 / go-ethereum keystore format).  Works with any tool that
+   produces standard ``UTC--...`` keystore files: ``geth``, ``cast wallet``,
+   MetaMask exports, etc.  The only dependency is the ``eth-account`` library
+   which is already a transitive dependency of ``web3``.
 
-    pip install open-wallet-standard
+2. :class:`OpenWalletSigner` — delegates to the ``open-wallet-standard``
+   (``ows``) package which keeps key material encrypted at rest, supports
+   multiple chains (EVM, Solana, Bitcoin, …), and provides a policy engine
+   that gates signing operations.  Requires the optional
+   ``open-wallet-standard`` package::
+
+       pip install "pydefi[wallet]"   # or: pip install open-wallet-standard
+
+Both classes are drop-in replacements for the raw private-key hex strings
+accepted throughout the ``pydefi.hyperliquid`` signing API.
 
 Quick start::
 
+    # ── Ethereum keystore (no extra deps) ──────────────────────────────
+    from pydefi.wallet import EthKeystoreSigner
+
+    signer = EthKeystoreSigner("/path/to/keystore.json", password="s3cr3t")
+    # or from an in-memory dict:
+    signer = EthKeystoreSigner(keystore_dict, password="s3cr3t")
+
+    # ── Open Wallet Standard ────────────────────────────────────────────
     from pydefi.wallet import create_wallet, OpenWalletSigner
-    from pydefi.hyperliquid import HyperliquidClient
 
-    # Create (or import) a wallet once
-    wallet = create_wallet("agent-treasury")
-
-    # Build a signer and pass it wherever pydefi expects a private key
+    create_wallet("agent-treasury")
     signer = OpenWalletSigner("agent-treasury")
+
+    # ── Use either signer with Hyperliquid ──────────────────────────────
+    from pydefi.hyperliquid import HyperliquidClient
 
     client = HyperliquidClient()
     await client.usd_send(signer, destination="0x...", amount="10", nonce=...)
@@ -28,14 +46,20 @@ All ``ows.*`` management functions (``create_wallet``, ``list_wallets``, etc.)
 are re-exported from this module so callers only need one import.
 
 Note:
-    The ``vault_path`` parameter accepted by every function here maps to the
+    The ``vault_path`` parameter accepted by the OWS functions maps to the
     ``vault_path_opt`` keyword in the underlying ``ows`` API.
 """
 
 from __future__ import annotations
 
 import json
+from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Any
+
+from eth_account import Account
+from eth_account.messages import encode_typed_data
+from eth_utils import to_hex
 
 try:
     import ows as _ows
@@ -56,7 +80,140 @@ def _require_ows() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Re-exported wallet management functions
+# Shared abstract interface
+# ---------------------------------------------------------------------------
+
+
+class WalletSigner(ABC):
+    """Abstract base class for EIP-712 wallet signers.
+
+    Concrete implementations must provide :meth:`sign_eip712` (signs a
+    fully-formed EIP-712 payload and returns ``{"r", "s", "v"}``) and an
+    :attr:`address` property that returns the EVM address.
+
+    Subclasses are accepted everywhere pydefi signing functions previously
+    required a raw private-key hex string.
+    """
+
+    @abstractmethod
+    def sign_eip712(self, data: dict[str, Any]) -> dict[str, str | int]:
+        """Sign an EIP-712 payload and return ``{"r", "s", "v"}``.
+
+        Args:
+            data: Fully-formed EIP-712 payload dict with ``domain``,
+                ``types``, ``primaryType``, and ``message`` keys.
+
+        Returns:
+            ``{"r": "0x...", "s": "0x...", "v": 27|28}``
+        """
+
+    @property
+    @abstractmethod
+    def address(self) -> str:
+        """EVM address (EIP-55 checksummed) associated with this signer."""
+
+
+# ---------------------------------------------------------------------------
+# JSON helper for EIP-712 serialization
+# ---------------------------------------------------------------------------
+
+
+def _json_default(obj: Any) -> str:
+    """JSON serialiser for types not handled by the standard encoder.
+
+    EIP-712 payloads may contain ``bytes`` values (e.g. ``bytes32``
+    ``connectionId`` in phantom-agent signing).  These are encoded as
+    ``0x``-prefixed hex strings, which is the canonical representation
+    expected by typed-data signers.
+    """
+    if isinstance(obj, (bytes, bytearray)):
+        return "0x" + obj.hex()
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+
+
+# ---------------------------------------------------------------------------
+# EthKeystoreSigner — Ethereum Web3 Secret Storage signer
+# ---------------------------------------------------------------------------
+
+
+class EthKeystoreSigner(WalletSigner):
+    """EIP-712 signer backed by an Ethereum Web3 Secret Storage keystore.
+
+    Supports the standard encrypted keystore format produced by ``geth``,
+    ``cast wallet import``, MetaMask exports, and ``Account.encrypt()``.
+    No extra dependencies beyond ``eth-account`` (already included via
+    ``web3``).
+
+    The private key is decrypted once at construction time and held in an
+    in-process ``LocalAccount`` object for the lifetime of this signer.
+
+    Args:
+        keystore: Path to a keystore JSON file (``str`` or :class:`~pathlib.Path`),
+            **or** an already-parsed keystore ``dict``.
+        password: Decryption password for the keystore.
+
+    Example::
+
+        from pydefi.wallet import EthKeystoreSigner
+        from pydefi.hyperliquid import HyperliquidClient
+
+        signer = EthKeystoreSigner("/home/alice/.keystore/UTC--2024-01-01--ab16.json", "my-password")
+        print(signer.address)   # 0xAb16...
+
+        client = HyperliquidClient()
+        await client.usd_send(signer, destination="0x...", amount="10")
+
+    You can also create a keystore programmatically::
+
+        from eth_account import Account
+        from pydefi.wallet import EthKeystoreSigner
+
+        ks = Account.encrypt("0xYourPrivateKeyHex", "my-password")
+        signer = EthKeystoreSigner(ks, "my-password")
+    """
+
+    def __init__(
+        self,
+        keystore: str | Path | dict[str, Any],
+        password: str,
+    ) -> None:
+        if isinstance(keystore, (str, Path)):
+            with open(keystore) as f:
+                keystore_dict: dict[str, Any] = json.load(f)
+        else:
+            keystore_dict = keystore
+
+        private_key = Account.decrypt(keystore_dict, password)
+        self._account = Account.from_key(private_key)
+
+    # ------------------------------------------------------------------
+    # WalletSigner interface
+    # ------------------------------------------------------------------
+
+    def sign_eip712(self, data: dict[str, Any]) -> dict[str, str | int]:
+        """Sign an EIP-712 payload using the decrypted private key.
+
+        Args:
+            data: Fully-formed EIP-712 payload dict.
+
+        Returns:
+            ``{"r": "0x...", "s": "0x...", "v": 27|28}``
+        """
+        structured_data = encode_typed_data(full_message=data)
+        signed = self._account.sign_message(structured_data)
+        return {"r": to_hex(signed.r), "s": to_hex(signed.s), "v": signed.v}
+
+    @property
+    def address(self) -> str:
+        """EVM address (EIP-55 checksummed) for this signer."""
+        return self._account.address
+
+    def __repr__(self) -> str:
+        return f"EthKeystoreSigner(address={self.address!r})"
+
+
+# ---------------------------------------------------------------------------
+# Re-exported wallet management functions (open-wallet-standard)
 # ---------------------------------------------------------------------------
 
 
@@ -277,7 +434,7 @@ def _json_default(obj: Any) -> str:
 # ---------------------------------------------------------------------------
 
 
-class OpenWalletSigner:
+class OpenWalletSigner(WalletSigner):
     """EIP-712 signer that delegates to an ``open-wallet-standard`` wallet.
 
     Use this anywhere pydefi accepts a private-key hex string.  The key
@@ -314,7 +471,7 @@ class OpenWalletSigner:
         self.vault_path = vault_path
 
     # ------------------------------------------------------------------
-    # EIP-712 signing — used by pydefi.hyperliquid.signing.sign_inner()
+    # WalletSigner interface
     # ------------------------------------------------------------------
 
     def sign_eip712(self, data: dict[str, Any]) -> dict[str, str | int]:
@@ -346,10 +503,6 @@ class OpenWalletSigner:
         v: int = result["recovery_id"]
         return {"r": r, "s": s, "v": v}
 
-    # ------------------------------------------------------------------
-    # Address helpers
-    # ------------------------------------------------------------------
-
     @property
     def address(self) -> str:
         """Return the EVM (EIP-55 checksummed) address for this signer."""
@@ -364,7 +517,12 @@ class OpenWalletSigner:
 
 
 __all__ = [
+    # Abstract interface
+    "WalletSigner",
+    # Concrete implementations
+    "EthKeystoreSigner",
     "OpenWalletSigner",
+    # OWS management helpers
     "generate_mnemonic",
     "derive_address",
     "create_wallet",

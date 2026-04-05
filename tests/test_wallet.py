@@ -1,12 +1,16 @@
-"""Tests for pydefi.wallet — OpenWallet Standard integration (no live calls)."""
+"""Tests for pydefi.wallet — wallet signer implementations (no live calls)."""
 
 from __future__ import annotations
+
+import json
 
 import pytest
 from eth_account import Account
 
 from pydefi.wallet import (
+    EthKeystoreSigner,
     OpenWalletSigner,
+    WalletSigner,
     create_wallet,
     delete_wallet,
     derive_address,
@@ -361,3 +365,180 @@ class TestOpenWalletSignerIntegration:
         assert ows_result["r"] == pk_result["r"]
         assert ows_result["s"] == pk_result["s"]
         assert ows_result["v"] == pk_result["v"]
+
+
+# ---------------------------------------------------------------------------
+# WalletSigner abstract interface
+# ---------------------------------------------------------------------------
+
+
+class TestWalletSignerABC:
+    """Verify that the abstract interface is enforced correctly."""
+
+    def test_eth_keystore_is_wallet_signer(self):
+        ks = Account.encrypt(_TEST_PRIVATE_KEY, "pw")
+        signer = EthKeystoreSigner(ks, "pw")
+        assert isinstance(signer, WalletSigner)
+
+    def test_open_wallet_is_wallet_signer(self, vault):
+        import_wallet_private_key("pk-wallet", _TEST_PRIVATE_KEY, vault_path=vault)
+        signer = OpenWalletSigner("pk-wallet", vault_path=vault)
+        assert isinstance(signer, WalletSigner)
+
+    def test_cannot_instantiate_abc_directly(self):
+        with pytest.raises(TypeError):
+            WalletSigner()  # type: ignore[abstract]
+
+
+# ---------------------------------------------------------------------------
+# EthKeystoreSigner
+# ---------------------------------------------------------------------------
+
+
+class TestEthKeystoreSignerConstruction:
+    def test_from_dict(self):
+        ks = Account.encrypt(_TEST_PRIVATE_KEY, "pw")
+        signer = EthKeystoreSigner(ks, "pw")
+        assert signer.address == _TEST_ADDRESS
+
+    def test_from_file_path(self, tmp_path):
+        ks = Account.encrypt(_TEST_PRIVATE_KEY, "pw")
+        ks_path = tmp_path / "keystore.json"
+        ks_path.write_text(json.dumps(ks))
+        signer = EthKeystoreSigner(str(ks_path), "pw")
+        assert signer.address == _TEST_ADDRESS
+
+    def test_from_pathlib_path(self, tmp_path):
+        ks = Account.encrypt(_TEST_PRIVATE_KEY, "pw")
+        ks_path = tmp_path / "keystore.json"
+        ks_path.write_text(json.dumps(ks))
+        signer = EthKeystoreSigner(ks_path, "pw")
+        assert signer.address == _TEST_ADDRESS
+
+    def test_wrong_password_raises(self):
+        ks = Account.encrypt(_TEST_PRIVATE_KEY, "correct-pw")
+        with pytest.raises(ValueError, match="MAC mismatch"):
+            EthKeystoreSigner(ks, "wrong-pw")
+
+    def test_repr(self):
+        ks = Account.encrypt(_TEST_PRIVATE_KEY, "pw")
+        signer = EthKeystoreSigner(ks, "pw")
+        assert _TEST_ADDRESS in repr(signer)
+
+
+class TestEthKeystoreSignerSignEip712:
+    """EthKeystoreSigner.sign_eip712 must match eth_account directly."""
+
+    def _make_payload(self, chain_id: int = 421614) -> dict:
+        return {
+            "domain": {
+                "name": "HyperliquidSignTransaction",
+                "version": "1",
+                "chainId": chain_id,
+                "verifyingContract": "0x0000000000000000000000000000000000000000",
+            },
+            "types": {
+                "HyperliquidTransaction:UsdSend": [
+                    {"name": "hyperliquidChain", "type": "string"},
+                    {"name": "destination", "type": "string"},
+                    {"name": "amount", "type": "string"},
+                    {"name": "time", "type": "uint64"},
+                ],
+                "EIP712Domain": [
+                    {"name": "name", "type": "string"},
+                    {"name": "version", "type": "string"},
+                    {"name": "chainId", "type": "uint256"},
+                    {"name": "verifyingContract", "type": "address"},
+                ],
+            },
+            "primaryType": "HyperliquidTransaction:UsdSend",
+            "message": {
+                "hyperliquidChain": "Mainnet",
+                "destination": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+                "amount": "10.0",
+                "time": 1_700_000_000_000,
+            },
+        }
+
+    def test_returns_r_s_v(self):
+        ks = Account.encrypt(_TEST_PRIVATE_KEY, "pw")
+        signer = EthKeystoreSigner(ks, "pw")
+        result = signer.sign_eip712(self._make_payload())
+        assert set(result.keys()) == {"r", "s", "v"}
+
+    def test_r_s_are_hex_strings(self):
+        ks = Account.encrypt(_TEST_PRIVATE_KEY, "pw")
+        signer = EthKeystoreSigner(ks, "pw")
+        result = signer.sign_eip712(self._make_payload())
+        assert result["r"].startswith("0x")
+        assert result["s"].startswith("0x")
+
+    def test_v_is_27_or_28(self):
+        ks = Account.encrypt(_TEST_PRIVATE_KEY, "pw")
+        signer = EthKeystoreSigner(ks, "pw")
+        result = signer.sign_eip712(self._make_payload())
+        assert result["v"] in (27, 28)
+
+    def test_matches_raw_private_key(self):
+        """EthKeystoreSigner produces the same signature as a raw private-key string."""
+        from pydefi.hyperliquid.signing import sign_inner
+
+        ks = Account.encrypt(_TEST_PRIVATE_KEY, "pw")
+        signer = EthKeystoreSigner(ks, "pw")
+        payload = self._make_payload()
+
+        ks_result = sign_inner(signer, payload)
+        pk_result = sign_inner(_TEST_ACCOUNT, payload)
+
+        assert ks_result["r"] == pk_result["r"]
+        assert ks_result["s"] == pk_result["s"]
+        assert ks_result["v"] == pk_result["v"]
+
+    def test_deterministic(self):
+        ks = Account.encrypt(_TEST_PRIVATE_KEY, "pw")
+        signer = EthKeystoreSigner(ks, "pw")
+        payload = self._make_payload()
+        r1 = signer.sign_eip712(payload)
+        r2 = signer.sign_eip712(payload)
+        assert r1 == r2
+
+
+class TestEthKeystoreSignerWithHyperliquid:
+    """Integration: EthKeystoreSigner with Hyperliquid signing helpers."""
+
+    def test_sign_usd_transfer_action(self):
+        from pydefi.hyperliquid.signing import sign_usd_transfer_action
+
+        ks = Account.encrypt(_TEST_PRIVATE_KEY, "pw")
+        signer = EthKeystoreSigner(ks, "pw")
+
+        action_ks = {
+            "type": "usdSend",
+            "destination": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+            "amount": "10.0",
+            "time": 1_700_000_000_000,
+        }
+        action_pk = dict(action_ks)
+
+        ks_result = sign_usd_transfer_action(signer, action_ks, is_mainnet=True)
+        pk_result = sign_usd_transfer_action(_TEST_PRIVATE_KEY, action_pk, is_mainnet=True)
+
+        assert ks_result["r"] == pk_result["r"]
+        assert ks_result["s"] == pk_result["s"]
+        assert ks_result["v"] == pk_result["v"]
+
+    def test_sign_l1_action(self):
+        from pydefi.hyperliquid.signing import sign_l1_action
+
+        ks = Account.encrypt(_TEST_PRIVATE_KEY, "pw")
+        signer = EthKeystoreSigner(ks, "pw")
+
+        action = {"type": "order", "coin": "BTC"}
+        nonce = 1_700_000_000_000
+
+        ks_result = sign_l1_action(signer, action, nonce, is_mainnet=True)
+        pk_result = sign_l1_action(_TEST_PRIVATE_KEY, action, nonce, is_mainnet=True)
+
+        assert ks_result["r"] == pk_result["r"]
+        assert ks_result["s"] == pk_result["s"]
+        assert ks_result["v"] == pk_result["v"]

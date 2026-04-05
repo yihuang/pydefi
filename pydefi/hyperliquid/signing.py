@@ -34,11 +34,13 @@ from eth_account.messages import encode_typed_data
 from eth_utils import keccak, to_hex
 
 if TYPE_CHECKING:
-    from pydefi.wallet import OpenWalletSigner
+    from pydefi.wallet import WalletSigner
 
-#: Type alias for a signer: either a raw private-key hex string or an
-#: :class:`~pydefi.wallet.OpenWalletSigner` instance.
-Signer = Union[str, "OpenWalletSigner"]
+#: Type alias for a signer: either a raw private-key hex string or any
+#: :class:`~pydefi.wallet.WalletSigner` instance (e.g.
+#: :class:`~pydefi.wallet.EthKeystoreSigner` or
+#: :class:`~pydefi.wallet.OpenWalletSigner`).
+Signer = Union[str, "WalletSigner"]
 
 # ---------------------------------------------------------------------------
 # EIP-712 type definitions for user-signed actions

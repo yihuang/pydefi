@@ -68,7 +68,9 @@ from pydefi.types import (
     TokenAmount,
 )
 from pydefi.wallet import (
+    EthKeystoreSigner,
     OpenWalletSigner,
+    WalletSigner,
     create_wallet,
     delete_wallet,
     derive_address,
@@ -99,7 +101,9 @@ __all__ = [
     "MultiRpcProvider",
     "fetch_chain_rpcs",
     "get_w3",
-    # Wallet (open-wallet-standard integration)
+    # Wallet
+    "WalletSigner",
+    "EthKeystoreSigner",
     "OpenWalletSigner",
     "generate_mnemonic",
     "derive_address",
