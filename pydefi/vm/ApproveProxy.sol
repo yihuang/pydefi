@@ -80,9 +80,12 @@ contract ApproveProxy {
 
     /**
      * @dev Call ``token.transferFrom(from, to, amount)`` and revert on failure.
+     *      Handles both tokens that return a bool and tokens that return nothing.
      */
     function _safeTransferFrom(address token, address from, address to, uint256 amount) internal {
-        bool ok = IERC20(token).transferFrom(from, to, amount);
-        require(ok, "ApproveProxy: deposit failed");
+        (bool ok, bytes memory ret) = token.call(
+            abi.encodeCall(IERC20.transferFrom, (from, to, amount))
+        );
+        require(ok && (ret.length == 0 || abi.decode(ret, (bool))), "ApproveProxy: deposit failed");
     }
 }
