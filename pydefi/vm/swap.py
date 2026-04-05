@@ -422,23 +422,23 @@ def _build_v2_direct_swap_segment(hop: SwapHop, *, amount_reg: int) -> Program:
     prog._emit(mul())                    # [amountInWithFee]
 
     # denominator = reserveIn * 10000 + amountInWithFee
-    # Keep a copy of amountInWithFee on the stack via DUP1
-    prog._emit(dup())                    # [amountInWithFee, amountInWithFee]
-    prog._emit(load_reg(r_reserve_in))  # [amountInWithFee, amountInWithFee, reserveIn]
-    prog._emit(push_u256(10000))         # [amountInWithFee, amountInWithFee, reserveIn, 10000]
-    prog._emit(mul())                    # [amountInWithFee, amountInWithFee, reserveIn*10000]
-    prog._emit(add())                    # [amountInWithFee, denominator]
-    # (ADD pops TOS=reserveIn*10000 and 2nd=amountInWithFee(dup), pushes sum)
+    # DUP1 makes a copy of amountInWithFee on top so we can use it twice.
+    prog._emit(dup())                    # [amountInWithFee(orig), amountInWithFee(dup)]
+    prog._emit(load_reg(r_reserve_in))  # [amountInWithFee(orig), amountInWithFee(dup), reserveIn]
+    prog._emit(push_u256(10000))         # [amountInWithFee(orig), amountInWithFee(dup), reserveIn, 10000]
+    prog._emit(mul())                    # [amountInWithFee(orig), amountInWithFee(dup), reserveIn*10000]
+    prog._emit(add())                    # ADD pops TOS=reserveIn*10000 and 2nd=amountInWithFee(dup), pushes sum
+    # Stack now: [amountInWithFee(orig), denominator]
 
-    # Stack: TOS=denominator, 2nd=amountInWithFee(original)
-    prog._emit(swap())                   # [denominator, amountInWithFee]
+    # SWAP1: put amountInWithFee(orig) on top for the numerator multiplication.
+    prog._emit(swap())                   # [denominator, amountInWithFee(orig)]
 
     # numerator = amountInWithFee * reserveOut
-    prog._emit(load_reg(r_reserve_out)) # [denominator, amountInWithFee, reserveOut]
+    prog._emit(load_reg(r_reserve_out)) # [denominator, amountInWithFee(orig), reserveOut]
     prog._emit(mul())                    # [denominator, numerator]
 
     # amountOut = numerator / denominator
-    # DIV: a=TOS=numerator, b=2nd=denominator → a/b = numerator/denominator ✓
+    # EVM DIV: a=TOS=numerator, b=next=denominator → result = TOS/next = numerator/denominator ✓
     prog._emit(div())                    # [amountOut]
     prog._emit(store_reg(r_amount_out))  # save for calldata patch
 

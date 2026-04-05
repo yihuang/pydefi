@@ -22,7 +22,6 @@ from pathlib import Path
 
 import pytest
 from eth_contract.erc20 import ERC20
-from web3 import AsyncWeb3
 from web3.exceptions import ContractLogicError, Web3RPCError
 
 from pydefi.vm import Patch, Program
@@ -66,26 +65,6 @@ APPROVE_PROXY_SOL_FILE = REPO_ROOT / "pydefi" / "vm" / "ApproveProxy.sol"
 WETH_MAINNET = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
 # Coinbase 8 — a well-funded address on mainnet (used for introspection only)
 WHALE = "0x77134cbC06cB00b66F4c7e623D5fdBF6777635EC"
-
-# ---------------------------------------------------------------------------
-# Local compile helpers (file-specific wrappers around shared utilities)
-# ---------------------------------------------------------------------------
-
-
-def _ensure_solc(version: str = "0.8.24") -> None:
-    ensure_solc(version)
-
-
-def _deploy(w3: AsyncWeb3, compiled: dict, deployer: str, *args) -> str:
-    return deploy(w3, compiled, deployer, *args)
-
-
-def _compile_sol_file(path: Path, contract_name: str) -> dict:
-    return compile_sol_file(path, contract_name)
-
-
-def _compile_sol_source(source: str, contract_name: str) -> dict:
-    return compile_sol_source(source, contract_name)
 
 
 def _compile_defi_vm() -> dict:
@@ -146,7 +125,7 @@ contract MockAdapter {
 
 
 def _compile_mock_adapter() -> dict:
-    _ensure_solc("0.8.24")
+    ensure_solc("0.8.24")
     result = solcx.compile_source(
         MOCK_ADAPTER_SOL,
         output_values=["abi", "bin"],
@@ -190,8 +169,8 @@ async def ctx(vm_fork_w3, compiled_vm, compiled_adapter, interpreter_addr):
     accounts = await w3.eth.accounts
     deployer = accounts[0]
 
-    vm_address = await _deploy(w3, compiled_vm, deployer, interpreter_addr)
-    adapter_address = await _deploy(w3, compiled_adapter, deployer)
+    vm_address = await deploy(w3, compiled_vm, deployer, interpreter_addr)
+    adapter_address = await deploy(w3, compiled_adapter, deployer)
 
     vm = w3.eth.contract(address=vm_address, abi=compiled_vm["abi"])
 
@@ -913,14 +892,14 @@ async def proxy_ctx(vm_fork_w3, compiled_vm, interpreter_addr):
     user = accounts[1]
     recipient = accounts[2]
 
-    vm_address = await _deploy(w3, compiled_vm, deployer, interpreter_addr)
+    vm_address = await deploy(w3, compiled_vm, deployer, interpreter_addr)
 
     compiled_proxy = _compile_approve_proxy()
-    proxy_address = await _deploy(w3, compiled_proxy, deployer, vm_address)
+    proxy_address = await deploy(w3, compiled_proxy, deployer, vm_address)
 
     compiled_token = compile_sol_source(MOCK_TOKEN_SOL, "MockToken")
-    token_a_address = await _deploy(w3, compiled_token, deployer)
-    token_b_address = await _deploy(w3, compiled_token, deployer)
+    token_a_address = await deploy(w3, compiled_token, deployer)
+    token_b_address = await deploy(w3, compiled_token, deployer)
     token_a = w3.eth.contract(address=token_a_address, abi=compiled_token["abi"])
     token_b = w3.eth.contract(address=token_b_address, abi=compiled_token["abi"])
 

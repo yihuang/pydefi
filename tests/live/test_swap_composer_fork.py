@@ -320,10 +320,12 @@ async def ctx(fork_w3_module, compiled_vm, compiled_pools, interpreter_addr):
     RESERVE0 = 10**12
     RESERVE1 = 3 * 10**12
     v2pair_compiled = compiled_pools["<stdin>:MockV2Pair"]
-    # Mint reserves to v2pair before deployment (will mint after deployment)
+    # Deploy pair with token1_address as its token0 and token0_address as its token1
+    # (reversed order gives us a hop2 of token1→token0).
+    # Actual token balances are minted to the pair after deployment.
     v2pair_address = await deploy(
         w3, v2pair_compiled, deployer,
-        token1_address, token0_address,  # token0=token1, token1=token0 in this pair (reverse order)
+        token1_address, token0_address,  # pair.token0 = token1_address, pair.token1 = token0_address
         RESERVE0, RESERVE1,
     )
     v2pair = w3.eth.contract(address=v2pair_address, abi=v2pair_compiled["abi"])
