@@ -37,7 +37,6 @@ Two complementary interfaces are provided:
         )
 """
 
-from pydefi.vm.approve_proxy import ApproveProxy
 from pydefi.vm.builder import Patch, PatchSource, PatchSpec, Program
 from pydefi.vm.program import (
     OP_ADD,
@@ -109,8 +108,6 @@ from pydefi.vm.program import (
 )
 
 __all__ = [
-    # ApproveProxy
-    "ApproveProxy",
     # Fluent builder
     "Program",
     # Patch type aliases and Patch class
