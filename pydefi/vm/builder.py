@@ -241,18 +241,14 @@ class Patch:
     positional argument in ``call_contract_abi`` should be filled at runtime
     rather than baked into the calldata template.
 
-    ``call_contract_abi`` automatically:
-
-    1. Generates a unique 32-byte sentinel ("needle") value for the parameter.
-    2. Encodes the full ABI calldata using the sentinel in place of the patched
-       argument.
-    3. Locates each sentinel's byte offset within the encoded calldata.
-    4. Delegates to :meth:`~Program.call_with_patches` with ``kind="u256"``
-       patches at the discovered offsets.
-
-    Supported parameter types: ``uint<N>`` and ``int<N>`` with N ≥ 96
-    (need at least 12 bytes to embed the random needle marker).  :class:`Patch`
-    instances may also appear inside nested tuple arguments.
+    ``call_contract_abi`` automatically passes each :class:`Patch` object as a
+    callable hook to :func:`eth_abi.encode_with_hooks`.  The encoding library
+    calls the hook with an :class:`~eth_abi.EncodingContext` that carries the
+    exact byte offset of the value in the encoded output; the hook stores that
+    offset in :attr:`offset` and returns ``0`` as a placeholder.  After
+    encoding, :attr:`offset` holds the absolute calldata offset (including the
+    4-byte function selector), ready for use in
+    :meth:`~Program.call_with_patches`.
 
     Args:
         opcodes: Raw DeFiVM bytecode that, when executed, pushes the runtime
@@ -281,6 +277,16 @@ class Patch:
 
     def __init__(self, opcodes: PatchSource) -> None:
         self.opcodes: bytes = bytes(opcodes)
+        self.offset: int | None = None  # set by __call__ during encode_with_hooks
+
+    def __call__(self, ctx: object) -> int:
+        """Hook called by ``eth_abi.encode_with_hooks`` with the encoding context.
+
+        Stores the absolute calldata offset (selector + encoded-args offset) and
+        returns ``0`` as a zero-filled placeholder for the ABI encoder.
+        """
+        self.offset = 4 + ctx.offset  # type: ignore[attr-defined]
+        return 0
 
 
 # ---------------------------------------------------------------------------
@@ -337,15 +343,6 @@ def _strip_array_suffix(type_str: str) -> str | None:
     return type_str[:open_idx]
 
 
-def _has_patch(arg: object) -> bool:
-    """Return ``True`` if *arg* or any element nested inside it is a :class:`Patch`."""
-    if isinstance(arg, Patch):
-        return True
-    if isinstance(arg, (tuple, list)):
-        return any(_has_patch(a) for a in arg)
-    return False
-
-
 def _validate_patch_type(type_str: str) -> None:
     """Raise :exc:`ValueError` if *type_str* is not patchable.
 
@@ -369,51 +366,37 @@ def _validate_patch_type(type_str: str) -> None:
     )
 
 
-def _replace_patches_with_hooks(
-    arg: object,
-    type_str: str,
-    hook_patches: list,
-) -> object:
-    """Recursively replace :class:`Patch` instances with callable hooks.
+def _collect_patches(arg: object, type_str: str, patches: list["Patch"]) -> bool:
+    """Recursively collect :class:`Patch` objects and validate their types.
 
-    Each :class:`Patch` becomes a callable that ``eth_abi``'s
-    :func:`~eth_abi.encode_with_hooks` will invoke with an
-    :class:`~eth_abi.EncodingContext` reporting the exact byte offset of
-    this value in the encoded output.  The hook appends a ``PatchSpec``
-    with the absolute calldata offset (``4 + ctx.offset``) to
-    *hook_patches* and returns ``0`` as a placeholder value.
+    Walks the argument/type tree and appends every :class:`Patch` leaf to
+    *patches*, validating that its Solidity type is supported.
 
-    ``eth_abi`` resolves hooks at any nesting depth — inside tuples and
-    inside arrays — so this function only needs to walk the type tree to
-    validate each :class:`Patch` leaf's Solidity type and create the hook
-    callable; the library handles the rest.
-
-    Args:
-        arg: The argument value to process.
-        type_str: Solidity canonical type string for *arg*.
-        hook_patches: Accumulator for resolved ``PatchSpec`` 3-tuples.
+    Returns:
+        ``True`` if any :class:`Patch` was found, ``False`` otherwise.
     """
     type_str = type_str.strip()
 
     if isinstance(arg, Patch):
         _validate_patch_type(type_str)
+        patches.append(arg)
+        return True
 
-        def hook(ctx, p=arg):
-            hook_patches.append(("u256", 4 + ctx.offset, p.opcodes))
-            return 0
-
-        return hook
-
+    found = False
     if type_str.startswith("(") and isinstance(arg, tuple):
         component_types = _parse_tuple_component_types(type_str)
-        return tuple(_replace_patches_with_hooks(a, t, hook_patches) for a, t in zip(arg, component_types))
+        for a, t in zip(arg, component_types):
+            found |= _collect_patches(a, t, patches)
+        return found
 
     if isinstance(arg, list):
         elem_type = _strip_array_suffix(type_str)
         if elem_type is not None:
-            return [_replace_patches_with_hooks(a, elem_type, hook_patches) for a in arg]
+            for a in arg:
+                found |= _collect_patches(a, elem_type, patches)
+        return found
 
-    return arg
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -738,12 +721,8 @@ class Program:
         normalised = abi_sig if abi_sig.lstrip().startswith("function ") else "function " + abi_sig
         fn = ContractFunction.from_abi(normalised)
 
-        # Fast path: no Patch objects anywhere in the argument tree.
-        if not any(_has_patch(a) for a in args):
-            return self.call_contract(to, fn(*args).data, value=value, gas=gas, require_success=require_success)
-
-        # Slow path: build hooked args using the eth_abi callable-hook API for
-        # tuple/direct args and the needle approach for array args.
+        # Collect all Patch objects from the arg tree (also validates types and
+        # detects whether any patching is needed).
         param_types: list[str] = fn.input_types
 
         if len(args) != len(param_types):
@@ -752,17 +731,25 @@ class Program:
                 f"for signature {abi_sig!r}, got {len(args)}."
             )
 
+        patch_list: list[Patch] = []
+        for a, t in zip(args, param_types):
+            _collect_patches(a, t, patch_list)
+
+        # Fast path: no Patch objects anywhere in the argument tree.
+        if not patch_list:
+            return self.call_contract(to, fn(*args).data, value=value, gas=gas, require_success=require_success)
+
+        # Slow path: Patch objects are callable hooks; encode_with_hooks calls
+        # each one with the EncodingContext so each Patch stores its offset.
         from eth_abi.codec import ABICodec
         from eth_abi.registry import registry as default_registry
 
         codec = ABICodec(default_registry)
-        hook_patches: list[PatchSpec] = []
-        new_args = [_replace_patches_with_hooks(a, t, hook_patches) for a, t in zip(args, param_types)]
-
-        encoded_args = codec.encode_with_hooks(param_types, new_args)
+        encoded_args = codec.encode_with_hooks(param_types, args)
         calldata = bytes(fn.selector) + encoded_args
 
-        return self.call_with_patches(to, calldata, hook_patches, value=value, gas=gas, require_success=require_success)
+        patches: list[PatchSpec] = [("u256", p.offset, p.opcodes) for p in patch_list if p.offset is not None]
+        return self.call_with_patches(to, calldata, patches, value=value, gas=gas, require_success=require_success)
 
     def call_with_patches(
         self,
