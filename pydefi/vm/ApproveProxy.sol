@@ -79,7 +79,7 @@ contract ApproveProxy {
     }
 
     /**
-     * @dev Call ``token.transferFrom(from, to, amount)`` and revert on failure.
+     * @dev Call ``token.transferFrom(from, to, amount)`` and revert if it returns false.
      */
     function _safeTransferFrom(address token, address from, address to, uint256 amount) internal {
         bool ok = IERC20(token).transferFrom(from, to, amount);
