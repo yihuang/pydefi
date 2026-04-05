@@ -1258,8 +1258,8 @@ class TestPatch:
         assert len(bytecode) > 0
         assert load_reg(0) in bytecode
         # 999_999_999_999 = 0xe8d4a50fff; push_bytes splits into 32-byte chunks so
-        # the 5 significant bytes span a boundary — check the 4-byte tail that is
-        # guaranteed to be contiguous within one chunk.
+        # the 5 significant bytes (0xe8 + 0xd4a50fff) may span a chunk boundary —
+        # check the last 4 bytes (0xd4a50fff) which are contiguous within one chunk.
         assert bytes.fromhex("d4a50fff") in bytecode
 
     def test_patch_in_nested_tuple(self):
@@ -1284,8 +1284,8 @@ class TestPatch:
         assert len(bytecode) > 0
         assert load_reg(1) in bytecode
         # The static value must be baked in; push_bytes splits into 32-byte chunks
-        # so the 5 significant bytes of 999_999_999_999 (0xe8d4a50fff) may span a
-        # boundary — check the 4-byte tail that is guaranteed to be contiguous.
+        # so the 5 significant bytes of 999_999_999_999 (0xe8 + 0xd4a50fff) may span
+        # a boundary — check the last 4 bytes (0xd4a50fff) which are contiguous.
         assert bytes.fromhex("d4a50fff") in bytecode
 
 
