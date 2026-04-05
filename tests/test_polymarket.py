@@ -137,6 +137,32 @@ class TestBuildHmacSignature:
         sig_with_body = build_hmac_signature(_TEST_SECRET, "1700000000", "POST", "/order", {"foo": "bar"})
         assert sig_no_body != sig_with_body
 
+    def test_known_good_vector_no_body(self):
+        """Known-good HMAC for a GET request with no body.
+
+        Verified by:
+            import base64, hashlib, hmac
+            key = base64.urlsafe_b64decode(_TEST_SECRET)
+            msg = b"1700000000GET/orders"
+            base64.urlsafe_b64encode(hmac.new(key, msg, hashlib.sha256).digest())
+        """
+        expected = "pxJCUIZkL3HEcBHdGYmnmvPQNQxlF7CCo2cU_9tCRq4="
+        sig = build_hmac_signature(_TEST_SECRET, "1700000000", "GET", "/orders")
+        assert sig == expected
+
+    def test_known_good_vector_with_body(self):
+        """Known-good HMAC for a POST request with a JSON body dict.
+
+        Verified by:
+            import base64, hashlib, hmac, json
+            key = base64.urlsafe_b64decode(_TEST_SECRET)
+            msg = ('1700000000POST/order' + json.dumps({"foo": "bar"})).encode()
+            base64.urlsafe_b64encode(hmac.new(key, msg, hashlib.sha256).digest())
+        """
+        expected = "8jmMLnsdqpIaiH7N_IetwTILTR09TGAGraaykWTsyiQ="
+        sig = build_hmac_signature(_TEST_SECRET, "1700000000", "POST", "/order", {"foo": "bar"})
+        assert sig == expected
+
 
 # ---------------------------------------------------------------------------
 # get_order_amounts
@@ -398,14 +424,24 @@ class TestPolymarketClientGamma:
 
     @pytest.mark.asyncio
     async def test_get_market(self, client):
-        """get_market() calls /markets/{condition_id}."""
+        """get_market() returns first item from the Gamma API list response."""
         fake_market = {"conditionId": "0xabc", "question": "Q?"}
-        mock_session = _make_aiohttp_mock(200, fake_market)
+        mock_session = _make_aiohttp_mock(200, [fake_market])
 
         with patch("aiohttp.ClientSession", return_value=mock_session):
             result = await client.get_market("0xabc")
 
         assert result == fake_market
+
+    @pytest.mark.asyncio
+    async def test_get_market_not_found(self, client):
+        """get_market() returns None when the Gamma API returns an empty list."""
+        mock_session = _make_aiohttp_mock(200, [])
+
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            result = await client.get_market("0xnonexistent")
+
+        assert result is None
 
     @pytest.mark.asyncio
     async def test_get_events(self, client):
@@ -444,14 +480,15 @@ class TestPolymarketClientClobPublic:
 
     @pytest.mark.asyncio
     async def test_get_server_time(self, client):
-        """get_server_time() returns a dict with 'time'."""
-        fake_resp = {"time": 1_700_000_000}
+        """get_server_time() returns an int timestamp."""
+        fake_resp = 1_700_000_000
         mock_session = _make_aiohttp_mock(200, fake_resp)
 
         with patch("aiohttp.ClientSession", return_value=mock_session):
             result = await client.get_server_time()
 
-        assert result == fake_resp
+        assert isinstance(result, int)
+        assert result == 1_700_000_000
 
     @pytest.mark.asyncio
     async def test_get_orderbook(self, client):

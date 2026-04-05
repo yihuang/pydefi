@@ -32,8 +32,10 @@ Docs:
 
 from __future__ import annotations
 
+import json
 import time
 from typing import Any
+from urllib.parse import urlencode
 
 import aiohttp
 
@@ -171,11 +173,12 @@ class PolymarketClient:
         self,
         url: str,
         json: dict[str, Any] | None = None,
+        data: str | None = None,
         headers: dict[str, str] | None = None,
     ) -> Any:
         """Perform a POST request and return the parsed JSON response."""
         async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=json, headers=headers) as resp:
+            async with session.post(url, json=json, data=data, headers=headers) as resp:
                 resp.raise_for_status()
                 return await resp.json(content_type=None)
 
@@ -300,7 +303,7 @@ class PolymarketClient:
         params.update(kwargs)
         return await self._get(f"{self._gamma_base}/markets", params=params)
 
-    async def get_market(self, condition_id: str) -> dict[str, Any]:
+    async def get_market(self, condition_id: str) -> dict[str, Any] | None:
         """Retrieve a single market by its condition ID.
 
         Args:
@@ -310,8 +313,8 @@ class PolymarketClient:
             Market dict, or ``None`` if no market with that condition ID exists.
         """
         results = await self._get(f"{self._gamma_base}/markets", params={"condition_ids": condition_id})
-        if isinstance(results, list) and results:
-            return results[0]
+        if isinstance(results, list):
+            return results[0] if results else None
         return results
 
     async def get_events(
@@ -389,7 +392,14 @@ class PolymarketClient:
         Returns:
             Unix timestamp as an integer.
         """
-        return await self._get(f"{self._clob_base}/time")
+        response = await self._get(f"{self._clob_base}/time")
+        if isinstance(response, dict):
+            if "time" not in response:
+                raise TypeError("Expected /time response dict to contain a 'time' field")
+            return int(response["time"])
+        if isinstance(response, (int, float)):
+            return int(response)
+        raise TypeError("Expected /time response to be a number or a dict with a 'time' field")
 
     async def get_clob_market(self, condition_id: str) -> dict[str, Any]:
         """Retrieve market details from the CLOB API by condition ID.
@@ -552,7 +562,7 @@ class PolymarketClient:
 
         path = "/data/orders"
         if params:
-            path += "?" + "&".join(f"{k}={v}" for k, v in params.items())
+            path += "?" + urlencode(params)
 
         headers = self._l2_headers("GET", path)
         return await self._get(f"{self._clob_base}{path}", headers=headers)
@@ -573,9 +583,8 @@ class PolymarketClient:
 
         Requires L2 credentials and a private key.
 
-        The method fetches the current *fee rate* from the market config,
-        computes *maker_amount* / *taker_amount* from *price* and *size*,
-        signs the order, and POSTs it to ``/order``.
+        The method computes *maker_amount* / *taker_amount* from *price*
+        and *size*, signs the order, and POSTs it to ``/order``.
 
         Args:
             token_id: Conditional outcome token ID (decimal string).
@@ -644,9 +653,12 @@ class PolymarketClient:
             "orderType": order_type,
         }
 
+        # Pre-serialize once so the HMAC is computed over the exact bytes sent.
+        body_str = json.dumps(body)
         path = "/order"
-        headers = self._l2_headers("POST", path, body)
-        return await self._post(f"{self._clob_base}{path}", json=body, headers=headers)
+        headers = self._l2_headers("POST", path, body_str)
+        headers["Content-Type"] = "application/json"
+        return await self._post(f"{self._clob_base}{path}", data=body_str, headers=headers)
 
     async def cancel_order(self, order_id: str) -> dict[str, Any]:
         """Cancel an open order by its order ID.
@@ -702,7 +714,7 @@ class PolymarketClient:
 
         path = "/data/trades"
         if params:
-            path += "?" + "&".join(f"{k}={v}" for k, v in params.items())
+            path += "?" + urlencode(params)
 
         headers = self._l2_headers("GET", path)
         return await self._get(f"{self._clob_base}{path}", headers=headers)

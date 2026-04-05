@@ -25,6 +25,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import json
 import math
 import os
 import time
@@ -190,9 +191,7 @@ def build_hmac_signature(
     base64_secret = base64.urlsafe_b64decode(secret)
     message = str(timestamp) + str(method) + str(request_path)
     if body:
-        # NOTE: Replace single quotes with double quotes to match the Go/TS
-        # HMAC implementation used by the CLOB API.
-        message += str(body).replace("'", '"')
+        message += body if isinstance(body, str) else json.dumps(body)
 
     h = hmac.new(base64_secret, bytes(message, "utf-8"), hashlib.sha256)
     return base64.urlsafe_b64encode(h.digest()).decode("utf-8")
@@ -259,7 +258,14 @@ def sign_order(
     if salt is None:
         salt = _generate_salt()
 
-    exchange_address = EXCHANGE_ADDRESSES[(chain_id, neg_risk)]
+    exchange_key = (chain_id, neg_risk)
+    exchange_address = EXCHANGE_ADDRESSES.get(exchange_key)
+    if exchange_address is None:
+        supported_keys = ", ".join(str(k) for k in sorted(EXCHANGE_ADDRESSES.keys()))
+        raise ValueError(
+            f"Unsupported Polymarket exchange configuration {exchange_key}. "
+            f"Supported (chain_id, neg_risk) values: {supported_keys}"
+        )
 
     domain: dict[str, Any] = {
         "name": PROTOCOL_NAME,
