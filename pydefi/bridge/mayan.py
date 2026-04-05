@@ -126,17 +126,14 @@ _FORWARDER_ABI = [
 
 # MayanSwift V2 ABI fragment for createOrderWithToken.
 # The OrderParams struct field order differs from V1.
-_SWIFT_V2_ABI = (
-    MayanSwiftOrderParams.human_readable_abi()
-    + [
-        "function createOrderWithToken("
-        "  address tokenIn,"
-        "  uint256 amountIn,"
-        "  MayanSwiftOrderParams params,"
-        "  bytes customPayload"
-        ") external returns (bytes32 orderHash)",
-    ]
-)
+_SWIFT_V2_ABI = MayanSwiftOrderParams.human_readable_abi() + [
+    "function createOrderWithToken("
+    "  address tokenIn,"
+    "  uint256 amountIn,"
+    "  MayanSwiftOrderParams params,"
+    "  bytes customPayload"
+    ") external returns (bytes32 orderHash)",
+]
 
 
 def _addr_to_bytes32(addr: str) -> bytes:
