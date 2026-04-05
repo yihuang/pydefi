@@ -25,6 +25,9 @@ from pydefi.polymarket import (
 # Deterministic test key — no real funds
 # ---------------------------------------------------------------------------
 
+# A well-known throwaway private key used only for deterministic signing
+# assertions in tests. It holds no real funds and must never be used on any
+# live network.
 _TEST_PRIVATE_KEY = "0xb0057716d5917badaf911b193b12b910811c1497b5bada8d7711f758981c3773"
 _TEST_WALLET = Account.from_key(_TEST_PRIVATE_KEY)
 _TEST_ADDRESS = _TEST_WALLET.address

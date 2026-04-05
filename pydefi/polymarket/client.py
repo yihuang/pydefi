@@ -552,7 +552,7 @@ class PolymarketClient:
             path += "?" + "&".join(f"{k}={v}" for k, v in params.items())
 
         headers = self._l2_headers("GET", path)
-        return await self._get(f"{self._clob_base}{path}", headers=headers)  # type: ignore[arg-type]
+        return await self._get(f"{self._clob_base}{path}", headers=headers)
 
     async def post_order(
         self,
@@ -702,4 +702,4 @@ class PolymarketClient:
             path += "?" + "&".join(f"{k}={v}" for k, v in params.items())
 
         headers = self._l2_headers("GET", path)
-        return await self._get(f"{self._clob_base}{path}", headers=headers)  # type: ignore[arg-type]
+        return await self._get(f"{self._clob_base}{path}", headers=headers)

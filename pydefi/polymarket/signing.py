@@ -25,6 +25,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import math
 import os
 import time
 from typing import Any
@@ -333,8 +334,6 @@ def _round_normal(value: float, decimals: int) -> float:
 
 def _round_up(value: float, decimals: int) -> float:
     """Round *value* up to *decimals* decimal places."""
-    import math
-
     factor = 10**decimals
     return math.ceil(value * factor) / factor
 
