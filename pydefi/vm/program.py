@@ -1,151 +1,200 @@
-"""DeFiVM program builder — Python DSL for assembling DeFiVM bytecode.
+"""DeFiVM program builder — Python DSL for assembling DeFiVM EVM bytecode.
 
-Each function emits the raw bytes for one DeFiVM instruction.  Programs are
-built by concatenating instruction bytes::
+Programs are raw EVM bytecode executed on the native EVM stack by the
+Analog-Labs interpreter.  ``execute()`` in DeFiVM.sol runs a program via
+``DELEGATECALL`` into that interpreter; it does not deploy the bytecode via
+``CREATE``.  As a result, callers should reason about calldata, memory, and
+gas behaviour using the interpreter/delegatecall execution model rather than
+the semantics of a freshly deployed contract.
+
+Memory conventions used by the interpreter
+------------------------------------------
+- Registers:          ``memory[0x80 + i*32]`` for ``i`` in 0..15
+- Free memory pointer: ``memory[0x40]`` (initialised to 0x280 on first use)
+- Dynamic buffers:    allocated starting at ``memory[0x280]``
+
+Usage example::
 
     from pydefi.vm.program import push_u256, push_addr, push_bytes, call, assert_ge
 
     program = (
-        push_bytes(swap_calldata)
-        + push_u256(0)
-        + push_addr(SWAP_ADAPTER)
-        + push_u256(0)
+        push_u256(0) + push_u256(0)          # retLen, retOffset
+        + push_bytes(swap_calldata)
+        + push_u256(0) + push_addr(SWAP_ADAPTER) + gas_opcode()
         + call()
-        + push_addr(WHALE)
-        + push_addr(WETH)
-        + assert_ge("slippage: amount_out too low")
     )
-
-Opcode reference (mirrors DeFiVM.sol)
---------------------------------------
-
-Stack / Register
-  0x01  PUSH_U256 <32 bytes>
-  0x02  PUSH_ADDR <20 bytes>
-  0x03  PUSH_BYTES <2-byte len> <data>
-  0x04  DUP
-  0x05  SWAP
-  0x06  POP
-  0x10  LOAD_REG  <reg-idx>
-  0x11  STORE_REG <reg-idx>
-
-Control flow
-  0x20  JUMP  <2-byte target>
-  0x21  JUMPI <2-byte target>    (forward only; pops condition)
-  0x22  REVERT_IF <1-byte msgLen> <msg>
-  0x23  ASSERT_GE <1-byte msgLen> <msg>  (a >= b: pop a top, pop b below)
-  0x24  ASSERT_LE <1-byte msgLen> <msg>  (a <= b)
-
-External / introspection
-  0x30  CALL  <1-byte flags>  (bit0=requireSuccess)
-  0x31  BALANCE_OF            (pop: token, account → push balance)
-  0x32  SELF_ADDR             (push address(this))
-  0x33  SUB                   (pop a, b → push a - b, saturates to 0 if a < b)
-  0x34  ADD                   (pop a, b → push a + b, wrapping uint256)
-  0x35  MUL                   (pop a, b → push a * b, wrapping uint256)
-  0x36  DIV                   (pop a, b → push a / b, 0 if b == 0)
-  0x37  MOD                   (pop a, b → push a % b, 0 if b == 0)
-
-ABI / data
-  0x40  PATCH_U256 <2-byte offset>
-  0x41  PATCH_ADDR <2-byte offset>
-  0x42  RET_U256   <2-byte offset>
-  0x43  RET_SLICE  <2-byte offset> <2-byte len>
 """
 
 from __future__ import annotations
 
-import struct
-
 # ---------------------------------------------------------------------------
-# Opcode constants (mirrors DeFiVM.sol)
+# Opcode constants — single EVM opcode identifiers
 # ---------------------------------------------------------------------------
 
-OP_PUSH_U256: int = 0x01
-OP_PUSH_ADDR: int = 0x02
-OP_PUSH_BYTES: int = 0x03
-OP_DUP: int = 0x04
-OP_SWAP: int = 0x05
-OP_POP: int = 0x06
-OP_LOAD_REG: int = 0x10
-OP_STORE_REG: int = 0x11
-OP_JUMP: int = 0x20
-OP_JUMPI: int = 0x21
-OP_REVERT_IF: int = 0x22
-OP_ASSERT_GE: int = 0x23
-OP_ASSERT_LE: int = 0x24
-OP_CALL: int = 0x30
-OP_BALANCE_OF: int = 0x31
-OP_SELF_ADDR: int = 0x32
-OP_SUB: int = 0x33
-OP_ADD: int = 0x34
-OP_MUL: int = 0x35
-OP_DIV: int = 0x36
-OP_MOD: int = 0x37
-OP_PATCH_U256: int = 0x40
-OP_PATCH_ADDR: int = 0x41
-OP_RET_U256: int = 0x42
-OP_RET_SLICE: int = 0x43
+OP_PUSH_U256: int = 0x7F  # PUSH32 — emitted by push_u256()
+OP_PUSH_ADDR: int = 0x73  # PUSH20 — emitted by push_addr()
+OP_DUP: int = 0x80  # DUP1 — emitted by dup()
+OP_SWAP: int = 0x90  # SWAP1 — emitted by swap()
+OP_POP: int = 0x50  # POP — emitted by pop()
+# NOTE: OP_JUMP and OP_JUMPI share the PUSH2 prefix (0x61) with load_reg/store_reg.
+# They identify the first byte of the 4-byte PUSH2 target + JUMP/JUMPI sequence.
+OP_JUMP: int = 0x61  # first byte of jump() sequence (PUSH2 target JUMP)
+OP_JUMPI: int = 0x61  # first byte of jumpi() sequence (PUSH2 target JUMPI)
+OP_ADD: int = 0x01  # ADD — emitted by add()
+OP_MUL: int = 0x02  # MUL — emitted by mul()
+OP_SUB: int = 0x81  # DUP2 — first byte of saturating sub() sequence
+OP_DIV: int = 0x04  # DIV — emitted by div()
+OP_MOD: int = 0x06  # MOD — emitted by mod()
+OP_LT: int = 0x10  # LT — emitted by lt()
+OP_GT: int = 0x11  # GT — emitted by gt()
+OP_EQ: int = 0x14  # EQ — emitted by eq()
+OP_ISZERO: int = 0x15  # ISZERO — emitted by iszero()
+OP_AND: int = 0x16  # AND — emitted by bitwise_and()
+OP_OR: int = 0x17  # OR — emitted by bitwise_or()
+OP_XOR: int = 0x18  # XOR — emitted by bitwise_xor()
+OP_NOT: int = 0x19  # NOT — emitted by bitwise_not()
+OP_SHL: int = 0x1B  # SHL — emitted by shl()
+OP_SHR: int = 0x1C  # SHR — emitted by shr()
+OP_GAS: int = 0x5A  # GAS — emitted by gas_opcode()
+OP_CALL: int = 0xF1  # CALL — core opcode in the call() sequence
+OP_SELF_ADDR: int = 0x30  # ADDRESS — emitted by self_addr()
+OP_BALANCE: int = 0x31  # BALANCE — used in balance_of() ETH path
+OP_MLOAD: int = 0x51  # MLOAD — load word from memory
+OP_MSTORE: int = 0x52  # MSTORE — store word to memory
+OP_JUMPDEST: int = 0x5B  # JUMPDEST — marks a valid jump target
+OP_RETURNDATACOPY: int = 0x3E  # RETURNDATACOPY — copy returndata into memory
+OP_STATICCALL: int = 0xFA  # STATICCALL — used by balance_of() ERC-20 path
+OP_REVERT: int = 0xFD  # REVERT
 
 # ---------------------------------------------------------------------------
-# Low-level encoding helpers
+# Private module-level opcode aliases (used only inside multi-opcode helpers)
 # ---------------------------------------------------------------------------
 
-
-def _u256(n: int) -> bytes:
-    """Encode a non-negative integer as a 32-byte big-endian uint256."""
-    if n < 0:
-        raise ValueError(f"_u256: value must be non-negative, got {n}")
-    return n.to_bytes(32, "big")
-
-
-def _addr(a: str) -> bytes:
-    """Decode a hex Ethereum address string to 20 raw bytes."""
-    raw = bytes.fromhex(a.removeprefix("0x"))
-    if len(raw) != 20:
-        raise ValueError(f"bad address length: {a!r}")
-    return raw
-
-
-def _u16(n: int) -> bytes:
-    if not 0 <= n <= 0xFFFF:
-        raise ValueError(f"_u16: value must be in 0..65535, got {n}")
-    return struct.pack(">H", n)
-
+_PUSH1: int = 0x60  # PUSH1 — followed by one immediate byte
+_PUSH2: int = 0x61  # PUSH2 — followed by two immediate bytes (= OP_JUMP first byte)
+_PC: int = 0x58  # PC — push current program counter
+_JUMP: int = 0x56  # JUMP raw opcode (inside multi-opcode sequences)
+_JUMPI: int = 0x57  # JUMPI raw opcode
+_SUB_OP: int = 0x03  # SUB — integer subtraction
+_DUP2: int = 0x81  # DUP2
+_DUP3: int = 0x82  # DUP3
+_DUP4: int = 0x83  # DUP4
+_DUP6: int = 0x85  # DUP6
+_SWAP2: int = 0x91  # SWAP2
+_SWAP3: int = 0x92  # SWAP3
 
 # ---------------------------------------------------------------------------
-# Stack / Register instructions
+# Stack instructions
 # ---------------------------------------------------------------------------
 
 
 def push_u256(n: int) -> bytes:
-    """Emit PUSH_U256 — push a uint256 literal onto the stack."""
-    return bytes([OP_PUSH_U256]) + _u256(n)
+    """Emit PUSH32 — push a uint256 literal onto the native EVM stack."""
+    if n < 0:
+        raise ValueError(f"push_u256: value must be non-negative, got {n}")
+    return bytes([OP_PUSH_U256]) + n.to_bytes(32, "big")
 
 
 def push_addr(a: str) -> bytes:
-    """Emit PUSH_ADDR — push a 20-byte Ethereum address onto the stack."""
-    return bytes([OP_PUSH_ADDR]) + _addr(a)
+    """Emit PUSH20 — push a 20-byte Ethereum address onto the native EVM stack."""
+    raw = bytes.fromhex(a.removeprefix("0x"))
+    if len(raw) != 20:
+        raise ValueError(f"push_addr: bad address length: {a!r}")
+    return bytes([OP_PUSH_ADDR]) + raw
+
+
+def gas_opcode() -> bytes:
+    """Emit GAS — push the remaining gas onto the stack."""
+    return bytes([OP_GAS])
 
 
 def push_bytes(data: bytes) -> bytes:
-    """Emit PUSH_BYTES — push a bytes buffer onto the stack.
+    """Copy *data* into free memory and leave ``[argsOffset(TOS), argsLen(2nd)]``.
 
-    The buffer is stored in the VM's internal buffer array; the stack receives
-    the buffer index as a ``bytes32`` value.
+    Each 32-byte chunk of *data* is embedded as a ``PUSH32`` immediate and
+    stored with ``MSTORE``.  The free memory pointer at ``mem[0x40]`` is
+    initialised to ``0x280`` minimum and advanced after the allocation.
+
+    This implementation avoids ``CALLDATACOPY`` (opcode ``0x37``) because the
+    Analog-Labs EVM interpreter's CALLDATACOPY handler ignores the user-supplied
+    source offset and always reads from ``calldatasize`` (past the end of the
+    program calldata), copying zeros instead of the intended bytes.
     """
     if len(data) > 0xFFFF:
         raise ValueError(f"push_bytes: data too large ({len(data)} bytes, max 65535)")
-    return bytes([OP_PUSH_BYTES]) + _u16(len(data)) + data
+    blen = len(data)
+    blen_padded = (blen + 31) & ~31
+
+    def _push_imm(v: int) -> bytes:
+        """Smallest PUSH opcode for non-negative integer *v* (1–3 bytes)."""
+        if v <= 0xFF:
+            return bytes([_PUSH1, v])  # PUSH1
+        elif v <= 0xFFFF:
+            return bytes([_PUSH2, v >> 8, v & 0xFF])  # PUSH2
+        else:
+            n = (v.bit_length() + 7) // 8
+            return bytes([0x5F + n]) + v.to_bytes(n, "big")
+
+    # Build the output in a list of chunks to avoid O(n²) bytes concatenation.
+    parts: list[bytes] = []
+
+    # Compute max_fp = fp | (0x280 * (fp == 0))
+    parts.append(
+        bytes(
+            [
+                _PUSH1,
+                0x40,  # PUSH1 0x40
+                OP_MLOAD,  # MLOAD           → [fp]
+                _PUSH2,
+                0x02,
+                0x80,  # PUSH2 0x0280    → [0x280, fp]
+                _DUP2,  # DUP2            → [fp, 0x280, fp]
+                OP_ISZERO,  # ISZERO          → [fp==0, 0x280, fp]
+                OP_MUL,  # MUL             → [0x280*(fp==0), fp]
+                OP_OR,  # OR              → [max_fp]
+            ]
+        )
+    )
+
+    # Store each 32-byte chunk; max_fp stays at TOS between iterations.
+    for i in range(0, blen_padded, 32):
+        chunk = data[i : i + 32].ljust(32, b"\x00")
+        chunk_val = int.from_bytes(chunk, "big")
+
+        # Duplicate max_fp, then compute store address = max_fp + i.
+        parts.append(bytes([OP_DUP]))  # DUP1 → [max_fp, max_fp, ...]
+        if i > 0:
+            parts.append(_push_imm(i))  # [i, max_fp, max_fp]
+            parts.append(bytes([OP_ADD]))  # ADD → [max_fp+i, max_fp]
+
+        # Push the 32-byte chunk (use PUSH1 0 for all-zero chunks).
+        if chunk_val == 0:
+            parts.append(bytes([_PUSH1, 0x00]))  # PUSH1 0
+        else:
+            parts.append(bytes([OP_PUSH_U256]) + chunk)  # PUSH32 chunk
+
+        parts.append(bytes([OP_SWAP, OP_MSTORE]))  # SWAP1, MSTORE → mem[max_fp+i]=chunk; [max_fp]
+
+    # Update free-memory pointer: mem[0x40] = max_fp + blen_padded.
+    parts.append(bytes([OP_DUP]))  # DUP1 → [max_fp, max_fp]
+    parts.append(_push_imm(blen_padded))  # [blen_padded, max_fp, max_fp]
+    parts.append(bytes([OP_ADD]))  # ADD → [new_fp, max_fp]
+    parts.append(bytes([_PUSH1, 0x40]))  # PUSH1 0x40
+    parts.append(bytes([OP_MSTORE]))  # MSTORE → mem[0x40] = new_fp; [max_fp]
+
+    # Leave [argsOffset(TOS), argsLen(2nd)].
+    parts.append(_push_imm(blen))  # [blen, max_fp]
+    parts.append(bytes([OP_SWAP]))  # SWAP1 → [max_fp=argsOffset, blen=argsLen]
+    return b"".join(parts)
 
 
 def dup() -> bytes:
-    """Emit DUP — duplicate the top stack item."""
+    """Emit DUP1 — duplicate the top stack item."""
     return bytes([OP_DUP])
 
 
 def swap() -> bytes:
-    """Emit SWAP — exchange the top two stack items."""
+    """Emit SWAP1 — exchange the top two stack items."""
     return bytes([OP_SWAP])
 
 
@@ -155,17 +204,19 @@ def pop() -> bytes:
 
 
 def load_reg(i: int) -> bytes:
-    """Emit LOAD_REG i — push register *i* onto the stack."""
+    """Emit PUSH2 addr MLOAD — push register *i* onto the stack."""
     if not 0 <= i <= 15:
         raise ValueError(f"load_reg: register index must be 0..15, got {i}")
-    return bytes([OP_LOAD_REG, i])
+    addr = 0x80 + i * 32
+    return bytes([_PUSH2, addr >> 8, addr & 0xFF, OP_MLOAD])
 
 
 def store_reg(i: int) -> bytes:
-    """Emit STORE_REG i — pop the top of the stack into register *i*."""
+    """Emit PUSH2 addr MSTORE — pop TOS into register *i*."""
     if not 0 <= i <= 15:
         raise ValueError(f"store_reg: register index must be 0..15, got {i}")
-    return bytes([OP_STORE_REG, i])
+    addr = 0x80 + i * 32
+    return bytes([_PUSH2, addr >> 8, addr & 0xFF, OP_MSTORE])
 
 
 # ---------------------------------------------------------------------------
@@ -174,154 +225,421 @@ def store_reg(i: int) -> bytes:
 
 
 def jump(target: int) -> bytes:
-    """Emit JUMP — unconditional forward jump to *target* (byte offset in program)."""
-    return bytes([OP_JUMP]) + _u16(target)
+    """Emit PUSH2 target JUMP — unconditional jump."""
+    return bytes([_PUSH2, target >> 8, target & 0xFF, _JUMP])
 
 
 def jumpi(target: int) -> bytes:
-    """Emit JUMPI — conditional forward jump; pops a boolean condition from the stack."""
-    return bytes([OP_JUMPI]) + _u16(target)
+    """Emit PUSH2 target JUMPI — conditional jump; pops condition from stack."""
+    return bytes([_PUSH2, target >> 8, target & 0xFF, _JUMPI])
 
 
 def revert_if(msg: str) -> bytes:
-    """Emit REVERT_IF — pop condition; if truthy, revert with *msg* as ``Error(string)``."""
+    """Pop condition; if non-zero, revert with ``Error(string)`` *msg* (≤32 bytes).
+
+    Self-contained 101-byte PC-relative sequence.
+    """
     raw = msg.encode()
-    if len(raw) > 255:
-        raise ValueError(f"revert_if: message too long ({len(raw)} bytes, max 255)")
-    return bytes([OP_REVERT_IF, len(raw)]) + raw
+    if len(raw) > 32:
+        raise ValueError(f"revert_if: message too long ({len(raw)} bytes, max 32)")
+    msglen = len(raw)
+    msg_word = int.from_bytes(raw.ljust(32, b"\x00"), "big")
+    selector_word = 0x08C379A000000000000000000000000000000000000000000000000000000000
+
+    # 94-byte revert block: builds Error(string) and reverts
+    revert_block = (
+        bytes(
+            [
+                _PUSH1,
+                0x40,  # PUSH1 0x40
+                OP_MLOAD,  # MLOAD                   → [scratch]
+                OP_PUSH_U256,  # PUSH32 selector
+            ]
+        )
+        + selector_word.to_bytes(32, "big")
+        + bytes(
+            [
+                _DUP2,  # DUP2                    → [scratch, sel, scratch]
+                OP_MSTORE,  # MSTORE                  → [scratch]
+                _PUSH1,
+                0x20,  # PUSH1 0x20
+                _DUP2,  # DUP2                    → [scratch, 32, scratch]
+                _PUSH1,
+                0x04,  # PUSH1 4
+                OP_ADD,  # ADD                     → [scratch+4, 32, scratch]
+                OP_MSTORE,  # MSTORE                  → [scratch]
+                _PUSH1,
+                msglen,  # PUSH1 msglen
+                _DUP2,  # DUP2                    → [scratch, msglen, scratch]
+                _PUSH1,
+                0x24,  # PUSH1 0x24
+                OP_ADD,  # ADD                     → [scratch+0x24, msglen, scratch]
+                OP_MSTORE,  # MSTORE                  → [scratch]
+                OP_PUSH_U256,  # PUSH32 msg_word
+            ]
+        )
+        + msg_word.to_bytes(32, "big")
+        + bytes(
+            [
+                _DUP2,  # DUP2                    → [scratch, msg_word, scratch]
+                _PUSH1,
+                0x44,  # PUSH1 0x44
+                OP_ADD,  # ADD                     → [scratch+0x44, msg_word, scratch]
+                OP_MSTORE,  # MSTORE                  → [scratch]
+                _PUSH1,
+                0x64,  # PUSH1 0x64 (100)
+                OP_SWAP,  # SWAP1                   → [scratch, 100]
+                OP_REVERT,  # REVERT
+            ]
+        )
+    )
+    assert len(revert_block) == 94
+
+    # Full sequence: ISZERO PC PUSH1 99 ADD JUMPI <revert_block> JUMPDEST
+    # PC at byte 1; JUMPDEST at byte 100; distance = 99
+    return (
+        bytes(
+            [
+                OP_ISZERO,  # ISZERO       byte 0
+                _PC,  # PC           byte 1  (= instr_start + 1)
+                _PUSH1,
+                99,  # PUSH1 99     bytes 2-3
+                OP_ADD,  # ADD          byte 4
+                _JUMPI,  # JUMPI        byte 5
+            ]
+        )
+        + revert_block
+        + bytes([OP_JUMPDEST])
+    )  # JUMPDEST  byte 100
 
 
 def assert_ge(msg: str = "") -> bytes:
-    """Emit ASSERT_GE — pop *a* (top), pop *b* (below); revert if ``a < b``.
-
-    Stack effect: ``(a, b → )`` where ``a`` is the value that must be ≥ ``b``.
-    """
+    """Pop *a* (TOS), *b* (2nd); revert if ``a < b``.  Stack effect: ``(a, b → )``."""
     raw = msg.encode()
-    if len(raw) > 255:
-        raise ValueError(f"assert_ge: message too long ({len(raw)} bytes, max 255)")
-    return bytes([OP_ASSERT_GE, len(raw)]) + raw
+    if len(raw) > 32:
+        raise ValueError(f"assert_ge: message too long ({len(raw)} bytes, max 32)")
+    # DUP2 DUP2 LT produces [a<b, a, b]; revert_if consumes [a<b]; then POP POP
+    return bytes([_DUP2, _DUP2, OP_LT]) + revert_if(msg) + bytes([OP_POP, OP_POP])
 
 
 def assert_le(msg: str = "") -> bytes:
-    """Emit ASSERT_LE — pop *a* (top), pop *b* (below); revert if ``a > b``."""
+    """Pop *a* (TOS), *b* (2nd); revert if ``a > b``.  Stack effect: ``(a, b → )``."""
     raw = msg.encode()
-    if len(raw) > 255:
-        raise ValueError(f"assert_le: message too long ({len(raw)} bytes, max 255)")
-    return bytes([OP_ASSERT_LE, len(raw)]) + raw
+    if len(raw) > 32:
+        raise ValueError(f"assert_le: message too long ({len(raw)} bytes, max 32)")
+    return bytes([_DUP2, _DUP2, OP_GT]) + revert_if(msg) + bytes([OP_POP, OP_POP])
 
 
 # ---------------------------------------------------------------------------
-# External / introspection instructions
+# Arithmetic / bitwise instructions (direct EVM opcodes)
 # ---------------------------------------------------------------------------
-
-
-def call(require_success: bool = True) -> bytes:
-    """Emit CALL — make a whitelisted external call.
-
-    The caller must have pushed (top to bottom):
-
-    - ``gasLimit`` (uint256)  ← top of stack
-    - ``to``       (address)
-    - ``value``    (uint256)
-    - ``calldataBufIdx`` (buffer index from PUSH_BYTES)
-
-    After the call the stack is unchanged (success/failure is handled via
-    ``require_success``); the return data is available via RET_U256/RET_SLICE.
-    """
-    flags = 0x01 if require_success else 0x00
-    return bytes([OP_CALL, flags])
-
-
-def balance_of() -> bytes:
-    """Emit BALANCE_OF — pop token address and account address; push ERC-20 balance."""
-    return bytes([OP_BALANCE_OF])
-
-
-def self_addr() -> bytes:
-    """Emit SELF_ADDR — push the VM contract's own address onto the stack.
-
-    Combined with :func:`balance_of` and ``push_u256(0)`` (ETH token), this
-    gives the self ETH balance::
-
-        self_addr() + push_u256(0) + balance_of()
-    """
-    return bytes([OP_SELF_ADDR])
-
-
-def sub() -> bytes:
-    """Emit SUB — pop ``a`` (top) then ``b``; push ``a - b`` (saturates to 0 if a < b).
-
-    Use with two :func:`balance_of` calls to compute a balance delta::
-
-        push_addr(account)
-        + push_addr(token)    # or push_u256(0) for ETH
-        + balance_of()        # pre-balance on stack
-        + <call that changes balance>
-        + push_addr(account)
-        + push_addr(token)
-        + balance_of()        # post-balance on top
-        + sub()               # post - pre
-    """
-    return bytes([OP_SUB])
 
 
 def add() -> bytes:
-    """Emit ADD — pop ``a`` (top) then ``b``; push ``a + b`` (wrapping uint256)."""
+    """Emit ADD."""
     return bytes([OP_ADD])
 
 
 def mul() -> bytes:
-    """Emit MUL — pop ``a`` (top) then ``b``; push ``a * b`` (wrapping uint256)."""
+    """Emit MUL."""
     return bytes([OP_MUL])
 
 
-def div() -> bytes:
-    """Emit DIV — pop ``a`` (top) then ``b``; push ``a / b`` (0 if ``b == 0``).
+def sub() -> bytes:
+    """Emit saturating SUB: ``max(a - b, 0)`` where *a* is TOS, *b* is 2nd.
 
-    Matches EVM ``DIV`` semantics — integer (floor) division, no revert on zero.
+    8-byte sequence: DUP2 DUP2 LT ISZERO SWAP2 SWAP1 SUB MUL
     """
+    return bytes([_DUP2, _DUP2, OP_LT, OP_ISZERO, _SWAP2, OP_SWAP, _SUB_OP, OP_MUL])
+
+
+def div() -> bytes:
+    """Emit DIV."""
     return bytes([OP_DIV])
 
 
 def mod() -> bytes:
-    """Emit MOD — pop ``a`` (top) then ``b``; push ``a % b`` (0 if ``b == 0``).
-
-    Matches EVM ``MOD`` semantics — no revert on zero denominator.
-    """
+    """Emit MOD."""
     return bytes([OP_MOD])
 
 
+def lt() -> bytes:
+    """Emit LT."""
+    return bytes([OP_LT])
+
+
+def gt() -> bytes:
+    """Emit GT."""
+    return bytes([OP_GT])
+
+
+def eq() -> bytes:
+    """Emit EQ."""
+    return bytes([OP_EQ])
+
+
+def iszero() -> bytes:
+    """Emit ISZERO."""
+    return bytes([OP_ISZERO])
+
+
+def bitwise_and() -> bytes:
+    """Emit AND."""
+    return bytes([OP_AND])
+
+
+def bitwise_or() -> bytes:
+    """Emit OR."""
+    return bytes([OP_OR])
+
+
+def bitwise_xor() -> bytes:
+    """Emit XOR."""
+    return bytes([OP_XOR])
+
+
+def bitwise_not() -> bytes:
+    """Emit NOT."""
+    return bytes([OP_NOT])
+
+
+def shl() -> bytes:
+    """Emit SHL."""
+    return bytes([OP_SHL])
+
+
+def shr() -> bytes:
+    """Emit SHR."""
+    return bytes([OP_SHR])
+
+
+def self_addr() -> bytes:
+    """Emit ADDRESS — push the deployed program's own address."""
+    return bytes([OP_SELF_ADDR])
+
+
 # ---------------------------------------------------------------------------
-# ABI / data instructions
+# External call
+# ---------------------------------------------------------------------------
+
+
+def call(require_success: bool = True) -> bytes:
+    """Emit EVM CALL with optional PC-relative revert on failure.
+
+    Stack before (TOS first): gas, addr, value, argsOffset, argsLen, retOffset, retLen.
+    Stack after (require_success=False): [success].
+    Stack after (require_success=True): [success] (reverts on failure; on success the CALL
+    success flag remains on the stack).
+    """
+    if not require_success:
+        return bytes([OP_CALL])
+    # CALL DUP1 PC PUSH1 9 ADD JUMPI PUSH1 0 DUP1 REVERT JUMPDEST
+    # PC at byte 2; JUMPDEST at byte 11; distance = 9
+    return bytes(
+        [
+            OP_CALL,  # CALL          byte 0
+            OP_DUP,  # DUP1          byte 1
+            _PC,  # PC            byte 2  (= instr_start + 2)
+            _PUSH1,
+            9,  # PUSH1 9       bytes 3-4
+            OP_ADD,  # ADD           byte 5
+            _JUMPI,  # JUMPI         byte 6
+            _PUSH1,
+            0x00,  # PUSH1 0       bytes 7-8
+            OP_DUP,  # DUP1          byte 9
+            OP_REVERT,  # REVERT        byte 10
+            OP_JUMPDEST,  # JUMPDEST      byte 11
+        ]
+    )
+
+
+# ---------------------------------------------------------------------------
+# Balance query
+# ---------------------------------------------------------------------------
+
+
+def balance_of() -> bytes:
+    """Pop token (TOS) and account (2nd); push balance.
+
+    If token == 0: EVM BALANCE(account).
+    If token != 0: STATICCALL token.balanceOf(account).
+
+    75-byte PC-relative sequence.
+    """
+    SELECTOR = 0x70A0823100000000000000000000000000000000000000000000000000000000
+
+    # Preamble (7 bytes): if token==0 jump to ETH path at byte 71
+    # PC at byte 2; ETH_PATH_JUMPDEST at byte 71; distance = 69
+    preamble = bytes(
+        [
+            OP_DUP,  # DUP1         byte 0
+            OP_ISZERO,  # ISZERO       byte 1
+            _PC,  # PC           byte 2
+            _PUSH1,
+            69,  # PUSH1 69     bytes 3-4
+            OP_ADD,  # ADD          byte 5
+            _JUMPI,  # JUMPI        byte 6
+        ]
+    )
+
+    # ERC-20 path (64 bytes, bytes 7-70)
+    # PC at relative byte 59 → absolute byte 66; END_JUMPDEST at byte 74; distance = 8
+    erc20_path = (
+        bytes(
+            [
+                _PUSH1,
+                0x40,  # PUSH1 0x40
+                OP_MLOAD,  # MLOAD                         → [fp, token, account]
+                OP_PUSH_U256,  # PUSH32 selector
+            ]
+        )
+        + SELECTOR.to_bytes(32, "big")
+        + bytes(
+            [
+                _DUP2,  # DUP2                          → [fp, sel, fp, token, account]
+                OP_MSTORE,  # MSTORE   mem[fp]=sel          → [fp, token, account]
+                _DUP3,  # DUP3                          → [account, fp, token, account]
+                _DUP2,  # DUP2                          → [fp, account, fp, token, account]
+                _PUSH1,
+                0x04,  # PUSH1 4
+                OP_ADD,  # ADD                           → [fp+4, account, fp, token, account]
+                OP_MSTORE,  # MSTORE   mem[fp+4]=account    → [fp, token, account]
+                # STATICCALL(gas, token, fp, 36, fp, 32)
+                _PUSH1,
+                0x20,  # PUSH1 0x20  retLen=32
+                _DUP2,  # DUP2        retOff=fp
+                _PUSH1,
+                0x24,  # PUSH1 0x24  argsLen=36
+                _DUP4,  # DUP4        argsOff=fp
+                _DUP6,  # DUP6        addr=token
+                OP_GAS,  # GAS
+                OP_STATICCALL,  # STATICCALL  → [success, fp, token, account]
+                OP_SWAP,  # SWAP1                         → [fp, success, token, account]
+                OP_MLOAD,  # MLOAD                         → [balance, success, token, account]
+                _SWAP3,  # SWAP3                         → [account, success, token, balance]
+                OP_POP,  # POP                           → [success, token, balance]
+                OP_POP,  # POP                           → [token, balance]
+                OP_POP,  # POP                           → [balance]
+                # Jump to END at byte 74
+                _PC,  # PC    byte 66 (= 7 + 59)
+                _PUSH1,
+                8,  # PUSH1 8
+                OP_ADD,  # ADD
+                _JUMP,  # JUMP
+            ]
+        )
+    )
+    assert len(erc20_path) == 64
+
+    # ETH path (bytes 71-73)
+    eth_path = bytes(
+        [
+            OP_JUMPDEST,  # JUMPDEST  byte 71
+            OP_POP,  # POP       byte 72  (remove token=0)
+            OP_BALANCE,  # BALANCE   byte 73
+        ]
+    )
+
+    # END (byte 74)
+    end = bytes([OP_JUMPDEST])
+
+    result = preamble + erc20_path + eth_path + end
+    assert len(result) == 75
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Calldata patching
 # ---------------------------------------------------------------------------
 
 
 def patch_u256(offset: int) -> bytes:
-    """Emit PATCH_U256 — overwrite a 32-byte word in a buffer at *offset*.
+    """Overwrite a 32-byte word in the calldata buffer at *offset*.
 
-    Stack effect: pop value (uint256), pop bufIdx → push bufIdx.
+    Stack before: [value(TOS), argsOffset(2nd), argsLen(3rd), ...]
+    Stack after:  [argsOffset(TOS), argsLen(2nd), ...]
     """
-    return bytes([OP_PATCH_U256]) + _u16(offset)
+    return bytes([_DUP2, _PUSH2, offset >> 8, offset & 0xFF, OP_ADD, OP_MSTORE])
 
 
 def patch_addr(offset: int) -> bytes:
-    """Emit PATCH_ADDR — overwrite 20 bytes in a buffer starting at *offset*.
+    """Overwrite a 20-byte address in the calldata buffer at *offset*.
 
-    Stack effect: pop addr (address), pop bufIdx → push bufIdx.
-    The 20 bytes are written starting exactly at *offset* (raw byte copy).
+    ABI places the 20-byte address at ``[offset..offset+19]``, so the
+    32-byte MSTORE target is at ``offset - 12``.
+
+    Stack before: [addr(TOS), argsOffset(2nd), argsLen(3rd), ...]
+    Stack after:  [argsOffset(TOS), argsLen(2nd), ...]
     """
-    return bytes([OP_PATCH_ADDR]) + _u16(offset)
+    if offset < 12:
+        raise ValueError(
+            f"patch_addr: offset must be >= 12 (got {offset}); "
+            "the 20-byte address occupies [offset..offset+19] so MSTORE "
+            "must land at offset-12 >= 0"
+        )
+    mstore_off = offset - 12
+    if mstore_off > 0xFFFF:
+        raise ValueError(f"patch_addr: mstore offset {mstore_off} exceeds 16-bit PUSH2 range")
+    return bytes([_DUP2, _PUSH2, mstore_off >> 8, mstore_off & 0xFF, OP_ADD, OP_MSTORE])
+
+
+# ---------------------------------------------------------------------------
+# Returndata helpers
+# ---------------------------------------------------------------------------
 
 
 def ret_u256(offset: int) -> bytes:
-    """Emit RET_U256 — push a uint256 from the last call's returndata at *offset*."""
-    return bytes([OP_RET_U256]) + _u16(offset)
+    """Copy 32 bytes from returndata at *offset* into free memory; push the value.
+
+    11-byte sequence.
+    """
+    return bytes(
+        [
+            _PUSH1,
+            0x40,  # PUSH1 0x40
+            OP_MLOAD,  # MLOAD         → [fp]
+            _PUSH1,
+            0x20,  # PUSH1 0x20    → [32, fp]
+            _PUSH2,
+            offset >> 8,
+            offset & 0xFF,  # PUSH2 offset  → [offset, 32, fp]
+            _DUP3,  # DUP3          → [fp, offset, 32, fp]
+            OP_RETURNDATACOPY,  # RETURNDATACOPY → [fp]
+            OP_MLOAD,  # MLOAD         → [value]
+        ]
+    )
 
 
 def ret_slice(offset: int, length: int) -> bytes:
-    """Emit RET_SLICE — push a bytes slice from the last call's returndata.
+    """Copy a slice from returndata into free memory; push ``[argsOffset, argsLen]``.
 
-    The slice ``returndata[offset : offset + length]`` is stored as a new buffer
-    and its index is pushed onto the stack.
+    23-byte sequence.
     """
-    return bytes([OP_RET_SLICE]) + _u16(offset) + _u16(length)
+    length_padded = (length + 31) & ~31
+    return bytes(
+        [
+            _PUSH1,
+            0x40,  # PUSH1 0x40
+            OP_MLOAD,  # MLOAD              → [fp]
+            OP_DUP,  # DUP1               → [fp, fp]
+            _PUSH2,
+            length >> 8,
+            length & 0xFF,  # PUSH2 length
+            _PUSH2,
+            offset >> 8,
+            offset & 0xFF,  # PUSH2 offset
+            _DUP4,  # DUP4               → [fp, offset, length, fp, fp]
+            OP_RETURNDATACOPY,  # RETURNDATACOPY     → [fp, fp]
+            _PUSH2,
+            length_padded >> 8,
+            length_padded & 0xFF,
+            OP_ADD,  # ADD                → [new_fp, fp]
+            _PUSH1,
+            0x40,  # PUSH1 0x40
+            OP_MSTORE,  # MSTORE             → [fp]
+            _PUSH2,
+            length >> 8,
+            length & 0xFF,  # PUSH2 length
+            OP_SWAP,  # SWAP1              → [fp=argsOffset, length=argsLen]
+        ]
+    )

@@ -289,7 +289,7 @@ def compiled_defi_vm():
 
 
 @pytest.fixture(scope="module")
-async def ctx(oft_fork_w3, compiled_oft_composer, compiled_mocks, compiled_defi_vm):
+async def ctx(oft_fork_w3, compiled_oft_composer, compiled_mocks, compiled_defi_vm, interpreter_addr):
     """Deploy OFTComposer, DeFiVM, and mock contracts once; return shared context."""
     w3 = oft_fork_w3
     accounts = await w3.eth.accounts
@@ -298,8 +298,8 @@ async def ctx(oft_fork_w3, compiled_oft_composer, compiled_mocks, compiled_defi_
     # Deploy mock endpoint (controls which address may call lzCompose).
     endpoint_address = await _deploy(w3, compiled_mocks["MockEndpoint"], deployer)
 
-    # Deploy DeFiVM (no constructor arguments).
-    vm_address = await _deploy(w3, compiled_defi_vm, deployer)
+    # Deploy DeFiVM (pass interpreter address via constructor).
+    vm_address = await _deploy(w3, compiled_defi_vm, deployer, interpreter_addr)
 
     # Deploy OFT composer pointing it at the mock endpoint and DeFiVM.
     composer_address = await _deploy(
@@ -363,11 +363,13 @@ class TestOFTComposerFork:
     def _call_target(target_address: str, calldata: bytes, value: int = 0) -> bytes:
         """Return DeFiVM instructions for one external call (discards success flag)."""
         return (
-            push_bytes(calldata)  # buf N; stack: [..., N]
-            + push_u256(value)  # stack: [..., N, value]
-            + push_addr(target_address)  # stack: [..., N, value, to]
-            + push_u256(0)  # gasLimit=0 (all gas); stack: [..., N, value, to, 0]
-            + call()  # pops top-4; requireSuccess=True -> reverts on failure; pushes 1
+            push_u256(0)
+            + push_u256(0)  # retLen=0, retOffset=0 for CALL
+            + push_bytes(calldata)
+            + push_u256(value)
+            + push_addr(target_address)
+            + bytes([0x5A])  # GAS — forward all remaining gas
+            + call()  # requireSuccess=True → reverts on failure; pushes success flag
             + pop()  # discard success flag
         )
 
@@ -479,10 +481,12 @@ class TestOFTComposerFork:
         program = (
             store_reg(0)
             + store_reg(1)
+            + push_u256(0)
+            + push_u256(0)  # retLen=0, retOffset=0 for CALL
             + push_bytes(calldata)
             + push_u256(eth_amount)  # value for sub-call
             + push_addr(target_address)
-            + push_u256(0)  # gasLimit=0
+            + bytes([0x5A])  # GAS — forward all remaining gas
             + call()
             + pop()
         )
@@ -582,12 +586,14 @@ class TestOFTComposerFork:
         program = (
             store_reg(0)  # R0 = _from
             + store_reg(1)  # R1 = amountLD
-            + push_bytes(template)  # buf 0; stack: [0]
-            + load_reg(1)  # stack: [0, amountLD]
-            + patch_u256(68)  # patch amountLD at offset 68; stack: [0]
+            + push_u256(0)
+            + push_u256(0)  # retLen=0, retOffset=0 for CALL
+            + push_bytes(template)  # argsOffset, argsLen above retOffset/retLen
+            + load_reg(1)  # push amountLD
+            + patch_u256(68)  # patch amountLD at offset 68; leaves [argsOffset, argsLen, retOffset, retLen]
             + push_u256(0)  # value=0
             + push_addr(target_address)  # to
-            + push_u256(0)  # gasLimit=0
+            + bytes([0x5A])  # GAS — forward all remaining gas
             + call()
             + pop()
         )
@@ -631,19 +637,23 @@ class TestOFTComposerFork:
         # Program:
         #   STORE_REG 0 -> R0 = _from   (pop from top)
         #   STORE_REG 1 -> R1 = amountLD
-        #   PUSH_BYTES template -> buf 0; stack: [0]
-        #   LOAD_REG 0  -> stack: [0, _from]
-        #   PATCH_ADDR 68 -> writes bytes20(_from) at offset 68; stack: [0]
+        #   PUSH_BYTES template -> buf; stack: [argsOffset, argsLen, ...]
+        #   LOAD_REG 0  -> stack: [_from, argsOffset, ...]
+        #   PATCH_ADDR 80 -> MSTORE(argsOffset+68, _from): writes 12 zeros at data[0..11]
+        #                    then 20-byte address at data[12..31]; MSTORE starts at
+        #                    offset 68 (= 80-12), safely past the length field at [36..67]
         #   CALL
         program = (
             store_reg(0)  # R0 = _from
             + store_reg(1)  # R1 = amountLD
-            + push_bytes(template)  # buf 0; stack: [0]
-            + load_reg(0)  # stack: [0, _from]
-            + patch_addr(68)  # write 20 bytes of _from at offset 68; stack: [0]
+            + push_u256(0)
+            + push_u256(0)  # retLen=0, retOffset=0 for CALL
+            + push_bytes(template)  # argsOffset, argsLen above retOffset/retLen
+            + load_reg(0)  # push _from
+            + patch_addr(80)  # MSTORE at buf+68: data[0..11]=0x00*12, data[12..31]=_from
             + push_u256(0)  # value=0
             + push_addr(target_address)  # to
-            + push_u256(0)  # gasLimit=0
+            + bytes([0x5A])  # GAS — forward all remaining gas
             + call()
             + pop()
         )
@@ -664,11 +674,12 @@ class TestOFTComposerFork:
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
 
-        # PATCH_ADDR writes exactly 20 bytes at offset 68; the remaining 12 bytes stay zero.
+        # PATCH_ADDR(80) does MSTORE(buf+68, _from): writes 12 leading zeros then
+        # the 20-byte address into data[0..31].
         last_data = await target.functions.lastData().call()
         expected_addr_bytes = bytes.fromhex(oft_address.lower().removeprefix("0x"))
-        assert last_data[:20] == expected_addr_bytes
-        assert last_data[20:] == b"\x00" * 12
+        assert last_data[:12] == b"\x00" * 12
+        assert last_data[12:32] == expected_addr_bytes
 
     # ------------------------------------------------------------------
     # Security: unauthorized endpoint
@@ -717,10 +728,12 @@ class TestOFTComposerFork:
             store_reg(0)
             + store_reg(1)
             + self._call_target(target_address, calldata_ok)  # succeeds, pops success
+            + push_u256(0)
+            + push_u256(0)  # retLen=0, retOffset=0 for CALL
             + push_bytes(b"")  # empty calldata for fallback
             + push_u256(0)
             + push_addr(reverting_address)
-            + push_u256(0)
+            + bytes([0x5A])
             + call()  # requireSuccess=True; target reverts -> DeFiVM reverts
         )
         amount_ld = 10**18
@@ -895,10 +908,12 @@ class TestOFTComposerFork:
         program = (
             store_reg(0)  # R0 = _from (OFT address)
             + store_reg(1)  # R1 = amountLD
-            + push_bytes(vm_forward_calldata)  # push calldata buffer; stack: [buf_idx]
+            + push_u256(0)
+            + push_u256(0)  # retLen=0, retOffset=0 for CALL
+            + push_bytes(vm_forward_calldata)  # push calldata buffer
             + push_u256(0)  # value = 0 ETH
             + push_addr(oft_address)  # call the OFT token contract
-            + push_u256(0)  # gasLimit = 0 (all gas)
+            + bytes([0x5A])  # GAS — forward all remaining gas
             + call()
             + pop()  # discard success flag
         )
@@ -964,10 +979,12 @@ class TestOFTComposerFork:
         program = (
             store_reg(0)  # R0 = _from (adapter address)
             + store_reg(1)  # R1 = amountLD
-            + push_bytes(vm_forward_calldata)  # push calldata buffer; stack: [buf_idx]
+            + push_u256(0)
+            + push_u256(0)  # retLen=0, retOffset=0 for CALL
+            + push_bytes(vm_forward_calldata)  # push calldata buffer
             + push_u256(0)  # value = 0 ETH
             + push_addr(token_address)  # call the underlying ERC-20 contract
-            + push_u256(0)  # gasLimit = 0 (all gas)
+            + bytes([0x5A])  # GAS — forward all remaining gas
             + call()
             + pop()  # discard success flag
         )

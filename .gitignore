@@ -21,3 +21,6 @@ htmlcov/
 .vscode/
 .idea/
 *.tgz
+
+/.env
+/.envrc

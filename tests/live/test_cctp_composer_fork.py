@@ -354,7 +354,7 @@ def compiled_defi_vm():
 
 
 @pytest.fixture(scope="module")
-async def ctx(cctp_fork_w3, compiled_cctp_composer, compiled_mocks, compiled_defi_vm):
+async def ctx(cctp_fork_w3, compiled_cctp_composer, compiled_mocks, compiled_defi_vm, interpreter_addr):
     """Deploy CCTPComposer, DeFiVM, and mock contracts once; return shared context."""
     w3 = cctp_fork_w3
     accounts = await w3.eth.accounts
@@ -367,7 +367,7 @@ async def ctx(cctp_fork_w3, compiled_cctp_composer, compiled_mocks, compiled_def
     transmitter_address = await _deploy(w3, compiled_mocks["MockMessageTransmitterV2"], deployer, usdc_address)
 
     # Deploy DeFiVM.
-    vm_address = await _deploy(w3, compiled_defi_vm, deployer)
+    vm_address = await _deploy(w3, compiled_defi_vm, deployer, interpreter_addr)
 
     # Deploy CCTPComposer.
     composer_address = await _deploy(
@@ -464,10 +464,12 @@ class TestCCTPComposerBasic:
         program = (
             store_reg(0)  # R0 = sourceDomain (top of stack after prologue)
             + store_reg(1)  # R1 = amountReceived
+            + push_u256(0)
+            + push_u256(0)  # retLen=0, retOffset=0 for CALL
             + push_bytes(target_calldata)
             + push_u256(0)  # value = 0 ETH
             + push_addr(target_address)
-            + push_u256(0)  # gasLimit = 0 (all gas)
+            + bytes([0x5A])  # GAS — forward all remaining gas
             + call()
             + pop()  # discard success flag
         )
@@ -507,10 +509,12 @@ class TestCCTPComposerBasic:
         program = (
             store_reg(0)  # R0 = sourceDomain
             + store_reg(1)  # R1 = amountReceived (should be amount - fee)
+            + push_u256(0)
+            + push_u256(0)  # retLen=0, retOffset=0 for CALL
             + push_bytes(target_calldata)
             + push_u256(0)
             + push_addr(target_address)
-            + push_u256(0)
+            + bytes([0x5A])
             + call()
             + pop()
         )
@@ -544,10 +548,12 @@ class TestCCTPComposerBasic:
         program = (
             store_reg(0)
             + store_reg(1)
+            + push_u256(0)
+            + push_u256(0)  # retLen=0, retOffset=0 for CALL
             + push_bytes(target_calldata)
             + push_u256(eth_value)  # value = 0.01 ETH
             + push_addr(target_address)
-            + push_u256(0)
+            + bytes([0x5A])
             + call()
             + pop()
         )
@@ -577,10 +583,12 @@ class TestCCTPComposerBasic:
         program = (
             store_reg(0)
             + store_reg(1)
+            + push_u256(0)
+            + push_u256(0)  # retLen=0, retOffset=0 for CALL
             + push_bytes(target_calldata)
             + push_u256(0)
             + push_addr(target_address)
-            + push_u256(0)
+            + bytes([0x5A])
             + call()
             + pop()
         )
@@ -611,10 +619,12 @@ class TestCCTPComposerBasic:
         program = (
             store_reg(0)
             + store_reg(1)
+            + push_u256(0)
+            + push_u256(0)  # retLen=0, retOffset=0 for CALL
             + push_bytes(target_calldata)
             + push_u256(0)
             + push_addr(target_address)
-            + push_u256(0)
+            + bytes([0x5A])
             + call()
             + pop()
         )
@@ -653,10 +663,12 @@ class TestCCTPComposerBasic:
         program = (
             store_reg(0)
             + store_reg(1)
+            + push_u256(0)
+            + push_u256(0)  # retLen=0, retOffset=0 for CALL
             + push_bytes(transfer_calldata)
             + push_u256(0)
             + push_addr(usdc_address)
-            + push_u256(0)
+            + bytes([0x5A])
             + call()
             + pop()
         )
@@ -691,10 +703,12 @@ class TestCCTPComposerErrors:
         program = (
             store_reg(0)
             + store_reg(1)
+            + push_u256(0)
+            + push_u256(0)  # retLen=0, retOffset=0 for CALL
             + push_bytes(target_calldata)
             + push_u256(0)
             + push_addr(target_address)
-            + push_u256(0)
+            + bytes([0x5A])
             + call()
             + pop()
         )
@@ -731,7 +745,7 @@ class TestCCTPComposerErrors:
             + push_bytes(b"\xde\xad")
             + push_u256(0)
             + push_addr(reverting_address)
-            + push_u256(0)
+            + bytes([0x5A])
             + call(require_success=True)
             + pop()
         )

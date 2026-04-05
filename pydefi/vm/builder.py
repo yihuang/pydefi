@@ -181,18 +181,26 @@ if TYPE_CHECKING:
     from eth_abi.hooks import EncodingContext
 
 from pydefi.vm.program import (
-    OP_JUMP,
-    OP_JUMPI,
+    OP_JUMPDEST,
     add,
     assert_ge,
     assert_le,
     balance_of,
+    bitwise_and,
+    bitwise_not,
+    bitwise_or,
+    bitwise_xor,
     call,
     div,
     dup,
+    eq,
+    gas_opcode,
+    gt,
+    iszero,
     jump,
     jumpi,
     load_reg,
+    lt,
     mod,
     mul,
     patch_addr,
@@ -205,6 +213,8 @@ from pydefi.vm.program import (
     ret_u256,
     revert_if,
     self_addr,
+    shl,
+    shr,
     store_reg,
     sub,
     swap,
@@ -353,7 +363,7 @@ class Program:
     # ------------------------------------------------------------------
 
     def label(self, name: str) -> "Program":
-        """Mark the current program position with *name*.
+        """Mark the current program position with *name* and emit a JUMPDEST.
 
         Use the same name as the target in :meth:`jump` or :meth:`jumpi`
         to create a labelled branch without computing byte offsets.
@@ -363,6 +373,7 @@ class Program:
         if name in self._labels:
             raise ValueError(f"Program: duplicate label {name!r}")
         self._labels[name] = len(self._buf)
+        self._buf.append(OP_JUMPDEST)  # JUMPDEST
         return self
 
     # ------------------------------------------------------------------
@@ -413,9 +424,10 @@ class Program:
         """
         if isinstance(target, int):
             return self._emit(jump(target))
-        self._buf.append(OP_JUMP)
+        self._buf.append(0x61)  # PUSH2
         self._fixups.append((len(self._buf), target))
-        self._buf.extend(b"\x00\x00")
+        self._buf.extend(b"\x00\x00")  # 2-byte placeholder
+        self._buf.append(0x56)  # JUMP
         return self
 
     def jumpi(self, target: str | int) -> "Program":
@@ -427,9 +439,10 @@ class Program:
         """
         if isinstance(target, int):
             return self._emit(jumpi(target))
-        self._buf.append(OP_JUMPI)
+        self._buf.append(0x61)  # PUSH2
         self._fixups.append((len(self._buf), target))
-        self._buf.extend(b"\x00\x00")
+        self._buf.extend(b"\x00\x00")  # 2-byte placeholder
+        self._buf.append(0x57)  # JUMPI
         return self
 
     def revert_if(self, msg: str) -> "Program":
@@ -490,6 +503,46 @@ class Program:
         """Emit MOD — pop ``a`` (top), ``b``; push ``a % b`` (0 if ``b == 0``)."""
         return self._emit(mod())
 
+    def lt(self) -> "Program":
+        """Emit LT — pop ``a`` (top), ``b``; push ``1`` if ``a < b`` else ``0``."""
+        return self._emit(lt())
+
+    def gt(self) -> "Program":
+        """Emit GT — pop ``a`` (top), ``b``; push ``1`` if ``a > b`` else ``0``."""
+        return self._emit(gt())
+
+    def eq(self) -> "Program":
+        """Emit EQ — pop ``a`` (top), ``b``; push ``1`` if ``a == b`` else ``0``."""
+        return self._emit(eq())
+
+    def iszero(self) -> "Program":
+        """Emit ISZERO — pop ``a``; push ``1`` if ``a == 0`` else ``0``."""
+        return self._emit(iszero())
+
+    def bitwise_and(self) -> "Program":
+        """Emit AND — pop ``a`` (top), ``b``; push ``a & b``."""
+        return self._emit(bitwise_and())
+
+    def bitwise_or(self) -> "Program":
+        """Emit OR — pop ``a`` (top), ``b``; push ``a | b``."""
+        return self._emit(bitwise_or())
+
+    def bitwise_xor(self) -> "Program":
+        """Emit XOR — pop ``a`` (top), ``b``; push ``a ^ b``."""
+        return self._emit(bitwise_xor())
+
+    def bitwise_not(self) -> "Program":
+        """Emit NOT — pop ``a``; push ``~a`` (bitwise complement)."""
+        return self._emit(bitwise_not())
+
+    def shl(self) -> "Program":
+        """Emit SHL — pop ``shift`` (top), ``value``; push ``value << shift``."""
+        return self._emit(shl())
+
+    def shr(self) -> "Program":
+        """Emit SHR — pop ``shift`` (top), ``value``; push ``value >> shift``."""
+        return self._emit(shr())
+
     # ------------------------------------------------------------------
     # ABI / data instructions
     # ------------------------------------------------------------------
@@ -525,18 +578,20 @@ class Program:
     ) -> "Program":
         """Emit a complete external-call sequence for a pre-built calldata buffer.
 
-        This is a convenience wrapper that pushes the four items required by
-        the ``CALL`` opcode in the correct stack order::
+        Pushes the seven items required by the EVM ``CALL`` opcode in the correct
+        stack order::
 
-            push_bytes(calldata)   # calldataBufIdx (bottom)
+            push_u256(0)           # retSize  (deepest)
+            push_u256(0)           # retOffset
+            push_bytes(calldata)   # argsOffset (TOS after push_bytes), argsLen (below)
             push_u256(value)
             push_addr(to)
-            push_u256(gas)         # gasLimit (top)
+            push_u256(gas) or gas_opcode()  # gasLimit (top); gas_opcode() when gas==0
             CALL
 
         Args:
             to: Target contract address (checksummed or lowercase hex).
-            calldata: Pre-encoded ABI calldata (use :mod:`pydefi.vm.abi` helpers).
+            calldata: Pre-encoded ABI calldata.
             value: ETH value to forward with the call (wei), default 0.
             gas: Gas limit for the sub-call (0 = forward all remaining gas).
             require_success: If ``True`` (default), revert if the sub-call fails.
@@ -545,10 +600,12 @@ class Program:
             ``self`` for chaining.
         """
         return (
-            self._emit(push_bytes(calldata))
+            self._emit(push_u256(0))  # retSize
+            ._emit(push_u256(0))  # retOffset
+            ._emit(push_bytes(calldata))  # argsOffset (TOS), argsLen
             ._emit(push_u256(value))
             ._emit(push_addr(to))
-            ._emit(push_u256(gas))
+            ._emit(gas_opcode() if gas == 0 else push_u256(gas))
             ._emit(call(require_success))
         )
 
@@ -741,7 +798,9 @@ class Program:
         Returns:
             ``self`` for chaining.
         """
-        self._emit(push_bytes(calldata))  # [bufIdx]
+        self._emit(push_u256(0))  # retSize
+        self._emit(push_u256(0))  # retOffset
+        self._emit(push_bytes(calldata))  # argsOffset (TOS), argsLen
 
         for offset, size, opcodes in patches:
             if size not in (20, 32):
@@ -760,10 +819,10 @@ class Program:
             else:
                 self._emit(patch_u256(offset))
 
-        # Stack now: [bufIdx] — ready for CALL prologue
+        # Stack now: [argsOffset(TOS), argsLen, retOffset, retSize] — ready for CALL prologue
         self._emit(push_u256(value))
         self._emit(push_addr(to))
-        self._emit(push_u256(gas))
+        self._emit(gas_opcode() if gas == 0 else push_u256(gas))
         self._emit(call(require_success))
         return self
 

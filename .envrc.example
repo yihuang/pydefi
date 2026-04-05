@@ -1,0 +1,4 @@
+use nix -p python313 uv ruff
+export VIRTUAL_ENV=.venv
+layout python3
+dotenv
