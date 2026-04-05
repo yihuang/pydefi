@@ -243,7 +243,7 @@ PatchSource = bytes
 #: A single patch descriptor: ``(calldata_offset, size, opcodes)`` where:
 #:
 #: - *calldata_offset*: byte offset inside the calldata template to overwrite.
-#: - *size*: number of bytes to overwrite (must be 20 or 32).
+#: - *size*: number of bytes to overwrite (0, 32].
 #: - *opcodes*: :data:`PatchSource` — raw bytecode that pushes the patch value.
 PatchSpec = tuple[int, int, PatchSource]
 
