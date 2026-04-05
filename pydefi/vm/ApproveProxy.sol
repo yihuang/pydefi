@@ -1,6 +1,14 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
+interface IERC20 {
+    function transferFrom(address from, address to, uint256 amount) external returns (bool);
+}
+
+interface IDeFiVM {
+    function execute(bytes calldata program) external payable;
+}
+
 /**
  * @title ApproveProxy
  * @notice A proxy entry-point that lets users safely grant ERC-20 token
@@ -63,29 +71,18 @@ contract ApproveProxy {
      *                 before program execution.  May be empty.
      */
     function execute(bytes calldata program, Deposit[] calldata deposits) external payable {
-        address _vm = vm;
+        IDeFiVM _vm = IDeFiVM(vm);
         for (uint256 i = 0; i < deposits.length; i++) {
-            _safeTransferFrom(deposits[i].token, msg.sender, _vm, deposits[i].amount);
+            _safeTransferFrom(deposits[i].token, msg.sender, address(_vm), deposits[i].amount);
         }
-        (bool success, ) = _vm.call{value: msg.value}(
-            abi.encodeWithSignature("execute(bytes)", program)
-        );
-        if (!success) {
-            assembly {
-                returndatacopy(0, 0, returndatasize())
-                revert(0, returndatasize())
-            }
-        }
+        _vm.execute{value: msg.value}(program);
     }
 
     /**
      * @dev Call ``token.transferFrom(from, to, amount)`` and revert on failure.
-     *      Handles both tokens that return a bool and tokens that return nothing.
      */
     function _safeTransferFrom(address token, address from, address to, uint256 amount) internal {
-        (bool ok, bytes memory ret) = token.call(
-            abi.encodeWithSignature("transferFrom(address,address,uint256)", from, to, amount)
-        );
-        require(ok && (ret.length == 0 || abi.decode(ret, (bool))), "ApproveProxy: deposit failed");
+        bool ok = IERC20(token).transferFrom(from, to, amount);
+        require(ok, "ApproveProxy: deposit failed");
     }
 }
