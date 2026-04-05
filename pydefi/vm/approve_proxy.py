@@ -73,7 +73,6 @@ ABI = [
         "outputs": [{"name": "", "type": "address"}],
         "stateMutability": "view",
     },
-    {"type": "receive", "stateMutability": "payable"},
 ]
 
 

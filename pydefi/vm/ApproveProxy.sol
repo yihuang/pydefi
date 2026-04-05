@@ -28,7 +28,7 @@ pragma solidity ^0.8.24;
  * Usage
  * -----
  * 1. User: ``token.approve(approveProxy, amount)``  — once per token/session.
- * 2. User: ``approveProxy.execute{value: v}(program, deposits)``
+ * 2. User: ``approveProxy.execute(program, deposits)``
  *           where ``deposits`` lists the tokens and amounts to pull into DeFiVM.
  * 3. DeFiVM program operates on the deposited tokens (e.g. calls
  *    ``token.transfer(recipient, amount)`` from the VM's balance).
@@ -65,15 +65,7 @@ contract ApproveProxy {
     function execute(bytes calldata program, Deposit[] calldata deposits) external payable {
         address _vm = vm;
         for (uint256 i = 0; i < deposits.length; i++) {
-            (bool ok, bytes memory ret) = deposits[i].token.call(
-                abi.encodeWithSignature(
-                    "transferFrom(address,address,uint256)",
-                    msg.sender,
-                    _vm,
-                    deposits[i].amount
-                )
-            );
-            require(ok && (ret.length == 0 || abi.decode(ret, (bool))), "ApproveProxy: deposit failed");
+            _safeTransferFrom(deposits[i].token, msg.sender, _vm, deposits[i].amount);
         }
         (bool success, ) = _vm.call{value: msg.value}(
             abi.encodeWithSignature("execute(bytes)", program)
@@ -86,6 +78,14 @@ contract ApproveProxy {
         }
     }
 
-    /// @notice Allow the proxy to receive ETH.
-    receive() external payable {}
+    /**
+     * @dev Call ``token.transferFrom(from, to, amount)`` and revert on failure.
+     *      Handles both tokens that return a bool and tokens that return nothing.
+     */
+    function _safeTransferFrom(address token, address from, address to, uint256 amount) internal {
+        (bool ok, bytes memory ret) = token.call(
+            abi.encodeWithSignature("transferFrom(address,address,uint256)", from, to, amount)
+        );
+        require(ok && (ret.length == 0 || abi.decode(ret, (bool))), "ApproveProxy: deposit failed");
+    }
 }
