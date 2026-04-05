@@ -91,7 +91,7 @@ class TestDeriveAddress:
     def test_solana_address(self):
         phrase = generate_mnemonic()
         addr = derive_address(phrase, "solana")
-        # Solana addresses are base58, 32-44 chars
+        # Solana addresses are Base58, 32-44 chars
         assert len(addr) > 30
 
 

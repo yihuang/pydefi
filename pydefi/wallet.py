@@ -85,7 +85,7 @@ def derive_address(mnemonic: str, chain: str, index: int = 0) -> str:
         Chain-native address string.
     """
     _require_ows()
-    return _ows.derive_address(mnemonic, chain, index if index else None)
+    return _ows.derive_address(mnemonic, chain, index)
 
 
 def create_wallet(
