@@ -9,9 +9,9 @@ Uniswap V3 uses concentrated liquidity with discrete fee tiers:
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import NamedTuple
+from typing import Annotated
 
-from eth_contract import Contract
+from eth_contract import ABIStruct, Contract
 from web3 import AsyncWeb3
 
 from pydefi.amm.base import BaseAMM
@@ -19,84 +19,90 @@ from pydefi.exceptions import InsufficientLiquidityError
 from pydefi.types import SwapRoute, SwapStep, Token, TokenAmount
 
 # ---------------------------------------------------------------------------
-# ABI struct NamedTuples
-#
-# NamedTuple is a subclass of tuple, so eth_abi's TupleEncoder accepts these
-# directly while keeping fields readable by name.
+# ABI struct definitions (annotated classes)
 # ---------------------------------------------------------------------------
 
 
-class QuoteExactInputSingleParams(NamedTuple):
+class QuoteExactInputSingleParams(ABIStruct):
     """Params struct for ``QuoterV2.quoteExactInputSingle``."""
 
-    tokenIn: str
-    tokenOut: str
-    amountIn: int
-    fee: int
-    sqrtPriceLimitX96: int
+    tokenIn: Annotated[str, "address"]
+    tokenOut: Annotated[str, "address"]
+    amountIn: Annotated[int, "uint256"]
+    fee: Annotated[int, "uint24"]
+    sqrtPriceLimitX96: Annotated[int, "uint160"]
 
 
-class QuoteExactOutputSingleParams(NamedTuple):
+class QuoteExactOutputSingleParams(ABIStruct):
     """Params struct for ``QuoterV2.quoteExactOutputSingle``."""
 
-    tokenIn: str
-    tokenOut: str
-    amount: int
-    fee: int
-    sqrtPriceLimitX96: int
+    tokenIn: Annotated[str, "address"]
+    tokenOut: Annotated[str, "address"]
+    amount: Annotated[int, "uint256"]
+    fee: Annotated[int, "uint24"]
+    sqrtPriceLimitX96: Annotated[int, "uint160"]
 
 
-class ExactInputSingleParams(NamedTuple):
+class ExactInputSingleParams(ABIStruct):
     """Params struct for ``SwapRouter.exactInputSingle``."""
 
-    tokenIn: str
-    tokenOut: str
-    fee: int
-    recipient: str
-    deadline: int
-    amountIn: int
-    amountOutMinimum: int
-    sqrtPriceLimitX96: int
+    tokenIn: Annotated[str, "address"]
+    tokenOut: Annotated[str, "address"]
+    fee: Annotated[int, "uint24"]
+    recipient: Annotated[str, "address"]
+    deadline: Annotated[int, "uint256"]
+    amountIn: Annotated[int, "uint256"]
+    amountOutMinimum: Annotated[int, "uint256"]
+    sqrtPriceLimitX96: Annotated[int, "uint160"]
 
 
-class ExactInputParams(NamedTuple):
+class ExactInputParams(ABIStruct):
     """Params struct for ``SwapRouter.exactInput``."""
 
-    path: bytes
-    recipient: str
-    deadline: int
-    amountIn: int
-    amountOutMinimum: int
+    path: Annotated[bytes, "bytes"]
+    recipient: Annotated[str, "address"]
+    deadline: Annotated[int, "uint256"]
+    amountIn: Annotated[int, "uint256"]
+    amountOutMinimum: Annotated[int, "uint256"]
 
 
-class ExactOutputSingleParams(NamedTuple):
+class ExactOutputSingleParams(ABIStruct):
     """Params struct for ``SwapRouter.exactOutputSingle``."""
 
-    tokenIn: str
-    tokenOut: str
-    fee: int
-    recipient: str
-    deadline: int
-    amountOut: int
-    amountInMaximum: int
-    sqrtPriceLimitX96: int
+    tokenIn: Annotated[str, "address"]
+    tokenOut: Annotated[str, "address"]
+    fee: Annotated[int, "uint24"]
+    recipient: Annotated[str, "address"]
+    deadline: Annotated[int, "uint256"]
+    amountOut: Annotated[int, "uint256"]
+    amountInMaximum: Annotated[int, "uint256"]
+    sqrtPriceLimitX96: Annotated[int, "uint160"]
 
 
 # ---------------------------------------------------------------------------
 # ABI fragments
 # ---------------------------------------------------------------------------
 
-_QUOTER_V2_ABI = [
-    "function quoteExactInputSingle((address tokenIn, address tokenOut, uint256 amountIn, uint24 fee, uint160 sqrtPriceLimitX96) params) external returns (uint256 amountOut, uint160 sqrtPriceX96After, uint32 initializedTicksCrossed, uint256 gasEstimate)",
-    "function quoteExactOutputSingle((address tokenIn, address tokenOut, uint256 amount, uint24 fee, uint160 sqrtPriceLimitX96) params) external returns (uint256 amountIn, uint160 sqrtPriceX96After, uint32 initializedTicksCrossed, uint256 gasEstimate)",
-    "function quoteExactInput(bytes path, uint256 amountIn) external returns (uint256 amountOut, uint160[] sqrtPriceX96AfterList, uint32[] initializedTicksCrossedList, uint256 gasEstimate)",
-]
+_QUOTER_V2_ABI = (
+    QuoteExactInputSingleParams.human_readable_abi()
+    + QuoteExactOutputSingleParams.human_readable_abi()
+    + [
+        "function quoteExactInputSingle(QuoteExactInputSingleParams params) external returns (uint256 amountOut, uint160 sqrtPriceX96After, uint32 initializedTicksCrossed, uint256 gasEstimate)",
+        "function quoteExactOutputSingle(QuoteExactOutputSingleParams params) external returns (uint256 amountIn, uint160 sqrtPriceX96After, uint32 initializedTicksCrossed, uint256 gasEstimate)",
+        "function quoteExactInput(bytes path, uint256 amountIn) external returns (uint256 amountOut, uint160[] sqrtPriceX96AfterList, uint32[] initializedTicksCrossedList, uint256 gasEstimate)",
+    ]
+)
 
-_ROUTER_V3_ABI = [
-    "function exactInputSingle((address tokenIn, address tokenOut, uint24 fee, address recipient, uint256 deadline, uint256 amountIn, uint256 amountOutMinimum, uint160 sqrtPriceLimitX96) params) external payable returns (uint256 amountOut)",
-    "function exactInput((bytes path, address recipient, uint256 deadline, uint256 amountIn, uint256 amountOutMinimum) params) external payable returns (uint256 amountOut)",
-    "function exactOutputSingle((address tokenIn, address tokenOut, uint24 fee, address recipient, uint256 deadline, uint256 amountOut, uint256 amountInMaximum, uint160 sqrtPriceLimitX96) params) external payable returns (uint256 amountIn)",
-]
+_ROUTER_V3_ABI = (
+    ExactInputSingleParams.human_readable_abi()
+    + ExactInputParams.human_readable_abi()
+    + ExactOutputSingleParams.human_readable_abi()
+    + [
+        "function exactInputSingle(ExactInputSingleParams params) external payable returns (uint256 amountOut)",
+        "function exactInput(ExactInputParams params) external payable returns (uint256 amountOut)",
+        "function exactOutputSingle(ExactOutputSingleParams params) external payable returns (uint256 amountIn)",
+    ]
+)
 
 _FACTORY_V3_ABI = [
     "function getPool(address tokenA, address tokenB, uint24 fee) external view returns (address pool)",

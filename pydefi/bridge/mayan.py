@@ -13,10 +13,10 @@ from __future__ import annotations
 
 import os
 from decimal import Decimal
-from typing import Any, Optional
+from typing import Annotated, Any, Optional
 
 import aiohttp
-from eth_contract import Contract
+from eth_contract import ABIStruct, Contract
 
 from pydefi.bridge.base import BaseBridge
 from pydefi.exceptions import BridgeError
@@ -86,6 +86,30 @@ _CHAIN_WETH: dict[int, str] = {
     59144: "0xe5D7C2a44FfDDf6b295A15c148167daaAf5Cf34f",  # Linea
 }
 
+# ---------------------------------------------------------------------------
+# ABI struct definitions (annotated classes)
+# ---------------------------------------------------------------------------
+
+
+class MayanSwiftOrderParams(ABIStruct):
+    """OrderParams struct for ``MayanSwift.createOrderWithToken`` (V2)."""
+
+    payloadType: Annotated[int, "uint8"]
+    trader: Annotated[bytes, "bytes32"]
+    destAddr: Annotated[bytes, "bytes32"]
+    destChainId: Annotated[int, "uint16"]
+    referrerAddr: Annotated[bytes, "bytes32"]
+    tokenOut: Annotated[bytes, "bytes32"]
+    minAmountOut: Annotated[int, "uint64"]
+    gasDrop: Annotated[int, "uint64"]
+    cancelFee: Annotated[int, "uint64"]
+    refundFee: Annotated[int, "uint64"]
+    deadline: Annotated[int, "uint64"]
+    referrerBps: Annotated[int, "uint8"]
+    auctionMode: Annotated[int, "uint8"]
+    random: Annotated[bytes, "bytes32"]
+
+
 # MayanForwarder ABI fragments (only the methods we use)
 _FORWARDER_ABI = [
     "function forwardEth(address mayanProtocol, bytes protocolData) external payable",
@@ -102,17 +126,17 @@ _FORWARDER_ABI = [
 
 # MayanSwift V2 ABI fragment for createOrderWithToken.
 # The OrderParams struct field order differs from V1.
-_SWIFT_V2_ABI = [
-    "function createOrderWithToken("
-    "  address tokenIn,"
-    "  uint256 amountIn,"
-    "  (uint8 payloadType, bytes32 trader, bytes32 destAddr, uint16 destChainId,"
-    "   bytes32 referrerAddr, bytes32 tokenOut, uint64 minAmountOut, uint64 gasDrop,"
-    "   uint64 cancelFee, uint64 refundFee, uint64 deadline,"
-    "   uint8 referrerBps, uint8 auctionMode, bytes32 random) params,"
-    "  bytes customPayload"
-    ") external returns (bytes32 orderHash)",
-]
+_SWIFT_V2_ABI = (
+    MayanSwiftOrderParams.human_readable_abi()
+    + [
+        "function createOrderWithToken("
+        "  address tokenIn,"
+        "  uint256 amountIn,"
+        "  MayanSwiftOrderParams params,"
+        "  bytes customPayload"
+        ") external returns (bytes32 orderHash)",
+    ]
+)
 
 
 def _addr_to_bytes32(addr: str) -> bytes:
@@ -409,22 +433,22 @@ class Mayan(BaseBridge):
         dest_addr_b32 = _addr_to_bytes32(recipient)
         referrer_b32 = _addr_to_bytes32(referrer) if referrer else bytes(32)
 
-        # SWIFT V2 OrderParams tuple (field order differs from V1)
-        order_tuple = (
-            0,  # uint8 payloadType (0 = default, no custom payload)
-            trader_b32,  # bytes32 trader
-            dest_addr_b32,  # bytes32 destAddr
-            dest_wh_chain,  # uint16 destChainId
-            referrer_b32,  # bytes32 referrerAddr
-            token_out_b32,  # bytes32 tokenOut
-            min_amount_out,  # uint64 minAmountOut
-            gas_drop,  # uint64 gasDrop
-            cancel_fee,  # uint64 cancelFee
-            refund_fee,  # uint64 refundFee
-            deadline,  # uint64 deadline
-            0,  # uint8 referrerBps
-            auction_mode,  # uint8 auctionMode
-            random_b32,  # bytes32 random
+        # SWIFT V2 OrderParams (field order differs from V1)
+        order_params = MayanSwiftOrderParams(
+            payloadType=0,  # 0 = default, no custom payload
+            trader=trader_b32,
+            destAddr=dest_addr_b32,
+            destChainId=dest_wh_chain,
+            referrerAddr=referrer_b32,
+            tokenOut=token_out_b32,
+            minAmountOut=min_amount_out,
+            gasDrop=gas_drop,
+            cancelFee=cancel_fee,
+            refundFee=refund_fee,
+            deadline=deadline,
+            referrerBps=0,
+            auctionMode=auction_mode,
+            random=random_b32,
         )
 
         # Step 3 — fetch ETH→WETH swap calldata from the Mayan get-swap/evm API.
@@ -459,7 +483,7 @@ class Mayan(BaseBridge):
         swift_calldata: bytes = swift_c.fns.createOrderWithToken(
             swift_input_contract,  # address tokenIn (the WETH the SWIFT contract receives)
             effective_amount_in,  # uint256 amountIn
-            order_tuple,  # OrderParams
+            order_params,  # OrderParams
             b"",  # bytes customPayload (empty = default)
         ).data
 

@@ -11,9 +11,9 @@ Docs: https://docs.layerzero.network/v2/developers/evm/oft/quickstart
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any
 
-from eth_contract import Contract
+from eth_contract import ABIStruct, Contract
 from hexbytes import HexBytes
 from web3 import AsyncWeb3, Web3
 
@@ -22,15 +22,43 @@ from pydefi.exceptions import BridgeError
 from pydefi.types import BridgeQuote, Token, TokenAmount
 
 # ---------------------------------------------------------------------------
+# ABI struct definitions (annotated classes)
+# ---------------------------------------------------------------------------
+
+
+class OFTSendParam(ABIStruct):
+    """SendParam struct for LayerZero OFT ``quoteSend`` and ``send``."""
+
+    dstEid: Annotated[int, "uint32"]
+    to: Annotated[bytes, "bytes32"]
+    amountLD: Annotated[int, "uint256"]
+    minAmountLD: Annotated[int, "uint256"]
+    extraOptions: Annotated[bytes, "bytes"]
+    composeMsg: Annotated[bytes, "bytes"]
+    oftCmd: Annotated[bytes, "bytes"]
+
+
+class MessagingFee(ABIStruct):
+    """MessagingFee struct for LayerZero OFT ``send``."""
+
+    nativeFee: Annotated[int, "uint256"]
+    lzTokenFee: Annotated[int, "uint256"]
+
+
+# ---------------------------------------------------------------------------
 # ABI fragments
 # ---------------------------------------------------------------------------
 
-_OFT_ABI = [
-    # quoteSend(SendParam, payInLzToken) -> MessagingFee
-    "function quoteSend((uint32 dstEid, bytes32 to, uint256 amountLD, uint256 minAmountLD, bytes extraOptions, bytes composeMsg, bytes oftCmd) _sendParam, bool _payInLzToken) external view returns (uint256 nativeFee, uint256 lzTokenFee)",
-    # send(SendParam, MessagingFee, refundAddress) -> (MessagingReceipt, OFTReceipt)
-    "function send((uint32 dstEid, bytes32 to, uint256 amountLD, uint256 minAmountLD, bytes extraOptions, bytes composeMsg, bytes oftCmd) _sendParam, (uint256 nativeFee, uint256 lzTokenFee) _fee, address _refundAddress) external payable",
-]
+_OFT_ABI = (
+    OFTSendParam.human_readable_abi()
+    + MessagingFee.human_readable_abi()
+    + [
+        # quoteSend(SendParam, payInLzToken) -> MessagingFee
+        "function quoteSend(OFTSendParam _sendParam, bool _payInLzToken) external view returns (uint256 nativeFee, uint256 lzTokenFee)",
+        # send(SendParam, MessagingFee, refundAddress) -> (MessagingReceipt, OFTReceipt)
+        "function send(OFTSendParam _sendParam, MessagingFee _fee, address _refundAddress) external payable",
+    ]
+)
 
 # LayerZero v2 endpoint IDs (EIDs) mapped from EVM chain IDs.
 # See: https://docs.layerzero.network/v2/developers/evm/technical-reference/deployed-contracts
@@ -156,14 +184,14 @@ class LayerZeroOFT(BaseBridge):
         to_bytes32 = self._address_to_bytes32(recipient)
         min_amount = self._apply_slippage(amount, slippage_bps)
 
-        send_param = (
-            dst_eid,
-            to_bytes32,
-            amount,
-            min_amount,
-            b"",  # extraOptions
-            b"",  # composeMsg
-            b"",  # oftCmd
+        send_param = OFTSendParam(
+            dstEid=dst_eid,
+            to=to_bytes32,
+            amountLD=amount,
+            minAmountLD=min_amount,
+            extraOptions=b"",
+            composeMsg=b"",
+            oftCmd=b"",
         )
 
         try:
@@ -249,18 +277,18 @@ class LayerZeroOFT(BaseBridge):
         to_bytes32 = self._address_to_bytes32(recipient)
         min_amount = self._apply_slippage(amount_in.amount, slippage_bps)
 
-        send_param = (
-            dst_eid,
-            to_bytes32,
-            amount_in.amount,
-            min_amount,
-            b"",  # extraOptions
-            b"",  # composeMsg
-            b"",  # oftCmd
+        send_param = OFTSendParam(
+            dstEid=dst_eid,
+            to=to_bytes32,
+            amountLD=amount_in.amount,
+            minAmountLD=min_amount,
+            extraOptions=b"",
+            composeMsg=b"",
+            oftCmd=b"",
         )
 
         native_fee = await self.quote_send_fee(amount_in.amount, recipient, slippage_bps)
-        messaging_fee = (native_fee, 0)  # (nativeFee, lzTokenFee)
+        messaging_fee = MessagingFee(nativeFee=native_fee, lzTokenFee=0)
 
         call_data = self._oft.fns.send(send_param, messaging_fee, _refund).data
 
