@@ -945,10 +945,12 @@ async def ctx(swap_fork_w3, compiled_vm, compiled_mock_contracts, interpreter_ad
     router_address = await _deploy(w3, router_compiled, deployer)
     router = w3.eth.contract(address=router_address, abi=router_compiled["abi"])
 
-    # Mint tokens to pools so they can give them out in flash swaps
-    mint_amount = 10**24
-    await token.functions.mint(v3pool_address, mint_amount).transact({"from": deployer})
-    await token.functions.mint(v2pool_address, mint_amount).transact({"from": deployer})
+    # Mint a large supply of mock tokens to each pool so they have enough
+    # to give out in flash-swap simulation calls.
+    # 10**24 = 1 million tokens with 18 decimal places.
+    pool_initial_mint = 10**24
+    await token.functions.mint(v3pool_address, pool_initial_mint).transact({"from": deployer})
+    await token.functions.mint(v2pool_address, pool_initial_mint).transact({"from": deployer})
 
     return {
         "w3": w3,
