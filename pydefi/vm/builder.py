@@ -205,8 +205,6 @@ from pydefi.vm.program import (
     lt,
     mod,
     mul,
-    patch_addr,
-    patch_u256,
     patch_value,
     pop,
     push_addr,
@@ -553,11 +551,11 @@ class Program:
 
     def patch_u256(self, offset: int) -> "Program":
         """Emit PATCH_U256 at *offset*."""
-        return self._emit(patch_u256(offset))
+        return self._emit(patch_value(offset, 32))
 
     def patch_addr(self, offset: int) -> "Program":
         """Emit PATCH_ADDR at *offset*."""
-        return self._emit(patch_addr(offset))
+        return self._emit(patch_value(offset, 20))
 
     def ret_u256(self, offset: int) -> "Program":
         """Emit RET_U256 — push uint256 from last returndata at *offset*."""

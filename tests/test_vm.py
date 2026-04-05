@@ -59,8 +59,7 @@ from pydefi.vm.program import (
     lt,
     mod,
     mul,
-    patch_addr,
-    patch_u256,
+    patch_value,
     pop,
     push_addr,
     push_bytes,
@@ -159,10 +158,10 @@ class TestProgramInstructionEmission:
         assert Program().mod().build() == mod()
 
     def test_patch_u256(self):
-        assert Program().patch_u256(4).build() == patch_u256(4)
+        assert Program().patch_u256(4).build() == patch_value(4, 32)
 
     def test_patch_addr(self):
-        assert Program().patch_addr(16).build() == patch_addr(16)
+        assert Program().patch_addr(16).build() == patch_value(16, 20)
 
     def test_ret_u256(self):
         assert Program().ret_u256(0).build() == ret_u256(0)
@@ -610,7 +609,7 @@ class TestCallWithPatches:
         assert actual == expected
 
     def test_bytes_u256_patch(self):
-        """Bytes opcodes for u256 patch: emits opcodes + patch_u256."""
+        """Bytes opcodes for u256 patch: emits opcodes + patch_value(4, 32)."""
         cd = self._template()
         # Manually build equivalent low-level sequence
         expected = (
@@ -618,7 +617,7 @@ class TestCallWithPatches:
             + push_u256(0)  # retSize, retOffset
             + push_bytes(cd)
             + push_u256(42)
-            + patch_u256(4)
+            + patch_value(4, 32)
             + push_u256(0)  # value
             + push_addr(ADDR_A)
             + gas_opcode()  # gas (forward all)
@@ -628,14 +627,14 @@ class TestCallWithPatches:
         assert actual == expected
 
     def test_bytes_addr_patch(self):
-        """Bytes opcodes for addr patch: emits opcodes + patch_addr."""
+        """Bytes opcodes for addr patch: emits opcodes + patch_value(16, 20)."""
         cd = self._template()
         expected = (
             push_u256(0)
             + push_u256(0)  # retSize, retOffset
             + push_bytes(cd)
             + push_addr(ADDR_B)
-            + patch_addr(16)
+            + patch_value(16, 20)
             + push_u256(0)
             + push_addr(ADDR_A)
             + gas_opcode()  # gas (forward all)
@@ -645,14 +644,14 @@ class TestCallWithPatches:
         assert actual == expected
 
     def test_ret_u256_patch(self):
-        """ret_u256(offset) bytes emits ret_u256 + patch_u256."""
+        """ret_u256(offset) bytes emits ret_u256 + patch_value(4, 32)."""
         cd = self._template()
         expected = (
             push_u256(0)
             + push_u256(0)  # retSize, retOffset
             + push_bytes(cd)
             + ret_u256(0)
-            + patch_u256(4)
+            + patch_value(4, 32)
             + push_u256(0)
             + push_addr(ADDR_A)
             + gas_opcode()
@@ -662,14 +661,14 @@ class TestCallWithPatches:
         assert actual == expected
 
     def test_reg_patch(self):
-        """load_reg(idx) bytes emits load_reg + patch_u256."""
+        """load_reg(idx) bytes emits load_reg + patch_value(4, 32)."""
         cd = self._template()
         expected = (
             push_u256(0)
             + push_u256(0)  # retSize, retOffset
             + push_bytes(cd)
             + load_reg(3)
-            + patch_u256(4)
+            + patch_value(4, 32)
             + push_u256(0)
             + push_addr(ADDR_A)
             + gas_opcode()
@@ -679,14 +678,14 @@ class TestCallWithPatches:
         assert actual == expected
 
     def test_reg_patch_addr(self):
-        """load_reg(idx) with size=20 emits load_reg + patch_addr."""
+        """load_reg(idx) with size=20 emits load_reg + patch_value(16, 20)."""
         cd = self._template()
         expected = (
             push_u256(0)
             + push_u256(0)  # retSize, retOffset
             + push_bytes(cd)
             + load_reg(5)
-            + patch_addr(16)
+            + patch_value(16, 20)
             + push_u256(0)
             + push_addr(ADDR_A)
             + gas_opcode()
@@ -703,9 +702,9 @@ class TestCallWithPatches:
             + push_u256(0)  # retSize, retOffset
             + push_bytes(cd)
             + push_u256(100)
-            + patch_u256(4)
+            + patch_value(4, 32)
             + push_addr(ADDR_B)
-            + patch_addr(4 + 32 + 12)
+            + patch_value(4 + 32 + 12, 20)
             + push_u256(0)
             + push_addr(ADDR_A)
             + gas_opcode()  # gas (forward all)

@@ -553,43 +553,11 @@ def balance_of() -> bytes:
 # ---------------------------------------------------------------------------
 
 
-def patch_u256(offset: int) -> bytes:
-    """Overwrite a 32-byte word in the calldata buffer at *offset*.
-
-    Stack before: [value(TOS), argsOffset(2nd), argsLen(3rd), ...]
-    Stack after:  [argsOffset(TOS), argsLen(2nd), ...]
-    """
-    return bytes([_DUP2, _PUSH2, offset >> 8, offset & 0xFF, OP_ADD, OP_MSTORE])
-
-
-def patch_addr(offset: int) -> bytes:
-    """Overwrite a 20-byte address in the calldata buffer at *offset*.
-
-    ABI places the 20-byte address at ``[offset..offset+19]``, so the
-    32-byte MSTORE target is at ``offset - 12``.
-
-    Stack before: [addr(TOS), argsOffset(2nd), argsLen(3rd), ...]
-    Stack after:  [argsOffset(TOS), argsLen(2nd), ...]
-    """
-    if offset < 12:
-        raise ValueError(
-            f"patch_addr: offset must be >= 12 (got {offset}); "
-            "the 20-byte address occupies [offset..offset+19] so MSTORE "
-            "must land at offset-12 >= 0"
-        )
-    mstore_off = offset - 12
-    if mstore_off > 0xFFFF:
-        raise ValueError(f"patch_addr: mstore offset {mstore_off} exceeds 16-bit PUSH2 range")
-    return bytes([_DUP2, _PUSH2, mstore_off >> 8, mstore_off & 0xFF, OP_ADD, OP_MSTORE])
-
-
 def patch_value(offset: int, size: int) -> bytes:
     """Overwrite a ``size``-byte value in the calldata buffer at *offset*.
 
     ABI right-aligns values shorter than 32 bytes within a 32-byte word, so the
-    MSTORE target is ``offset + size - 32``.  For ``size == 32`` this is identical
-    to :func:`patch_u256`; for ``size == 20`` it is identical to
-    :func:`patch_addr`.
+    MSTORE target is ``offset + size - 32``.
 
     Args:
         offset: Byte offset of the value's first byte inside the calldata buffer.
