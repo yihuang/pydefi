@@ -174,7 +174,6 @@ two separate destinations using arithmetic and composition::
 
 from __future__ import annotations
 
-import os
 import struct
 
 from pydefi.vm.program import (
@@ -370,175 +369,49 @@ def _validate_patch_type(type_str: str) -> None:
     )
 
 
-def _make_needle(type_str: str) -> tuple[object, bytes]:
-    """Return *(python_value, abi_encoded_32bytes)* for a unique integer sentinel.
-
-    Used as a fallback for :class:`Patch` instances inside ABI array arguments,
-    where the hook-based offset detection cannot be applied (array encoders do not
-    support callable hooks).  Each call produces an independent random value so
-    needle collisions are vanishingly unlikely.
-
-    Args:
-        type_str: Solidity canonical type, e.g. ``"uint256"`` or ``"int128"``.
-
-    Raises:
-        ValueError: If *type_str* is not a supported integer type or is too narrow.
-    """
-    type_str = type_str.strip()
-    _validate_patch_type(type_str)
-
-    is_signed = type_str.startswith("int") and not type_str.startswith("uint")
-    base = "int" if is_signed else "uint"
-    bits_str = type_str[len(base) :]
-    bits = int(bits_str) if bits_str.isdigit() else 256
-    byte_width = bits // 8  # e.g. 32 for uint256 / int256
-    payload = os.urandom(byte_width)
-    if is_signed:
-        # Mask the sign bit to guarantee a non-negative value within int<N> range.
-        payload = bytes([payload[0] & 0x7F]) + payload[1:]
-    abi_enc = b"\x00" * (32 - byte_width) + payload  # 32-byte ABI slot
-    val = int.from_bytes(abi_enc, "big")
-    return val, abi_enc
-
-
-def _replace_with_needles(
-    arg: object,
-    type_str: str,
-    needle_patterns: list[tuple[bytes, "Patch"]],
-) -> object:
-    """Recursively replace :class:`Patch` instances with unique needle values.
-
-    Used as a fallback for array arguments where callable hooks are not supported
-    by the ABI array encoder.
-
-    Args:
-        arg: The argument value.
-        type_str: The Solidity canonical type string for *arg*.
-        needle_patterns: Accumulator; each resolved patch appends a
-            ``(32_byte_pattern, Patch)`` entry.
-
-    Returns:
-        *arg* with every :class:`Patch` replaced by its needle Python value.
-    """
-    if isinstance(arg, Patch):
-        python_val, abi_enc = _make_needle(type_str.strip())
-        needle_patterns.append((abi_enc, arg))
-        return python_val
-
-    type_str = type_str.strip()
-
-    if isinstance(arg, list):
-        elem_type = _strip_array_suffix(type_str)
-        if elem_type is not None:
-            return [_replace_with_needles(a, elem_type, needle_patterns) for a in arg]
-        return arg
-
-    if type_str.startswith("(") and isinstance(arg, tuple):
-        component_types = _parse_tuple_component_types(type_str)
-        return tuple(
-            _replace_with_needles(sub_arg, sub_type, needle_patterns) for sub_arg, sub_type in zip(arg, component_types)
-        )
-
-    return arg
-
-
-def _make_patch_hook(
-    patch_obj: "Patch",
-    hook_patches: list,
-    outer_base: int,
-    type_str: str,
-) -> object:
-    """Create a callable hook for *patch_obj* that records its absolute calldata offset.
-
-    The hook is designed to be consumed by ``eth_abi``'s ``TupleEncoder`` when it
-    encounters a callable value.  ``TupleEncoder._encode_with_hooks`` calls the
-    hook with ``EncodingContext(offset=ctx_offset, type_str=...)`` where
-    *ctx_offset* is the byte position of this value within the current
-    ``TupleEncoder``'s encoding output.
-
-    The **absolute calldata offset** is::
-
-        4 (selector bytes) + outer_base + ctx.offset
-
-    where *outer_base* is 0 for top-level function arguments (``ctx.offset``
-    already equals the absolute ``encoded_args`` position) and equals the
-    absolute ``encoded_args`` start of the immediately enclosing struct for
-    nested arguments.
-
-    The hook returns 0 as a placeholder so the encoder produces a valid zero-filled
-    32-byte ABI slot that is later patched at runtime.
-
-    Raises:
-        ValueError: If *type_str* is not a patchable integer type.
-    """
-    _validate_patch_type(type_str)
-
-    def hook(ctx, p=patch_obj, base=outer_base):
-        hook_patches.append(("u256", 4 + base + ctx.offset, p.opcodes))
-        return 0
-
-    return hook
-
-
-def _build_arg_with_hooks(
+def _replace_patches_with_hooks(
     arg: object,
     type_str: str,
     hook_patches: list,
-    needle_patterns: list[tuple[bytes, "Patch"]],
-    outer_base: int,
 ) -> object:
-    """Recursively build a hooked version of *arg*, replacing :class:`Patch` objects.
+    """Recursively replace :class:`Patch` instances with callable hooks.
 
-    * :class:`Patch` directly in function args or inside ``tuple`` (struct) args
-      are replaced with callable hooks; the hooks record the exact calldata offset
-      using :func:`_make_patch_hook`.
+    Each :class:`Patch` becomes a callable that ``eth_abi``'s
+    :func:`~eth_abi.encode_with_hooks` will invoke with an
+    :class:`~eth_abi.EncodingContext` reporting the exact byte offset of
+    this value in the encoded output.  The hook appends a ``PatchSpec``
+    with the absolute calldata offset (``4 + ctx.offset``) to
+    *hook_patches* and returns ``0`` as a placeholder value.
 
-    * :class:`Patch` inside ``list`` (ABI array) args fall back to the needle
-      (random sentinel) approach via :func:`_replace_with_needles`, because the
-      ABI array encoder does not support callable hooks.
+    ``eth_abi`` resolves hooks at any nesting depth — inside tuples and
+    inside arrays — so this function only needs to walk the type tree to
+    validate each :class:`Patch` leaf's Solidity type and create the hook
+    callable; the library handles the rest.
 
     Args:
         arg: The argument value to process.
         type_str: Solidity canonical type string for *arg*.
-        hook_patches: Accumulator for hook-resolved ``PatchSpec`` entries.
-        needle_patterns: Accumulator for needle ``(bytes, Patch)`` entries.
-        outer_base: Absolute ``encoded_args`` offset of the enclosing
-            ``TupleEncoder`` level.  Pass 0 for top-level function arguments.
+        hook_patches: Accumulator for resolved ``PatchSpec`` 3-tuples.
     """
-    if isinstance(arg, Patch):
-        return _make_patch_hook(arg, hook_patches, outer_base, type_str=type_str)
-
     type_str = type_str.strip()
 
-    if isinstance(arg, tuple) and type_str.startswith("("):
-        from eth_abi.encoding import _get_encoder_head_size
-        from eth_abi.registry import registry as default_registry
+    if isinstance(arg, Patch):
+        _validate_patch_type(type_str)
 
+        def hook(ctx, p=arg):
+            hook_patches.append(("u256", 4 + ctx.offset, p.opcodes))
+            return 0
+
+        return hook
+
+    if type_str.startswith("(") and isinstance(arg, tuple):
         component_types = _parse_tuple_component_types(type_str)
-        inner_encoders = [default_registry.get_encoder(ct) for ct in component_types]
-        inner_running = 0
-        new_elements: list[object] = []
-        for sub_arg, sub_type, sub_enc in zip(arg, component_types, inner_encoders):
-            if isinstance(sub_arg, Patch):
-                # Direct Patch inside this struct: hook base = outer_base.
-                # TupleEncoder will supply ctx.offset = inner_running.
-                new_elements.append(_make_patch_hook(sub_arg, hook_patches, outer_base, type_str=sub_type))
-            elif isinstance(sub_arg, tuple) and _has_patch(sub_arg):
-                # Nested struct: its data starts at outer_base + inner_running.
-                new_elements.append(
-                    _build_arg_with_hooks(sub_arg, sub_type, hook_patches, needle_patterns, outer_base + inner_running)
-                )
-            elif isinstance(sub_arg, list) and _has_patch(sub_arg):
-                # Array inside struct: fall back to needles.
-                new_elements.append(_replace_with_needles(sub_arg, sub_type, needle_patterns))
-            else:
-                new_elements.append(sub_arg)
-            inner_running += _get_encoder_head_size(sub_enc)
-        return tuple(new_elements)
+        return tuple(_replace_patches_with_hooks(a, t, hook_patches) for a, t in zip(arg, component_types))
 
     if isinstance(arg, list):
-        # Top-level array arg: fall back to needles.
-        return _replace_with_needles(arg, type_str, needle_patterns)
+        elem_type = _strip_array_suffix(type_str)
+        if elem_type is not None:
+            return [_replace_patches_with_hooks(a, elem_type, hook_patches) for a in arg]
 
     return arg
 
@@ -799,22 +672,20 @@ class Program:
         When one or more positional arguments are :class:`Patch` instances the
         method automatically:
 
-        1. For :class:`Patch` values in function arguments or inside ``tuple``
-           (struct) arguments, uses the ``eth_abi`` callable-hook API to detect
-           the exact byte offset of each value during ABI encoding — no random
-           sentinel bytes are required.
-        2. For :class:`Patch` values inside ``list`` (ABI array) arguments,
-           falls back to the random-sentinel ("needle") approach: a unique random
-           integer is encoded in place of each :class:`Patch`, then its offset
-           is located by searching the encoded calldata.
+        1. Replaces each :class:`Patch` (including those nested inside ``tuple``
+           or ``list`` arguments, at any depth) with a callable hook.
+        2. Encodes the full ABI calldata using
+           :func:`eth_abi.encode_with_hooks`, which calls each hook with an
+           :class:`~eth_abi.EncodingContext` carrying the exact byte offset of
+           that value in the encoded output.
         3. Delegates to :meth:`call_with_patches` with ``kind="u256"`` patches
            at the discovered offsets and the :attr:`~Patch.opcodes` as the source.
 
-        This works for ``uint<N>`` and ``int<N>`` parameters with N ≥ 96 bits
-        (the needle fallback used for array elements also requires N ≥ 96).
-        :class:`Patch` may appear as a leaf element *inside* a ``tuple`` argument
-        (any nesting depth) or directly inside an array argument, as long as each
-        patched leaf is a supported ``uint<N>`` or ``int<N>`` type (N ≥ 96).
+        This works for ``uint<N>`` and ``int<N>`` parameters with N ≥ 96 bits.
+        :class:`Patch` may appear as a leaf element at any nesting depth —
+        directly as a function argument, inside a ``tuple`` (struct) argument, or
+        inside a ``list`` (array) argument, including arrays of tuples and
+        multi-dimensional arrays.
         All other types — ``address``, ``bytes<N>``, ``bytes``, ``string`` —
         are not supported for patching.
 
@@ -881,51 +752,17 @@ class Program:
                 f"for signature {abi_sig!r}, got {len(args)}."
             )
 
-        from eth_abi.encoding import _get_encoder_head_size
+        from eth_abi.codec import ABICodec
         from eth_abi.registry import registry as default_registry
 
-        encoders = [default_registry.get_encoder(t) for t in param_types]
-
-        # hook_patches: PatchSpecs collected directly by hook callbacks (no search needed).
-        # needle_patterns: (32-byte-pattern, Patch) pairs for the array fallback.
+        codec = ABICodec(default_registry)
         hook_patches: list[PatchSpec] = []
-        needle_patterns: list[tuple[bytes, Patch]] = []
+        new_args = [_replace_patches_with_hooks(a, t, hook_patches) for a, t in zip(args, param_types)]
 
-        new_args: list[object] = []
-        current_head = 0
-        for arg, ptype, enc in zip(args, param_types, encoders):
-            if _has_patch(arg):
-                if isinstance(arg, Patch):
-                    # Top-level Patch: outer_base=0; TupleEncoder provides the
-                    # absolute encoded_args offset via ctx.offset directly.
-                    new_args.append(_make_patch_hook(arg, hook_patches, outer_base=0, type_str=ptype))
-                else:
-                    # Struct / array arg containing Patches.
-                    # outer_base = start of this arg in encoded_args.
-                    new_args.append(
-                        _build_arg_with_hooks(arg, ptype, hook_patches, needle_patterns, outer_base=current_head)
-                    )
-            else:
-                new_args.append(arg)
-            current_head += _get_encoder_head_size(enc)
+        encoded_args = codec.encode_with_hooks(param_types, new_args)
+        calldata = bytes(fn.selector) + encoded_args
 
-        calldata = fn(*new_args).data
-
-        # hook_patches already have absolute calldata offsets recorded by hooks.
-        patches: list[PatchSpec] = list(hook_patches)
-
-        # Resolve needle patterns (array-element fallback): search in calldata.
-        for idx, (pattern, patch_obj) in enumerate(needle_patterns):
-            offset = calldata.find(pattern)
-            if offset == -1:
-                raise RuntimeError(
-                    f"call_contract_abi: needle for array patch argument {idx} "
-                    "not found in encoded calldata. "
-                    "This is an internal error — please report it."
-                )
-            patches.append(("u256", offset, patch_obj.opcodes))
-
-        return self.call_with_patches(to, calldata, patches, value=value, gas=gas, require_success=require_success)
+        return self.call_with_patches(to, calldata, hook_patches, value=value, gas=gas, require_success=require_success)
 
     def call_with_patches(
         self,
