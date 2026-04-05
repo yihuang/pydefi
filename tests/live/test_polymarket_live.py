@@ -232,9 +232,7 @@ class TestClobApiPublicLive:
         tick = result["minimum_tick_size"]
         # The API may return a float or a string; normalise to float for comparison
         tick_float = float(tick)
-        assert tick_float in (0.1, 0.01, 0.001, 0.0001), (
-            f"tick size {tick_float} should be one of the standard values"
-        )
+        assert tick_float in (0.1, 0.01, 0.001, 0.0001), f"tick size {tick_float} should be one of the standard values"
 
     async def test_get_neg_risk(self, client):
         """get_neg_risk() returns a dict with a 'neg_risk' boolean."""

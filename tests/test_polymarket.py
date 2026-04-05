@@ -220,9 +220,19 @@ class TestSignOrder:
             salt=42,
         )
         required_keys = {
-            "salt", "maker", "signer", "taker", "tokenId",
-            "makerAmount", "takerAmount", "expiration", "nonce",
-            "feeRateBps", "side", "signatureType", "signature",
+            "salt",
+            "maker",
+            "signer",
+            "taker",
+            "tokenId",
+            "makerAmount",
+            "takerAmount",
+            "expiration",
+            "nonce",
+            "feeRateBps",
+            "side",
+            "signatureType",
+            "signature",
         }
         assert required_keys.issubset(order.keys())
 
