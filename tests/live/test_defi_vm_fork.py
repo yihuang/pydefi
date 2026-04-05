@@ -21,10 +21,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from eth_contract.erc20 import ERC20
 from web3 import AsyncWeb3
 from web3.exceptions import ContractLogicError, Web3RPCError
-
-from eth_contract.erc20 import ERC20
 
 from pydefi.vm import Patch, Program
 from pydefi.vm.program import (
