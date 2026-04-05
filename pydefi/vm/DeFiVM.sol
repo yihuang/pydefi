@@ -32,7 +32,8 @@ pragma solidity ^0.8.24;
  * Security assumptions
  * --------------------
  *  1. Never approve tokens directly to this contract.  Approvals can be drained by
- *     any caller because ``execute`` is permissionless.  Use permit signatures instead.
+ *     any caller because ``execute`` is permissionless.  Use ``ApproveProxy``
+ *     (see ``ApproveProxy.sol``) or permit signatures instead.
  *  2. Do not leave token or ETH balances in this contract between transactions.
  *  3. Verify every address in a program and simulate off-chain before broadcasting.
  *  4. Programs run via DELEGATECALL and have full access to DeFiVM's storage.
