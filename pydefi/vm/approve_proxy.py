@@ -3,34 +3,32 @@
 The :class:`ApproveProxy` class provides:
 
 * Solidity source and ABI for the ``ApproveProxy`` contract.
-* Calldata builders used by DeFiVM programs to call
-  ``ApproveProxy.transferFrom(token, recipient, amount)``.
+* A helper for building the ``Deposit`` list passed to
+  ``ApproveProxy.execute(program, deposits)``.
 
 Typical usage::
 
     from pydefi.vm.approve_proxy import ApproveProxy
     from pydefi.vm import Program
-    from pydefi.vm.program import load_reg
+    from eth_contract.erc20 import ERC20
 
     # --- Deploy (once) ---
     proxy_address = await ApproveProxy.deploy(w3, deployer, vm_address)
 
     # --- Off-chain: user approves ERC-20 to the proxy ---
-    # token.approve(proxy_address, amount)
+    # await token.functions.approve(proxy_address, amount).transact({"from": user})
 
-    # --- Build a program that pulls tokens via the proxy ---
+    # --- Build a program that works with tokens already held by DeFiVM ---
     program = (
         Program()
-        .call_contract(
-            proxy_address,
-            ApproveProxy.calldata.transferFrom(token_address, recipient, amount),
-        )
+        .call_contract(token_address, ERC20.fns.transfer(recipient, amount).data)
         .pop()
         .build()
     )
 
-    # --- Execute through the proxy (not directly through DeFiVM) ---
-    await proxy.functions.execute(program).transact({"from": user})
+    # --- Execute through the proxy, depositing tokens into DeFiVM first ---
+    deposits = [{"token": token_address, "amount": amount}]
+    await proxy.functions.execute(program, deposits).transact({"from": user})
 """
 
 from __future__ import annotations
@@ -54,20 +52,19 @@ ABI = [
     {
         "type": "function",
         "name": "execute",
-        "inputs": [{"name": "program", "type": "bytes"}],
-        "outputs": [],
-        "stateMutability": "payable",
-    },
-    {
-        "type": "function",
-        "name": "transferFrom",
         "inputs": [
-            {"name": "token", "type": "address"},
-            {"name": "recipient", "type": "address"},
-            {"name": "amount", "type": "uint256"},
+            {"name": "program", "type": "bytes"},
+            {
+                "name": "deposits",
+                "type": "tuple[]",
+                "components": [
+                    {"name": "token", "type": "address"},
+                    {"name": "amount", "type": "uint256"},
+                ],
+            },
         ],
         "outputs": [],
-        "stateMutability": "nonpayable",
+        "stateMutability": "payable",
     },
     {
         "type": "function",
@@ -102,40 +99,9 @@ def _compile(solc_version: str = "0.8.24") -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Calldata builders
-# ---------------------------------------------------------------------------
-
-class _CalldataBuilders:
-    """Generates ABI-encoded calldata for ``ApproveProxy`` functions.
-
-    Use as ``ApproveProxy.calldata.transferFrom(token, recipient, amount)``
-    to produce a ``bytes`` object suitable for
-    :meth:`~pydefi.vm.builder.Program.call_contract`.
-    """
-
-    @staticmethod
-    def transferFrom(token: str, recipient: str, amount: int) -> bytes:
-        """Encode calldata for ``transferFrom(address,address,uint256)``.
-
-        Args:
-            token:     ERC-20 token address.
-            recipient: Destination address for the tokens.
-            amount:    Number of tokens to transfer (in token's base units).
-
-        Returns:
-            ABI-encoded calldata including the 4-byte function selector.
-        """
-        from eth_abi import encode
-        from eth_utils import keccak
-
-        selector = keccak(b"transferFrom(address,address,uint256)")[:4]
-        encoded = encode(["address", "address", "uint256"], [token, recipient, amount])
-        return selector + encoded
-
-
-# ---------------------------------------------------------------------------
 # Main class
 # ---------------------------------------------------------------------------
+
 
 class ApproveProxy:
     """Helper for the ``ApproveProxy`` Solidity contract.
@@ -150,19 +116,17 @@ class ApproveProxy:
 
     1. Call ``token.approve(proxy_address, amount)`` — grant the proxy ERC-20
        allowance.
-    2. Call ``proxy.execute(program)`` instead of ``vm.execute(program)`` to
-       run DeFiVM programs.  The proxy records ``msg.sender`` before
-       forwarding to DeFiVM.
-    3. Inside the program, call ``proxy.transferFrom(token, recipient, amount)``
-       to pull tokens from the user who triggered step 2.
+    2. Call ``proxy.execute(program, deposits)`` where ``deposits`` is a list of
+       ``{"token": address, "amount": int}`` dicts.  For each deposit, the proxy
+       calls ``token.transferFrom(user, vm, amount)``, moving tokens directly
+       into DeFiVM before running the program.
+    3. The DeFiVM program operates on tokens already held by DeFiVM (e.g. calls
+       ``token.transfer(recipient, amount)`` from the VM's balance).
 
-    Because ``transferFrom`` only works when called by the paired DeFiVM
-    *during* an active ``proxy.execute()`` call, arbitrary ``vm.execute()``
-    callers cannot drain the user's token approvals.
+    Because the proxy only performs ``transferFrom(msg.sender → vm)`` — with the
+    amounts explicitly declared by the caller — there is no shared mutable state
+    and no reentrancy risk.
     """
-
-    #: Calldata builders for ApproveProxy functions.
-    calldata = _CalldataBuilders()
 
     @classmethod
     def compile(cls, solc_version: str = "0.8.24") -> dict:

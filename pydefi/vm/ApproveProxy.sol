@@ -17,26 +17,32 @@ pragma solidity ^0.8.24;
  * --------
  * Users approve ERC-20 tokens to *this* proxy and invoke DeFiVM programs
  * through ``ApproveProxy.execute()`` instead of ``DeFiVM.execute()``.  The
- * proxy records the current caller before forwarding to DeFiVM, and exposes
- * ``transferFrom()`` which programs can call to pull tokens.  Because
- * ``transferFrom()`` only succeeds when called by the paired DeFiVM *during*
- * an active ``ApproveProxy.execute()`` call, arbitrary ``vm.execute()``
- * callers cannot drain user approvals.
+ * proxy pulls the declared token deposits from the caller into DeFiVM *before*
+ * forwarding the program.  Programs then operate on tokens already held by
+ * DeFiVM — no in-program ``transferFrom`` back-channel is required.
+ *
+ * Because the proxy only calls ``token.transferFrom(msg.sender, vm, amount)``
+ * (user → VM, caller-controlled), there is no shared mutable state and no
+ * reentrancy risk.
  *
  * Usage
  * -----
- * 1. User: ``token.approve(approveProxy, amount)``  — one-time or per-session.
- * 2. User: ``approveProxy.execute{value: v}(program)``  — run DeFiVM program.
- * 3. Program: calls ``approveProxy.transferFrom(token, recipient, amount)`` to
- *    pull tokens from the user who triggered step 2.
+ * 1. User: ``token.approve(approveProxy, amount)``  — once per token/session.
+ * 2. User: ``approveProxy.execute{value: v}(program, deposits)``
+ *           where ``deposits`` lists the tokens and amounts to pull into DeFiVM.
+ * 3. DeFiVM program operates on the deposited tokens (e.g. calls
+ *    ``token.transfer(recipient, amount)`` from the VM's balance).
  */
 contract ApproveProxy {
     /// @dev The DeFiVM instance this proxy is paired with.
     address public immutable vm;
 
-    /// @dev Address of the user who initiated the current ``execute()`` call.
-    ///      Zero when no execution is in progress; non-zero during execution.
-    address private _currentSender;
+    /// @notice A single ERC-20 token deposit: token address + amount to pull
+    ///         from the caller into DeFiVM before executing the program.
+    struct Deposit {
+        address token;
+        uint256 amount;
+    }
 
     /// @param _vm Address of the paired DeFiVM contract.
     constructor(address _vm) {
@@ -45,18 +51,34 @@ contract ApproveProxy {
     }
 
     /**
-     * @notice Execute a DeFiVM program, making msg.sender available for token
-     *         transfers inside the program via transferFrom().
-     * @param program Raw EVM bytecode to execute (forwarded to DeFiVM).
+     * @notice Deposit ERC-20 tokens into DeFiVM and then execute a program.
+     *
+     * For each entry in ``deposits``, this function calls
+     * ``token.transferFrom(msg.sender, vm, amount)``, moving the tokens from
+     * the caller directly into the paired DeFiVM contract.  It then forwards
+     * the program (and any ETH) to ``DeFiVM.execute()``.
+     *
+     * @param program  Raw EVM bytecode to execute (forwarded to DeFiVM).
+     * @param deposits List of ERC-20 tokens and amounts to deposit into DeFiVM
+     *                 before program execution.  May be empty.
      */
-    function execute(bytes calldata program) external payable {
-        require(_currentSender == address(0), "ApproveProxy: reentrant call");
-        _currentSender = msg.sender;
-        (bool ok, ) = vm.call{value: msg.value}(
+    function execute(bytes calldata program, Deposit[] calldata deposits) external payable {
+        address _vm = vm;
+        for (uint256 i = 0; i < deposits.length; i++) {
+            (bool ok, bytes memory ret) = deposits[i].token.call(
+                abi.encodeWithSignature(
+                    "transferFrom(address,address,uint256)",
+                    msg.sender,
+                    _vm,
+                    deposits[i].amount
+                )
+            );
+            require(ok && (ret.length == 0 || abi.decode(ret, (bool))), "ApproveProxy: deposit failed");
+        }
+        (bool success, ) = _vm.call{value: msg.value}(
             abi.encodeWithSignature("execute(bytes)", program)
         );
-        _currentSender = address(0);
-        if (!ok) {
+        if (!success) {
             assembly {
                 returndatacopy(0, 0, returndatasize())
                 revert(0, returndatasize())
@@ -64,26 +86,6 @@ contract ApproveProxy {
         }
     }
 
-    /**
-     * @notice Transfer ERC-20 tokens from the current ``execute()`` caller to
-     *         a recipient.  Must be called (indirectly) by the paired DeFiVM
-     *         during an active ``ApproveProxy.execute()`` call.
-     * @dev    Reverts if called outside of an active execution context or by
-     *         any address other than the paired DeFiVM.
-     * @param token     ERC-20 token contract address.
-     * @param recipient Destination address for the tokens.
-     * @param amount    Number of tokens to transfer.
-     */
-    function transferFrom(address token, address recipient, uint256 amount) external {
-        require(msg.sender == vm, "ApproveProxy: caller is not the vm");
-        address owner = _currentSender;
-        require(owner != address(0), "ApproveProxy: no active sender");
-        (bool ok, bytes memory ret) = token.call(
-            abi.encodeWithSignature("transferFrom(address,address,uint256)", owner, recipient, amount)
-        );
-        require(ok && (ret.length == 0 || abi.decode(ret, (bool))), "ApproveProxy: transfer failed");
-    }
-
-    /// @notice Allow the proxy to receive ETH (forwarded to DeFiVM).
+    /// @notice Allow the proxy to receive ETH.
     receive() external payable {}
 }

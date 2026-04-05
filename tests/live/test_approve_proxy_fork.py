@@ -1,15 +1,14 @@
 """Fork tests for ApproveProxy — safe ERC-20 allowance proxy for DeFiVM.
 
 These tests compile ApproveProxy.sol and DeFiVM.sol with py-solc-x, deploy
-them on a local Anvil fork, and exercise the full approval + execution flow:
+them on a local Anvil fork, and exercise the full deposit + execution flow:
 
- - Basic token transfer via ApproveProxy.execute() + program calling
-   proxy.transferFrom()
- - Revert when transferFrom is called directly (outside of execute)
- - Revert when transferFrom is called by address other than the vm
- - Revert when the proxy is called reentrantly
- - Transfer reverts when ERC-20 allowance is insufficient
- - ETH value is correctly forwarded to DeFiVM via proxy.execute()
+ - Single token deposit: tokens move user → DeFiVM, program transfers them
+   to a recipient
+ - Multiple token deposits in one call
+ - Deposit with no tokens (empty deposits list) + ETH forwarding
+ - Insufficient ERC-20 allowance reverts before program runs
+ - vm() accessor returns the correct paired DeFiVM address
 
 Run with::
 
@@ -168,7 +167,7 @@ async def proxy_fork_w3(fork_w3_module):
 
 @pytest.fixture(scope="module")
 async def proxy_ctx(proxy_fork_w3, interpreter_addr):
-    """Deploy DeFiVM, ApproveProxy, and MockToken; return shared context."""
+    """Deploy DeFiVM, ApproveProxy, and two MockTokens; return shared context."""
     w3 = proxy_fork_w3
     accounts = await w3.eth.accounts
     deployer = accounts[0]
@@ -183,14 +182,17 @@ async def proxy_ctx(proxy_fork_w3, interpreter_addr):
     compiled_proxy = ApproveProxy.compile()
     proxy_address = await _deploy(w3, compiled_proxy, deployer, vm_address)
 
-    # Deploy MockToken and mint tokens to the user
+    # Deploy two MockTokens and mint tokens to the user
     compiled_token = _compile_sol_source(_MOCK_TOKEN_SOL, "MockToken")
-    token_address = await _deploy(w3, compiled_token, deployer)
-    token = w3.eth.contract(address=token_address, abi=compiled_token["abi"])
+    token_a_address = await _deploy(w3, compiled_token, deployer)
+    token_b_address = await _deploy(w3, compiled_token, deployer)
+    token_a = w3.eth.contract(address=token_a_address, abi=compiled_token["abi"])
+    token_b = w3.eth.contract(address=token_b_address, abi=compiled_token["abi"])
 
     MINT_AMOUNT = 1_000 * 10**18
-    tx = await token.functions.mint(user, MINT_AMOUNT).transact({"from": deployer})
-    await w3.eth.get_transaction_receipt(tx)
+    for fn in [token_a.functions.mint(user, MINT_AMOUNT), token_b.functions.mint(user, MINT_AMOUNT)]:
+        tx = await fn.transact({"from": deployer})
+        await w3.eth.get_transaction_receipt(tx)
 
     vm = w3.eth.contract(address=vm_address, abi=compiled_vm["abi"])
     proxy = ApproveProxy.contract(w3, proxy_address)
@@ -201,13 +203,29 @@ async def proxy_ctx(proxy_fork_w3, interpreter_addr):
         "vm_address": vm_address,
         "proxy": proxy,
         "proxy_address": proxy_address,
-        "token": token,
-        "token_address": token_address,
+        "token_a": token_a,
+        "token_a_address": token_a_address,
+        "token_b": token_b,
+        "token_b_address": token_b_address,
         "deployer": deployer,
         "user": user,
         "recipient": recipient,
         "mint_amount": MINT_AMOUNT,
     }
+
+
+# ---------------------------------------------------------------------------
+# ERC-20 transfer calldata helper
+# ---------------------------------------------------------------------------
+
+
+def _transfer_calldata(recipient: str, amount: int) -> bytes:
+    """Encode calldata for ERC-20 ``transfer(address,uint256)``."""
+    from eth_abi import encode
+    from eth_utils import keccak
+
+    selector = keccak(b"transfer(address,uint256)")[:4]
+    return selector + encode(["address", "uint256"], [recipient, amount])
 
 
 # ---------------------------------------------------------------------------
@@ -220,128 +238,139 @@ class TestApproveProxyFork:
     """Fork-level tests for ApproveProxy.sol on a local Anvil mainnet fork."""
 
     # ------------------------------------------------------------------
-    # Happy path: token transfer via proxy
+    # Happy path: single token deposit + program transfers to recipient
     # ------------------------------------------------------------------
 
-    async def test_transfer_via_proxy(self, proxy_ctx):
-        """Program calls proxy.transferFrom to pull tokens from the executing user."""
+    async def test_single_deposit_and_transfer(self, proxy_ctx):
+        """Proxy deposits one token into DeFiVM; program transfers it to recipient."""
         w3 = proxy_ctx["w3"]
         proxy = proxy_ctx["proxy"]
         proxy_address = proxy_ctx["proxy_address"]
-        token = proxy_ctx["token"]
-        token_address = proxy_ctx["token_address"]
+        token_a = proxy_ctx["token_a"]
+        token_a_address = proxy_ctx["token_a_address"]
+        vm_address = proxy_ctx["vm_address"]
         user = proxy_ctx["user"]
         recipient = proxy_ctx["recipient"]
 
-        TRANSFER_AMOUNT = 100 * 10**18
+        AMOUNT = 100 * 10**18
 
-        # User approves the proxy to spend tokens on their behalf
-        tx = await token.functions.approve(proxy_address, TRANSFER_AMOUNT).transact({"from": user})
+        # User approves proxy to pull tokens
+        tx = await token_a.functions.approve(proxy_address, AMOUNT).transact({"from": user})
         await w3.eth.get_transaction_receipt(tx)
 
-        # Check balances before
-        bal_user_before = await token.functions.balanceOf(user).call()
-        bal_recipient_before = await token.functions.balanceOf(recipient).call()
+        bal_user_before = await token_a.functions.balanceOf(user).call()
+        bal_recipient_before = await token_a.functions.balanceOf(recipient).call()
+        bal_vm_before = await token_a.functions.balanceOf(vm_address).call()
 
-        # Build a program that calls proxy.transferFrom(token, recipient, amount)
-        calldata = ApproveProxy.calldata.transferFrom(token_address, recipient, TRANSFER_AMOUNT)
+        # Program: DeFiVM already holds the tokens after deposit, transfer to recipient
+        program = Program().call_contract(token_a_address, _transfer_calldata(recipient, AMOUNT)).pop().build()
+        deposits = [{"token": token_a_address, "amount": AMOUNT}]
+
+        tx = await proxy.functions.execute(program, deposits).transact({"from": user})
+        receipt = await w3.eth.get_transaction_receipt(tx)
+        assert receipt["status"] == 1
+
+        # User lost AMOUNT tokens; recipient gained AMOUNT; VM balance unchanged (transit)
+        assert await token_a.functions.balanceOf(user).call() == bal_user_before - AMOUNT
+        assert await token_a.functions.balanceOf(recipient).call() == bal_recipient_before + AMOUNT
+        assert await token_a.functions.balanceOf(vm_address).call() == bal_vm_before
+
+    # ------------------------------------------------------------------
+    # Multiple token deposits in one call
+    # ------------------------------------------------------------------
+
+    async def test_multiple_deposits(self, proxy_ctx):
+        """Proxy deposits two different tokens into DeFiVM in one execute() call."""
+        w3 = proxy_ctx["w3"]
+        proxy = proxy_ctx["proxy"]
+        proxy_address = proxy_ctx["proxy_address"]
+        token_a = proxy_ctx["token_a"]
+        token_a_address = proxy_ctx["token_a_address"]
+        token_b = proxy_ctx["token_b"]
+        token_b_address = proxy_ctx["token_b_address"]
+        vm_address = proxy_ctx["vm_address"]
+        user = proxy_ctx["user"]
+        recipient = proxy_ctx["recipient"]
+
+        AMOUNT_A = 50 * 10**18
+        AMOUNT_B = 75 * 10**18
+
+        for token, amount in [(token_a, AMOUNT_A), (token_b, AMOUNT_B)]:
+            tx = await token.functions.approve(proxy_address, amount).transact({"from": user})
+            await w3.eth.get_transaction_receipt(tx)
+
+        bal_a_user_before = await token_a.functions.balanceOf(user).call()
+        bal_b_user_before = await token_b.functions.balanceOf(user).call()
+        bal_a_recipient_before = await token_a.functions.balanceOf(recipient).call()
+        bal_b_recipient_before = await token_b.functions.balanceOf(recipient).call()
+
+        # Program: transfer both tokens from VM to recipient
         program = (
             Program()
-            .call_contract(proxy_address, calldata)
+            .call_contract(token_a_address, _transfer_calldata(recipient, AMOUNT_A))
+            .pop()
+            .call_contract(token_b_address, _transfer_calldata(recipient, AMOUNT_B))
             .pop()
             .build()
         )
+        deposits = [
+            {"token": token_a_address, "amount": AMOUNT_A},
+            {"token": token_b_address, "amount": AMOUNT_B},
+        ]
 
-        # Execute through the proxy (user is msg.sender → proxy tracks them)
-        tx = await proxy.functions.execute(program).transact({"from": user})
+        tx = await proxy.functions.execute(program, deposits).transact({"from": user})
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
 
-        # Verify balances changed correctly
-        bal_user_after = await token.functions.balanceOf(user).call()
-        bal_recipient_after = await token.functions.balanceOf(recipient).call()
-        assert bal_user_before - bal_user_after == TRANSFER_AMOUNT
-        assert bal_recipient_after - bal_recipient_before == TRANSFER_AMOUNT
+        assert await token_a.functions.balanceOf(user).call() == bal_a_user_before - AMOUNT_A
+        assert await token_b.functions.balanceOf(user).call() == bal_b_user_before - AMOUNT_B
+        assert await token_a.functions.balanceOf(recipient).call() == bal_a_recipient_before + AMOUNT_A
+        assert await token_b.functions.balanceOf(recipient).call() == bal_b_recipient_before + AMOUNT_B
+        # VM balance is net-zero for both tokens (deposited then transferred out)
+        assert await token_a.functions.balanceOf(vm_address).call() == 0
+        assert await token_b.functions.balanceOf(vm_address).call() == 0
 
-    async def test_transfer_partial_amount(self, proxy_ctx):
-        """proxy.transferFrom can be called with any amount up to the ERC-20 allowance."""
+    # ------------------------------------------------------------------
+    # Empty deposits list (program runs without any token deposit)
+    # ------------------------------------------------------------------
+
+    async def test_empty_deposits_succeeds(self, proxy_ctx):
+        """execute() with an empty deposits list still runs the program."""
         w3 = proxy_ctx["w3"]
         proxy = proxy_ctx["proxy"]
-        proxy_address = proxy_ctx["proxy_address"]
-        token = proxy_ctx["token"]
-        token_address = proxy_ctx["token_address"]
         user = proxy_ctx["user"]
-        recipient = proxy_ctx["recipient"]
 
-        APPROVE_AMOUNT = 500 * 10**18
-        TRANSFER_AMOUNT = 50 * 10**18
-
-        tx = await token.functions.approve(proxy_address, APPROVE_AMOUNT).transact({"from": user})
-        await w3.eth.get_transaction_receipt(tx)
-
-        bal_user_before = await token.functions.balanceOf(user).call()
-        bal_recipient_before = await token.functions.balanceOf(recipient).call()
-
-        calldata = ApproveProxy.calldata.transferFrom(token_address, recipient, TRANSFER_AMOUNT)
-        program = Program().call_contract(proxy_address, calldata).pop().build()
-
-        tx = await proxy.functions.execute(program).transact({"from": user})
+        # Trivial program: push 0 + pop (no-op)
+        program = push_u256(0) + pop()
+        tx = await proxy.functions.execute(program, []).transact({"from": user})
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
 
-        assert (await token.functions.balanceOf(user).call()) == bal_user_before - TRANSFER_AMOUNT
-        assert (await token.functions.balanceOf(recipient).call()) == bal_recipient_before + TRANSFER_AMOUNT
-
     # ------------------------------------------------------------------
-    # Security: transferFrom outside of execute() must fail
+    # Security: insufficient ERC-20 allowance reverts
     # ------------------------------------------------------------------
-
-    async def test_transferFrom_direct_call_reverts(self, proxy_ctx):
-        """Calling proxy.transferFrom directly (outside execute) must revert."""
-        proxy = proxy_ctx["proxy"]
-        token_address = proxy_ctx["token_address"]
-        recipient = proxy_ctx["recipient"]
-        user = proxy_ctx["user"]
-
-        with pytest.raises((ContractLogicError, Web3RPCError)):
-            await proxy.functions.transferFrom(
-                token_address, recipient, 1
-            ).transact({"from": user})
-
-    async def test_transferFrom_by_non_vm_caller_reverts(self, proxy_ctx):
-        """Only the paired DeFiVM can call proxy.transferFrom (not arbitrary callers)."""
-        proxy = proxy_ctx["proxy"]
-        token_address = proxy_ctx["token_address"]
-        recipient = proxy_ctx["recipient"]
-        deployer = proxy_ctx["deployer"]
-
-        with pytest.raises((ContractLogicError, Web3RPCError)):
-            await proxy.functions.transferFrom(
-                token_address, recipient, 1
-            ).transact({"from": deployer})
 
     async def test_insufficient_allowance_reverts(self, proxy_ctx):
-        """Executing a transfer that exceeds the ERC-20 allowance must revert."""
+        """execute() reverts before running the program if a deposit allowance is too low."""
         w3 = proxy_ctx["w3"]
         proxy = proxy_ctx["proxy"]
         proxy_address = proxy_ctx["proxy_address"]
-        token = proxy_ctx["token"]
-        token_address = proxy_ctx["token_address"]
+        token_a = proxy_ctx["token_a"]
+        token_a_address = proxy_ctx["token_a_address"]
         user = proxy_ctx["user"]
         recipient = proxy_ctx["recipient"]
 
-        # Approve less than the transfer amount
         APPROVE_AMOUNT = 1
-        TRANSFER_AMOUNT = 1_000 * 10**18
+        DEPOSIT_AMOUNT = 1_000 * 10**18
 
-        tx = await token.functions.approve(proxy_address, APPROVE_AMOUNT).transact({"from": user})
+        tx = await token_a.functions.approve(proxy_address, APPROVE_AMOUNT).transact({"from": user})
         await w3.eth.get_transaction_receipt(tx)
 
-        calldata = ApproveProxy.calldata.transferFrom(token_address, recipient, TRANSFER_AMOUNT)
-        program = Program().call_contract(proxy_address, calldata).pop().build()
+        program = Program().call_contract(token_a_address, _transfer_calldata(recipient, DEPOSIT_AMOUNT)).pop().build()
+        deposits = [{"token": token_a_address, "amount": DEPOSIT_AMOUNT}]
 
         with pytest.raises((ContractLogicError, Web3RPCError)):
-            await proxy.functions.execute(program).transact({"from": user})
+            await proxy.functions.execute(program, deposits).transact({"from": user})
 
     # ------------------------------------------------------------------
     # Proxy vm() accessor
@@ -370,10 +399,8 @@ class TestApproveProxyFork:
 
         vm_balance_before = await w3.eth.get_balance(vm_address)
 
-        # Empty program that just succeeds — ETH ends up in DeFiVM
         program = push_u256(0) + pop()
-
-        tx = await proxy.functions.execute(program).transact(
+        tx = await proxy.functions.execute(program, []).transact(
             {"from": user, "value": ETH_VALUE}
         )
         receipt = await w3.eth.get_transaction_receipt(tx)
