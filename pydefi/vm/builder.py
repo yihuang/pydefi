@@ -154,7 +154,7 @@ two separate destinations using arithmetic and composition::
         Program()
         .call_with_patches(
             SWAP12, swap12_template,
-            patches=[("u256", AMOUNT_OFFSET, load_reg(1))],
+            patches=[(AMOUNT_OFFSET, 32, load_reg(1))],
         )
         .pop()
     )
@@ -164,7 +164,7 @@ two separate destinations using arithmetic and composition::
         Program()
         .call_with_patches(
             SWAP13, swap13_template,
-            patches=[("u256", AMOUNT_OFFSET, load_reg(2))],
+            patches=[(AMOUNT_OFFSET, 32, load_reg(2))],
         )
         .pop()
     )
@@ -175,6 +175,10 @@ two separate destinations using arithmetic and composition::
 from __future__ import annotations
 
 import struct
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from eth_abi.hooks import EncodingContext
 
 from pydefi.vm.program import (
     OP_JUMP,
@@ -225,12 +229,12 @@ from pydefi.vm.program import (
 #:     push_addr("0x…")   # static address literal
 PatchSource = bytes
 
-#: A single patch descriptor: ``(kind, calldata_offset, opcodes)`` where:
+#: A single patch descriptor: ``(calldata_offset, size, opcodes)`` where:
 #:
-#: - *kind*: ``"u256"`` (patch a 32-byte word) or ``"addr"`` (patch a 20-byte address).
 #: - *calldata_offset*: byte offset inside the calldata template to overwrite.
+#: - *size*: number of bytes to overwrite (must be 20 or 32).
 #: - *opcodes*: :data:`PatchSource` — raw bytecode that pushes the patch value.
-PatchSpec = tuple[str, int, PatchSource]
+PatchSpec = tuple[int, int, PatchSource]
 
 
 class Patch:
@@ -243,11 +247,12 @@ class Patch:
 
     ``call_contract_abi`` automatically passes each :class:`Patch` object as a
     callable hook to :func:`eth_abi.encode_with_hooks`.  The encoding library
-    calls the hook with an :class:`~eth_abi.EncodingContext` that carries the
-    exact byte offset of the value in the encoded output; the hook stores that
-    offset in :attr:`offset` and returns ``0`` as a placeholder.  After
-    encoding, :attr:`offset` holds the absolute calldata offset (including the
-    4-byte function selector), ready for use in
+    calls the hook with an :class:`~eth_abi.hooks.EncodingContext` that carries
+    the exact byte offset and size of the value in the encoded output; the hook
+    stores those in :attr:`offset` and :attr:`size` and returns ``0`` as a
+    placeholder.  After encoding, :attr:`offset` holds the absolute calldata
+    offset (including the 4-byte function selector) and :attr:`size` holds the
+    number of bytes occupied by that value, ready for use in
     :meth:`~Program.call_with_patches`.
 
     Args:
@@ -278,14 +283,17 @@ class Patch:
     def __init__(self, opcodes: PatchSource) -> None:
         self.opcodes: bytes = bytes(opcodes)
         self.offset: int | None = None  # set by __call__ during encode_with_hooks
+        self.size: int | None = None  # set by __call__ during encode_with_hooks
 
-    def __call__(self, ctx: object) -> int:
+    def __call__(self, ctx: EncodingContext) -> int:
         """Hook called by ``eth_abi.encode_with_hooks`` with the encoding context.
 
         Stores the absolute calldata offset (selector + encoded-args offset) and
-        returns ``0`` as a zero-filled placeholder for the ABI encoder.
+        the size of the encoded value, then returns ``0`` as a zero-filled
+        placeholder for the ABI encoder.
         """
-        self.offset = 4 + ctx.offset  # type: ignore[attr-defined]
+        self.offset = 4 + ctx.offset
+        self.size = ctx.size
         return 0
 
 
@@ -294,109 +302,25 @@ class Patch:
 # ---------------------------------------------------------------------------
 
 
-def _parse_tuple_component_types(tuple_type: str) -> list[str]:
-    """Split a canonical tuple type string into its component type strings.
+def _collect_patches(arg: object, patches: list["Patch"]) -> bool:
+    """Recursively collect :class:`Patch` objects from an argument tree.
 
-    Example: ``"(uint256,address,(bytes32,uint128))"``
-    → ``["uint256", "address", "(bytes32,uint128)"]``
-    """
-    if not (tuple_type.startswith("(") and tuple_type.endswith(")")):
-        raise ValueError(f"_parse_tuple_component_types: expected a tuple type, got {tuple_type!r}")
-    inner = tuple_type[1:-1]  # strip outer parens
-    if not inner:
-        return []  # empty tuple ()
-    components: list[str] = []
-    depth = 0
-    start = 0
-    for i, ch in enumerate(inner):
-        if ch == "(":
-            depth += 1
-        elif ch == ")":
-            depth -= 1
-        elif ch == "," and depth == 0:
-            components.append(inner[start:i].strip())
-            start = i + 1
-    tail = inner[start:].strip()
-    if tail:
-        components.append(tail)
-    return components
-
-
-def _strip_array_suffix(type_str: str) -> str | None:
-    """Return the element type if *type_str* is an array type, else ``None``.
-
-    Strips only the **outermost** array suffix (``[]`` or ``[N]``), so
-    multi-dimensional arrays are handled by recursive calls.
-
-    Examples::
-
-        _strip_array_suffix("uint256[]")       # → "uint256"
-        _strip_array_suffix("uint256[3]")      # → "uint256"
-        _strip_array_suffix("uint256[][]")     # → "uint256[]"
-        _strip_array_suffix("(address,uint256)[]")  # → "(address,uint256)"
-    """
-    if not type_str.endswith("]"):
-        return None
-    open_idx = type_str.rfind("[")
-    if open_idx == -1:
-        return None
-    return type_str[:open_idx]
-
-
-def _validate_patch_type(type_str: str) -> None:
-    """Raise :exc:`ValueError` if *type_str* is not patchable.
-
-    Only ``uint<N>`` and ``int<N>`` with N ≥ 96 are supported.
-    """
-    ts = type_str.strip()
-    is_signed = ts.startswith("int") and not ts.startswith("uint")
-    if ts.startswith("uint") or is_signed:
-        base = "int" if is_signed else "uint"
-        bits_str = ts[len(base) :]
-        bits = int(bits_str) if bits_str.isdigit() else 256
-        if bits < 96:
-            raise ValueError(
-                f"Patch: type {type_str!r} is too narrow for offset detection "
-                f"(need at least {'int' if is_signed else 'uint'}96)."
-            )
-        return
-    raise ValueError(
-        f"Patch: type {type_str!r} is not supported for automatic offset detection. "
-        "Only uint<N> and int<N> (N ≥ 96) are supported."
-    )
-
-
-def _collect_patches(arg: object, type_str: str, patches: list["Patch"]) -> bool:
-    """Recursively collect :class:`Patch` objects and validate their types.
-
-    Walks the argument/type tree and appends every :class:`Patch` leaf to
-    *patches*, validating that its Solidity type is supported.
+    Traverses the value structure directly — no type-string parsing needed.
+    Supports :class:`Patch` leaves at any depth inside nested :class:`tuple`
+    and :class:`list` containers.
 
     Returns:
         ``True`` if any :class:`Patch` was found, ``False`` otherwise.
     """
-    type_str = type_str.strip()
-
     if isinstance(arg, Patch):
-        _validate_patch_type(type_str)
         patches.append(arg)
         return True
 
     found = False
-    if type_str.startswith("(") and isinstance(arg, tuple):
-        component_types = _parse_tuple_component_types(type_str)
-        for a, t in zip(arg, component_types):
-            found |= _collect_patches(a, t, patches)
-        return found
-
-    if isinstance(arg, list):
-        elem_type = _strip_array_suffix(type_str)
-        if elem_type is not None:
-            for a in arg:
-                found |= _collect_patches(a, elem_type, patches)
-        return found
-
-    return False
+    if isinstance(arg, (tuple, list)):
+        for item in arg:
+            found |= _collect_patches(item, patches)
+    return found
 
 
 # ---------------------------------------------------------------------------
@@ -655,22 +579,22 @@ class Program:
         When one or more positional arguments are :class:`Patch` instances the
         method automatically:
 
-        1. Replaces each :class:`Patch` (including those nested inside ``tuple``
-           or ``list`` arguments, at any depth) with a callable hook.
+        1. Collects all :class:`Patch` objects from the argument tree (including
+           those nested inside ``tuple`` or ``list`` arguments at any depth).
         2. Encodes the full ABI calldata using
-           :func:`eth_abi.encode_with_hooks`, which calls each hook with an
-           :class:`~eth_abi.EncodingContext` carrying the exact byte offset of
-           that value in the encoded output.
-        3. Delegates to :meth:`call_with_patches` with ``kind="u256"`` patches
-           at the discovered offsets and the :attr:`~Patch.opcodes` as the source.
+           :func:`eth_abi.encode_with_hooks`, which calls each :class:`Patch`
+           hook with an :class:`~eth_abi.hooks.EncodingContext` carrying the
+           exact byte offset and size of that value in the encoded output.
+        3. Delegates to :meth:`call_with_patches` with the discovered offsets
+           and sizes, using the :attr:`~Patch.opcodes` as the source.
 
-        This works for ``uint<N>`` and ``int<N>`` parameters with N ≥ 96 bits.
         :class:`Patch` may appear as a leaf element at any nesting depth —
         directly as a function argument, inside a ``tuple`` (struct) argument, or
         inside a ``list`` (array) argument, including arrays of tuples and
-        multi-dimensional arrays.
-        All other types — ``address``, ``bytes<N>``, ``bytes``, ``string`` —
-        are not supported for patching.
+        multi-dimensional arrays.  The underlying ABI encoder determines whether
+        a given type is patchable (numeric types always work; types like
+        ``address`` and ``bool`` will raise an encoding error since they do not
+        accept ``0`` as a placeholder).
 
         Args:
             to: Target contract address (hex string with ``0x`` prefix).
@@ -679,8 +603,8 @@ class Program:
                 ``"function exactInputSingle((address,address,uint24,...) params)"``.
             *args: Positional arguments matching the signature's input parameters.
                 Plain values (``int``, ``str`` address, ``tuple``, …) are encoded
-                statically.  :class:`Patch` instances are replaced with unique
-                sentinel values; their offsets are resolved automatically.
+                statically.  :class:`Patch` instances are used as callable hooks;
+                their calldata offsets and sizes are resolved automatically.
             value: ETH value to forward with the call (wei), default 0.
             gas: Gas limit for the sub-call (0 = forward all remaining gas).
             require_success: If ``True`` (default), revert if the sub-call fails.
@@ -721,8 +645,8 @@ class Program:
         normalised = abi_sig if abi_sig.lstrip().startswith("function ") else "function " + abi_sig
         fn = ContractFunction.from_abi(normalised)
 
-        # Collect all Patch objects from the arg tree (also validates types and
-        # detects whether any patching is needed).
+        # Collect all Patch objects from the arg tree and detect whether any
+        # patching is needed.
         param_types: list[str] = fn.input_types
 
         if len(args) != len(param_types):
@@ -732,15 +656,15 @@ class Program:
             )
 
         patch_list: list[Patch] = []
-        for a, t in zip(args, param_types):
-            _collect_patches(a, t, patch_list)
+        for a in args:
+            _collect_patches(a, patch_list)
 
         # Fast path: no Patch objects anywhere in the argument tree.
         if not patch_list:
             return self.call_contract(to, fn(*args).data, value=value, gas=gas, require_success=require_success)
 
         # Slow path: Patch objects are callable hooks; encode_with_hooks calls
-        # each one with the EncodingContext so each Patch stores its offset.
+        # each one with the EncodingContext so each Patch stores its offset/size.
         from eth_abi.codec import ABICodec
         from eth_abi.registry import registry as default_registry
 
@@ -748,7 +672,9 @@ class Program:
         encoded_args = codec.encode_with_hooks(param_types, args)
         calldata = bytes(fn.selector) + encoded_args
 
-        patches: list[PatchSpec] = [("u256", p.offset, p.opcodes) for p in patch_list if p.offset is not None]
+        patches: list[PatchSpec] = [
+            (p.offset, p.size, p.opcodes) for p in patch_list if p.offset is not None and p.size is not None
+        ]
         return self.call_with_patches(to, calldata, patches, value=value, gas=gas, require_success=require_success)
 
     def call_with_patches(
@@ -768,10 +694,11 @@ class Program:
         overwrites a field at a specific byte offset using a value produced at
         runtime by arbitrary opcodes), then issues the ``CALL`` opcode.
 
-        Each entry in *patches* is a 3-tuple ``(kind, offset, opcodes)``:
+        Each entry in *patches* is a 3-tuple ``(offset, size, opcodes)``:
 
-        - *kind* — ``"u256"`` to overwrite a 32-byte word, ``"addr"`` for 20 bytes.
         - *offset* — byte offset in the calldata template to overwrite.
+        - *size* — number of bytes to overwrite: 32 for a ``uint256``/``int256``
+          word, or 20 for an ``address``.
         - *opcodes* — raw DeFiVM bytecode (``bytes``) that, when executed, pushes
           exactly one value onto the stack.  Any instruction sequence that leaves a
           single item on the stack is valid.  For example::
@@ -796,7 +723,7 @@ class Program:
                     ROUTER,
                     swap_template,          # swap(0, ...) — amount placeholder at offset 36
                     patches=[
-                        ("u256", 36, ret_u256(0)),   # fill amount from last retdata
+                        (36, 32, ret_u256(0)),   # fill 32-byte amount from last retdata
                     ],
                 )
                 .pop()
@@ -806,7 +733,7 @@ class Program:
         Args:
             to: Target contract address.
             calldata: Mutable calldata template bytes.
-            patches: List of ``(kind, offset, opcodes)`` patch descriptors.
+            patches: List of ``(offset, size, opcodes)`` patch descriptors.
             value: ETH value to forward (wei), default 0.
             gas: Sub-call gas limit (0 = forward all remaining gas).
             require_success: Revert if the sub-call fails (default ``True``).
@@ -816,9 +743,9 @@ class Program:
         """
         self._emit(push_bytes(calldata))  # [bufIdx]
 
-        for kind, offset, opcodes in patches:
-            if kind not in ("u256", "addr"):
-                raise ValueError(f"call_with_patches: unknown patch kind {kind!r}; expected 'u256' or 'addr'")
+        for offset, size, opcodes in patches:
+            if not (0 < size <= 32):
+                raise ValueError(f"call_with_patches: patch size {size!r} out of range; expected 0 < size <= 32")
             if not isinstance(opcodes, (bytes, bytearray)):
                 raise TypeError(
                     f"call_with_patches: opcodes must be bytes or bytearray, got {type(opcodes).__name__!r}"
@@ -826,10 +753,10 @@ class Program:
 
             self._emit(opcodes)  # push the patch value onto the stack
 
-            if kind == "u256":
-                self._emit(patch_u256(offset))
-            else:  # kind == "addr"
+            if size == 20:
                 self._emit(patch_addr(offset))
+            else:
+                self._emit(patch_u256(offset))
 
         # Stack now: [bufIdx] — ready for CALL prologue
         self._emit(push_u256(value))

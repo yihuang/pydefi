@@ -583,7 +583,7 @@ class TestCallWithPatches:
             + push_u256(0)  # gas
             + call(True)
         )
-        actual = Program().call_with_patches(ADDR_A, cd, [("u256", 4, push_u256(42))]).build()
+        actual = Program().call_with_patches(ADDR_A, cd, [(4, 32, push_u256(42))]).build()
         assert actual == expected
 
     def test_bytes_addr_patch(self):
@@ -598,7 +598,7 @@ class TestCallWithPatches:
             + push_u256(0)
             + call(True)
         )
-        actual = Program().call_with_patches(ADDR_A, cd, [("addr", 16, push_addr(ADDR_B))]).build()
+        actual = Program().call_with_patches(ADDR_A, cd, [(16, 20, push_addr(ADDR_B))]).build()
         assert actual == expected
 
     def test_ret_u256_patch(self):
@@ -607,7 +607,7 @@ class TestCallWithPatches:
         expected = (
             push_bytes(cd) + ret_u256(0) + patch_u256(4) + push_u256(0) + push_addr(ADDR_A) + push_u256(0) + call(True)
         )
-        actual = Program().call_with_patches(ADDR_A, cd, [("u256", 4, ret_u256(0))]).build()
+        actual = Program().call_with_patches(ADDR_A, cd, [(4, 32, ret_u256(0))]).build()
         assert actual == expected
 
     def test_reg_patch(self):
@@ -616,16 +616,16 @@ class TestCallWithPatches:
         expected = (
             push_bytes(cd) + load_reg(3) + patch_u256(4) + push_u256(0) + push_addr(ADDR_A) + push_u256(0) + call(True)
         )
-        actual = Program().call_with_patches(ADDR_A, cd, [("u256", 4, load_reg(3))]).build()
+        actual = Program().call_with_patches(ADDR_A, cd, [(4, 32, load_reg(3))]).build()
         assert actual == expected
 
     def test_reg_patch_addr(self):
-        """load_reg(idx) with kind='addr' emits load_reg + patch_addr."""
+        """load_reg(idx) with size=20 emits load_reg + patch_addr."""
         cd = self._template()
         expected = (
             push_bytes(cd) + load_reg(5) + patch_addr(16) + push_u256(0) + push_addr(ADDR_A) + push_u256(0) + call(True)
         )
-        actual = Program().call_with_patches(ADDR_A, cd, [("addr", 16, load_reg(5))]).build()
+        actual = Program().call_with_patches(ADDR_A, cd, [(16, 20, load_reg(5))]).build()
         assert actual == expected
 
     def test_multiple_patches(self):
@@ -648,8 +648,8 @@ class TestCallWithPatches:
                 ADDR_A,
                 cd,
                 [
-                    ("u256", 4, push_u256(100)),
-                    ("addr", 4 + 32 + 12, push_addr(ADDR_B)),
+                    (4, 32, push_u256(100)),
+                    (4 + 32 + 12, 20, push_addr(ADDR_B)),
                 ],
             )
             .build()
@@ -676,30 +676,30 @@ class TestCallWithPatches:
         actual = Program().call_with_patches(ADDR_A, cd, [], require_success=False).build()
         assert actual == expected
 
-    def test_unknown_patch_kind_raises(self):
-        with pytest.raises(ValueError, match="unknown patch kind"):
-            Program().call_with_patches(ADDR_A, self._template(), [("bytes32", 4, push_u256(0))]).build()
+    def test_invalid_patch_size_raises(self):
+        with pytest.raises(ValueError, match="patch size"):
+            Program().call_with_patches(ADDR_A, self._template(), [(4, 0, push_u256(0))]).build()
 
     def test_non_bytes_opcodes_raises(self):
         """Passing a non-bytes source raises TypeError."""
         with pytest.raises(TypeError, match="opcodes must be bytes or bytearray"):
-            Program().call_with_patches(ADDR_A, self._template(), [("u256", 4, 42)]).build()
+            Program().call_with_patches(ADDR_A, self._template(), [(4, 32, 42)]).build()
 
     def test_non_bytes_str_opcodes_raises(self):
         """Passing a string raises TypeError."""
         with pytest.raises(TypeError, match="opcodes must be bytes or bytearray"):
-            Program().call_with_patches(ADDR_A, self._template(), [("u256", 4, "0xdeadbeef")]).build()
+            Program().call_with_patches(ADDR_A, self._template(), [(4, 32, "0xdeadbeef")]).build()
 
     def test_non_bytes_none_opcodes_raises(self):
         """Passing None raises TypeError."""
         with pytest.raises(TypeError, match="opcodes must be bytes or bytearray"):
-            Program().call_with_patches(ADDR_A, self._template(), [("u256", 4, None)]).build()
+            Program().call_with_patches(ADDR_A, self._template(), [(4, 32, None)]).build()
 
     def test_chained_with_composition(self):
         """call_with_patches works correctly when composed with other programs."""
         cd = self._template()
         step1 = Program().call_contract(ADDR_A, cd).pop()
-        step2 = Program().call_with_patches(ADDR_A, cd, [("u256", 4, ret_u256(0))]).pop()
+        step2 = Program().call_with_patches(ADDR_A, cd, [(4, 32, ret_u256(0))]).pop()
         combined = step1 + step2
         bytecode = combined.build()
         assert len(bytecode) > 0
@@ -790,7 +790,7 @@ class TestSplitSwapComposition:
             .call_with_patches(
                 ADDR_B,
                 self._SWAP12,
-                [("u256", self.AMOUNT_OFFSET, load_reg(1))],
+                [(self.AMOUNT_OFFSET, 32, load_reg(1))],
             )
             .pop()
         )
@@ -800,7 +800,7 @@ class TestSplitSwapComposition:
             .call_with_patches(
                 ADDR_B,
                 self._SWAP13,
-                [("u256", self.AMOUNT_OFFSET, load_reg(2))],
+                [(self.AMOUNT_OFFSET, 32, load_reg(2))],
             )
             .pop()
         )
@@ -1124,20 +1124,21 @@ class TestPatch:
             Program().call_contract_abi(ADDR_A, sig, Patch(load_reg(0))).build()
 
     def test_bool_type_raises(self):
-        """Patching a non-int parameter (bool) raises ValueError."""
+        """Patching a bool parameter fails because BooleanEncoder rejects integer 0."""
         from pydefi.vm import Patch
 
         sig = "function foo(bool flag)"
-        with pytest.raises(ValueError, match="not supported"):
+        with pytest.raises(Exception):
             Program().call_contract_abi(ADDR_A, sig, Patch(load_reg(0))).build()
 
-    def test_small_uint_raises(self):
-        """Patching a uint8 (too narrow for offset detection) raises ValueError."""
+    def test_small_uint_works(self):
+        """Patching a uint8 parameter now works (ABI encodes it as a 32-byte word)."""
         from pydefi.vm import Patch
 
         sig = "function foo(uint8 x)"
-        with pytest.raises(ValueError, match="too narrow"):
-            Program().call_contract_abi(ADDR_A, sig, Patch(load_reg(0))).build()
+        bytecode = Program().call_contract_abi(ADDR_A, sig, Patch(load_reg(0))).build()
+        assert len(bytecode) > 0
+        assert load_reg(0) in bytecode
 
     def test_patch_two_uint256_args_unique_offsets(self):
         """Two Patch args of the same type get distinct offsets."""
@@ -1148,12 +1149,12 @@ class TestPatch:
         assert len(bytecode) > 0
 
     def test_patch_address_arg_raises(self):
-        """Patching an address parameter raises ValueError (only uint<N> types supported)."""
+        """Patching an address parameter fails because AddressEncoder rejects integer 0."""
         from pydefi.vm import Patch
 
         sig = "function setRecipient(address recipient)"
         p = Patch(load_reg(3))
-        with pytest.raises(ValueError, match="not supported"):
+        with pytest.raises(Exception):
             Program().call_contract_abi(ADDR_A, sig, p).build()
 
     def test_patch_int_type_works(self):
