@@ -30,8 +30,7 @@ from web3.exceptions import ContractLogicError, Web3RPCError
 from pydefi.vm.program import (
     call,
     load_reg,
-    patch_addr,
-    patch_u256,
+    patch_value,
     pop,
     push_addr,
     push_bytes,
@@ -590,7 +589,7 @@ class TestOFTComposerFork:
             + push_u256(0)  # retLen=0, retOffset=0 for CALL
             + push_bytes(template)  # argsOffset, argsLen above retOffset/retLen
             + load_reg(1)  # push amountLD
-            + patch_u256(68)  # patch amountLD at offset 68; leaves [argsOffset, argsLen, retOffset, retLen]
+            + patch_value(68, 32)  # patch amountLD at offset 68; leaves [argsOffset, argsLen, retOffset, retLen]
             + push_u256(0)  # value=0
             + push_addr(target_address)  # to
             + bytes([0x5A])  # GAS — forward all remaining gas
@@ -650,7 +649,7 @@ class TestOFTComposerFork:
             + push_u256(0)  # retLen=0, retOffset=0 for CALL
             + push_bytes(template)  # argsOffset, argsLen above retOffset/retLen
             + load_reg(0)  # push _from
-            + patch_addr(80)  # MSTORE at buf+68: data[0..11]=0x00*12, data[12..31]=_from
+            + patch_value(80, 20)  # MSTORE at buf+68: data[0..11]=0x00*12, data[12..31]=_from
             + push_u256(0)  # value=0
             + push_addr(target_address)  # to
             + bytes([0x5A])  # GAS — forward all remaining gas

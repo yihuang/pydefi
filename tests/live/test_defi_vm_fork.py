@@ -34,8 +34,7 @@ from pydefi.vm.program import (
     jump,
     jumpi,
     load_reg,
-    patch_addr,
-    patch_u256,
+    patch_value,
     pop,
     push_addr,
     push_bytes,
@@ -523,7 +522,7 @@ class TestDeFiVMFork:
             + push_u256(0)  # retLen=0, retOffset=0 for CALL
             + push_bytes(bytes(template))
             + push_u256(0xABCD)
-            + patch_u256(4)
+            + patch_value(4, 32)
             + push_u256(0)
             + push_addr(adapter)
             + bytes([0x5A])
@@ -573,7 +572,7 @@ class TestDeFiVMFork:
             + push_u256(0)  # retLen=0, retOffset=0 for CALL
             + push_bytes(bytes(template))
             + push_addr(adapter)
-            + patch_addr(patch_offset)
+            + patch_value(patch_offset, 20)
             + push_u256(0)
             + push_addr(adapter)
             + bytes([0x5A])
@@ -638,7 +637,7 @@ class TestDeFiVMFork:
             + push_u256(0)  # retLen=0, retOffset=0 for call 2
             + push_bytes(template2)  # argsOffset, argsLen above retOffset/retLen
             + ret_u256(0)  # push 10 from retdata
-            + patch_u256(4)  # patch template2[4..36] = 10; leaves [argsOffset, argsLen, retOffset, retLen]
+            + patch_value(4, 32)  # patch template2[4..36] = 10; leaves [argsOffset, argsLen, retOffset, retLen]
             # --- Call 2: double(10) → retdata = abi.encode(20) ---
             + push_u256(0)
             + push_addr(adapter)
@@ -693,7 +692,7 @@ class TestDeFiVMFork:
             + push_u256(0)  # retLen=0, retOffset=0 for call 2
             + push_bytes(template2)  # argsOffset, argsLen above retOffset/retLen
             + ret_u256(0)  # push 14
-            + patch_u256(4)  # patch template2[4..36] = 14; leaves [argsOffset, argsLen, retOffset, retLen]
+            + patch_value(4, 32)  # patch template2[4..36] = 14; leaves [argsOffset, argsLen, retOffset, retLen]
             # --- Call 2: addInputs(14, 3) → retdata = abi.encode(17) ---
             + push_u256(0)
             + push_addr(adapter)
