@@ -744,8 +744,10 @@ class Program:
         self._emit(push_bytes(calldata))  # [bufIdx]
 
         for offset, size, opcodes in patches:
-            if not (0 < size <= 32):
-                raise ValueError(f"call_with_patches: patch size {size!r} out of range; expected 0 < size <= 32")
+            if size not in (20, 32):
+                raise ValueError(
+                    f"call_with_patches: patch size {size!r} not supported; expected 20 (address) or 32 (u256)"
+                )
             if not isinstance(opcodes, (bytes, bytearray)):
                 raise TypeError(
                     f"call_with_patches: opcodes must be bytes or bytearray, got {type(opcodes).__name__!r}"

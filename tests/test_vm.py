@@ -1124,11 +1124,13 @@ class TestPatch:
             Program().call_contract_abi(ADDR_A, sig, Patch(load_reg(0))).build()
 
     def test_bool_type_raises(self):
-        """Patching a bool parameter fails because BooleanEncoder rejects integer 0."""
+        """Patching a bool parameter fails: BooleanEncoder rejects integer 0."""
+        from eth_abi.exceptions import EncodingTypeError
+
         from pydefi.vm import Patch
 
         sig = "function foo(bool flag)"
-        with pytest.raises(Exception):
+        with pytest.raises(EncodingTypeError):
             Program().call_contract_abi(ADDR_A, sig, Patch(load_reg(0))).build()
 
     def test_small_uint_works(self):
@@ -1149,12 +1151,14 @@ class TestPatch:
         assert len(bytecode) > 0
 
     def test_patch_address_arg_raises(self):
-        """Patching an address parameter fails because AddressEncoder rejects integer 0."""
+        """Patching an address parameter fails: AddressEncoder rejects integer 0."""
+        from eth_abi.exceptions import EncodingTypeError
+
         from pydefi.vm import Patch
 
         sig = "function setRecipient(address recipient)"
         p = Patch(load_reg(3))
-        with pytest.raises(Exception):
+        with pytest.raises(EncodingTypeError):
             Program().call_contract_abi(ADDR_A, sig, p).build()
 
     def test_patch_int_type_works(self):
