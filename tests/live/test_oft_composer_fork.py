@@ -37,6 +37,7 @@ from pydefi.vm.program import (
     push_u256,
     store_reg,
 )
+from tests.live.sol_utils import compile_sol_file, deploy, ensure_solc
 
 # ---------------------------------------------------------------------------
 # Optional: skip whole module if solcx not installed
@@ -51,50 +52,23 @@ SOL_FILE = REPO_ROOT / "pydefi" / "bridge" / "OFTComposer.sol"
 DEFI_VM_SOL_FILE = REPO_ROOT / "pydefi" / "vm" / "DeFiVM.sol"
 
 # ---------------------------------------------------------------------------
-# Compile + deploy helpers
+# Local compile + deploy wrappers
 # ---------------------------------------------------------------------------
-
-
-def _ensure_solc(version: str = "0.8.24") -> None:
-    """Install *version* of solc once (no-op if already installed)."""
-    if version not in solcx.get_installed_solc_versions():
-        solcx.install_solc(version, show_progress=False)
 
 
 def _compile_oft_composer() -> dict:
     """Compile OFTComposer.sol and return the ABI + bytecode."""
-    _ensure_solc("0.8.24")
-    result = solcx.compile_files(
-        [str(SOL_FILE)],
-        output_values=["abi", "bin"],
-        solc_version="0.8.24",
-        optimize=True,
-        optimize_runs=200,
-    )
-    key = next(k for k in result if k.endswith(":OFTComposer"))
-    return result[key]
+    return compile_sol_file(SOL_FILE, "OFTComposer")
 
 
 def _compile_defi_vm() -> dict:
     """Compile DeFiVM.sol and return the ABI + bytecode."""
-    _ensure_solc("0.8.24")
-    result = solcx.compile_files(
-        [str(DEFI_VM_SOL_FILE)],
-        output_values=["abi", "bin"],
-        solc_version="0.8.24",
-        optimize=True,
-        optimize_runs=200,
-    )
-    key = next(k for k in result if k.endswith(":DeFiVM"))
-    return result[key]
+    return compile_sol_file(DEFI_VM_SOL_FILE, "DeFiVM")
 
 
 async def _deploy(w3: AsyncWeb3, compiled: dict, deployer: str, *args) -> str:
     """Deploy a contract and return its address."""
-    contract = w3.eth.contract(abi=compiled["abi"], bytecode=compiled["bin"])
-    tx_hash = await contract.constructor(*args).transact({"from": deployer})
-    receipt = await w3.eth.get_transaction_receipt(tx_hash)
-    return receipt["contractAddress"]
+    return await deploy(w3, compiled, deployer, *args)
 
 
 # ---------------------------------------------------------------------------
@@ -206,7 +180,7 @@ contract RevertingTarget {
 
 def _compile_mock_contracts() -> dict[str, dict]:
     """Compile mock contracts and return {name: {abi, bin}} mapping."""
-    _ensure_solc("0.8.24")
+    ensure_solc("0.8.24")
     result = solcx.compile_source(
         _MOCK_CONTRACTS_SOL,
         output_values=["abi", "bin"],

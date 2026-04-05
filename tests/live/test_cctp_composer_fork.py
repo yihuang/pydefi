@@ -35,6 +35,7 @@ from pydefi.vm.program import (
     push_u256,
     store_reg,
 )
+from tests.live.sol_utils import compile_sol_file, deploy, ensure_solc
 
 # ---------------------------------------------------------------------------
 # Optional: skip whole module if solcx not installed
@@ -263,39 +264,16 @@ def make_cctp_v2_message(
 # ---------------------------------------------------------------------------
 
 
-def _ensure_solc(version: str = "0.8.24") -> None:
-    if version not in solcx.get_installed_solc_versions():
-        solcx.install_solc(version, show_progress=False)
-
-
 def _compile_cctp_composer() -> dict:
-    _ensure_solc("0.8.24")
-    result = solcx.compile_files(
-        [str(SOL_FILE)],
-        output_values=["abi", "bin"],
-        solc_version="0.8.24",
-        optimize=True,
-        optimize_runs=200,
-    )
-    key = next(k for k in result if k.endswith(":CCTPComposer"))
-    return result[key]
+    return compile_sol_file(SOL_FILE, "CCTPComposer")
 
 
 def _compile_defi_vm() -> dict:
-    _ensure_solc("0.8.24")
-    result = solcx.compile_files(
-        [str(DEFI_VM_SOL_FILE)],
-        output_values=["abi", "bin"],
-        solc_version="0.8.24",
-        optimize=True,
-        optimize_runs=200,
-    )
-    key = next(k for k in result if k.endswith(":DeFiVM"))
-    return result[key]
+    return compile_sol_file(DEFI_VM_SOL_FILE, "DeFiVM")
 
 
 def _compile_mock_contracts() -> dict[str, dict]:
-    _ensure_solc("0.8.24")
+    ensure_solc("0.8.24")
     result = solcx.compile_source(
         _MOCK_CONTRACTS_SOL,
         output_values=["abi", "bin"],
@@ -310,10 +288,7 @@ def _compile_mock_contracts() -> dict[str, dict]:
 
 
 async def _deploy(w3: AsyncWeb3, compiled: dict, deployer: str, *args) -> str:
-    contract = w3.eth.contract(abi=compiled["abi"], bytecode=compiled["bin"])
-    tx_hash = await contract.constructor(*args).transact({"from": deployer})
-    receipt = await w3.eth.get_transaction_receipt(tx_hash)
-    return receipt["contractAddress"]
+    return await deploy(w3, compiled, deployer, *args)
 
 
 def _abidata(hex_or_bytes: str | bytes) -> bytes:

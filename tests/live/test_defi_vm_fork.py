@@ -48,6 +48,7 @@ from pydefi.vm.program import (
     sub,
     swap,
 )
+from tests.live.sol_utils import MOCK_TOKEN_SOL, compile_sol_file, compile_sol_source, deploy, ensure_solc
 
 # ---------------------------------------------------------------------------
 # Optional: skip whole module if solcx not installed
@@ -67,57 +68,34 @@ WETH_MAINNET = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
 WHALE = "0x77134cbC06cB00b66F4c7e623D5fdBF6777635EC"
 
 # ---------------------------------------------------------------------------
-# Compile + deploy helpers
+# Local compile helpers (file-specific wrappers around shared utilities)
 # ---------------------------------------------------------------------------
 
 
 def _ensure_solc(version: str = "0.8.24") -> None:
-    """Install *version* of solc once (no-op if already installed)."""
-    if version not in solcx.get_installed_solc_versions():
-        solcx.install_solc(version, show_progress=False)
+    ensure_solc(version)
+
+
+def _deploy(w3: AsyncWeb3, compiled: dict, deployer: str, *args) -> str:
+    return deploy(w3, compiled, deployer, *args)
+
+
+def _compile_sol_file(path: Path, contract_name: str) -> dict:
+    return compile_sol_file(path, contract_name)
+
+
+def _compile_sol_source(source: str, contract_name: str) -> dict:
+    return compile_sol_source(source, contract_name)
 
 
 def _compile_defi_vm() -> dict:
     """Compile DeFiVM.sol and return the ABI + bytecode."""
-    return _compile_sol_file(SOL_FILE, "DeFiVM")
-
-
-async def _deploy(w3: AsyncWeb3, compiled: dict, deployer: str, *args) -> str:
-    """Deploy a contract and return its address."""
-    contract = w3.eth.contract(abi=compiled["abi"], bytecode=compiled["bin"])
-    tx_hash = await contract.constructor(*args).transact({"from": deployer})
-    receipt = await w3.eth.get_transaction_receipt(tx_hash)
-    return receipt["contractAddress"]
-
-
-def _compile_sol_file(path: Path, contract_name: str) -> dict:
-    """Compile a Solidity file and return ABI + bytecode for *contract_name*."""
-    _ensure_solc("0.8.24")
-    result = solcx.compile_files(
-        [str(path)],
-        output_values=["abi", "bin"],
-        solc_version="0.8.24",
-        optimize=True,
-        optimize_runs=200,
-    )
-    key = next(k for k in result if k.endswith(f":{contract_name}"))
-    return result[key]
-
-
-def _compile_sol_source(source: str, contract_name: str) -> dict:
-    """Compile an inline Solidity source string and return ABI + bytecode."""
-    _ensure_solc("0.8.24")
-    result = solcx.compile_source(
-        source,
-        output_values=["abi", "bin"],
-        solc_version="0.8.24",
-    )
-    return result[f"<stdin>:{contract_name}"]
+    return compile_sol_file(SOL_FILE, "DeFiVM")
 
 
 def _compile_approve_proxy() -> dict:
     """Compile ApproveProxy.sol and return ABI + bytecode."""
-    return _compile_sol_file(APPROVE_PROXY_SOL_FILE, "ApproveProxy")
+    return compile_sol_file(APPROVE_PROXY_SOL_FILE, "ApproveProxy")
 
 
 # ---------------------------------------------------------------------------
@@ -922,47 +900,6 @@ class TestDeFiVMFork:
 
 
 # ---------------------------------------------------------------------------
-# Mock ERC-20 token (inline Solidity) — used by ApproveProxy tests
-# ---------------------------------------------------------------------------
-
-_MOCK_TOKEN_SOL = """
-// SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
-
-/// @notice Minimal mintable ERC-20 token used in tests.
-contract MockToken {
-    mapping(address => uint256) public balanceOf;
-    mapping(address => mapping(address => uint256)) public allowance;
-
-    function mint(address to, uint256 amount) external {
-        balanceOf[to] += amount;
-    }
-
-    function approve(address spender, uint256 amount) external returns (bool) {
-        allowance[msg.sender][spender] = amount;
-        return true;
-    }
-
-    function transferFrom(address from, address to, uint256 amount) external returns (bool) {
-        require(balanceOf[from] >= amount, "MockToken: insufficient balance");
-        require(allowance[from][msg.sender] >= amount, "MockToken: insufficient allowance");
-        allowance[from][msg.sender] -= amount;
-        balanceOf[from] -= amount;
-        balanceOf[to] += amount;
-        return true;
-    }
-
-    function transfer(address to, uint256 amount) external returns (bool) {
-        require(balanceOf[msg.sender] >= amount, "MockToken: insufficient balance");
-        balanceOf[msg.sender] -= amount;
-        balanceOf[to] += amount;
-        return true;
-    }
-}
-"""
-
-
-# ---------------------------------------------------------------------------
 # Module-scoped fixture: deploy ApproveProxy + two MockTokens alongside DeFiVM
 # ---------------------------------------------------------------------------
 
@@ -981,7 +918,7 @@ async def proxy_ctx(vm_fork_w3, compiled_vm, interpreter_addr):
     compiled_proxy = _compile_approve_proxy()
     proxy_address = await _deploy(w3, compiled_proxy, deployer, vm_address)
 
-    compiled_token = _compile_sol_source(_MOCK_TOKEN_SOL, "MockToken")
+    compiled_token = compile_sol_source(MOCK_TOKEN_SOL, "MockToken")
     token_a_address = await _deploy(w3, compiled_token, deployer)
     token_b_address = await _deploy(w3, compiled_token, deployer)
     token_a = w3.eth.contract(address=token_a_address, abi=compiled_token["abi"])
