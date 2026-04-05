@@ -962,7 +962,6 @@ contract MockToken {
 """
 
 
-
 # ---------------------------------------------------------------------------
 # Module-scoped fixture: deploy ApproveProxy + two MockTokens alongside DeFiVM
 # ---------------------------------------------------------------------------
@@ -1129,7 +1128,9 @@ class TestApproveProxyFork:
         tx = await token_a.functions.approve(proxy_address, APPROVE_AMOUNT).transact({"from": user})
         await w3.eth.get_transaction_receipt(tx)
 
-        program = Program().call_contract(token_a_address, ERC20.fns.transfer(recipient, DEPOSIT_AMOUNT).data).pop().build()
+        program = (
+            Program().call_contract(token_a_address, ERC20.fns.transfer(recipient, DEPOSIT_AMOUNT).data).pop().build()
+        )
         deposits = [{"token": token_a_address, "amount": DEPOSIT_AMOUNT}]
 
         with pytest.raises((ContractLogicError, Web3RPCError)):
@@ -1155,9 +1156,7 @@ class TestApproveProxyFork:
         vm_balance_before = await w3.eth.get_balance(vm_address)
 
         program = push_u256(0) + pop()
-        tx = await proxy.functions.execute(program, []).transact(
-            {"from": user, "value": ETH_VALUE}
-        )
+        tx = await proxy.functions.execute(program, []).transact({"from": user, "value": ETH_VALUE})
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
 
