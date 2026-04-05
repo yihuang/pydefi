@@ -26,6 +26,9 @@ dev = [
     "ruff>=0.4.0",
     "py-solc-x>=2.0.0",
 ]
+wallet = [
+    "open-wallet-standard>=1.2.4",
+]
 
 [project.urls]
 "Homepage" = "https://github.com/yihuang/pydefi"

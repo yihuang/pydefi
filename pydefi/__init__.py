@@ -67,6 +67,19 @@ from pydefi.types import (
     Token,
     TokenAmount,
 )
+from pydefi.wallet import (
+    OpenWalletSigner,
+    create_wallet,
+    delete_wallet,
+    derive_address,
+    export_wallet,
+    generate_mnemonic,
+    get_wallet,
+    import_wallet_mnemonic,
+    import_wallet_private_key,
+    list_wallets,
+    rename_wallet,
+)
 
 __version__ = "0.1.0"
 
@@ -86,6 +99,18 @@ __all__ = [
     "MultiRpcProvider",
     "fetch_chain_rpcs",
     "get_w3",
+    # Wallet (open-wallet-standard integration)
+    "OpenWalletSigner",
+    "generate_mnemonic",
+    "derive_address",
+    "create_wallet",
+    "import_wallet_mnemonic",
+    "import_wallet_private_key",
+    "list_wallets",
+    "get_wallet",
+    "delete_wallet",
+    "rename_wallet",
+    "export_wallet",
     # Exceptions
     "PydefiError",
     "InsufficientLiquidityError",

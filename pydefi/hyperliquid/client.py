@@ -27,6 +27,7 @@ import aiohttp
 from web3 import AsyncWeb3
 
 from pydefi.hyperliquid.signing import (
+    Signer,
     sign_l1_action,
     sign_send_asset_action,
     sign_send_to_evm_with_data_action,
@@ -122,7 +123,7 @@ class HyperliquidClient:
     async def post_action(
         self,
         action: dict[str, Any],
-        private_key: str,
+        private_key: Signer,
         nonce: int | None = None,
         vault_address: str | None = None,
         expires_after: int | None = None,
@@ -136,7 +137,8 @@ class HyperliquidClient:
 
         Args:
             action: The L1 action dict (e.g. ``{"type": "order", ...}``).
-            private_key: Hex-encoded private key for signing.
+            private_key: Hex-encoded private key **or** an
+                :class:`~pydefi.wallet.OpenWalletSigner` instance.
             nonce: Millisecond timestamp nonce.  Defaults to current time.
             vault_address: Address of the vault / sub-account to act on
                 behalf of, or ``None`` for the master account.
@@ -279,7 +281,7 @@ class HyperliquidClient:
 
     async def usd_send(
         self,
-        private_key: str,
+        private_key: Signer,
         destination: str,
         amount: str,
         nonce: int | None = None,
@@ -289,7 +291,8 @@ class HyperliquidClient:
         This transfer does not touch the EVM bridge.
 
         Args:
-            private_key: Sender's hex-encoded private key.
+            private_key: Sender's hex-encoded private key **or** an
+                :class:`~pydefi.wallet.OpenWalletSigner` instance.
             destination: Recipient EVM address.
             amount: Amount as a decimal string (e.g. ``"100.0"``).
             nonce: Millisecond timestamp nonce.  Defaults to current time.
@@ -311,7 +314,7 @@ class HyperliquidClient:
 
     async def spot_send(
         self,
-        private_key: str,
+        private_key: Signer,
         destination: str,
         token: str,
         amount: str,
@@ -347,7 +350,7 @@ class HyperliquidClient:
 
     async def withdraw(
         self,
-        private_key: str,
+        private_key: Signer,
         destination: str,
         amount: str,
         nonce: int | None = None,
@@ -381,7 +384,7 @@ class HyperliquidClient:
 
     async def usd_class_transfer(
         self,
-        private_key: str,
+        private_key: Signer,
         amount: str,
         to_perp: bool,
         nonce: int | None = None,
@@ -412,7 +415,7 @@ class HyperliquidClient:
 
     async def send_asset(
         self,
-        private_key: str,
+        private_key: Signer,
         destination: str,
         token: str,
         amount: str,
@@ -464,7 +467,7 @@ class HyperliquidClient:
 
     async def send_to_evm_with_data(
         self,
-        private_key: str,
+        private_key: Signer,
         destination_recipient: str,
         amount: str,
         destination_chain_id: int,
