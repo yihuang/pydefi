@@ -24,6 +24,8 @@ import pytest
 from web3 import AsyncWeb3
 from web3.exceptions import ContractLogicError, Web3RPCError
 
+from eth_contract.erc20 import ERC20
+
 from pydefi.vm import Patch, Program
 from pydefi.vm.program import (
     assert_ge,
@@ -78,18 +80,7 @@ def _ensure_solc(version: str = "0.8.24") -> None:
 
 def _compile_defi_vm() -> dict:
     """Compile DeFiVM.sol and return the ABI + bytecode."""
-    _ensure_solc("0.8.24")
-    result = solcx.compile_files(
-        [str(SOL_FILE)],
-        output_values=["abi", "bin"],
-        solc_version="0.8.24",
-        optimize=True,
-        optimize_runs=200,
-    )
-    # solcx may return relative or absolute path as the key prefix;
-    # find the DeFiVM entry regardless.
-    key = next(k for k in result if k.endswith(":DeFiVM"))
-    return result[key]
+    return _compile_sol_file(SOL_FILE, "DeFiVM")
 
 
 async def _deploy(w3: AsyncWeb3, compiled: dict, deployer: str, *args) -> str:
@@ -98,6 +89,20 @@ async def _deploy(w3: AsyncWeb3, compiled: dict, deployer: str, *args) -> str:
     tx_hash = await contract.constructor(*args).transact({"from": deployer})
     receipt = await w3.eth.get_transaction_receipt(tx_hash)
     return receipt["contractAddress"]
+
+
+def _compile_sol_file(path: Path, contract_name: str) -> dict:
+    """Compile a Solidity file and return ABI + bytecode for *contract_name*."""
+    _ensure_solc("0.8.24")
+    result = solcx.compile_files(
+        [str(path)],
+        output_values=["abi", "bin"],
+        solc_version="0.8.24",
+        optimize=True,
+        optimize_runs=200,
+    )
+    key = next(k for k in result if k.endswith(f":{contract_name}"))
+    return result[key]
 
 
 def _compile_sol_source(source: str, contract_name: str) -> dict:
@@ -113,16 +118,7 @@ def _compile_sol_source(source: str, contract_name: str) -> dict:
 
 def _compile_approve_proxy() -> dict:
     """Compile ApproveProxy.sol and return ABI + bytecode."""
-    _ensure_solc("0.8.24")
-    result = solcx.compile_files(
-        [str(APPROVE_PROXY_SOL_FILE)],
-        output_values=["abi", "bin"],
-        solc_version="0.8.24",
-        optimize=True,
-        optimize_runs=200,
-    )
-    key = next(k for k in result if k.endswith(":ApproveProxy"))
-    return result[key]
+    return _compile_sol_file(APPROVE_PROXY_SOL_FILE, "ApproveProxy")
 
 
 # ---------------------------------------------------------------------------
@@ -967,19 +963,6 @@ contract MockToken {
 """
 
 
-# ---------------------------------------------------------------------------
-# ERC-20 transfer calldata helper
-# ---------------------------------------------------------------------------
-
-
-def _transfer_calldata(recipient: str, amount: int) -> bytes:
-    """Encode calldata for ERC-20 ``transfer(address,uint256)``."""
-    from eth_abi import encode
-    from eth_utils import keccak
-
-    selector = keccak(b"transfer(address,uint256)")[:4]
-    return selector + encode(["address", "uint256"], [recipient, amount])
-
 
 # ---------------------------------------------------------------------------
 # Module-scoped fixture: deploy ApproveProxy + two MockTokens alongside DeFiVM
@@ -1060,7 +1043,7 @@ class TestApproveProxyFork:
         bal_recipient_before = await token_a.functions.balanceOf(recipient).call()
         bal_vm_before = await token_a.functions.balanceOf(vm_address).call()
 
-        program = Program().call_contract(token_a_address, _transfer_calldata(recipient, AMOUNT)).pop().build()
+        program = Program().call_contract(token_a_address, ERC20.fns.transfer(recipient, AMOUNT).data).pop().build()
         deposits = [{"token": token_a_address, "amount": AMOUNT}]
 
         tx = await proxy.functions.execute(program, deposits).transact({"from": user})
@@ -1098,9 +1081,9 @@ class TestApproveProxyFork:
 
         program = (
             Program()
-            .call_contract(token_a_address, _transfer_calldata(recipient, AMOUNT_A))
+            .call_contract(token_a_address, ERC20.fns.transfer(recipient, AMOUNT_A).data)
             .pop()
-            .call_contract(token_b_address, _transfer_calldata(recipient, AMOUNT_B))
+            .call_contract(token_b_address, ERC20.fns.transfer(recipient, AMOUNT_B).data)
             .pop()
             .build()
         )
@@ -1147,7 +1130,7 @@ class TestApproveProxyFork:
         tx = await token_a.functions.approve(proxy_address, APPROVE_AMOUNT).transact({"from": user})
         await w3.eth.get_transaction_receipt(tx)
 
-        program = Program().call_contract(token_a_address, _transfer_calldata(recipient, DEPOSIT_AMOUNT)).pop().build()
+        program = Program().call_contract(token_a_address, ERC20.fns.transfer(recipient, DEPOSIT_AMOUNT).data).pop().build()
         deposits = [{"token": token_a_address, "amount": DEPOSIT_AMOUNT}]
 
         with pytest.raises((ContractLogicError, Web3RPCError)):
