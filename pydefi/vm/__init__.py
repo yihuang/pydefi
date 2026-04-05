@@ -106,6 +106,20 @@ from pydefi.vm.program import (
     sub,
     swap,
 )
+from pydefi.vm.swap import (
+    V2_AMOUNT_OUT_OFFSET,
+    V3_AMOUNT_OUT_OFFSET,
+    SwapHop,
+    SwapProtocol,
+    build_multi_hop_program,
+    check_min_balance,
+    encode_v2_callback_data,
+    encode_v3_callback_data,
+    encode_v3_path,
+    v2_swap_calldata,
+    v3_exact_input_calldata,
+    v3_exact_input_single_calldata,
+)
 
 __all__ = [
     # Fluent builder
@@ -182,4 +196,17 @@ __all__ = [
     "shr",
     "ret_u256",
     "ret_slice",
+    # Swap composer
+    "SwapHop",
+    "SwapProtocol",
+    "V2_AMOUNT_OUT_OFFSET",
+    "V3_AMOUNT_OUT_OFFSET",
+    "build_multi_hop_program",
+    "check_min_balance",
+    "encode_v2_callback_data",
+    "encode_v3_callback_data",
+    "encode_v3_path",
+    "v2_swap_calldata",
+    "v3_exact_input_calldata",
+    "v3_exact_input_single_calldata",
 ]
