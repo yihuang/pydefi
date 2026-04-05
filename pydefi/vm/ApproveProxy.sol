@@ -28,7 +28,7 @@ pragma solidity ^0.8.24;
  * Usage
  * -----
  * 1. User: ``token.approve(approveProxy, amount)``  — once per token/session.
- * 2. User: ``approveProxy.execute(program, deposits)``
+ * 2. User: ``approveProxy.execute{value: v}(program, deposits)``
  *           where ``deposits`` lists the tokens and amounts to pull into DeFiVM.
  * 3. DeFiVM program operates on the deposited tokens (e.g. calls
  *    ``token.transfer(recipient, amount)`` from the VM's balance).
