@@ -1146,8 +1146,12 @@ class TestPatch:
         p_amount = Patch(ret_u256(0))
         bytecode = Program().call_contract_abi(ADDR_A, sig, ADDR_B, p_amount).build()
 
-        # ADDR_B must be baked into the calldata template in the bytecode
-        assert bytes.fromhex(ADDR_B[2:]) in bytecode
+        # ADDR_B must be baked into the calldata template in the bytecode.
+        # push_bytes splits calldata into 32-byte chunks, so the 20-byte address
+        # may span two chunks; check that both halves appear.
+        addr_bytes = bytes.fromhex(ADDR_B[2:])
+        assert addr_bytes[:16] in bytecode
+        assert addr_bytes[16:] in bytecode
         # The patch opcodes must be present
         assert ret_u256(0) in bytecode
 
@@ -1253,7 +1257,10 @@ class TestPatch:
         bytecode = Program().call_contract_abi(ADDR_A, sig, [p, 999_999_999_999]).build()
         assert len(bytecode) > 0
         assert load_reg(0) in bytecode
-        assert (999_999_999_999).to_bytes(32, "big") in bytecode
+        # 999_999_999_999 = 0xe8d4a50fff; push_bytes splits into 32-byte chunks so
+        # the 5 significant bytes span a boundary — check the 4-byte tail that is
+        # guaranteed to be contiguous within one chunk.
+        assert bytes.fromhex("d4a50fff") in bytecode
 
     def test_patch_in_nested_tuple(self):
         """Patch inside a tuple argument is located and applied correctly."""
@@ -1276,9 +1283,10 @@ class TestPatch:
         bytecode = Program().call_contract_abi(ADDR_A, sig, (p, 999_999_999_999)).build()
         assert len(bytecode) > 0
         assert load_reg(1) in bytecode
-        # The static value must be baked in; use a distinctive large value to
-        # minimise the chance of the byte pattern appearing elsewhere in the bytecode.
-        assert (999_999_999_999).to_bytes(32, "big") in bytecode
+        # The static value must be baked in; push_bytes splits into 32-byte chunks
+        # so the 5 significant bytes of 999_999_999_999 (0xe8d4a50fff) may span a
+        # boundary — check the 4-byte tail that is guaranteed to be contiguous.
+        assert bytes.fromhex("d4a50fff") in bytecode
 
 
 # ---------------------------------------------------------------------------

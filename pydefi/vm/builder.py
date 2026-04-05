@@ -177,6 +177,8 @@ from __future__ import annotations
 import struct
 from typing import TYPE_CHECKING
 
+from eth_abi import encode_with_hooks
+
 if TYPE_CHECKING:
     from eth_abi.hooks import EncodingContext
 
@@ -205,6 +207,7 @@ from pydefi.vm.program import (
     mul,
     patch_addr,
     patch_u256,
+    patch_value,
     pop,
     push_addr,
     push_bytes,
@@ -290,21 +293,22 @@ class Patch:
         )
     """
 
-    def __init__(self, opcodes: PatchSource) -> None:
+    def __init__(self, opcodes: PatchSource, placeholder: object = 0) -> None:
         self.opcodes: bytes = bytes(opcodes)
+        self.placeholder = placeholder
         self.offset: int | None = None  # set by __call__ during encode_with_hooks
         self.size: int | None = None  # set by __call__ during encode_with_hooks
 
-    def __call__(self, ctx: EncodingContext) -> int:
+    def __call__(self, ctx: EncodingContext) -> object:
         """Hook called by ``eth_abi.encode_with_hooks`` with the encoding context.
 
         Stores the absolute calldata offset (selector + encoded-args offset) and
-        the size of the encoded value, then returns ``0`` as a zero-filled
-        placeholder for the ABI encoder.
+        the size of the encoded value, then returns the placeholder value for the
+        ABI encoder.
         """
         self.offset = 4 + ctx.offset
         self.size = ctx.size
-        return 0
+        return self.placeholder
 
 
 # ---------------------------------------------------------------------------
@@ -713,8 +717,7 @@ class Program:
             )
 
         patch_list: list[Patch] = []
-        for a in args:
-            _collect_patches(a, patch_list)
+        _collect_patches(args, patch_list)
 
         # Fast path: no Patch objects anywhere in the argument tree.
         if not patch_list:
@@ -722,11 +725,7 @@ class Program:
 
         # Slow path: Patch objects are callable hooks; encode_with_hooks calls
         # each one with the EncodingContext so each Patch stores its offset/size.
-        from eth_abi.codec import ABICodec
-        from eth_abi.registry import registry as default_registry
-
-        codec = ABICodec(default_registry)
-        encoded_args = codec.encode_with_hooks(param_types, args)
+        encoded_args = encode_with_hooks(param_types, args)
         calldata = bytes(fn.selector) + encoded_args
 
         patches: list[PatchSpec] = [
@@ -803,21 +802,15 @@ class Program:
         self._emit(push_bytes(calldata))  # argsOffset (TOS), argsLen
 
         for offset, size, opcodes in patches:
-            if size not in (20, 32):
-                raise ValueError(
-                    f"call_with_patches: patch size {size!r} not supported; expected 20 (address) or 32 (u256)"
-                )
+            if not (0 < size <= 32):
+                raise ValueError(f"call_with_patches: patch size {size!r} not supported; expected 0 < size <= 32")
             if not isinstance(opcodes, (bytes, bytearray)):
                 raise TypeError(
                     f"call_with_patches: opcodes must be bytes or bytearray, got {type(opcodes).__name__!r}"
                 )
 
             self._emit(opcodes)  # push the patch value onto the stack
-
-            if size == 20:
-                self._emit(patch_addr(offset))
-            else:
-                self._emit(patch_u256(offset))
+            self._emit(patch_value(offset, size))
 
         # Stack now: [argsOffset(TOS), argsLen, retOffset, retSize] — ready for CALL prologue
         self._emit(push_u256(value))

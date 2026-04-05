@@ -583,9 +583,32 @@ def patch_addr(offset: int) -> bytes:
     return bytes([_DUP2, _PUSH2, mstore_off >> 8, mstore_off & 0xFF, OP_ADD, OP_MSTORE])
 
 
-# ---------------------------------------------------------------------------
-# Returndata helpers
-# ---------------------------------------------------------------------------
+def patch_value(offset: int, size: int) -> bytes:
+    """Overwrite a ``size``-byte value in the calldata buffer at *offset*.
+
+    ABI right-aligns values shorter than 32 bytes within a 32-byte word, so the
+    MSTORE target is ``offset + size - 32``.  For ``size == 32`` this is identical
+    to :func:`patch_u256`; for ``size == 20`` it is identical to
+    :func:`patch_addr`.
+
+    Args:
+        offset: Byte offset of the value's first byte inside the calldata buffer.
+        size:   Number of bytes occupied by the value.  Must satisfy
+                ``0 < size <= 32``.
+
+    Stack before: [value(TOS), argsOffset(2nd), argsLen(3rd), ...]
+    Stack after:  [argsOffset(TOS), argsLen(2nd), ...]
+    """
+    if not (0 < size <= 32):
+        raise ValueError(f"patch_value: size must be in (0, 32], got {size}")
+    mstore_off = offset + size - 32
+    if mstore_off < 0:
+        raise ValueError(
+            f"patch_value: offset {offset} is too small for size {size}; MSTORE target {mstore_off} would be negative"
+        )
+    if mstore_off > 0xFFFF:
+        raise ValueError(f"patch_value: mstore offset {mstore_off} exceeds 16-bit PUSH2 range")
+    return bytes([_DUP2, _PUSH2, mstore_off >> 8, mstore_off & 0xFF, OP_ADD, OP_MSTORE])
 
 
 def ret_u256(offset: int) -> bytes:
