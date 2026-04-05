@@ -642,13 +642,10 @@ wheels = [
 [[package]]
 name = "eth-contract"
 version = "0.3.0"
-source = { registry = "https://pypi.org/simple" }
+source = { git = "https://github.com/yihuang/eth-contract.git?rev=main#9bd1b1cb05493d5b23f9e3508ae746457e911092" }
 dependencies = [
+    { name = "eth-abi" },
     { name = "web3" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/c2/66/eadb55c44c766fb7dda37a58fd06cdb3c3c543224c3d54bf56127d22bd9f/eth_contract-0.3.0.tar.gz", hash = "sha256:0cafb061127e14c36461ac203611d2285dbda1d8cca4de784a0c48da78159cd8", size = 104742, upload-time = "2025-10-17T11:42:41.727Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/59/58/4760a58fcea7bdb8584049bf7bd4ffe56e8cc8c64a2d3ae4cd9e73d2a1ba/eth_contract-0.3.0-py3-none-any.whl", hash = "sha256:817b34023a21dcb414ac1051e409e3f0b066fa616ac8d682ed053153fbcec749", size = 96733, upload-time = "2025-10-17T11:42:40.105Z" },
 ]
 
 [[package]]
@@ -1446,7 +1443,7 @@ dev = [
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.9.0" },
     { name = "eth-abi", git = "https://github.com/yihuang/eth-abi.git?rev=copilot%2Fsupport-hooks-for-offset-detection" },
-    { name = "eth-contract", specifier = ">=0.3.0" },
+    { name = "eth-contract", git = "https://github.com/yihuang/eth-contract.git?rev=main" },
     { name = "msgpack", specifier = ">=1.0.0" },
     { name = "py-solc-x", marker = "extra == 'dev'", specifier = ">=2.0.0" },
     { name = "pydantic", specifier = ">=2.0.0" },

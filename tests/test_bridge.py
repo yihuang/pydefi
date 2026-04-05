@@ -13,7 +13,7 @@ from pydefi.bridge.cctp import (
 )
 from pydefi.bridge.gaszip import _SUPPORTED_CHAINS, GasZip
 from pydefi.bridge.layerzero_oft import _LZ_EID, LayerZeroOFT
-from pydefi.bridge.mayan import _CHAIN_NAMES, Mayan
+from pydefi.bridge.mayan import _CHAIN_NAMES, _MAYAN_FORWARDER, Mayan
 from pydefi.bridge.relay import Relay
 from pydefi.bridge.stargate import _LZ_CHAIN_ID, _POOL_IDS, Stargate
 from pydefi.exceptions import BridgeError
@@ -349,6 +349,84 @@ class TestMayan:
         assert _CHAIN_NAMES[81457] == "blast"
         assert _CHAIN_NAMES[324] == "zksync"
         assert _CHAIN_NAMES[7777777] == "zora"
+
+    @pytest.mark.asyncio
+    async def test_build_bridge_tx(self):
+        """build_bridge_tx returns a tx dict with non-empty calldata.
+
+        The outer calldata selector must match ``swapAndForwardEth``
+        (0xfa74fd43) and the inner ``mayanData`` must embed
+        ``createOrderWithToken`` (0xa3a30834).
+        """
+        m = Mayan(src_chain_id=1, dst_chain_id=42161)
+        amount_in = TokenAmount(token=ETH_NATIVE, amount=10**18)  # 1 ETH
+        recipient = "0x" + "CC" * 20
+        weth = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+        swift_contract = "0x" + "AA" * 20
+        swap_router = "0x" + "BB" * 20
+
+        mock_quote_response = {
+            "quotes": [
+                {
+                    "type": "SWIFT",
+                    "swiftMayanContract": swift_contract,
+                    "minAmountOut": "900",
+                    "gasDrop": "0",
+                    "cancelRelayerFee64": "1000",
+                    "refundRelayerFee64": "1000",
+                    "deadline64": "9999999999",
+                    "swiftAuctionMode": 1,
+                    "effectiveAmountIn64": str(10**18),
+                    "swiftInputDecimals": 18,
+                    "minMiddleAmount": "0.9",
+                    "swiftInputContract": weth,
+                }
+            ]
+        }
+        mock_swap_response = {
+            "swapRouterAddress": swap_router,
+            "swapRouterCalldata": "0xdeadbeef",
+        }
+
+        quote_ctx = _make_aiohttp_mock(200, mock_quote_response)
+        swap_ctx = _make_aiohttp_mock(200, mock_swap_response)
+
+        with patch("aiohttp.ClientSession", MagicMock(side_effect=[quote_ctx, swap_ctx])):
+            tx = await m.build_bridge_tx(ETH_NATIVE, USDC_ARB, amount_in, recipient)
+
+        assert tx["to"] == _MAYAN_FORWARDER
+        assert tx["value"] == str(10**18)
+        # calldata is non-empty and carries the swapAndForwardEth selector
+        assert tx["data"].startswith("0xfa74fd43")
+        # the inner createOrderWithToken calldata must be embedded
+        assert "a3a30834" in tx["data"]
+
+    @pytest.mark.asyncio
+    async def test_build_bridge_tx_erc20_raises(self):
+        """build_bridge_tx raises BridgeError for ERC-20 token_in."""
+        m = Mayan(src_chain_id=1, dst_chain_id=42161)
+        amount_in = TokenAmount.from_human(USDC_ETH, "1000")
+        with pytest.raises(BridgeError):
+            await m.build_bridge_tx(USDC_ETH, USDC_ARB, amount_in, "0x" + "CC" * 20)
+
+    @pytest.mark.asyncio
+    async def test_build_bridge_tx_no_swift_route_raises(self):
+        """build_bridge_tx raises BridgeError when no SWIFT route is returned."""
+        m = Mayan(src_chain_id=1, dst_chain_id=42161)
+        amount_in = TokenAmount(token=ETH_NATIVE, amount=10**18)
+
+        mock_quote_response = {
+            "quotes": [
+                {
+                    "type": "MCTP",
+                    "expectedAmountOut": "998",
+                }
+            ]
+        }
+
+        with patch("aiohttp.ClientSession", return_value=_make_aiohttp_mock(200, mock_quote_response)):
+            with pytest.raises(BridgeError):
+                await m.build_bridge_tx(ETH_NATIVE, USDC_ARB, amount_in, "0x" + "CC" * 20)
 
 
 # ---------------------------------------------------------------------------
