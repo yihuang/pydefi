@@ -307,9 +307,12 @@ class PolymarketClient:
             condition_id: The market's condition ID (hex string).
 
         Returns:
-            Market dict.
+            Market dict, or ``None`` if no market with that condition ID exists.
         """
-        return await self._get(f"{self._gamma_base}/markets/{condition_id}")
+        results = await self._get(f"{self._gamma_base}/markets", params={"condition_ids": condition_id})
+        if isinstance(results, list) and results:
+            return results[0]
+        return results
 
     async def get_events(
         self,
@@ -380,11 +383,11 @@ class PolymarketClient:
     # CLOB API — public endpoints
     # -----------------------------------------------------------------------
 
-    async def get_server_time(self) -> dict[str, Any]:
+    async def get_server_time(self) -> int:
         """Return the current server timestamp from the CLOB API.
 
         Returns:
-            Dict with ``"time"`` key containing the Unix timestamp.
+            Unix timestamp as an integer.
         """
         return await self._get(f"{self._clob_base}/time")
 
