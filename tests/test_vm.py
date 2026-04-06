@@ -84,7 +84,14 @@ from pydefi.vm.swap import (
     build_multi_hop_program,
     build_split_program,
 )
-from tests.conftest import MINI_EVM_SENDER, MINI_EVM_SENDER_BALANCE, RETURN_TOP, mini_evm
+from tests.conftest import (
+    MINI_EVM_RECEIVER,
+    MINI_EVM_SENDER,
+    MINI_EVM_SENDER_BALANCE,
+    RETURN_TOP,
+    MiniEVMContext,
+    mini_evm,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1900,7 +1907,6 @@ class TestMiniEVM:
     def test_self_addr(self):
         # ADDRESS opcode returns the *to* address used in the Message.
         # mini_evm uses MINI_EVM_RECEIVER as the receiver.
-        from tests.conftest import MINI_EVM_RECEIVER
 
         expected = int.from_bytes(MINI_EVM_RECEIVER, "big")
         assert self._run_int(self_addr()) == expected
@@ -1965,3 +1971,267 @@ class TestMiniEVM:
         assert result.is_error
         # Output begins with Error(string) selector 0x08c379a0.
         assert result.output[:4] == bytes.fromhex("08c379a0")
+
+
+# ---------------------------------------------------------------------------
+# MiniEVMContext — stateful contract-level tests
+# ---------------------------------------------------------------------------
+
+
+class TestMiniEVMContext:
+    """Tests for :class:`~tests.conftest.MiniEVMContext`.
+
+    Exercises deploying contracts, reading token balances via DeFiVM programs,
+    token transfers, and direct state inspection — all entirely in-process.
+    """
+
+    # ------------------------------------------------------------------
+    # Construction
+    # ------------------------------------------------------------------
+
+    def test_deployer_is_bytes20(self):
+        ctx = MiniEVMContext()
+        assert isinstance(ctx.deployer, bytes)
+        assert len(ctx.deployer) == 20
+
+    def test_program_executor_is_bytes20(self):
+        ctx = MiniEVMContext()
+        assert isinstance(ctx.program_executor, bytes)
+        assert len(ctx.program_executor) == 20
+
+    def test_fresh_context_is_isolated(self):
+        """Two independent MiniEVMContext instances share no state."""
+        ctx_a = MiniEVMContext()
+        ctx_b = MiniEVMContext()
+        tok_a = ctx_a.deploy_mock_token()
+        # ctx_b should have no code at tok_a's address.
+        assert ctx_b._vm.state.get_code(tok_a) == b""
+
+    # ------------------------------------------------------------------
+    # MockToken deployment
+    # ------------------------------------------------------------------
+
+    def test_deploy_mock_token_returns_address(self, evm_ctx):
+        token = evm_ctx.deploy_mock_token()
+        assert isinstance(token, bytes)
+        assert len(token) == 20
+
+    def test_deploy_two_tokens_have_distinct_addresses(self, evm_ctx):
+        tok_a = evm_ctx.deploy_mock_token()
+        tok_b = evm_ctx.deploy_mock_token()
+        assert tok_a != tok_b
+
+    def test_deployed_token_has_code(self, evm_ctx):
+        token = evm_ctx.deploy_mock_token()
+        assert len(evm_ctx._vm.state.get_code(token)) > 0
+
+    # ------------------------------------------------------------------
+    # mint_token / token_balance
+    # ------------------------------------------------------------------
+
+    def test_mint_token_increases_balance(self, evm_ctx):
+        token = evm_ctx.deploy_mock_token()
+        recipient = b"\x01" * 20
+        evm_ctx.mint_token(token, recipient, 1_000 * 10**18)
+        assert evm_ctx.token_balance(token, recipient) == 1_000 * 10**18
+
+    def test_mint_token_accumulates(self, evm_ctx):
+        token = evm_ctx.deploy_mock_token()
+        recipient = b"\x02" * 20
+        evm_ctx.mint_token(token, recipient, 500)
+        evm_ctx.mint_token(token, recipient, 300)
+        assert evm_ctx.token_balance(token, recipient) == 800
+
+    def test_initial_balance_is_zero(self, evm_ctx):
+        token = evm_ctx.deploy_mock_token()
+        stranger = b"\xff" * 20
+        assert evm_ctx.token_balance(token, stranger) == 0
+
+    # ------------------------------------------------------------------
+    # run_program — balance_of via program
+    # ------------------------------------------------------------------
+
+    def test_program_balance_of_own_tokens(self, evm_ctx):
+        """balance_of via a DeFiVM program returns the correct token balance."""
+        token = evm_ctx.deploy_mock_token()
+        executor = evm_ctx.program_executor
+        evm_ctx.mint_token(token, executor, 777 * 10**18)
+
+        program = self_addr() + push_addr(token.hex()) + balance_of() + RETURN_TOP
+        result = evm_ctx.run_program(program)
+
+        assert not result.is_error
+        assert int.from_bytes(result.output, "big") == 777 * 10**18
+
+    def test_program_balance_of_specific_holder(self, evm_ctx):
+        token = evm_ctx.deploy_mock_token()
+        holder = b"\x55" * 20
+        evm_ctx.mint_token(token, holder, 123 * 10**18)
+
+        program = push_addr(holder.hex()) + push_addr(token.hex()) + balance_of() + RETURN_TOP
+        result = evm_ctx.run_program(program)
+
+        assert not result.is_error
+        assert int.from_bytes(result.output, "big") == 123 * 10**18
+
+    def test_program_balance_zero_for_unfunded(self, evm_ctx):
+        token = evm_ctx.deploy_mock_token()
+        empty_addr = b"\xee" * 20
+
+        program = push_addr(empty_addr.hex()) + push_addr(token.hex()) + balance_of() + RETURN_TOP
+        result = evm_ctx.run_program(program)
+
+        assert not result.is_error
+        assert int.from_bytes(result.output, "big") == 0
+
+    # ------------------------------------------------------------------
+    # run_program — token transfer
+    # ------------------------------------------------------------------
+
+    def test_program_transfer_tokens(self, evm_ctx):
+        """A DeFiVM program can transfer ERC-20 tokens between addresses."""
+        import eth_abi
+        from eth_hash.auto import keccak
+
+        token = evm_ctx.deploy_mock_token()
+        executor = evm_ctx.program_executor
+        recipient = b"\x99" * 20
+        initial = 1_000 * 10**18
+        amount = 250 * 10**18
+
+        evm_ctx.mint_token(token, executor, initial)
+
+        # Build transfer calldata: token.transfer(recipient, amount)
+        sel_transfer = keccak(b"transfer(address,uint256)")[:4]
+        transfer_cd = sel_transfer + eth_abi.encode(
+            ["address", "uint256"], ["0x" + recipient.hex(), amount]
+        )
+        program = (
+            push_u256(0)
+            + push_u256(0)  # retLen=0, retOffset=0
+            + push_bytes(transfer_cd)  # argsOffset, argsLen
+            + push_u256(0)  # value=0
+            + push_addr(token.hex())  # target
+            + gas_opcode()
+            + call()
+            + pop()  # pop success flag
+        )
+        result = evm_ctx.run_program(program)
+        assert not result.is_error
+
+        assert evm_ctx.token_balance(token, executor) == initial - amount
+        assert evm_ctx.token_balance(token, recipient) == amount
+
+    # ------------------------------------------------------------------
+    # run_program — arithmetic & control flow (sanity-check)
+    # ------------------------------------------------------------------
+
+    def test_program_arithmetic_in_context(self, evm_ctx):
+        """Arithmetic programs work the same inside MiniEVMContext."""
+        result = evm_ctx.run_program(push_u256(6) + push_u256(7) + mul() + RETURN_TOP)
+        assert not result.is_error
+        assert int.from_bytes(result.output, "big") == 42
+
+    def test_program_revert_in_context(self, evm_ctx):
+        result = evm_ctx.run_program(push_u256(1) + revert_if("oops"))
+        assert result.is_error
+
+    # ------------------------------------------------------------------
+    # call() helper
+    # ------------------------------------------------------------------
+
+    def test_call_mint_and_balance(self, evm_ctx):
+        """call() can invoke contract functions directly (no program needed)."""
+        import eth_abi
+        from eth_hash.auto import keccak
+
+        token = evm_ctx.deploy_mock_token()
+        holder = b"\x44" * 20
+        amount = 42 * 10**18
+
+        sel_mint = keccak(b"mint(address,uint256)")[:4]
+        calldata = sel_mint + eth_abi.encode(
+            ["address", "uint256"], ["0x" + holder.hex(), amount]
+        )
+        result = evm_ctx.call(token, calldata)
+        assert not result.is_error
+        assert evm_ctx.token_balance(token, holder) == amount
+
+    # ------------------------------------------------------------------
+    # set_code / set_storage / set_balance
+    # ------------------------------------------------------------------
+
+    def test_set_code_callable(self, evm_ctx):
+        """set_code injects runtime bytecode at an address."""
+        addr = b"\xab" * 20
+        # simple contract: PUSH1 99 PUSH1 0 MSTORE PUSH1 32 PUSH1 0 RETURN
+        runtime = bytes.fromhex("606360005260206000f3")
+        evm_ctx.set_code(addr, runtime)
+
+        result = evm_ctx.call(addr)
+        assert not result.is_error
+        assert int.from_bytes(result.output, "big") == 99
+
+    def test_set_balance_and_read_via_program(self, evm_ctx):
+        """set_balance(addr, n) → balance_of(0, addr) returns n."""
+        addr = b"\xdc" * 20
+        evm_ctx.set_balance(addr, 888)
+
+        addr_int = int.from_bytes(addr, "big")
+        program = push_u256(addr_int) + push_u256(0) + balance_of() + RETURN_TOP
+        result = evm_ctx.run_program(program)
+        assert not result.is_error
+        assert int.from_bytes(result.output, "big") == 888
+
+    def test_set_storage_and_get_storage(self, evm_ctx):
+        """set_storage / get_storage round-trip."""
+        addr = b"\xce" * 20
+        evm_ctx.set_storage(addr, 7, 0xDEADBEEF)
+        assert evm_ctx.get_storage(addr, 7) == 0xDEADBEEF
+
+    # ------------------------------------------------------------------
+    # State persistence across multiple run_program calls
+    # ------------------------------------------------------------------
+
+    def test_storage_mutations_persist(self, evm_ctx):
+        """Token balance changes persist between run_program executions."""
+        import eth_abi
+        from eth_hash.auto import keccak
+
+        token = evm_ctx.deploy_mock_token()
+        executor = evm_ctx.program_executor
+        holder = b"\x77" * 20
+        evm_ctx.mint_token(token, executor, 1_000 * 10**18)
+
+        # First run_program: transfer 400e18
+        sel_transfer = keccak(b"transfer(address,uint256)")[:4]
+        cd = sel_transfer + eth_abi.encode(
+            ["address", "uint256"], ["0x" + holder.hex(), 400 * 10**18]
+        )
+        prog = (
+            push_u256(0) + push_u256(0)
+            + push_bytes(cd)
+            + push_u256(0) + push_addr(token.hex()) + gas_opcode() + call() + pop()
+        )
+        r1 = evm_ctx.run_program(prog)
+        assert not r1.is_error
+
+        # Second run_program: check balance persisted
+        bal_prog = self_addr() + push_addr(token.hex()) + balance_of() + RETURN_TOP
+        r2 = evm_ctx.run_program(bal_prog)
+        assert not r2.is_error
+        assert int.from_bytes(r2.output, "big") == 600 * 10**18
+
+    # ------------------------------------------------------------------
+    # evm_ctx fixture
+    # ------------------------------------------------------------------
+
+    def test_evm_ctx_fixture_is_fresh(self, evm_ctx):
+        """Each test gets a fresh context (tokens from other tests not visible)."""
+        token = evm_ctx.deploy_mock_token()
+        some_addr = b"\x11" * 20
+        evm_ctx.mint_token(token, some_addr, 999)
+        assert evm_ctx.token_balance(token, some_addr) == 999
+
+    def test_evm_ctx_fixture_type(self, evm_ctx):
+        assert isinstance(evm_ctx, MiniEVMContext)
