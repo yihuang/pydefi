@@ -1642,496 +1642,563 @@ class TestBuildSplitProgram:
 
 
 # ---------------------------------------------------------------------------
-# ABI encode/decode helpers — pydefi.vm.abi
+# In-VM ABI encoding — pydefi.vm.abi (EVM bytecode generators)
 # ---------------------------------------------------------------------------
 
 
-class TestAbiEncode:
-    """Verify abi_encode produces canonical ABI-encoded output."""
+def _mini_evm(bytecode: bytes, stack: list[int] | None = None) -> tuple[list[int], dict[int, int]]:
+    """Minimal EVM interpreter for testing bytecode generators.
+
+    Executes *bytecode* with the given initial *stack* and returns
+    ``(final_stack, memory)`` where *memory* maps byte-offset → value
+    for every MSTORE that was executed.
+
+    *stack* is given in **push order**: the first element was pushed first
+    (deepest), the last element was pushed last (TOS).  The returned
+    final_stack follows the same convention (last element = TOS).
+
+    Only the subset of opcodes used by emit_abi_encode / emit_abi_encode_packed
+    is implemented.  Raises RuntimeError for unsupported opcodes.
+    """
+    UINT256_MAX = (1 << 256) - 1
+    stk = list(stack or [])  # internal: index 0 = bottom, index -1 = TOS
+    mem: dict[int, int] = {}  # offset → 32-byte word (big-endian uint256)
+    pc = 0
+
+    def _pop() -> int:
+        return stk.pop()
+
+    def _push(v: int) -> None:
+        stk.append(v & UINT256_MAX)
+
+    def _tos() -> int:
+        return stk[-1]
+
+    def _mload(off: int) -> int:
+        return mem.get(off, 0)
+
+    def _mstore(off: int, val: int) -> None:
+        mem[off] = val & UINT256_MAX
+
+    while pc < len(bytecode):
+        op = bytecode[pc]
+
+        # PUSH1 .. PUSH32
+        if 0x60 <= op <= 0x7F:
+            n = op - 0x5F
+            val = int.from_bytes(bytecode[pc + 1 : pc + 1 + n], "big")
+            _push(val)
+            pc += 1 + n
+            continue
+
+        if op == 0x01:  # ADD
+            a, b = _pop(), _pop()
+            _push(a + b)
+        elif op == 0x02:  # MUL
+            a, b = _pop(), _pop()
+            _push(a * b)
+        elif op == 0x04:  # DIV
+            a, b = _pop(), _pop()
+            _push(a // b if b else 0)
+        elif op == 0x06:  # MOD
+            a, b = _pop(), _pop()
+            _push(a % b if b else 0)
+        elif op == 0x0B:  # SIGNEXTEND
+            b, x = _pop(), _pop()
+            if b < 31:
+                sign_bit = 1 << (b * 8 + 7)
+                mask = sign_bit - 1
+                if x & sign_bit:
+                    _push(x | ~mask)
+                else:
+                    _push(x & mask)
+            else:
+                _push(x)
+        elif op == 0x15:  # ISZERO
+            _push(1 if _pop() == 0 else 0)
+        elif op == 0x16:  # AND
+            _push(_pop() & _pop())
+        elif op == 0x17:  # OR
+            _push(_pop() | _pop())
+        elif op == 0x1B:  # SHL
+            shift, val = _pop(), _pop()
+            _push((val << shift) if shift < 256 else 0)
+        elif op == 0x1C:  # SHR
+            shift, val = _pop(), _pop()
+            _push((val >> shift) if shift < 256 else 0)
+        elif op == 0x50:  # POP
+            _pop()
+        elif op == 0x51:  # MLOAD
+            off = _pop()
+            _push(_mload(off))
+        elif op == 0x52:  # MSTORE
+            off, val = _pop(), _pop()
+            _mstore(off, val)
+        elif 0x80 <= op <= 0x8F:  # DUP1..DUP16
+            depth = op - 0x80 + 1
+            _push(stk[-depth])
+        elif 0x90 <= op <= 0x9F:  # SWAP1..SWAP16
+            depth = op - 0x90 + 1
+            stk[-1], stk[-(depth + 1)] = stk[-(depth + 1)], stk[-1]
+        else:
+            raise RuntimeError(f"Unsupported opcode 0x{op:02X} at PC={pc}")
+
+        pc += 1
+
+    return stk, mem
+
+
+def _read_memory(mem: dict[int, int], offset: int, length: int) -> bytes:
+    """Read *length* bytes from the word-oriented EVM memory dict."""
+    result = bytearray(length)
+    for addr, word in mem.items():
+        word_bytes = word.to_bytes(32, "big")
+        for i in range(32):
+            byte_addr = addr + i
+            if offset <= byte_addr < offset + length:
+                result[byte_addr - offset] = word_bytes[i]
+    return bytes(result)
+
+
+# ---------------------------------------------------------------------------
+# emit_abi_encode tests
+# ---------------------------------------------------------------------------
+
+
+class TestEmitAbiEncode:
+    """Verify that emit_abi_encode generates correct EVM bytecodes."""
 
     def test_single_uint256(self):
-        """uint256 is right-aligned in a 32-byte word."""
-        from pydefi.vm.abi import abi_encode
+        """A single uint256 encodes as 32 bytes at the free-memory pointer."""
+        from pydefi.vm.abi import emit_abi_encode
 
-        result = abi_encode(["uint256"], [42])
-        assert len(result) == 32
-        assert int.from_bytes(result, "big") == 42
+        code = emit_abi_encode(["uint256"])
+        # Stack input: [42] (TOS = val_0)
+        final_stack, mem = _mini_evm(code, [42])
+        # Stack output: [argsOffset(TOS), argsLen]
+        assert len(final_stack) == 2
+        args_len, args_offset = final_stack[-2], final_stack[-1]
+        assert args_len == 32
+        # The value 42 should be at mem[args_offset]
+        stored = mem[args_offset]
+        assert stored == 42
+
+    def test_two_uint256(self):
+        """Two uint256 values encode as consecutive 32-byte words."""
+        from pydefi.vm.abi import emit_abi_encode
+
+        code = emit_abi_encode(["uint256", "uint256"])
+        # val_0=100 pushed first (deepest), val_1=200 pushed last (TOS)
+        final_stack, mem = _mini_evm(code, [100, 200])
+        args_len, args_offset = final_stack[-2], final_stack[-1]
+        assert args_len == 64
+        assert mem[args_offset] == 100  # types[0] at offset 0
+        assert mem[args_offset + 32] == 200  # types[1] at offset 32
+
+    def test_address_masking(self):
+        """Address type masks the value to 160 bits."""
+        from pydefi.vm.abi import emit_abi_encode
+
+        # Dirty high bits
+        dirty_addr = (0xDEAD << 160) | int("aa" * 20, 16)
+        code = emit_abi_encode(["address"])
+        final_stack, mem = _mini_evm(code, [dirty_addr])
+        args_len, args_offset = final_stack[-2], final_stack[-1]
+        assert args_len == 32
+        stored = mem[args_offset]
+        assert stored == int("aa" * 20, 16)  # high bits cleaned
+
+    def test_bool_normalisation(self):
+        """Bool type normalises any non-zero to 1."""
+        from pydefi.vm.abi import emit_abi_encode
+
+        code = emit_abi_encode(["bool"])
+        final_stack, mem = _mini_evm(code, [42])
+        assert mem[final_stack[-1]] == 1
+
+        final_stack, mem = _mini_evm(code, [0])
+        assert mem[final_stack[-1]] == 0
+
+    def test_uint8_masking(self):
+        """uint8 masks to 8 bits."""
+        from pydefi.vm.abi import emit_abi_encode
+
+        code = emit_abi_encode(["uint8"])
+        final_stack, mem = _mini_evm(code, [0x1FF])
+        assert mem[final_stack[-1]] == 0xFF  # masked to 8 bits
+
+    def test_int8_sign_extension(self):
+        """int8 sign-extends the value."""
+        from pydefi.vm.abi import emit_abi_encode
+
+        code = emit_abi_encode(["int8"])
+        # -1 as a uint256 (only bottom byte is 0xFF)
+        val = 0xFF
+        final_stack, mem = _mini_evm(code, [val])
+        stored = mem[final_stack[-1]]
+        # int8(-1) should be sign-extended to 0xFFFF...FF
+        assert stored == (1 << 256) - 1
+
+    def test_bytes4_left_aligned(self):
+        """bytes4 preserves left-aligned value, zeroing trailing bytes."""
+        from pydefi.vm.abi import emit_abi_encode
+
+        val = 0xDEADBEEF << 224  # left-aligned in 32 bytes
+        code = emit_abi_encode(["bytes4"])
+        final_stack, mem = _mini_evm(code, [val])
+        stored = mem[final_stack[-1]]
+        assert stored == val
+
+    def test_mixed_types(self):
+        """Mixed static types encode correctly."""
+        from pydefi.vm.abi import emit_abi_encode
+
+        addr = int("ab" * 20, 16)
+        code = emit_abi_encode(["uint256", "address", "bool"])
+        # Push order: val_0=42, val_1=addr, val_2=True(=7 dirty)
+        final_stack, mem = _mini_evm(code, [42, addr, 7])
+        args_len, args_offset = final_stack[-2], final_stack[-1]
+        assert args_len == 96
+        assert mem[args_offset] == 42
+        assert mem[args_offset + 32] == addr
+        assert mem[args_offset + 64] == 1  # bool normalised
+
+    def test_with_selector(self):
+        """Selector is written as a 4-byte prefix."""
+        from pydefi.vm.abi import emit_abi_encode
+
+        sel = bytes.fromhex("a9059cbb")
+        code = emit_abi_encode(["uint256"], selector=sel)
+        final_stack, mem = _mini_evm(code, [42])
+        args_len, args_offset = final_stack[-2], final_stack[-1]
+        assert args_len == 36  # 4 + 32
+
+        # Read the full buffer from memory
+        buf = _read_memory(mem, args_offset, args_len)
+        assert buf[:4] == sel
+        assert int.from_bytes(buf[4:36], "big") == 42
+
+    def test_with_selector_two_args(self):
+        """Selector + two args: full calldata layout."""
+        from pydefi.vm.abi import emit_abi_encode
+
+        sel = bytes.fromhex("a9059cbb")
+        addr = int("ab" * 20, 16)
+        code = emit_abi_encode(["address", "uint256"], selector=sel)
+        final_stack, mem = _mini_evm(code, [addr, 10**18])
+        args_len, args_offset = final_stack[-2], final_stack[-1]
+        assert args_len == 68  # 4 + 32 + 32
+
+        buf = _read_memory(mem, args_offset, args_len)
+        assert buf[:4] == sel
+        # address at offset 4, right-aligned in 32 bytes
+        assert int.from_bytes(buf[4:36], "big") == addr
+        assert int.from_bytes(buf[36:68], "big") == 10**18
+
+    def test_tuple_flattening(self):
+        """Static tuple types are flattened into leaf scalars."""
+        from pydefi.vm.abi import emit_abi_encode
+
+        # (uint256, address) is 2 leaf values on the stack
+        code = emit_abi_encode(["(uint256,address)"])
+        addr = int("cc" * 20, 16)
+        final_stack, mem = _mini_evm(code, [42, addr])
+        args_len, args_offset = final_stack[-2], final_stack[-1]
+        assert args_len == 64
+        assert mem[args_offset] == 42
+        assert mem[args_offset + 32] == addr
+
+    def test_fixed_array_flattening(self):
+        """Fixed-size arrays are flattened into repeated leaf types."""
+        from pydefi.vm.abi import emit_abi_encode
+
+        code = emit_abi_encode(["uint256[3]"])
+        final_stack, mem = _mini_evm(code, [10, 20, 30])
+        args_len, args_offset = final_stack[-2], final_stack[-1]
+        assert args_len == 96
+        assert mem[args_offset] == 10
+        assert mem[args_offset + 32] == 20
+        assert mem[args_offset + 64] == 30
+
+    def test_dynamic_type_raises(self):
+        """Dynamic types are rejected with a clear error."""
+        from pydefi.vm.abi import emit_abi_encode
+
+        with pytest.raises(ValueError, match="Dynamic type"):
+            emit_abi_encode(["bytes"])
+        with pytest.raises(ValueError, match="Dynamic type"):
+            emit_abi_encode(["string"])
+        with pytest.raises(ValueError, match="Dynamic type"):
+            emit_abi_encode(["uint256[]"])
+
+    def test_empty_types_raises(self):
+        """Empty types without selector raises."""
+        from pydefi.vm.abi import emit_abi_encode
+
+        with pytest.raises(ValueError):
+            emit_abi_encode([])
+
+    def test_bad_selector_length_raises(self):
+        """Selector must be exactly 4 bytes."""
+        from pydefi.vm.abi import emit_abi_encode
+
+        with pytest.raises(ValueError, match="4 bytes"):
+            emit_abi_encode(["uint256"], selector=b"\x00\x00")
+
+    def test_fp_update(self):
+        """Free-memory pointer is advanced past the encoded buffer."""
+        from pydefi.vm.abi import emit_abi_encode
+
+        code = emit_abi_encode(["uint256"])
+        final_stack, mem = _mini_evm(code, [42])
+        args_offset = final_stack[-1]
+        # mem[0x40] should be args_offset + 32 (padded)
+        assert mem[0x40] == args_offset + 32
+
+    def test_selector_only_no_args(self):
+        """Selector with empty types produces 4-byte buffer."""
+        from pydefi.vm.abi import emit_abi_encode
+
+        sel = bytes.fromhex("18160ddd")  # totalSupply()
+        code = emit_abi_encode([], selector=sel)
+        final_stack, mem = _mini_evm(code, [])
+        args_len, args_offset = final_stack[-2], final_stack[-1]
+        assert args_len == 4
+        buf = _read_memory(mem, args_offset, 4)
+        assert buf == sel
+
+
+# ---------------------------------------------------------------------------
+# emit_abi_encode_packed tests
+# ---------------------------------------------------------------------------
+
+
+class TestEmitAbiEncodePacked:
+    """Verify emit_abi_encode_packed generates correct EVM bytecodes."""
+
+    def test_single_uint256(self):
+        """uint256 packed is 32 bytes."""
+        from pydefi.vm.abi import emit_abi_encode_packed
+
+        code = emit_abi_encode_packed(["uint256"])
+        final_stack, mem = _mini_evm(code, [42])
+        args_len, args_offset = final_stack[-2], final_stack[-1]
+        assert args_len == 32
+        buf = _read_memory(mem, args_offset, 32)
+        assert int.from_bytes(buf, "big") == 42
+
+    def test_single_uint8(self):
+        """uint8 packed is 1 byte."""
+        from pydefi.vm.abi import emit_abi_encode_packed
+
+        code = emit_abi_encode_packed(["uint8"])
+        final_stack, mem = _mini_evm(code, [0xFF])
+        args_len, args_offset = final_stack[-2], final_stack[-1]
+        assert args_len == 1
+        buf = _read_memory(mem, args_offset, 1)
+        assert buf == b"\xff"
 
     def test_single_address(self):
-        """address is zero-padded on the left to 32 bytes."""
-        from pydefi.vm.abi import abi_encode
-
-        result = abi_encode(["address"], [ADDR_A])
-        assert len(result) == 32
-        assert result[12:] == bytes.fromhex(ADDR_A[2:])
-        assert result[:12] == b"\x00" * 12
-
-    def test_single_bool_true(self):
-        """bool True encodes as 32-byte word with value 1."""
-        from pydefi.vm.abi import abi_encode
-
-        result = abi_encode(["bool"], [True])
-        assert len(result) == 32
-        assert result[-1] == 1
-
-    def test_single_bool_false(self):
-        """bool False encodes as 32-byte zero word."""
-        from pydefi.vm.abi import abi_encode
-
-        result = abi_encode(["bool"], [False])
-        assert result == b"\x00" * 32
-
-    def test_multiple_static_types(self):
-        """Multiple static types produce consecutive 32-byte words."""
-        from pydefi.vm.abi import abi_encode
-
-        result = abi_encode(["uint256", "address", "bool"], [100, ADDR_A, True])
-        assert len(result) == 96
-        assert int.from_bytes(result[:32], "big") == 100
-        assert result[32 + 12 : 64] == bytes.fromhex(ADDR_A[2:])
-        assert result[64:] == b"\x00" * 31 + b"\x01"
-
-    def test_bytes_dynamic(self):
-        """bytes type produces offset + length + data words (head/tail layout)."""
-        from pydefi.vm.abi import abi_encode
-
-        data = b"\xde\xad\xbe\xef"
-        result = abi_encode(["bytes"], [data])
-        # offset = 32 (pointing past the single head slot)
-        assert int.from_bytes(result[:32], "big") == 32
-        # length = 4
-        assert int.from_bytes(result[32:64], "big") == 4
-        # data left-aligned in 32-byte slot
-        assert result[64:68] == data
-        assert result[68:] == b"\x00" * 28
-
-    def test_string_dynamic(self):
-        """string type encodes with offset + length + UTF-8 bytes."""
-        from pydefi.vm.abi import abi_encode
-
-        text = "hello"
-        result = abi_encode(["string"], [text])
-        assert int.from_bytes(result[:32], "big") == 32
-        assert int.from_bytes(result[32:64], "big") == 5
-        assert result[64 : 64 + 5] == b"hello"
-
-    def test_bytes32_static(self):
-        """bytes32 is a static type — encoded as-is in a 32-byte slot (left-aligned)."""
-        from pydefi.vm.abi import abi_encode
-
-        val = b"\xde\xad" + b"\x00" * 30
-        result = abi_encode(["bytes32"], [val])
-        assert len(result) == 32
-        assert result == val
-
-    def test_uint8(self):
-        """uint8 is encoded as a 32-byte word (ABI always pads to 32 bytes)."""
-        from pydefi.vm.abi import abi_encode
-
-        result = abi_encode(["uint8"], [255])
-        assert len(result) == 32
-        assert result[-1] == 255
-        assert result[:-1] == b"\x00" * 31
-
-    def test_int256_negative(self):
-        """Negative int256 is encoded as two's complement."""
-        from pydefi.vm.abi import abi_encode
-
-        result = abi_encode(["int256"], [-1])
-        assert result == b"\xff" * 32
-
-    def test_dynamic_array(self):
-        """uint256[] is a dynamic type with head offset + length + elements."""
-        from pydefi.vm.abi import abi_encode
-
-        result = abi_encode(["uint256[]"], [[1, 2, 3]])
-        assert int.from_bytes(result[:32], "big") == 32  # offset to tail
-        assert int.from_bytes(result[32:64], "big") == 3  # array length
-        assert int.from_bytes(result[64:96], "big") == 1
-        assert int.from_bytes(result[96:128], "big") == 2
-        assert int.from_bytes(result[128:160], "big") == 3
-
-    def test_fixed_array(self):
-        """uint256[3] is a static type — elements encoded inline."""
-        from pydefi.vm.abi import abi_encode
-
-        result = abi_encode(["uint256[3]"], [[10, 20, 30]])
-        assert len(result) == 96
-        assert int.from_bytes(result[:32], "big") == 10
-        assert int.from_bytes(result[32:64], "big") == 20
-        assert int.from_bytes(result[64:96], "big") == 30
-
-    def test_tuple_static(self):
-        """A tuple of static types is encoded inline (no offset needed)."""
-        from pydefi.vm.abi import abi_encode
-
-        result = abi_encode(["(uint256,address)"], [(42, ADDR_A)])
-        assert len(result) == 64
-        assert int.from_bytes(result[:32], "big") == 42
-        assert result[32 + 12 :] == bytes.fromhex(ADDR_A[2:])
-
-    def test_tuple_with_dynamic_member(self):
-        """A tuple containing bytes is a dynamic type and uses head/tail layout."""
-        from pydefi.vm.abi import abi_encode
-
-        result = abi_encode(["(uint256,bytes)"], [(7, b"\xab\xcd")])
-        # The whole tuple is dynamic: head holds offset to tuple encoding
-        assert int.from_bytes(result[:32], "big") == 32
-        # Tuple encoding: offset to bytes within the tuple, then the uint256
-        # uint256 = 7 at first slot of tuple
-        assert int.from_bytes(result[32:64], "big") == 7
-
-    def test_mismatched_lengths_raises(self):
-        """abi_encode raises ValueError when types and values have different lengths."""
-        from pydefi.vm.abi import abi_encode
-
-        with pytest.raises(ValueError, match="equal length"):
-            abi_encode(["uint256", "address"], [42])
-
-    def test_roundtrip_static(self):
-        """abi_encode followed by abi_decode recovers the original values."""
-        from pydefi.vm.abi import abi_decode, abi_encode
-
-        types = ["uint256", "address", "bool"]
-        values = [999, ADDR_A, False]
-        encoded = abi_encode(types, values)
-        decoded = abi_decode(types, encoded)
-        assert decoded[0] == 999
-        assert decoded[1].lower() == ADDR_A.lower()
-        assert decoded[2] is False
-
-    def test_roundtrip_dynamic(self):
-        """Round-trip with dynamic types (bytes, string) restores original values."""
-        from pydefi.vm.abi import abi_decode, abi_encode
-
-        types = ["bytes", "string", "uint256"]
-        values = [b"\xde\xad\xbe\xef", "pydefi", 12345]
-        encoded = abi_encode(types, values)
-        decoded = abi_decode(types, encoded)
-        assert decoded == (b"\xde\xad\xbe\xef", "pydefi", 12345)
-
-    def test_roundtrip_nested(self):
-        """Round-trip with a nested tuple and array."""
-        from pydefi.vm.abi import abi_decode, abi_encode
-
-        types = ["(uint256,address)", "uint256[]"]
-        values = [(42, ADDR_A), [10, 20, 30]]
-        encoded = abi_encode(types, values)
-        decoded = abi_decode(types, encoded)
-        assert decoded[0][0] == 42
-        assert decoded[0][1].lower() == ADDR_A.lower()
-        assert list(decoded[1]) == [10, 20, 30]
-
-    def test_zero_values_produce_zero_bytes(self):
-        """abi_encode with all-zero values produces all-zero bytes for static types."""
-        from pydefi.vm.abi import abi_encode
-
-        result = abi_encode(["uint256", "uint256"], [0, 0])
-        assert result == b"\x00" * 64
-
-    def test_exported_from_pydefi_vm(self):
-        """abi_encode is importable directly from pydefi.vm."""
-        from pydefi.vm import abi_encode as fn
-
-        assert callable(fn)
-
-    def test_usable_with_push_bytes(self):
-        """abi_encode output can be passed directly to push_bytes in a Program."""
-        from pydefi.vm.abi import abi_encode
-
-        encoded = abi_encode(["uint256", "address"], [1000, ADDR_A])
-        # push_bytes accepts any bytes object; verify it doesn't raise
-        bytecode = Program().push_bytes(encoded).build()
-        assert len(bytecode) > 0
-
-    def test_head_tail_two_dynamic_types(self):
-        """Two consecutive dynamic types produce correct head offsets."""
-        from pydefi.vm.abi import abi_encode
-
-        result = abi_encode(["bytes", "bytes"], [b"\x01", b"\x02\x03"])
-        # head[0] = offset to first bytes payload, head[1] = offset to second
-        # Two head slots = 64 bytes; first payload at offset 64
-        assert int.from_bytes(result[:32], "big") == 64
-        # First payload: length=1 + padded data = 64 bytes; second at 64+64=128
-        assert int.from_bytes(result[32:64], "big") == 128
-
-    def test_matches_eth_abi_encode(self):
-        """abi_encode result matches eth_abi.encode directly."""
-        from eth_abi import encode
-
-        from pydefi.vm.abi import abi_encode
-
-        types = ["uint256", "address", "bytes"]
-        values = [777, ADDR_B, b"\xff\xee"]
-        assert abi_encode(types, values) == encode(types, values)
-
-
-class TestAbiEncodePacked:
-    """Verify abi_encode_packed produces Solidity-compatible packed output."""
-
-    def test_uint8_is_one_byte(self):
-        """uint8 packs to exactly 1 byte."""
-        from pydefi.vm.abi import abi_encode_packed
-
-        result = abi_encode_packed(["uint8"], [255])
-        assert result == b"\xff"
-        assert len(result) == 1
-
-    def test_uint256_is_32_bytes(self):
-        """uint256 packs to 32 bytes (its natural size)."""
-        from pydefi.vm.abi import abi_encode_packed
-
-        result = abi_encode_packed(["uint256"], [1])
-        assert len(result) == 32
-        assert result[-1] == 1
-        assert result[:-1] == b"\x00" * 31
-
-    def test_address_is_20_bytes(self):
-        """address packs to 20 bytes."""
-        from pydefi.vm.abi import abi_encode_packed
-
-        result = abi_encode_packed(["address"], [ADDR_A])
-        assert len(result) == 20
-        assert result == bytes.fromhex(ADDR_A[2:])
-
-    def test_bool_is_one_byte(self):
-        """bool packs to 1 byte."""
-        from pydefi.vm.abi import abi_encode_packed
-
-        assert abi_encode_packed(["bool"], [True]) == b"\x01"
-        assert abi_encode_packed(["bool"], [False]) == b"\x00"
-
-    def test_bytes4_is_four_bytes(self):
-        """bytes4 packs to exactly 4 bytes."""
-        from pydefi.vm.abi import abi_encode_packed
-
-        result = abi_encode_packed(["bytes4"], [b"\xde\xad\xbe\xef"])
-        assert result == b"\xde\xad\xbe\xef"
-        assert len(result) == 4
-
-    def test_bytes32_is_32_bytes(self):
-        """bytes32 packs to 32 bytes."""
-        from pydefi.vm.abi import abi_encode_packed
-
-        val = b"\xab" * 32
-        result = abi_encode_packed(["bytes32"], [val])
-        assert result == val
-        assert len(result) == 32
-
-    def test_bytes_dynamic_no_length_prefix(self):
-        """Dynamic bytes packs without a length prefix."""
-        from pydefi.vm.abi import abi_encode_packed
+        """address packed is 20 bytes."""
+        from pydefi.vm.abi import emit_abi_encode_packed
+
+        addr = int("ab" * 20, 16)
+        code = emit_abi_encode_packed(["address"])
+        final_stack, mem = _mini_evm(code, [addr])
+        args_len, args_offset = final_stack[-2], final_stack[-1]
+        assert args_len == 20
+        buf = _read_memory(mem, args_offset, 20)
+        assert buf == bytes.fromhex("ab" * 20)
+
+    def test_single_bool(self):
+        """bool packed is 1 byte (normalised)."""
+        from pydefi.vm.abi import emit_abi_encode_packed
+
+        code = emit_abi_encode_packed(["bool"])
+        final_stack, mem = _mini_evm(code, [42])
+        args_len, args_offset = final_stack[-2], final_stack[-1]
+        assert args_len == 1
+        buf = _read_memory(mem, args_offset, 1)
+        assert buf == b"\x01"
+
+    def test_uint8_address_combined(self):
+        """Packed encoding of (uint8, address) = 21 bytes."""
+        from pydefi.vm.abi import emit_abi_encode_packed
+
+        addr = int("cc" * 20, 16)
+        code = emit_abi_encode_packed(["uint8", "address"])
+        # Push order: uint8 first (deeper), address last (TOS)
+        final_stack, mem = _mini_evm(code, [0x42, addr])
+        args_len, args_offset = final_stack[-2], final_stack[-1]
+        assert args_len == 21
+        buf = _read_memory(mem, args_offset, 21)
+        assert buf[0] == 0x42
+        assert buf[1:] == bytes.fromhex("cc" * 20)
+
+    def test_address_uint256(self):
+        """Packed (address, uint256) = 52 bytes."""
+        from pydefi.vm.abi import emit_abi_encode_packed
+
+        addr = int("ab" * 20, 16)
+        code = emit_abi_encode_packed(["address", "uint256"])
+        final_stack, mem = _mini_evm(code, [addr, 10**18])
+        args_len, args_offset = final_stack[-2], final_stack[-1]
+        assert args_len == 52  # 20 + 32
+        buf = _read_memory(mem, args_offset, 52)
+        assert buf[:20] == bytes.fromhex("ab" * 20)
+        assert int.from_bytes(buf[20:52], "big") == 10**18
+
+    def test_bytes4(self):
+        """bytes4 packed is 4 bytes (left-aligned)."""
+        from pydefi.vm.abi import emit_abi_encode_packed
+
+        val = 0xDEADBEEF << 224  # left-aligned
+        code = emit_abi_encode_packed(["bytes4"])
+        final_stack, mem = _mini_evm(code, [val])
+        args_len, args_offset = final_stack[-2], final_stack[-1]
+        assert args_len == 4
+        buf = _read_memory(mem, args_offset, 4)
+        assert buf == b"\xde\xad\xbe\xef"
+
+    def test_three_uint8(self):
+        """Three uint8 values packed = 3 bytes."""
+        from pydefi.vm.abi import emit_abi_encode_packed
+
+        code = emit_abi_encode_packed(["uint8", "uint8", "uint8"])
+        final_stack, mem = _mini_evm(code, [0x11, 0x22, 0x33])
+        args_len, args_offset = final_stack[-2], final_stack[-1]
+        assert args_len == 3
+        buf = _read_memory(mem, args_offset, 3)
+        assert buf == b"\x11\x22\x33"
+
+    def test_too_many_values_raises(self):
+        """More than 15 leaf values raise ValueError."""
+        from pydefi.vm.abi import emit_abi_encode_packed
+
+        with pytest.raises(ValueError, match="max 15"):
+            emit_abi_encode_packed(["uint8"] * 16)
+
+    def test_dynamic_type_raises(self):
+        """Dynamic types are rejected."""
+        from pydefi.vm.abi import emit_abi_encode_packed
+
+        with pytest.raises(ValueError, match="Dynamic type"):
+            emit_abi_encode_packed(["bytes"])
+
+    def test_fp_update(self):
+        """Free-memory pointer is updated correctly for packed encoding."""
+        from pydefi.vm.abi import emit_abi_encode_packed
+
+        code = emit_abi_encode_packed(["uint8"])
+        final_stack, mem = _mini_evm(code, [0xFF])
+        args_offset = final_stack[-1]
+        # Padded to 32 bytes
+        assert mem[0x40] == args_offset + 32
+
+
+# ---------------------------------------------------------------------------
+# Program builder integration tests
+# ---------------------------------------------------------------------------
+
 
-        data = b"\xde\xad\xbe\xef"
-        result = abi_encode_packed(["bytes"], [data])
-        assert result == data
-
-    def test_string_no_length_prefix(self):
-        """string packs as raw UTF-8 without a length prefix."""
-        from pydefi.vm.abi import abi_encode_packed
-
-        result = abi_encode_packed(["string"], ["hello"])
-        assert result == b"hello"
-
-    def test_mixed_static_types(self):
-        """Multiple static types pack contiguously without padding."""
-        from pydefi.vm.abi import abi_encode_packed
-
-        result = abi_encode_packed(["uint8", "uint16", "uint32"], [1, 2, 3])
-        assert len(result) == 1 + 2 + 4
-        assert result == b"\x01\x00\x02\x00\x00\x00\x03"
-
-    def test_uint8_array_no_length_prefix(self):
-        """uint8[] packs elements contiguously without a length prefix."""
-        from pydefi.vm.abi import abi_encode_packed
-
-        result = abi_encode_packed(["uint8[]"], [[1, 2, 3]])
-        assert result == b"\x01\x02\x03"
-
-    def test_uint256_fixed_array(self):
-        """uint256[2] packs as 64 bytes (2 × 32)."""
-        from pydefi.vm.abi import abi_encode_packed
-
-        result = abi_encode_packed(["uint256[2]"], [[1, 2]])
-        assert len(result) == 64
-
-    def test_uint8_and_address_contiguous(self):
-        """uint8 + address packs to 21 bytes, no padding between them."""
-        from pydefi.vm.abi import abi_encode_packed
-
-        result = abi_encode_packed(["uint8", "address"], [1, ADDR_A])
-        assert len(result) == 21
-        assert result[0] == 1
-        assert result[1:] == bytes.fromhex(ADDR_A[2:])
-
-    def test_packed_shorter_than_standard(self):
-        """Packed encoding is strictly shorter than standard ABI for small types."""
-        from pydefi.vm.abi import abi_encode, abi_encode_packed
-
-        packed = abi_encode_packed(["uint8", "address"], [1, ADDR_A])
-        standard = abi_encode(["uint8", "address"], [1, ADDR_A])
-        assert len(packed) < len(standard)
-
-    def test_mismatched_lengths_raises(self):
-        """abi_encode_packed raises ValueError for mismatched types/values."""
-        from pydefi.vm.abi import abi_encode_packed
-
-        with pytest.raises(ValueError, match="equal length"):
-            abi_encode_packed(["uint8"], [1, 2])
-
-    def test_exported_from_pydefi_vm(self):
-        """abi_encode_packed is importable directly from pydefi.vm."""
-        from pydefi.vm import abi_encode_packed as fn
-
-        assert callable(fn)
-
-    def test_matches_eth_abi_packed(self):
-        """abi_encode_packed result matches eth_abi.packed.encode_packed."""
-        from eth_abi.packed import encode_packed
-
-        from pydefi.vm.abi import abi_encode_packed
-
-        types = ["uint8", "address", "bytes4"]
-        values = [42, ADDR_B, b"\xde\xad\xbe\xef"]
-        assert abi_encode_packed(types, values) == encode_packed(types, values)
-
-    def test_common_signature_pattern(self):
-        """address + uint256 packed is a common pattern for off-chain signature hashing."""
-        from pydefi.vm.abi import abi_encode_packed
-
-        result = abi_encode_packed(["address", "uint256"], [ADDR_A, 1000])
-        assert len(result) == 20 + 32
-        assert result[:20] == bytes.fromhex(ADDR_A[2:])
-        assert int.from_bytes(result[20:], "big") == 1000
-
-    def test_int16_negative(self):
-        """Negative int16 packs as 2-byte two's complement."""
-        from pydefi.vm.abi import abi_encode_packed
-
-        result = abi_encode_packed(["int16"], [-1])
-        assert result == b"\xff\xff"
-
-    def test_usable_with_push_bytes(self):
-        """abi_encode_packed output is valid for push_bytes in a Program."""
-        from pydefi.vm.abi import abi_encode_packed
-
-        packed = abi_encode_packed(["address", "uint256"], [ADDR_A, 42])
-        bytecode = Program().push_bytes(packed).build()
-        assert len(bytecode) > 0
-
-
-class TestAbiDecode:
-    """Verify abi_decode correctly recovers ABI-encoded values."""
-
-    def test_single_uint256(self):
-        """Decode a single uint256 from 32 bytes."""
-        from eth_abi import encode
-
-        from pydefi.vm.abi import abi_decode
-
-        data = encode(["uint256"], [12345])
-        (val,) = abi_decode(["uint256"], data)
-        assert val == 12345
-
-    def test_address(self):
-        """Decode an address — returned as a checksummed string."""
-        from eth_abi import encode
-
-        from pydefi.vm.abi import abi_decode
-
-        data = encode(["address"], [ADDR_A])
-        (addr,) = abi_decode(["address"], data)
-        # eth_abi returns checksummed address
-        assert addr.lower() == ADDR_A.lower()
-
-    def test_bool(self):
-        """Decode bool True and False."""
-        from eth_abi import encode
-
-        from pydefi.vm.abi import abi_decode
-
-        assert abi_decode(["bool"], encode(["bool"], [True])) == (True,)
-        assert abi_decode(["bool"], encode(["bool"], [False])) == (False,)
-
-    def test_bytes_dynamic(self):
-        """Decode dynamic bytes value."""
-        from eth_abi import encode
-
-        from pydefi.vm.abi import abi_decode
-
-        data = encode(["bytes"], [b"\xde\xad\xbe\xef"])
-        (val,) = abi_decode(["bytes"], data)
-        assert val == b"\xde\xad\xbe\xef"
-
-    def test_string(self):
-        """Decode a string value."""
-        from eth_abi import encode
-
-        from pydefi.vm.abi import abi_decode
-
-        data = encode(["string"], ["hello pydefi"])
-        (val,) = abi_decode(["string"], data)
-        assert val == "hello pydefi"
-
-    def test_dynamic_array(self):
-        """Decode a dynamic uint256 array."""
-        from eth_abi import encode
-
-        from pydefi.vm.abi import abi_decode
-
-        data = encode(["uint256[]"], [[10, 20, 30]])
-        (arr,) = abi_decode(["uint256[]"], data)
-        assert list(arr) == [10, 20, 30]
-
-    def test_tuple(self):
-        """Decode a static tuple."""
-        from eth_abi import encode
-
-        from pydefi.vm.abi import abi_decode
-
-        data = encode(["(uint256,address)"], [(42, ADDR_A)])
-        (tup,) = abi_decode(["(uint256,address)"], data)
-        assert tup[0] == 42
-        assert tup[1].lower() == ADDR_A.lower()
-
-    def test_multiple_types(self):
-        """Decode multiple values of different types in a single call."""
-        from eth_abi import encode
-
-        from pydefi.vm.abi import abi_decode
-
-        types = ["uint256", "address", "bytes", "bool"]
-        values = [999, ADDR_B, b"\xab", True]
-        data = encode(types, values)
-        decoded = abi_decode(types, data)
-        assert decoded[0] == 999
-        assert decoded[1].lower() == ADDR_B.lower()
-        assert decoded[2] == b"\xab"
-        assert decoded[3] is True
-
-    def test_bytes_input_also_accepted(self):
-        """abi_decode accepts both bytes and bytearray."""
-        from eth_abi import encode
-
-        from pydefi.vm.abi import abi_decode
-
-        data = encode(["uint256"], [7])
-        assert abi_decode(["uint256"], data) == abi_decode(["uint256"], bytearray(data))
-
-    def test_exported_from_pydefi_vm(self):
-        """abi_decode is importable directly from pydefi.vm."""
-        from pydefi.vm import abi_decode as fn
-
-        assert callable(fn)
-
-    def test_roundtrip_complex(self):
-        """Encode then decode a complex nested type restores the original value."""
-        from pydefi.vm.abi import abi_decode, abi_encode
-
-        types = ["uint256[]", "(address,uint256)", "bytes"]
-        values = [[1, 2, 3], (ADDR_A, 500), b"\x00\xff"]
-        encoded = abi_encode(types, values)
-        decoded = abi_decode(types, encoded)
-        assert list(decoded[0]) == [1, 2, 3]
-        assert decoded[1][1] == 500
-        assert decoded[2] == b"\x00\xff"
+class TestProgramAbiEncode:
+    """Verify Program.abi_encode and Program.abi_encode_packed methods."""
+
+    def test_program_abi_encode_emits_bytes(self):
+        """Program.abi_encode produces non-empty bytecode."""
+        bc = Program().push_u256(42).abi_encode(["uint256"]).build()
+        assert len(bc) > 33  # push_u256 is 33 bytes + encoding opcodes
+
+    def test_program_abi_encode_with_selector(self):
+        """Program.abi_encode with selector produces valid bytecode."""
+        sel = bytes.fromhex("a9059cbb")
+        bc = Program().push_u256(42).push_u256(100).abi_encode(["uint256", "uint256"], selector=sel).build()
+        assert len(bc) > 66  # two push_u256 + encoding
+
+    def test_program_abi_encode_packed(self):
+        """Program.abi_encode_packed produces non-empty bytecode."""
+        bc = Program().push_u256(0xFF).abi_encode_packed(["uint8"]).build()
+        assert len(bc) > 33
+
+    def test_program_abi_encode_chaining(self):
+        """abi_encode can be chained with other Program methods."""
+        bc = (
+            Program()
+            .push_u256(42)
+            .abi_encode(["uint256"])
+            .pop()  # consume argsOffset
+            .pop()  # consume argsLen
+            .build()
+        )
+        assert isinstance(bc, bytes)
+        assert len(bc) > 0
+
+    def test_program_abi_encode_execution(self):
+        """End-to-end: Program.abi_encode generates correct memory layout."""
+        from pydefi.vm.abi import emit_abi_encode
+
+        code = emit_abi_encode(["uint256", "address"], selector=bytes.fromhex("a9059cbb"))
+        addr = int("ab" * 20, 16)
+        final_stack, mem = _mini_evm(code, [42, addr])
+        args_len, args_offset = final_stack[-2], final_stack[-1]
+        assert args_len == 68
+        buf = _read_memory(mem, args_offset, 68)
+        assert buf[:4] == bytes.fromhex("a9059cbb")
+        assert int.from_bytes(buf[4:36], "big") == 42
+        assert int.from_bytes(buf[36:68], "big") == addr
+
+    def test_exports(self):
+        """emit_abi_encode and emit_abi_encode_packed are in pydefi.vm."""
+        from pydefi.vm import emit_abi_encode, emit_abi_encode_packed
+
+        assert callable(emit_abi_encode)
+        assert callable(emit_abi_encode_packed)
+
+
+# ---------------------------------------------------------------------------
+# Type parsing edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestAbiTypeValidation:
+    """Verify type parsing and validation in the ABI module."""
+
+    def test_nested_tuple(self):
+        """Nested static tuple is flattened correctly."""
+        from pydefi.vm.abi import emit_abi_encode
+
+        # ((uint256, address), bool) → 3 leaf scalars
+        code = emit_abi_encode(["((uint256,address),bool)"])
+        addr = int("ab" * 20, 16)
+        final_stack, mem = _mini_evm(code, [42, addr, 1])
+        assert final_stack[-2] == 96  # 3 * 32
+
+    def test_invalid_uint_width(self):
+        """uint with non-multiple-of-8 width raises."""
+        from pydefi.vm.abi import emit_abi_encode
+
+        with pytest.raises(ValueError, match="Invalid uint width"):
+            emit_abi_encode(["uint7"])
+
+    def test_invalid_bytes_width(self):
+        """bytes0 and bytes33 raise."""
+        from pydefi.vm.abi import emit_abi_encode
+
+        with pytest.raises(ValueError, match="Invalid bytesN width"):
+            emit_abi_encode(["bytes0"])
+        with pytest.raises(ValueError, match="Invalid bytesN width"):
+            emit_abi_encode(["bytes33"])
+
+    def test_unknown_type_raises(self):
+        """Unknown type string raises ValueError."""
+        from pydefi.vm.abi import emit_abi_encode
+
+        with pytest.raises(ValueError, match="Unsupported ABI scalar type"):
+            emit_abi_encode(["foobar"])
+
+    def test_dynamic_in_tuple_raises(self):
+        """Tuple containing a dynamic type raises."""
+        from pydefi.vm.abi import emit_abi_encode
+
+        with pytest.raises(ValueError, match="Dynamic type"):
+            emit_abi_encode(["(uint256,bytes)"])

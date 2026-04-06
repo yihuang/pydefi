@@ -1,222 +1,535 @@
-"""ABI encode/decode helpers for DeFiVM.
+"""ABI encoding bytecode generators for DeFiVM.
 
-Provides Python-level ABI encoding and decoding compatible with the Ethereum
-ABI specification and usable alongside the DeFiVM program builder.
+Generate EVM opcodes that, when executed inside the VM, perform ABI encoding
+of values taken from the EVM stack and write the result into free memory.
 
-- :func:`abi_encode` — standard ABI encoding (``abi.encode`` in Solidity).
-- :func:`abi_encode_packed` — non-standard packed encoding (``abi.encodePacked``).
-- :func:`abi_decode` — standard ABI decoding (``abi.decode`` in Solidity).
+**Types are known at compile time** (when the Python code generates opcodes);
+**values are provided at runtime** on the EVM stack.
 
-All three functions operate on the same type language used throughout the
-Ethereum ABI spec and ``eth_abi``:
+This module is the "in-VM abi.encode" equivalent — analogous to how the
+Solidity compiler generates opcodes for the built-in ``abi.encode()`` /
+``abi.encodePacked()`` functions.
 
-- Primitive types: ``uint<M>``, ``int<M>``, ``address``, ``bool``,
-  ``bytes<M>`` (M = 1–32), ``bytes``, ``string``.
-- Fixed-size arrays: ``T[N]`` — N elements of type T.
-- Dynamic arrays: ``T[]`` — variable-length sequence of T elements.
-- Tuples (structs): ``(T1,T2,...)`` — ordered fields.
-- Nested combinations of all of the above.
+Standard (canonical) encoding — :func:`emit_abi_encode`
+-------------------------------------------------------
+Produces the same byte layout as Solidity's ``abi.encode()``: each leaf
+scalar occupies one 32-byte slot, and the slots follow the flattened
+(depth-first) order of the type list.  Static tuples and fixed-size arrays
+are flattened; dynamic types are not supported.
 
-Standard encoding head/tail layout
-------------------------------------
-``abi_encode`` follows the canonical ABI encoding:
+Packed encoding — :func:`emit_abi_encode_packed`
+------------------------------------------------
+Produces the same byte layout as Solidity's ``abi.encodePacked()``: each
+value uses its *natural* size with no padding.  Values are written in
+forward (left-to-right) order using overlapping 32-byte MSTOREs so that
+each write's trailing zeros are overwritten by the next.
 
-* Each top-level value contributes exactly one 32-byte *head* slot.
-* Static types (uintN, intN, address, bool, bytesN, fixed-size arrays and
-  tuples of static types) are encoded in-place inside their head slot.
-* Dynamic types (bytes, string, dynamic arrays, or tuples/arrays that
-  contain a dynamic member) store a 32-byte byte-offset in the head and
-  place the actual data in the *tail* section that follows all head slots.
+Usage with the fluent builder::
 
-This mirrors exactly what the Solidity compiler generates for
-``abi.encode(...)`` calls.
-
-Packed encoding
----------------
-``abi_encode_packed`` packs each value using its *natural* size:
-
-* ``uint<M>`` / ``int<M>`` → M/8 bytes (big-endian, no padding).
-* ``address`` → 20 bytes.
-* ``bool`` → 1 byte.
-* ``bytes<M>`` → M bytes (left-aligned, no right-padding).
-* ``bytes`` / ``string`` → raw bytes with **no** length prefix.
-* ``T[N]`` / ``T[]`` → elements packed sequentially, **no** length prefix.
-* ``(T1,T2,...)`` → fields packed sequentially.
-
-Dynamic array lengths are omitted in packed mode, making the encoding
-ambiguous when multiple dynamic types follow each other.  Use packed
-encoding only for single dynamic types or when the layout is unambiguous.
-
-Integration example::
-
-    from pydefi.vm.abi import abi_encode, abi_encode_packed, abi_decode
     from pydefi.vm import Program
 
-    # Build a data buffer to pass as callback data (abi.encode style)
-    callback_data = abi_encode(['address', 'uint256'], [TOKEN_IN, amount_owed])
-
-    # Use the buffer inside a DeFiVM program
-    program = (
+    # ABI-encode two runtime values from the stack
+    bytecode = (
         Program()
-        .push_bytes(callback_data)
+        .load_reg(0)                           # arg 0: uint256 (deepest)
+        .push_addr("0x" + "ab" * 20)           # arg 1: address (TOS)
+        .abi_encode(["uint256", "address"])
+        # Stack: [argsOffset(TOS), argsLen(2nd)]  — ready for CALL args
         ...
         .build()
     )
 
-    # Decode return data from a completed call
-    (amount_out,) = abi_decode(['uint256'], returndata)
+    # With a 4-byte function selector prefix
+    bytecode = (
+        Program()
+        .load_reg(0)                           # arg 0: uint256
+        .load_reg(1)                           # arg 1: uint256
+        .abi_encode(["uint256", "uint256"], selector=b"\\x12\\x34\\x56\\x78")
+        .push_u256(0).push_addr(TARGET).gas_opcode().call().pop()
+        .build()
+    )
+
+Low-level functional style::
+
+    from pydefi.vm.abi import emit_abi_encode
+    from pydefi.vm.program import push_u256, push_addr
+
+    opcodes = (
+        push_u256(42) + push_addr("0x" + "ab" * 20)
+        + emit_abi_encode(["uint256", "address"])
+    )
 """
 
 from __future__ import annotations
 
-from typing import Any
+import re
+from typing import Sequence
 
-from eth_abi import decode as _decode
-from eth_abi import encode as _encode
-from eth_abi.packed import encode_packed as _encode_packed
+from pydefi.vm.program import (
+    _DUP2,
+    _PUSH1,
+    _PUSH2,
+    OP_ADD,
+    OP_AND,
+    OP_DUP,
+    OP_ISZERO,
+    OP_MLOAD,
+    OP_MSTORE,
+    OP_MUL,
+    OP_OR,
+    OP_POP,
+    OP_PUSH_U256,
+    OP_SHL,
+    OP_SWAP,
+)
 
-__all__ = [
-    "abi_encode",
-    "abi_encode_packed",
-    "abi_decode",
-]
+# Internal EVM opcode not exposed from program.py
+_SIGNEXTEND: int = 0x0B
+
+# ---------------------------------------------------------------------------
+# ABI type parsing helpers
+# ---------------------------------------------------------------------------
+
+_UINT_RE = re.compile(r"^uint(\d+)$")
+_INT_RE = re.compile(r"^int(\d+)$")
+_BYTES_FIXED_RE = re.compile(r"^bytes(\d+)$")
+_FIXED_ARRAY_RE = re.compile(r"^(.+)\[(\d+)\]$")
 
 
-def abi_encode(types: list[str], values: list[Any]) -> bytes:
-    """Standard ABI encode — equivalent to Solidity's ``abi.encode()``.
+def _split_tuple_types(inner: str) -> list[str]:
+    """Split a comma-separated type string, respecting nested parentheses."""
+    parts: list[str] = []
+    depth = 0
+    buf: list[str] = []
+    for ch in inner:
+        if ch == "(":
+            depth += 1
+            buf.append(ch)
+        elif ch == ")":
+            depth -= 1
+            buf.append(ch)
+        elif ch == "," and depth == 0:
+            parts.append("".join(buf).strip())
+            buf = []
+        else:
+            buf.append(ch)
+    if buf:
+        parts.append("".join(buf).strip())
+    return [p for p in parts if p]
 
-    Encodes *values* according to the canonical Ethereum ABI specification.
-    Each value is encoded with a 32-byte head slot; dynamic types (``bytes``,
-    ``string``, dynamic arrays, or types that contain dynamic members) store a
-    tail-section offset in their head slot and their actual data in the tail
-    that follows all head slots.
 
-    The result can be decoded by :func:`abi_decode` using the same type list,
-    or passed to a Solidity function expecting ABI-encoded data via
-    :func:`~pydefi.vm.program.push_bytes`.
+def _is_dynamic(typ: str) -> bool:
+    """Return ``True`` if *typ* is a dynamic ABI type."""
+    typ = typ.strip()
+    if typ in ("bytes", "string"):
+        return True
+    if typ.endswith("[]"):
+        return True
+    if typ.startswith("(") and typ.endswith(")"):
+        return any(_is_dynamic(m) for m in _split_tuple_types(typ[1:-1]))
+    m = _FIXED_ARRAY_RE.match(typ)
+    if m:
+        return _is_dynamic(m.group(1))
+    return False
 
-    Args:
-        types:  List of ABI type strings, e.g.
-                ``['uint256', 'address', 'bytes']``.
-        values: List of Python values corresponding to each type.
 
-    Returns:
-        Canonical ABI-encoded bytes (no function selector prefix).
+def _validate_scalar(typ: str) -> None:
+    """Raise if *typ* is not a recognised scalar type."""
+    if typ in ("uint256", "int256", "address", "bool"):
+        return
+    if _UINT_RE.match(typ):
+        bits = int(_UINT_RE.match(typ).group(1))  # type: ignore[union-attr]
+        if bits % 8 != 0 or not (8 <= bits <= 256):
+            raise ValueError(f"Invalid uint width: {typ}")
+        return
+    if _INT_RE.match(typ):
+        bits = int(_INT_RE.match(typ).group(1))  # type: ignore[union-attr]
+        if bits % 8 != 0 or not (8 <= bits <= 256):
+            raise ValueError(f"Invalid int width: {typ}")
+        return
+    if _BYTES_FIXED_RE.match(typ):
+        n = int(_BYTES_FIXED_RE.match(typ).group(1))  # type: ignore[union-attr]
+        if not (1 <= n <= 32):
+            raise ValueError(f"Invalid bytesN width: {typ}")
+        return
+    raise ValueError(f"Unsupported ABI scalar type: {typ!r}")
+
+
+def _flatten_static_types(types: Sequence[str]) -> list[str]:
+    """Flatten static types into a list of leaf scalars.
+
+    Static tuples are expanded into their members; fixed-size arrays of
+    static types are expanded into repeated copies of the base type.
+
+    Each leaf is a scalar: ``uint<M>``, ``int<M>``, ``address``, ``bool``,
+    or ``bytes<M>``.
 
     Raises:
-        ValueError: If ``len(types) != len(values)``.
-        eth_abi.exceptions.EncodingError: If a value cannot be encoded as the
-            specified type.
-
-    Examples::
-
-        # Static types only — output is 3 × 32 bytes = 96 bytes
-        abi_encode(['uint256', 'address', 'bool'], [42, ADDR, True])
-
-        # Dynamic type — output includes head + tail sections
-        abi_encode(['bytes', 'uint256'], [b'\\xde\\xad', 1])
-
-        # Tuple (struct)
-        abi_encode(['(address,uint256)'], [(ADDR, 1000)])
-
-        # Array
-        abi_encode(['uint256[]'], [[1, 2, 3]])
+        ValueError: If any type is dynamic (``bytes``, ``string``, ``T[]``).
     """
-    if len(types) != len(values):
-        raise ValueError(
-            f"abi_encode: types and values must have equal length, "
-            f"got {len(types)} types and {len(values)} values"
+    result: list[str] = []
+    for t in types:
+        t = t.strip()
+        if _is_dynamic(t):
+            raise ValueError(
+                f"Dynamic type {t!r} not supported in emit_abi_encode; "
+                "use push_bytes + patch_value for dynamic calldata"
+            )
+        if t.startswith("(") and t.endswith(")"):
+            members = _split_tuple_types(t[1:-1])
+            result.extend(_flatten_static_types(members))
+        else:
+            m = _FIXED_ARRAY_RE.match(t)
+            if m:
+                base, count = m.group(1), int(m.group(2))
+                result.extend(_flatten_static_types([base]) * count)
+            else:
+                _validate_scalar(t)
+                result.append(t)
+    return result
+
+
+def _natural_byte_size(typ: str) -> int:
+    """Return the natural byte size of a scalar type (for packed encoding)."""
+    typ = typ.strip()
+    if typ == "address":
+        return 20
+    if typ == "bool":
+        return 1
+    m = _UINT_RE.match(typ)
+    if m:
+        return int(m.group(1)) // 8
+    m = _INT_RE.match(typ)
+    if m:
+        return int(m.group(1)) // 8
+    m = _BYTES_FIXED_RE.match(typ)
+    if m:
+        return int(m.group(1))
+    if typ == "uint256":
+        return 32
+    if typ == "int256":
+        return 32
+    raise ValueError(f"Cannot determine natural size for type: {typ!r}")
+
+
+# ---------------------------------------------------------------------------
+# Small opcode helpers
+# ---------------------------------------------------------------------------
+
+
+def _push_small(v: int) -> bytes:
+    """Smallest PUSH opcode for a non-negative integer *v* (up to 256 bits)."""
+    if v == 0:
+        return bytes([_PUSH1, 0x00])
+    n = (v.bit_length() + 7) // 8
+    if n > 32:
+        raise ValueError(f"_push_small: value {v:#x} exceeds 256 bits")
+    return bytes([0x5F + n]) + v.to_bytes(n, "big")
+
+
+def _emit_clean(typ: str) -> bytes:
+    """Emit opcodes to clean/mask TOS for standard ABI encoding (no-op → b"")."""
+    typ = typ.strip()
+    if typ in ("uint256", "int256", "bytes32"):
+        return b""
+    if typ == "bool":
+        # normalise any non-zero to 1
+        return bytes([OP_ISZERO, OP_ISZERO])
+    if typ == "address":
+        mask = (1 << 160) - 1
+        return _push_small(mask) + bytes([OP_AND])
+    m = _UINT_RE.match(typ)
+    if m:
+        bits = int(m.group(1))
+        if bits == 256:
+            return b""
+        mask = (1 << bits) - 1
+        return _push_small(mask) + bytes([OP_AND])
+    m = _INT_RE.match(typ)
+    if m:
+        bits = int(m.group(1))
+        if bits == 256:
+            return b""
+        # SIGNEXTEND(b, x): b = byte_width - 1
+        b = bits // 8 - 1
+        return _push_small(b) + bytes([_SIGNEXTEND])
+    m = _BYTES_FIXED_RE.match(typ)
+    if m:
+        n = int(m.group(1))
+        if n == 32:
+            return b""
+        # zero-out trailing (32−n) bytes
+        mask = ((1 << (n * 8)) - 1) << ((32 - n) * 8)
+        return _push_small(mask) + bytes([OP_AND])
+    return b""
+
+
+# ---------------------------------------------------------------------------
+# Memory preamble / epilogue — shared between encode and encode_packed
+# ---------------------------------------------------------------------------
+
+
+def _emit_fp_init() -> bytes:
+    """Push ``max(mem[0x40], 0x280)`` onto the stack.
+
+    Same logic as ``push_bytes``: ensures the free-memory pointer is at
+    least 0x280 (past the register area).
+    """
+    return bytes(
+        [
+            _PUSH1,
+            0x40,  # PUSH1 0x40
+            OP_MLOAD,  # MLOAD         → [fp]
+            _PUSH2,
+            0x02,
+            0x80,  # PUSH2 0x0280  → [0x280, fp]
+            _DUP2,  # DUP2          → [fp, 0x280, fp]
+            OP_ISZERO,  # ISZERO        → [fp==0, 0x280, fp]
+            OP_MUL,  # MUL           → [0x280*(fp==0), fp]
+            OP_OR,  # OR            → [max_fp]
+        ]
+    )
+
+
+def _emit_fp_update(padded_size: int) -> bytes:
+    """``mem[0x40] = TOS + padded_size``.  TOS (max_fp) is preserved."""
+    return (
+        bytes([OP_DUP])  # [max_fp, max_fp]
+        + _push_small(padded_size)  # [padded_size, max_fp, max_fp]
+        + bytes(
+            [
+                OP_ADD,  # [new_fp, max_fp]
+                _PUSH1,
+                0x40,  # [0x40, new_fp, max_fp]
+                OP_MSTORE,  # mem[0x40]=new_fp; [max_fp]
+            ]
         )
-    return _encode(types, values)
+    )
 
 
-def abi_encode_packed(types: list[str], values: list[Any]) -> bytes:
-    """Packed ABI encode — equivalent to Solidity's ``abi.encodePacked()``.
-
-    Encodes *values* using their minimal *natural* sizes without padding:
-
-    * ``uint<M>`` / ``int<M>`` → M/8 bytes big-endian.
-    * ``address`` → 20 bytes.
-    * ``bool`` → 1 byte.
-    * ``bytes<M>`` → M bytes (no right-padding).
-    * ``bytes`` / ``string`` → raw bytes, **no** length prefix.
-    * ``T[N]`` / ``T[]`` → packed elements, **no** length prefix.
-    * ``(T1,T2,...)`` → packed fields.
-
-    .. warning::
-
-        Packed encoding is **ambiguous** when multiple dynamic types
-        (``bytes``, ``string``, or dynamic arrays) follow each other,
-        because no length delimiter is emitted.  Use it only when the
-        layout is unambiguous (e.g. a single dynamic type, or all static
-        types, or when the sizes are known at decode time).
-
-    Args:
-        types:  List of ABI type strings.
-        values: List of Python values corresponding to each type.
-
-    Returns:
-        Packed ABI-encoded bytes.
-
-    Raises:
-        ValueError: If ``len(types) != len(values)``.
-        eth_abi.exceptions.EncodingError: If a value cannot be encoded as the
-            specified type.
-
-    Examples::
-
-        # Single uint8 — 1 byte
-        abi_encode_packed(['uint8'], [255])   # → b'\\xff'
-
-        # Mixed static types — compact encoding
-        abi_encode_packed(['uint8', 'address'], [1, ADDR])  # 21 bytes
-
-        # Dynamic bytes — no length prefix
-        abi_encode_packed(['bytes'], [b'\\xde\\xad'])  # → b'\\xde\\xad'
-
-        # Keccak hash of packed values (common Solidity pattern)
-        import hashlib
-        data = abi_encode_packed(['address', 'uint256'], [ADDR, nonce])
-        key = hashlib.new('sha3_256', data).digest()  # illustrative only
-    """
-    if len(types) != len(values):
-        raise ValueError(
-            f"abi_encode_packed: types and values must have equal length, "
-            f"got {len(types)} types and {len(values)} values"
-        )
-    return _encode_packed(types, values)
+# =========================================================================
+# emit_abi_encode — standard canonical ABI encoding in EVM bytecodes
+# =========================================================================
 
 
-def abi_decode(types: list[str], data: bytes | bytearray) -> tuple[Any, ...]:
-    """Standard ABI decode — equivalent to Solidity's ``abi.decode()``.
+def emit_abi_encode(
+    types: Sequence[str],
+    *,
+    selector: bytes | None = None,
+) -> bytes:
+    """Generate EVM opcodes that ABI-encode stack values into memory.
 
-    Decodes *data* that was produced by :func:`abi_encode` (or by Solidity's
-    ``abi.encode``) back into a Python tuple of values.  Handles all static
-    and dynamic ABI types, including nested tuples and arrays.
+    Like Solidity's ``abi.encode()``, but the values come from the EVM stack
+    at runtime rather than from constants.  The type list is known at
+    compile time and determines the generated opcode sequence.
+
+    **Stack convention** — values are pushed in type-list order::
+
+        push(val_0)   # types[0] — pushed first, ends up deepest
+        push(val_1)   # types[1]
+        …
+        push(val_{n-1})  # types[-1] — pushed last, TOS
+
+    Static tuples and fixed-size arrays are **flattened**: each leaf scalar
+    occupies one stack slot.
+
+    **Stack after execution**::
+
+        [argsOffset(TOS), argsLen(2nd), <rest…>]
+
+    This is the same layout that :func:`~pydefi.vm.program.push_bytes`
+    produces, so the result plugs directly into ``CALL`` preparation or
+    :func:`~pydefi.vm.program.patch_value`.
 
     Args:
-        types: List of ABI type strings matching the original encoding.
-        data:  Canonical ABI-encoded bytes (no selector prefix).
+        types:    ABI type strings.  Only static scalars, static tuples,
+                  and fixed-size arrays of static types are supported.
+                  Dynamic types (``bytes``, ``string``, ``T[]``) raise
+                  :class:`ValueError`.
+        selector: Optional 4-byte function selector.  When given, the
+                  memory buffer is ``selector ‖ abi.encode(values)`` and
+                  ``argsLen`` includes the 4 selector bytes.
 
     Returns:
-        A ``tuple`` of decoded Python values in the same order as *types*.
+        Raw EVM bytecodes.
 
     Raises:
-        eth_abi.exceptions.DecodingError: If *data* is too short or
-            structurally invalid for the given *types*.
-
-    Examples::
-
-        values = abi_decode(['uint256', 'address'], encoded_bytes)
-        amount, recipient = values
-
-        # Round-trip static types
-        data = abi_encode(['uint256', 'bool'], [999, True])
-        (n, flag) = abi_decode(['uint256', 'bool'], data)
-        assert n == 999 and flag is True
-
-        # Round-trip dynamic type
-        data = abi_encode(['bytes', 'string'], [b'\\x01\\x02', 'hi'])
-        (raw, text) = abi_decode(['bytes', 'string'], data)
+        ValueError: If *types* is empty (and no *selector*), or contains a
+            dynamic type, or *selector* length ≠ 4.
     """
-    return _decode(types, bytes(data))
+    if selector is not None and len(selector) != 4:
+        raise ValueError(f"emit_abi_encode: selector must be exactly 4 bytes, got {len(selector)}")
+    if not types and selector is None:
+        raise ValueError("emit_abi_encode: types must not be empty (or provide a selector)")
+
+    flat = _flatten_static_types(types) if types else []
+    n = len(flat)
+
+    prefix_len = 4 if selector is not None else 0
+    total_bytes = prefix_len + n * 32
+    padded = (total_bytes + 31) & ~31  # always 32-aligned for static types
+
+    parts: list[bytes] = []
+
+    # ── 1. Initialise free-memory pointer ──────────────────────────────
+    # Stack after: [max_fp, val_{n-1}, …, val_0, <rest>]
+    parts.append(_emit_fp_init())
+
+    # ── 2. Write function selector (if any) ────────────────────────────
+    if selector is not None:
+        # Left-align 4-byte selector in a 32-byte word, then MSTORE at fp.
+        sel_word = int.from_bytes(selector, "big") << 224
+        parts.append(bytes([OP_PUSH_U256]) + sel_word.to_bytes(32, "big"))
+        parts.append(bytes([_DUP2, OP_MSTORE]))  # mem[max_fp] = sel_word
+
+    # ── 3. Write values in reverse order (TOS first → deepest last) ────
+    # Processing TOS first is natural for a stack machine and avoids deep
+    # stack access.  For standard encoding every slot is 32-byte-aligned,
+    # so writes never overlap (except selector bytes 4-31, which are
+    # correctly overwritten by the last-processed arg_0 at offset 4).
+    for i in range(n - 1, -1, -1):
+        offset = prefix_len + i * 32
+        clean = _emit_clean(flat[i])
+
+        # SWAP1: bring val_i to TOS, push max_fp down
+        parts.append(bytes([OP_SWAP]))
+        if clean:
+            parts.append(clean)
+
+        # DUP2 max_fp; compute store address; MSTORE
+        parts.append(bytes([_DUP2]))
+        if offset > 0:
+            parts.append(_push_small(offset))
+            parts.append(bytes([OP_ADD]))
+        parts.append(bytes([OP_MSTORE]))
+        # Stack restored to: [max_fp, remaining_vals…]
+
+    # ── 4. Update free-memory pointer ──────────────────────────────────
+    parts.append(_emit_fp_update(padded))
+
+    # ── 5. Leave [argsOffset(TOS), argsLen(2nd)] ──────────────────────
+    parts.append(_push_small(total_bytes))  # [total_bytes, max_fp]
+    parts.append(bytes([OP_SWAP]))  # [max_fp, total_bytes]
+
+    return b"".join(parts)
+
+
+# =========================================================================
+# emit_abi_encode_packed — packed ABI encoding in EVM bytecodes
+# =========================================================================
+
+
+def emit_abi_encode_packed(types: Sequence[str]) -> bytes:
+    """Generate EVM opcodes that packed-encode stack values into memory.
+
+    Like Solidity's ``abi.encodePacked()``, but values come from the EVM
+    stack.  Each scalar is encoded at its natural byte size (no padding).
+
+    **Stack convention** — same as :func:`emit_abi_encode`::
+
+        push(val_0)      # types[0] — deepest
+        …
+        push(val_{n-1})  # types[-1] — TOS
+
+    **Stack after execution**::
+
+        [argsOffset(TOS), argsLen(2nd)]
+
+    Implementation writes values in **forward** (left-to-right) order using
+    ``DUP`` to copy each value from the stack without consuming it.  Each
+    value is left-aligned via ``SHL`` and written with ``MSTORE`` (32 bytes);
+    subsequent writes overwrite the trailing zeros.  After all writes the
+    original values are removed from the stack.
+
+    Args:
+        types: Static scalar ABI type strings.  Max 15 leaf types (EVM
+               ``DUP`` depth limit).
+
+    Returns:
+        Raw EVM bytecodes.
+
+    Raises:
+        ValueError: Empty types, dynamic types, or > 15 leaf values.
+    """
+    if not types:
+        raise ValueError("emit_abi_encode_packed: types must not be empty")
+
+    flat = _flatten_static_types(types)
+    n = len(flat)
+
+    if n > 15:
+        raise ValueError(f"emit_abi_encode_packed: too many leaf values ({n}); max 15 (limited by EVM DUP depth)")
+
+    # Pre-compute cumulative byte offsets and total size.
+    offsets: list[int] = []
+    cum = 0
+    for t in flat:
+        offsets.append(cum)
+        cum += _natural_byte_size(t)
+    total_bytes = cum
+    padded = (total_bytes + 31) & ~31
+
+    parts: list[bytes] = []
+
+    # ── 1. Initialise free-memory pointer ──────────────────────────────
+    # Stack after: [max_fp, val_{n-1}, …, val_0, <rest>]
+    parts.append(_emit_fp_init())
+
+    # ── 2. Write values in FORWARD order (val_0 first) ─────────────────
+    # Forward order is required because each MSTORE writes 32 bytes — the
+    # trailing zeros of an earlier write must be overwritten by the next.
+    #
+    # Stack positions (1-indexed from TOS):
+    #   max_fp  → depth 1
+    #   val_{n-1} → depth 2
+    #   val_{n-2} → depth 3
+    #   …
+    #   val_i     → depth (n - i + 1)
+    #   …
+    #   val_0     → depth (n + 1)
+    for i in range(n):
+        off = offsets[i]
+        nat = _natural_byte_size(flat[i])
+        dup_depth = n - i + 1  # 1-indexed depth of val_i
+
+        # DUP{dup_depth}: copy val_i to TOS
+        parts.append(bytes([0x7F + dup_depth]))  # DUP1=0x80, DUP2=0x81, …
+
+        # Left-align the value for packed MSTORE.
+        is_bytes_fixed = _BYTES_FIXED_RE.match(flat[i])
+        if is_bytes_fixed:
+            # bytes<M> is already left-aligned; just mask trailing bytes.
+            bsize = int(is_bytes_fixed.group(1))
+            if bsize < 32:
+                mask = ((1 << (bsize * 8)) - 1) << ((32 - bsize) * 8)
+                parts.append(_push_small(mask) + bytes([OP_AND]))
+        else:
+            # Right-aligned types: shift left to fill the MSB.
+            shift = 256 - nat * 8
+            if shift > 0:
+                # For bool, normalise to 0/1 first.
+                if flat[i] == "bool":
+                    parts.append(bytes([OP_ISZERO, OP_ISZERO]))
+                parts.append(_push_small(shift) + bytes([OP_SHL]))
+            # If shift==0 (uint256/int256), no transformation needed.
+
+        # DUP2 to get max_fp, add offset, MSTORE
+        parts.append(bytes([_DUP2]))
+        if off > 0:
+            parts.append(_push_small(off))
+            parts.append(bytes([OP_ADD]))
+        parts.append(bytes([OP_MSTORE]))
+        # Stack restored: [max_fp, val_{n-1}, …, val_0, <rest>]
+
+    # ── 3. Remove all n original values from the stack ─────────────────
+    for _ in range(n):
+        parts.append(bytes([OP_SWAP, OP_POP]))
+
+    # ── 4. Update free-memory pointer ──────────────────────────────────
+    parts.append(_emit_fp_update(padded))
+
+    # ── 5. Leave [argsOffset(TOS), argsLen(2nd)] ──────────────────────
+    parts.append(_push_small(total_bytes))  # [total_bytes, max_fp]
+    parts.append(bytes([OP_SWAP]))  # [max_fp, total_bytes]
+
+    return b"".join(parts)

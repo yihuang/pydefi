@@ -566,6 +566,82 @@ class Program:
         return self._emit(ret_slice(offset, length))
 
     # ------------------------------------------------------------------
+    # In-VM ABI encoding
+    # ------------------------------------------------------------------
+
+    def abi_encode(
+        self,
+        types: list[str],
+        *,
+        selector: bytes | None = None,
+    ) -> "Program":
+        """ABI-encode N runtime values from the stack into memory.
+
+        Generates EVM opcodes that, when executed inside the VM, perform
+        canonical ABI encoding of values currently on the stack.  This is the
+        in-VM equivalent of Solidity's ``abi.encode()`` — types are known at
+        compile time, values come from the stack at runtime.
+
+        The caller must have pushed N values onto the stack in type-list
+        order: the first type's value pushed first (deepest on stack),
+        the last type's value pushed last (TOS).  Static tuples and
+        fixed-size arrays are flattened, so each leaf scalar consumes one
+        stack slot.
+
+        After execution the stack contains
+        ``[argsOffset(TOS), argsLen(2nd)]``, compatible with
+        :meth:`call`, :meth:`patch_u256`, and the ``CALL`` opcode.
+
+        Example — encode two runtime values and call a contract::
+
+            bytecode = (
+                Program()
+                .load_reg(0)                        # arg 0: uint256 (deepest)
+                .load_reg(1)                        # arg 1: address (TOS)
+                .abi_encode(
+                    ["uint256", "address"],
+                    selector=bytes.fromhex("a9059cbb"),  # transfer(address,uint256)
+                )
+                .push_u256(0)                       # value
+                .push_addr(TARGET)
+                .gas_opcode()
+                .call()
+                .pop()
+                .build()
+            )
+
+        Args:
+            types:    ABI type strings (static scalars, tuples, fixed arrays).
+            selector: Optional 4-byte function selector prefix.
+
+        Returns:
+            ``self`` for chaining.
+        """
+        from pydefi.vm.abi import emit_abi_encode
+
+        return self._emit(emit_abi_encode(types, selector=selector))
+
+    def abi_encode_packed(self, types: list[str]) -> "Program":
+        """Packed-encode N runtime values from the stack into memory.
+
+        Generates EVM opcodes that perform packed ABI encoding (Solidity's
+        ``abi.encodePacked()``) of values on the stack.
+
+        Same stack convention as :meth:`abi_encode`: values pushed in
+        type-list order, TOS = last type's value.  After execution the
+        stack contains ``[argsOffset(TOS), argsLen(2nd)]``.
+
+        Args:
+            types: Static scalar ABI type strings.  Max 15 leaf values.
+
+        Returns:
+            ``self`` for chaining.
+        """
+        from pydefi.vm.abi import emit_abi_encode_packed
+
+        return self._emit(emit_abi_encode_packed(types))
+
+    # ------------------------------------------------------------------
     # High-level helpers
     # ------------------------------------------------------------------
 
