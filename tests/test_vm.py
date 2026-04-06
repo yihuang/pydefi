@@ -74,6 +74,13 @@ from pydefi.vm.program import (
     sub,
     swap,
 )
+from pydefi.vm.swap import (
+    SplitLeg,
+    SwapHop,
+    SwapProtocol,
+    build_multi_hop_program,
+    build_split_program,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1400,3 +1407,196 @@ class TestEvmNativeOpcodes:
         expected = push_u256(5) + push_u256(5) + eq() + iszero()
         actual = Program().push_u256(5).push_u256(5).eq().iszero().build()
         assert actual == expected
+
+
+# ---------------------------------------------------------------------------
+# build_split_program — split-trading composer
+# ---------------------------------------------------------------------------
+
+
+class TestBuildSplitProgram:
+    """Unit tests for :func:`~pydefi.vm.swap.build_split_program` and :class:`~pydefi.vm.swap.SplitLeg`."""
+
+    POOL1 = "0x" + "11" * 20
+    POOL2 = "0x" + "22" * 20
+    POOL3 = "0x" + "33" * 20
+    TOKEN_A = "0x" + "aa" * 20
+    TOKEN_B = "0x" + "bb" * 20
+    TOKEN_C = "0x" + "cc" * 20
+    RECIPIENT = "0x" + "dd" * 20
+
+    def _v3_hop(self, pool: str, token_in: str, token_out: str) -> SwapHop:
+        return SwapHop(
+            protocol=SwapProtocol.UNISWAP_V3,
+            pool=pool,
+            token_in=token_in,
+            token_out=token_out,
+            fee=3000,
+            amount_in=0,
+            amount_out_min=0,
+            recipient=self.RECIPIENT,
+            zero_for_one=True,
+        )
+
+    def _v2_hop(self, pool: str, token_in: str, token_out: str) -> SwapHop:
+        return SwapHop(
+            protocol=SwapProtocol.UNISWAP_V2,
+            pool=pool,
+            token_in=token_in,
+            token_out=token_out,
+            fee=30,
+            amount_in=0,
+            amount_out_min=0,
+            recipient=self.RECIPIENT,
+            zero_for_one=True,
+        )
+
+    # -- Basic output correctness ---------------------------------------------
+
+    def test_single_leg_full_amount_produces_bytecode(self):
+        """A single 100 % leg should produce valid, non-empty bytecode."""
+        leg = SplitLeg(10000, [self._v3_hop(self.POOL1, self.TOKEN_A, self.TOKEN_B)])
+        bc = build_split_program(amount_in=10**18, legs=[leg]).build()
+        assert isinstance(bc, bytes)
+        assert len(bc) > 0
+
+    def test_two_legs_produces_bytecode(self):
+        """Two legs splitting 50/50 should produce valid bytecode."""
+        legs = [
+            SplitLeg(5000, [self._v3_hop(self.POOL1, self.TOKEN_A, self.TOKEN_B)]),
+            SplitLeg(5000, [self._v3_hop(self.POOL2, self.TOKEN_A, self.TOKEN_B)]),
+        ]
+        bc = build_split_program(amount_in=10**18, legs=legs).build()
+        assert isinstance(bc, bytes)
+        assert len(bc) > 0
+
+    def test_three_legs_30_30_40_produces_bytecode(self):
+        """Three legs at 30/30/40 % (the canonical issue example) produce valid bytecode."""
+        legs = [
+            SplitLeg(3000, [self._v3_hop(self.POOL1, self.TOKEN_A, self.TOKEN_B)]),
+            SplitLeg(3000, [self._v3_hop(self.POOL2, self.TOKEN_A, self.TOKEN_B)]),
+            SplitLeg(4000, [self._v3_hop(self.POOL3, self.TOKEN_A, self.TOKEN_B)]),
+        ]
+        bc = build_split_program(amount_in=10**18, legs=legs).build()
+        assert isinstance(bc, bytes)
+        assert len(bc) > 0
+
+    def test_multi_hop_leg_produces_bytecode(self):
+        """A leg with two chained hops (V3 then V2) produces valid bytecode."""
+        hop1 = self._v3_hop(self.POOL1, self.TOKEN_A, self.TOKEN_B)
+        hop2 = self._v2_hop(self.POOL2, self.TOKEN_B, self.TOKEN_C)
+        legs = [
+            SplitLeg(6000, [hop1, hop2]),
+            SplitLeg(4000, [self._v3_hop(self.POOL3, self.TOKEN_A, self.TOKEN_C)]),
+        ]
+        bc = build_split_program(amount_in=10**18, legs=legs).build()
+        assert isinstance(bc, bytes)
+        assert len(bc) > 0
+
+    # -- Fraction computation encoded in bytecode ----------------------------
+
+    def test_fraction_bps_and_divisor_appear_in_bytecode(self):
+        """The fraction and 10000 divisor must be PUSH32-encoded in the bytecode."""
+        legs = [
+            SplitLeg(3000, [self._v3_hop(self.POOL1, self.TOKEN_A, self.TOKEN_B)]),
+            SplitLeg(7000, [self._v3_hop(self.POOL2, self.TOKEN_A, self.TOKEN_B)]),
+        ]
+        bc = build_split_program(amount_in=10**18, legs=legs).build()
+        assert (3000).to_bytes(32, "big") in bc
+        assert (7000).to_bytes(32, "big") in bc
+        assert (10000).to_bytes(32, "big") in bc
+
+    def test_static_amount_in_appears_in_bytecode(self):
+        """When amount_in > 0 the value should be PUSH32-encoded in the bytecode."""
+        amount = 123456789
+        leg = SplitLeg(10000, [self._v3_hop(self.POOL1, self.TOKEN_A, self.TOKEN_B)])
+        bc = build_split_program(amount_in=amount, legs=[leg]).build()
+        assert amount.to_bytes(32, "big") in bc
+
+    # -- amount_in=0 reads from amount_reg -----------------------------------
+
+    def test_zero_amount_in_omits_static_push(self):
+        """amount_in=0 should produce shorter bytecode (no static PUSH32)."""
+        leg = SplitLeg(10000, [self._v3_hop(self.POOL1, self.TOKEN_A, self.TOKEN_B)])
+        bc_static = build_split_program(amount_in=10**18, legs=[leg]).build()
+        bc_dynamic = build_split_program(amount_in=0, legs=[leg]).build()
+        # Static version has an extra push_u256(amount_in) + store_reg
+        assert len(bc_dynamic) < len(bc_static)
+
+    # -- Slippage guard -------------------------------------------------------
+
+    def test_min_final_out_lengthens_bytecode(self):
+        """Passing min_final_out > 0 should add the slippage-check opcodes."""
+        leg = SplitLeg(10000, [self._v3_hop(self.POOL1, self.TOKEN_A, self.TOKEN_B)])
+        bc_no_check = build_split_program(amount_in=100, legs=[leg], min_final_out=0).build()
+        bc_with_check = build_split_program(amount_in=100, legs=[leg], min_final_out=1).build()
+        assert len(bc_with_check) > len(bc_no_check)
+
+    def test_min_final_out_value_in_bytecode(self):
+        """The min_final_out value should be PUSH32-encoded in the bytecode."""
+        min_out = 99999
+        leg = SplitLeg(10000, [self._v3_hop(self.POOL1, self.TOKEN_A, self.TOKEN_B)])
+        bc = build_split_program(amount_in=100, legs=[leg], min_final_out=min_out).build()
+        assert min_out.to_bytes(32, "big") in bc
+
+    # -- Composition with build_multi_hop_program ----------------------------
+
+    def test_composable_after_multi_hop(self):
+        """build_split_program(amount_in=0) chains correctly after build_multi_hop_program."""
+        first_hop = build_multi_hop_program(
+            [
+                SwapHop(
+                    protocol=SwapProtocol.UNISWAP_V3,
+                    pool=self.POOL1,
+                    token_in=self.TOKEN_A,
+                    token_out=self.TOKEN_B,
+                    fee=3000,
+                    amount_in=10**18,
+                    amount_out_min=0,
+                    recipient=self.RECIPIENT,
+                    zero_for_one=True,
+                )
+            ]
+        )
+        split = build_split_program(
+            amount_in=0,
+            legs=[
+                SplitLeg(5000, [self._v3_hop(self.POOL2, self.TOKEN_B, self.TOKEN_C)]),
+                SplitLeg(5000, [self._v3_hop(self.POOL3, self.TOKEN_B, self.TOKEN_C)]),
+            ],
+        )
+        bc = (first_hop + split).build()
+        assert isinstance(bc, bytes)
+        assert len(bc) > 0
+
+    # -- Validation -----------------------------------------------------------
+
+    def test_empty_legs_raises(self):
+        with pytest.raises(ValueError, match="legs list must not be empty"):
+            build_split_program(amount_in=100, legs=[])
+
+    def test_empty_hops_in_leg_raises(self):
+        with pytest.raises(ValueError, match="hops list must not be empty"):
+            build_split_program(amount_in=100, legs=[SplitLeg(10000, [])])
+
+    def test_fraction_bps_zero_raises(self):
+        hop = self._v3_hop(self.POOL1, self.TOKEN_A, self.TOKEN_B)
+        with pytest.raises(ValueError, match="fraction_bps"):
+            build_split_program(amount_in=100, legs=[SplitLeg(0, [hop])])
+
+    def test_fraction_bps_over_10000_raises(self):
+        hop = self._v3_hop(self.POOL1, self.TOKEN_A, self.TOKEN_B)
+        with pytest.raises(ValueError, match="fraction_bps"):
+            build_split_program(amount_in=100, legs=[SplitLeg(10001, [hop])])
+
+    def test_duplicate_registers_raises(self):
+        hop = self._v3_hop(self.POOL1, self.TOKEN_A, self.TOKEN_B)
+        with pytest.raises(ValueError, match="must all be distinct"):
+            build_split_program(
+                amount_in=100,
+                legs=[SplitLeg(10000, [hop])],
+                amount_reg=0,
+                amount_out_reg=0,  # duplicate
+                accum_reg=2,
+                total_in_reg=3,
+            )

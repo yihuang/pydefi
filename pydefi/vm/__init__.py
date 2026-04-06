@@ -109,9 +109,11 @@ from pydefi.vm.program import (
 from pydefi.vm.swap import (
     V2_AMOUNT_OUT_OFFSET,
     V3_AMOUNT_OUT_OFFSET,
+    SplitLeg,
     SwapHop,
     SwapProtocol,
     build_multi_hop_program,
+    build_split_program,
     check_min_balance,
     encode_v2_callback_data,
     encode_v3_callback_data,
@@ -197,9 +199,11 @@ __all__ = [
     # Swap composer
     "SwapHop",
     "SwapProtocol",
+    "SplitLeg",
     "V2_AMOUNT_OUT_OFFSET",
     "V3_AMOUNT_OUT_OFFSET",
     "build_multi_hop_program",
+    "build_split_program",
     "check_min_balance",
     "encode_v2_callback_data",
     "encode_v3_callback_data",
