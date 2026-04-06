@@ -372,6 +372,8 @@ def _build_v2_direct_swap_segment(hop: SwapHop, *, amount_reg: int) -> Program:
     # Uniswap V2 standard: amountInWithFee = amountIn * 997 / 1000 (for 0.30 % fee)
     # Generalised:         amountInWithFee = amountIn * (10000 - fee_bps)
     #                      denominator     = reserveIn * 10000 + amountInWithFee
+    if not 0 <= hop.fee < 10000:
+        raise ValueError(f"hop.fee must be in basis points within [0, 10000), got {hop.fee}")
     fee_num = 10000 - hop.fee
 
     prog = Program()
