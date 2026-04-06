@@ -37,6 +37,7 @@ Two complementary interfaces are provided:
         )
 """
 
+from pydefi.vm.abi import abi_decode, abi_encode, abi_encode_packed
 from pydefi.vm.builder import Patch, PatchSource, PatchSpec, Program
 from pydefi.vm.program import (
     OP_ADD,
@@ -122,6 +123,10 @@ from pydefi.vm.swap import (
 )
 
 __all__ = [
+    # ABI encode/decode helpers
+    "abi_encode",
+    "abi_encode_packed",
+    "abi_decode",
     # Fluent builder
     "Program",
     # Patch type aliases and Patch class
