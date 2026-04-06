@@ -37,6 +37,7 @@ from pydefi.vm.program import (
     OP_SHL,
     OP_SHR,
     OP_SUB,
+    OP_SWAP,
     OP_XOR,
     add,
     assert_ge,
@@ -1631,8 +1632,6 @@ class TestBuildSplitProgram:
         immediately before the DIV (0x04) so that the product (total_in *
         fraction_bps) is at TOS when the division executes.
         """
-        from pydefi.vm.program import OP_DIV, OP_SWAP, push_u256
-
         hop = self._v3_hop(self.POOL1, self.TOKEN_A, self.TOKEN_B)
         bc = build_split_program(amount_in=10**18, legs=[SplitLeg(10000, [hop])]).build()
         # Build the exact 3-byte sequence: PUSH32(10000) tail-byte … SWAP1 DIV

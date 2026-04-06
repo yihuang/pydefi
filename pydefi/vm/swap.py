@@ -678,11 +678,11 @@ def build_split_program(
     if total_bps != 10000:
         raise ValueError(f"build_split_program: sum of fraction_bps across all legs must be 10000, got {total_bps}")
 
-    _MAX_SAFE_AMOUNT = (2**256 - 1) // 10000
-    if amount_in > _MAX_SAFE_AMOUNT:
+    _MAX_SAFE_AMOUNT_IN = (2**256 - 1) // 10000
+    if amount_in > _MAX_SAFE_AMOUNT_IN:
         raise ValueError(
             f"build_split_program: amount_in {amount_in} exceeds safe multiplication "
-            f"range (max {_MAX_SAFE_AMOUNT}); on-chain MUL would overflow"
+            f"range (max {_MAX_SAFE_AMOUNT_IN}); on-chain MUL would overflow"
         )
 
     segments: list[Program] = []
