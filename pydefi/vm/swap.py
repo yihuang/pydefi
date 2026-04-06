@@ -227,9 +227,7 @@ def encode_v3_path(tokens: list[str], fees: list[int]) -> bytes:
         ValueError: If ``len(fees) != len(tokens) - 1``.
     """
     if len(fees) != len(tokens) - 1:
-        raise ValueError(
-            f"encode_v3_path: len(fees) ({len(fees)}) must equal len(tokens)-1 ({len(tokens) - 1})"
-        )
+        raise ValueError(f"encode_v3_path: len(fees) ({len(fees)}) must equal len(tokens)-1 ({len(tokens) - 1})")
     result = bytes.fromhex(tokens[0].removeprefix("0x").zfill(40))
     for fee, token in zip(fees, tokens[1:]):
         result += fee.to_bytes(3, "big")
@@ -360,7 +358,7 @@ def _build_v3_pool_swap_segment(hop: SwapHop, *, amount_reg: int) -> Program:
     if hop.zero_for_one:
         prog._emit(ret_u256(32))  # amount1 (negative → negate)
     else:
-        prog._emit(ret_u256(0))   # amount0 (negative → negate)
+        prog._emit(ret_u256(0))  # amount0 (negative → negate)
     prog._emit(bitwise_not())
     prog._emit(push_u256(1))
     prog._emit(add())
@@ -417,29 +415,29 @@ def _build_v2_direct_swap_segment(hop: SwapHop, *, amount_reg: int) -> Program:
 
     # --- Step 2: Compute amountOut --------------------------------------------
     # amountInWithFee = amountIn * fee_num
-    prog._emit(load_reg(amount_reg))    # [amountIn]
-    prog._emit(push_u256(fee_num))      # [amountIn, fee_num]
-    prog._emit(mul())                    # [amountInWithFee]
+    prog._emit(load_reg(amount_reg))  # [amountIn]
+    prog._emit(push_u256(fee_num))  # [amountIn, fee_num]
+    prog._emit(mul())  # [amountInWithFee]
 
     # denominator = reserveIn * 10000 + amountInWithFee
     # DUP1 makes a copy of amountInWithFee on top so we can use it twice.
-    prog._emit(dup())                    # [amountInWithFee(orig), amountInWithFee(dup)]
+    prog._emit(dup())  # [amountInWithFee(orig), amountInWithFee(dup)]
     prog._emit(load_reg(r_reserve_in))  # [amountInWithFee(orig), amountInWithFee(dup), reserveIn]
-    prog._emit(push_u256(10000))         # [amountInWithFee(orig), amountInWithFee(dup), reserveIn, 10000]
-    prog._emit(mul())                    # [amountInWithFee(orig), amountInWithFee(dup), reserveIn*10000]
-    prog._emit(add())                    # ADD pops TOS=reserveIn*10000 and 2nd=amountInWithFee(dup), pushes sum
+    prog._emit(push_u256(10000))  # [amountInWithFee(orig), amountInWithFee(dup), reserveIn, 10000]
+    prog._emit(mul())  # [amountInWithFee(orig), amountInWithFee(dup), reserveIn*10000]
+    prog._emit(add())  # ADD pops TOS=reserveIn*10000 and 2nd=amountInWithFee(dup), pushes sum
     # Stack now: [amountInWithFee(orig), denominator]
 
     # SWAP1: put amountInWithFee(orig) on top for the numerator multiplication.
-    prog._emit(swap())                   # [denominator, amountInWithFee(orig)]
+    prog._emit(swap())  # [denominator, amountInWithFee(orig)]
 
     # numerator = amountInWithFee * reserveOut
-    prog._emit(load_reg(r_reserve_out)) # [denominator, amountInWithFee(orig), reserveOut]
-    prog._emit(mul())                    # [denominator, numerator]
+    prog._emit(load_reg(r_reserve_out))  # [denominator, amountInWithFee(orig), reserveOut]
+    prog._emit(mul())  # [denominator, numerator]
 
     # amountOut = numerator / denominator
     # EVM DIV: a=TOS=numerator, b=next=denominator → result = TOS/next = numerator/denominator ✓
-    prog._emit(div())                    # [amountOut]
+    prog._emit(div())  # [amountOut]
     prog._emit(store_reg(r_amount_out))  # save for calldata patch
 
     # --- Step 3: Transfer amountIn to pair ------------------------------------
@@ -461,7 +459,7 @@ def _build_v2_direct_swap_segment(hop: SwapHop, *, amount_reg: int) -> Program:
     if hop.zero_for_one:
         amount_out_patch_offset = 4 + 32  # amount1Out
     else:
-        amount_out_patch_offset = 4       # amount0Out
+        amount_out_patch_offset = 4  # amount0Out
 
     prog.call_with_patches(
         hop.pool,
@@ -530,9 +528,7 @@ def build_multi_hop_program(
     for i, hop in enumerate(hops):
         # For the first hop, initialise amount_reg with the static input amount.
         if i == 0:
-            segments.append(
-                Program()._emit(push_u256(hop.amount_in))._emit(store_reg(amount_reg))
-            )
+            segments.append(Program()._emit(push_u256(hop.amount_in))._emit(store_reg(amount_reg)))
 
         if hop.protocol == SwapProtocol.UNISWAP_V3:
             swap_seg = _build_v3_pool_swap_segment(hop, amount_reg=amount_reg)

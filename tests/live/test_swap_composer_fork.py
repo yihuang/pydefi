@@ -53,7 +53,7 @@ DEFI_VM_SOL_FILE = REPO_ROOT / "pydefi" / "vm" / "DeFiVM.sol"
 
 WETH_ADDR = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
 USDC_ADDR = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
-DAI_ADDR  = "0x6B175474E89094C44Da98b954EedeAC495271d0F"
+DAI_ADDR = "0x6B175474E89094C44Da98b954EedeAC495271d0F"
 
 # Uniswap V3 SwapRouter (V1) — mainnet, used only for ABI calldata tests
 UNISWAP_V3_ROUTER = "0xE592427A0AEce92De3Edee1F18E0157C05861564"
@@ -324,9 +324,13 @@ async def ctx(fork_w3_module, compiled_vm, compiled_pools, interpreter_addr):
     # (reversed order gives us a hop2 of token1→token0).
     # Actual token balances are minted to the pair after deployment.
     v2pair_address = await deploy(
-        w3, v2pair_compiled, deployer,
-        token1_address, token0_address,  # pair.token0 = token1_address, pair.token1 = token0_address
-        RESERVE0, RESERVE1,
+        w3,
+        v2pair_compiled,
+        deployer,
+        token1_address,
+        token0_address,  # pair.token0 = token1_address, pair.token1 = token0_address
+        RESERVE0,
+        RESERVE1,
     )
     v2pair = w3.eth.contract(address=v2pair_address, abi=v2pair_compiled["abi"])
 
@@ -506,8 +510,8 @@ class TestDeFiVMCallbacks:
 
         tx = await v3pool.functions.simulateFlashSwap(
             vm_address,
-            repay_amount,   # amountOut minted to vm
-            repay_amount,   # amount0Delta (positive = owed to pool)
+            repay_amount,  # amountOut minted to vm
+            repay_amount,  # amount0Delta (positive = owed to pool)
             0,
             data,
             repay_amount,
@@ -531,7 +535,7 @@ class TestDeFiVMCallbacks:
         tx = await v3pool.functions.simulateFlashSwap(
             vm_address,
             repay_amount,
-            0,             # amount0Delta = 0 → use amount1Delta
+            0,  # amount0Delta = 0 → use amount1Delta
             repay_amount,
             data,
             repay_amount,
@@ -569,14 +573,16 @@ class TestDeFiVMCallbacks:
         deployer = ctx["deployer"]
         vm_address = ctx["vm_address"]
         v2pair = ctx["v2pair"]
-        token0_address = ctx["token0_address"]
-        token0 = ctx["token0"]
+        # v2pair was deployed with pair.token0 = token1_address; simulateFlashSwap
+        # mints and checks pair.token0, so we must repay with token1.
+        token1_address = ctx["token1_address"]
+        token1 = ctx["token1"]
 
         flash_amount = 2_000_000
         amount_owed = 2_006_000
 
-        await token0.functions.mint(vm_address, amount_owed).transact({"from": deployer})
-        data = encode_v2_callback_data(token0_address, amount_owed)
+        await token1.functions.mint(vm_address, amount_owed).transact({"from": deployer})
+        data = encode_v2_callback_data(token1_address, amount_owed)
 
         tx = await v2pair.functions.simulateFlashSwap(
             vm_address,
@@ -593,14 +599,16 @@ class TestDeFiVMCallbacks:
         deployer = ctx["deployer"]
         vm_address = ctx["vm_address"]
         v2pair = ctx["v2pair"]
-        token0_address = ctx["token0_address"]
-        token0 = ctx["token0"]
+        # v2pair was deployed with pair.token0 = token1_address; simulateAerodromeHook
+        # mints and checks pair.token0, so we must repay with token1.
+        token1_address = ctx["token1_address"]
+        token1 = ctx["token1"]
 
         flash_amount = 1_500_000
         amount_owed = 1_504_500
 
-        await token0.functions.mint(vm_address, amount_owed).transact({"from": deployer})
-        data = encode_v2_callback_data(token0_address, amount_owed)
+        await token1.functions.mint(vm_address, amount_owed).transact({"from": deployer})
+        data = encode_v2_callback_data(token1_address, amount_owed)
 
         tx = await v2pair.functions.simulateAerodromeHook(
             vm_address,
@@ -618,11 +626,13 @@ class TestDeFiVMCallbacks:
         vm_address = ctx["vm_address"]
 
         calldata = b"\xde\xad\xbe\xef" + b"\x00" * 32
-        tx_hash = await w3.eth.send_transaction({
-            "from": deployer,
-            "to": vm_address,
-            "data": "0x" + calldata.hex(),
-        })
+        tx_hash = await w3.eth.send_transaction(
+            {
+                "from": deployer,
+                "to": vm_address,
+                "data": "0x" + calldata.hex(),
+            }
+        )
         receipt = await w3.eth.get_transaction_receipt(tx_hash)
         assert receipt["status"] == 1, "Unknown selector should not revert"
 
@@ -778,7 +788,7 @@ class TestMultiHopSwapComposer:
                 fee=500,
                 amount_in=amount_in,
                 amount_out_min=0,
-                recipient=vm_address,    # keep token1 in VM for next hop
+                recipient=vm_address,  # keep token1 in VM for next hop
                 zero_for_one=True,
             ),
             SwapHop(
@@ -787,7 +797,7 @@ class TestMultiHopSwapComposer:
                 token_in=token1_address,
                 token_out=token0_address,
                 fee=30,
-                amount_in=0,             # patched at runtime from register
+                amount_in=0,  # patched at runtime from register
                 amount_out_min=0,
                 recipient=deployer,
                 zero_for_one=zero_for_one_v2,
