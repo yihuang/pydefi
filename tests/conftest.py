@@ -66,8 +66,10 @@ from eth.vm.forks.london import LondonVM
 from eth.vm.forks.shanghai import ShanghaiVM
 from eth.vm.message import Message
 from eth.vm.transaction_context import BaseTransactionContext
-from eth_hash.auto import keccak
+from eth_contract.erc20 import ERC20
 from eth_keys import keys
+
+from tests.live.sol_utils import MOCK_TOKEN_SOL, compile_sol_source, ensure_solc
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -242,56 +244,8 @@ _CTX_GAS_PRICE: int = 10**9
 #: ERC-20 calls; lower it explicitly when testing gas-bounded behaviour.
 _CTX_DEFAULT_GAS: int = 3_000_000
 
-# Minimal Solidity ERC-20 token used by deploy_mock_token().
-_MOCK_TOKEN_SOL: str = """\
-// SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
-
-/// @notice Minimal mintable ERC-20 used in MiniEVMContext tests.
-contract MockToken {
-    mapping(address => uint256) public balanceOf;
-    mapping(address => mapping(address => uint256)) public allowance;
-
-    event Transfer(address indexed from, address indexed to, uint256 value);
-
-    function mint(address to, uint256 amount) external {
-        balanceOf[to] += amount;
-        emit Transfer(address(0), to, amount);
-    }
-
-    function approve(address spender, uint256 amount) external returns (bool) {
-        allowance[msg.sender][spender] = amount;
-        return true;
-    }
-
-    function transfer(address to, uint256 amount) external returns (bool) {
-        require(balanceOf[msg.sender] >= amount, "MockToken: insufficient balance");
-        balanceOf[msg.sender] -= amount;
-        balanceOf[to] += amount;
-        emit Transfer(msg.sender, to, amount);
-        return true;
-    }
-
-    function transferFrom(
-        address from,
-        address to,
-        uint256 amount
-    ) external returns (bool) {
-        require(balanceOf[from] >= amount, "MockToken: insufficient balance");
-        require(
-            allowance[from][msg.sender] >= amount,
-            "MockToken: insufficient allowance"
-        );
-        allowance[from][msg.sender] -= amount;
-        balanceOf[from] -= amount;
-        balanceOf[to] += amount;
-        emit Transfer(from, to, amount);
-        return true;
-    }
-}
-"""
-
 # Cached compiled MockToken bytecode (creation code only).
+# Uses MOCK_TOKEN_SOL from tests.live.sol_utils to avoid duplication.
 _mock_token_bin: Optional[bytes] = None
 
 
@@ -299,24 +253,14 @@ def _get_mock_token_bin() -> bytes:
     """Lazily compile MockToken and return its creation bytecode."""
     global _mock_token_bin
     if _mock_token_bin is None:
-        import solcx
-
-        if "0.8.24" not in solcx.get_installed_solc_versions():
-            solcx.install_solc("0.8.24", show_progress=False)
-        result = solcx.compile_source(
-            _MOCK_TOKEN_SOL,
-            output_values=["bin"],
-            solc_version="0.8.24",
+        ensure_solc("0.8.24")
+        compiled = compile_sol_source(
+            MOCK_TOKEN_SOL,
+            "MockToken",
             evm_version=_SOLC_EVM_VERSION,
         )
-        _mock_token_bin = bytes.fromhex(result["<stdin>:MockToken"]["bin"])
+        _mock_token_bin = bytes.fromhex(compiled["bin"])
     return _mock_token_bin
-
-
-# ERC-20 function selectors (keccak256 of ABI signature, first 4 bytes).
-_SEL_BALANCE_OF: bytes = keccak(b"balanceOf(address)")[:4]
-_SEL_MINT: bytes = keccak(b"mint(address,uint256)")[:4]
-_SEL_TRANSFER: bytes = keccak(b"transfer(address,uint256)")[:4]
 
 
 @dataclass
@@ -465,17 +409,9 @@ class MiniEVMContext:
             The 20-byte canonical address of the newly deployed contract.
         """
         import eth_abi
-        import solcx
-
-        if "0.8.24" not in solcx.get_installed_solc_versions():
-            solcx.install_solc("0.8.24", show_progress=False)
-        result = solcx.compile_source(
-            source,
-            output_values=["abi", "bin"],
-            solc_version="0.8.24",
-            evm_version=_SOLC_EVM_VERSION,
+        compiled = compile_sol_source(
+            source, contract_name, evm_version=_SOLC_EVM_VERSION
         )
-        compiled = result[f"<stdin>:{contract_name}"]
         creation_code = bytes.fromhex(compiled["bin"])
         if constructor_args:
             # Use the full ABI for encoding; fall back to positional if needed.
@@ -655,11 +591,7 @@ class MiniEVMContext:
             recipient: 20-byte address of the recipient.
             amount:    Token amount (in the token's smallest unit).
         """
-        import eth_abi
-
-        calldata = _SEL_MINT + eth_abi.encode(
-            ["address", "uint256"], ["0x" + recipient.hex(), amount]
-        )
+        calldata = bytes(ERC20.fns.mint("0x" + recipient.hex(), amount).data)
         result = self.call(token, calldata)
         assert not result.is_error, (
             f"mint_token failed: {result.output.hex()}"
@@ -675,12 +607,12 @@ class MiniEVMContext:
         Returns:
             Token balance as a Python ``int``.
         """
-        calldata = _SEL_BALANCE_OF + holder.rjust(32, b"\x00")
-        result = self.call(token, calldata)
+        fn = ERC20.fns.balanceOf("0x" + holder.hex())
+        result = self.call(token, bytes(fn.data))
         assert not result.is_error, (
             f"token_balance failed: {result.output.hex()}"
         )
-        return int.from_bytes(result.output, "big")
+        return fn.decode(result.output)
 
 
 # ---------------------------------------------------------------------------

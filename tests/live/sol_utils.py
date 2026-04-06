@@ -31,14 +31,16 @@ def compile_sol_file(path: Path, contract_name: str) -> dict:
     return result[key]
 
 
-def compile_sol_source(source: str, contract_name: str) -> dict:
+def compile_sol_source(source: str, contract_name: str, *, evm_version: str = "default") -> dict:
     """Compile an inline Solidity source string and return ABI + bytecode."""
     ensure_solc("0.8.24")
-    result = solcx.compile_source(
-        source,
-        output_values=["abi", "bin"],
-        solc_version="0.8.24",
-    )
+    kwargs: dict = {
+        "output_values": ["abi", "bin"],
+        "solc_version": "0.8.24",
+    }
+    if evm_version != "default":
+        kwargs["evm_version"] = evm_version
+    result = solcx.compile_source(source, **kwargs)
     return result[f"<stdin>:{contract_name}"]
 
 

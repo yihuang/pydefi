@@ -1667,7 +1667,7 @@ class TestMiniEVM:
     """
 
     # ------------------------------------------------------------------
-    # Internal helper
+    # Internal helpers
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -1678,38 +1678,66 @@ class TestMiniEVM:
         assert len(result.output) == 32
         return int.from_bytes(result.output, "big")
 
+    @staticmethod
+    def _assert_stack_depth_one(bytecode: bytes) -> None:
+        """Assert that *bytecode* leaves exactly one value on the stack.
+
+        Strategy: run ``bytecode + POP + PUSH1 0xCC + RETURN_TOP`` and verify
+        the result is ``0xCC``.  If *bytecode* left more than one item the
+        sentinel ``0xCC`` would be buried beneath the extra item(s) and the
+        return value would differ.  If *bytecode* left zero items, POP would
+        cause a stack underflow and the computation would revert.
+        """
+        sentinel = 0xCC
+        probe = bytecode + pop() + push_u256(sentinel) + RETURN_TOP
+        result = mini_evm(probe)
+        assert not result.is_error, (
+            f"stack depth != 1: execution reverted (underflow?): {result.output.hex()}"
+        )
+        assert int.from_bytes(result.output, "big") == sentinel, (
+            "stack depth != 1: extra item(s) remained on stack after POP"
+        )
+
+    @classmethod
+    def _run_and_check_stack(cls, bytecode: bytes, expected: int) -> None:
+        """Assert *bytecode* produces *expected* as TOS and leaves exactly
+        one item on the stack.
+        """
+        assert cls._run_int(bytecode) == expected
+        cls._assert_stack_depth_one(bytecode)
+
     # ------------------------------------------------------------------
     # Arithmetic
     # ------------------------------------------------------------------
 
     def test_push_and_return(self):
         """PUSH32 42 leaves 42 on the stack; RETURN_TOP returns it."""
-        assert self._run_int(push_u256(42)) == 42
+        self._run_and_check_stack(push_u256(42), 42)
 
     def test_add(self):
         # Stack after pushes: [5, 3]  → ADD → [8]
-        assert self._run_int(push_u256(3) + push_u256(5) + add()) == 8
+        self._run_and_check_stack(push_u256(3) + push_u256(5) + add(), 8)
 
     def test_mul(self):
         # [7, 6] → MUL → [42]
-        assert self._run_int(push_u256(6) + push_u256(7) + mul()) == 42
+        self._run_and_check_stack(push_u256(6) + push_u256(7) + mul(), 42)
 
     def test_div(self):
         # [4, 12] → DIV: 12 / 4 = 3  (TOS is divisor)
-        assert self._run_int(push_u256(4) + push_u256(12) + div()) == 3
+        self._run_and_check_stack(push_u256(4) + push_u256(12) + div(), 3)
 
     def test_mod(self):
         # [3, 10] → MOD: 10 % 3 = 1  (TOS is modulus)
-        assert self._run_int(push_u256(3) + push_u256(10) + mod()) == 1
+        self._run_and_check_stack(push_u256(3) + push_u256(10) + mod(), 1)
 
     def test_sub_no_underflow(self):
         # sub() = saturating SUB: max(a - b, 0) where a=TOS, b=2nd
         # Push b=3 first, then a=10 → stack: [10, 3] → sub → 7
-        assert self._run_int(push_u256(3) + push_u256(10) + sub()) == 7
+        self._run_and_check_stack(push_u256(3) + push_u256(10) + sub(), 7)
 
     def test_sub_saturates_at_zero(self):
         # Push b=10 first, then a=3 → stack: [3, 10] → sub → max(3-10,0) = 0
-        assert self._run_int(push_u256(10) + push_u256(3) + sub()) == 0
+        self._run_and_check_stack(push_u256(10) + push_u256(3) + sub(), 0)
 
     # ------------------------------------------------------------------
     # Bitwise
@@ -1717,19 +1745,19 @@ class TestMiniEVM:
 
     def test_bitwise_and(self):
         # [0xF0, 0xFF] → AND → [0xF0]  (TOS & 2nd)
-        assert self._run_int(push_u256(0xFF) + push_u256(0xF0) + bitwise_and()) == 0xF0
+        self._run_and_check_stack(push_u256(0xFF) + push_u256(0xF0) + bitwise_and(), 0xF0)
 
     def test_bitwise_or(self):
         # [0x0F, 0xF0] → OR → [0xFF]
-        assert self._run_int(push_u256(0xF0) + push_u256(0x0F) + bitwise_or()) == 0xFF
+        self._run_and_check_stack(push_u256(0xF0) + push_u256(0x0F) + bitwise_or(), 0xFF)
 
     def test_bitwise_xor(self):
         # [0xFF, 0xF0] → XOR → [0x0F]
-        assert self._run_int(push_u256(0xF0) + push_u256(0xFF) + bitwise_xor()) == 0x0F
+        self._run_and_check_stack(push_u256(0xF0) + push_u256(0xFF) + bitwise_xor(), 0x0F)
 
     def test_bitwise_not(self):
         # NOT 0 → 2**256 - 1
-        assert self._run_int(push_u256(0) + bitwise_not()) == 2**256 - 1
+        self._run_and_check_stack(push_u256(0) + bitwise_not(), 2**256 - 1)
 
     # ------------------------------------------------------------------
     # Shift
@@ -1738,12 +1766,12 @@ class TestMiniEVM:
     def test_shl(self):
         # SHL: shift = TOS, value = 2nd → value << shift
         # Stack: [8(shift), 1(value)] → 1 << 8 = 256
-        assert self._run_int(push_u256(1) + push_u256(8) + shl()) == 256
+        self._run_and_check_stack(push_u256(1) + push_u256(8) + shl(), 256)
 
     def test_shr(self):
         # SHR: shift = TOS, value = 2nd → value >> shift
         # Stack: [1(shift), 256(value)] → 256 >> 1 = 128
-        assert self._run_int(push_u256(256) + push_u256(1) + shr()) == 128
+        self._run_and_check_stack(push_u256(256) + push_u256(1) + shr(), 128)
 
     # ------------------------------------------------------------------
     # Comparisons
@@ -1751,35 +1779,35 @@ class TestMiniEVM:
 
     def test_lt_true(self):
         # LT: TOS < 2nd → [5, 10] → 5 < 10 = 1
-        assert self._run_int(push_u256(10) + push_u256(5) + lt()) == 1
+        self._run_and_check_stack(push_u256(10) + push_u256(5) + lt(), 1)
 
     def test_lt_false(self):
         # [15, 10] → 15 < 10 = 0
-        assert self._run_int(push_u256(10) + push_u256(15) + lt()) == 0
+        self._run_and_check_stack(push_u256(10) + push_u256(15) + lt(), 0)
 
     def test_gt_true(self):
         # GT: TOS > 2nd → [15, 10] → 15 > 10 = 1
-        assert self._run_int(push_u256(10) + push_u256(15) + gt()) == 1
+        self._run_and_check_stack(push_u256(10) + push_u256(15) + gt(), 1)
 
     def test_gt_false(self):
         # [5, 10] → 5 > 10 = 0
-        assert self._run_int(push_u256(10) + push_u256(5) + gt()) == 0
+        self._run_and_check_stack(push_u256(10) + push_u256(5) + gt(), 0)
 
     def test_eq_true(self):
         # EQ: [42, 42] → 1
-        assert self._run_int(push_u256(42) + push_u256(42) + eq()) == 1
+        self._run_and_check_stack(push_u256(42) + push_u256(42) + eq(), 1)
 
     def test_eq_false(self):
         # EQ: [42, 43] → 0
-        assert self._run_int(push_u256(43) + push_u256(42) + eq()) == 0
+        self._run_and_check_stack(push_u256(43) + push_u256(42) + eq(), 0)
 
     def test_iszero_true(self):
         # ISZERO: [0] → 1
-        assert self._run_int(push_u256(0) + iszero()) == 1
+        self._run_and_check_stack(push_u256(0) + iszero(), 1)
 
     def test_iszero_false(self):
         # ISZERO: [1] → 0
-        assert self._run_int(push_u256(1) + iszero()) == 0
+        self._run_and_check_stack(push_u256(1) + iszero(), 0)
 
     # ------------------------------------------------------------------
     # Register operations
@@ -1787,11 +1815,11 @@ class TestMiniEVM:
 
     def test_store_and_load_reg(self):
         # Store 42 in register 0, load it back.
-        assert self._run_int(push_u256(42) + store_reg(0) + load_reg(0)) == 42
+        self._run_and_check_stack(push_u256(42) + store_reg(0) + load_reg(0), 42)
 
     def test_load_uninitialised_reg_is_zero(self):
         # Registers live in memory, which is zero-initialised.
-        assert self._run_int(load_reg(3)) == 0
+        self._run_and_check_stack(load_reg(3), 0)
 
     def test_registers_are_independent(self):
         # Store different values in registers 0 and 5; verify no cross-contamination.
@@ -1802,12 +1830,12 @@ class TestMiniEVM:
             + store_reg(5)
             + load_reg(0)  # should be 111
         )
-        assert self._run_int(code) == 111
+        self._run_and_check_stack(code, 111)
 
     def test_overwrite_reg(self):
         # Writing the same register twice keeps the latest value.
         code = push_u256(1) + store_reg(2) + push_u256(99) + store_reg(2) + load_reg(2)
-        assert self._run_int(code) == 99
+        self._run_and_check_stack(code, 99)
 
     # ------------------------------------------------------------------
     # Control flow
@@ -1816,12 +1844,12 @@ class TestMiniEVM:
     def test_unconditional_jump(self):
         # Jump over push_u256(99); only push_u256(42) should reach the stack.
         p = Program().jump("end").push_u256(99).label("end").push_u256(42)
-        assert self._run_int(p.build()) == 42
+        self._run_and_check_stack(p.build(), 42)
 
     def test_conditional_jump_taken(self):
         # Condition = 1 → jump taken, skip push_u256(99).
         p = Program().push_u256(1).jumpi("end").push_u256(99).label("end").push_u256(42)
-        assert self._run_int(p.build()) == 42
+        self._run_and_check_stack(p.build(), 42)
 
     def test_conditional_jump_not_taken(self):
         # Condition = 0 → jump NOT taken, push_u256(99) executes.
@@ -1907,9 +1935,8 @@ class TestMiniEVM:
     def test_self_addr(self):
         # ADDRESS opcode returns the *to* address used in the Message.
         # mini_evm uses MINI_EVM_RECEIVER as the receiver.
-
         expected = int.from_bytes(MINI_EVM_RECEIVER, "big")
-        assert self._run_int(self_addr()) == expected
+        self._run_and_check_stack(self_addr(), expected)
 
     # ------------------------------------------------------------------
     # balance_of (ETH path — no external call)
@@ -1919,14 +1946,14 @@ class TestMiniEVM:
         # balance_of: token(TOS)=0, account(2nd)=SENDER → ETH balance.
         # MINI_EVM_SENDER starts with MINI_EVM_SENDER_BALANCE wei.
         sender_int = int.from_bytes(MINI_EVM_SENDER, "big")
-        code = push_u256(sender_int) + push_u256(0) + balance_of() + RETURN_TOP
-        assert self._run_int(code) == MINI_EVM_SENDER_BALANCE
+        code = push_u256(sender_int) + push_u256(0) + balance_of()
+        self._run_and_check_stack(code, MINI_EVM_SENDER_BALANCE)
 
     def test_balance_of_unknown_address_is_zero(self):
         # An address not in genesis state has balance 0.
         unknown = int.from_bytes(b"\xcc" * 20, "big")
-        code = push_u256(unknown) + push_u256(0) + balance_of() + RETURN_TOP
-        assert self._run_int(code) == 0
+        code = push_u256(unknown) + push_u256(0) + balance_of()
+        self._run_and_check_stack(code, 0)
 
     # ------------------------------------------------------------------
     # gas_used inspection
@@ -2090,8 +2117,7 @@ class TestMiniEVMContext:
 
     def test_program_transfer_tokens(self, evm_ctx):
         """A DeFiVM program can transfer ERC-20 tokens between addresses."""
-        import eth_abi
-        from eth_hash.auto import keccak
+        from eth_contract.erc20 import ERC20
 
         token = evm_ctx.deploy_mock_token()
         executor = evm_ctx.program_executor
@@ -2102,10 +2128,7 @@ class TestMiniEVMContext:
         evm_ctx.mint_token(token, executor, initial)
 
         # Build transfer calldata: token.transfer(recipient, amount)
-        sel_transfer = keccak(b"transfer(address,uint256)")[:4]
-        transfer_cd = sel_transfer + eth_abi.encode(
-            ["address", "uint256"], ["0x" + recipient.hex(), amount]
-        )
+        transfer_cd = bytes(ERC20.fns.transfer("0x" + recipient.hex(), amount).data)
         program = (
             push_u256(0)
             + push_u256(0)  # retLen=0, retOffset=0
@@ -2142,17 +2165,13 @@ class TestMiniEVMContext:
 
     def test_call_mint_and_balance(self, evm_ctx):
         """call() can invoke contract functions directly (no program needed)."""
-        import eth_abi
-        from eth_hash.auto import keccak
+        from eth_contract.erc20 import ERC20
 
         token = evm_ctx.deploy_mock_token()
         holder = b"\x44" * 20
         amount = 42 * 10**18
 
-        sel_mint = keccak(b"mint(address,uint256)")[:4]
-        calldata = sel_mint + eth_abi.encode(
-            ["address", "uint256"], ["0x" + holder.hex(), amount]
-        )
+        calldata = bytes(ERC20.fns.mint("0x" + holder.hex(), amount).data)
         result = evm_ctx.call(token, calldata)
         assert not result.is_error
         assert evm_ctx.token_balance(token, holder) == amount
@@ -2195,8 +2214,7 @@ class TestMiniEVMContext:
 
     def test_storage_mutations_persist(self, evm_ctx):
         """Token balance changes persist between run_program executions."""
-        import eth_abi
-        from eth_hash.auto import keccak
+        from eth_contract.erc20 import ERC20
 
         token = evm_ctx.deploy_mock_token()
         executor = evm_ctx.program_executor
@@ -2204,10 +2222,7 @@ class TestMiniEVMContext:
         evm_ctx.mint_token(token, executor, 1_000 * 10**18)
 
         # First run_program: transfer 400e18
-        sel_transfer = keccak(b"transfer(address,uint256)")[:4]
-        cd = sel_transfer + eth_abi.encode(
-            ["address", "uint256"], ["0x" + holder.hex(), 400 * 10**18]
-        )
+        cd = bytes(ERC20.fns.transfer("0x" + holder.hex(), 400 * 10**18).data)
         prog = (
             push_u256(0) + push_u256(0)
             + push_bytes(cd)
