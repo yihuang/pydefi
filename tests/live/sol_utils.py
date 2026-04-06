@@ -7,9 +7,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import solcx
 from web3 import AsyncWeb3
-
-solcx = __import__("solcx")
 
 
 def ensure_solc(version: str = "0.8.24") -> None:

@@ -24,6 +24,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import solcx
 from web3 import AsyncWeb3
 from web3.exceptions import ContractLogicError, Web3RPCError
 
@@ -36,11 +37,6 @@ from pydefi.vm.program import (
     store_reg,
 )
 from tests.live.sol_utils import compile_sol_file, deploy, ensure_solc
-
-# ---------------------------------------------------------------------------
-# Optional: skip whole module if solcx not installed
-# ---------------------------------------------------------------------------
-solcx = pytest.importorskip("solcx")
 
 # ---------------------------------------------------------------------------
 # Paths

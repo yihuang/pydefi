@@ -297,9 +297,8 @@ _MAX_U256 = 2**256 - 1
 #: Default register index used to carry amounts between hops.
 _AMOUNT_REG: int = 0
 
-#: Number of extra registers each V2 hop reserves for the computed amountOut.
-#: Hop *i* uses registers: amount_reg (amountIn/amountOut), amount_reg+1 (computed amountOut temp).
-_V2_EXTRA_REGS: int = 1
+#: Default register index for V2 hops to store the computed amountOut temp.
+_AMOUNT_OUT_REG: int = 1
 
 
 def _build_v3_pool_swap_segment(hop: SwapHop, *, amount_reg: int) -> Program:
@@ -348,7 +347,7 @@ def _build_v3_pool_swap_segment(hop: SwapHop, *, amount_reg: int) -> Program:
     return prog
 
 
-def _build_v2_direct_swap_segment(hop: SwapHop, *, amount_reg: int) -> Program:
+def _build_v2_direct_swap_segment(hop: SwapHop, *, amount_reg: int, amount_out_reg: int) -> Program:
     """V2 pair direct swap: compute amountOut from reserves on-chain.
 
     Sequence:
@@ -356,17 +355,19 @@ def _build_v2_direct_swap_segment(hop: SwapHop, *, amount_reg: int) -> Program:
     2. Compute ``amountOut`` using the constant-product formula on the EVM
        stack (no temporary registers for reserves):
        ``amountIn * fee_num * reserveOut / (reserveIn * 10000 + amountIn * fee_num)``
-    3. Store computed ``amountOut`` in *amount_reg + 1* for calldata patching.
+    3. Store computed ``amountOut`` in *amount_out_reg* for calldata patching.
     4. ``tokenIn.transfer(pair, amountIn)`` — transfer input from VM.
     5. ``pair.swap(amount0Out, amount1Out, recipient, "")`` — amountOut patched
-       from *amount_reg + 1* via :class:`~pydefi.vm.builder.Patch`.
-    6. Copy ``amountOut`` from *amount_reg + 1* back to *amount_reg*.
+       from *amount_out_reg* via :class:`~pydefi.vm.builder.Patch`.
+    6. Copy ``amountOut`` from *amount_out_reg* back to *amount_reg*.
 
-    Registers used (relative to *amount_reg*):
-        * ``amount_reg``:     amountIn (in) / amountOut (out)
-        * ``amount_reg + 1``: computed amountOut (temp for calldata patching)
+    Args:
+        hop: The V2 swap hop descriptor.
+        amount_reg: Register holding ``amountIn`` on entry; updated with
+            ``amountOut`` on exit.
+        amount_out_reg: Scratch register for the intermediate ``amountOut``
+            value (must differ from *amount_reg*).
     """
-    r_amount_out = amount_reg + 1
 
     # hop.fee is in basis points (e.g. 30 for 0.30 %)
     # Uniswap V2 standard: amountInWithFee = amountIn * 997 / 1000 (for 0.30 % fee)
@@ -412,7 +413,7 @@ def _build_v2_direct_swap_segment(hop: SwapHop, *, amount_reg: int) -> Program:
     prog._emit(add())  # [numerator, denominator=rIn*10000+aif_dup]
     prog._emit(swap())  # [denominator, numerator]   (SWAP1: put numerator at TOS)
     prog._emit(div())  # [amountOut = numerator/denominator]
-    prog._emit(store_reg(r_amount_out))
+    prog._emit(store_reg(amount_out_reg))
 
     # --- Step 3: Transfer amountIn to pair ------------------------------------
     prog.call_contract_abi(
@@ -431,7 +432,7 @@ def _build_v2_direct_swap_segment(hop: SwapHop, *, amount_reg: int) -> Program:
             hop.pool,
             "function swap(uint256 amount0Out, uint256 amount1Out, address to, bytes data)",
             0,
-            Patch(load_reg(r_amount_out)),
+            Patch(load_reg(amount_out_reg)),
             hop.recipient,
             b"",
         ).pop()
@@ -439,14 +440,14 @@ def _build_v2_direct_swap_segment(hop: SwapHop, *, amount_reg: int) -> Program:
         prog.call_contract_abi(
             hop.pool,
             "function swap(uint256 amount0Out, uint256 amount1Out, address to, bytes data)",
-            Patch(load_reg(r_amount_out)),
+            Patch(load_reg(amount_out_reg)),
             0,
             hop.recipient,
             b"",
         ).pop()
 
     # --- Step 5: Update amount_reg for the next hop ---------------------------
-    prog._emit(load_reg(r_amount_out))
+    prog._emit(load_reg(amount_out_reg))
     prog._emit(store_reg(amount_reg))
 
     return prog
@@ -461,6 +462,7 @@ def build_multi_hop_program(
     hops: list[SwapHop],
     min_final_out: int = 0,
     amount_reg: int = _AMOUNT_REG,
+    amount_out_reg: int = _AMOUNT_OUT_REG,
 ) -> Program:
     """Compose a list of swap hops into a single atomic DeFiVM program.
 
@@ -488,18 +490,27 @@ def build_multi_hop_program(
         min_final_out: If ``> 0``, the program reverts when the last hop's
             output is below this value (slippage guard).  Pass ``0`` to skip.
         amount_reg: DeFiVM register index (0–15) used to pass amounts between
-            hops.  V2 hops additionally use one consecutive register starting
-            at ``amount_reg + 1``; ensure it does not conflict with other
-            register usage in your program.
+            hops.  Holds ``amountIn`` on entry to each hop and ``amountOut``
+            on exit.
+        amount_out_reg: DeFiVM register index (0–15) used by V2 hops as a
+            scratch register for the intermediate ``amountOut`` value before
+            it is patched into the ``pair.swap()`` calldata.  Must differ from
+            *amount_reg*.
 
     Returns:
         A :class:`~pydefi.vm.builder.Program` ready for ``.build()``.
 
     Raises:
-        ValueError: If *hops* is empty or a hop has an unsupported protocol.
+        ValueError: If *hops* is empty, a hop has an unsupported protocol, or
+            *amount_reg* equals *amount_out_reg*.
     """
     if not hops:
         raise ValueError("build_multi_hop_program: hops list must not be empty")
+    if amount_reg == amount_out_reg:
+        raise ValueError(
+            f"build_multi_hop_program: amount_reg ({amount_reg}) and "
+            f"amount_out_reg ({amount_out_reg}) must be different registers"
+        )
 
     segments: list[Program] = []
 
@@ -511,7 +522,7 @@ def build_multi_hop_program(
         if hop.protocol == SwapProtocol.UNISWAP_V3:
             swap_seg = _build_v3_pool_swap_segment(hop, amount_reg=amount_reg)
         elif hop.protocol == SwapProtocol.UNISWAP_V2:
-            swap_seg = _build_v2_direct_swap_segment(hop, amount_reg=amount_reg)
+            swap_seg = _build_v2_direct_swap_segment(hop, amount_reg=amount_reg, amount_out_reg=amount_out_reg)
         else:
             raise ValueError(f"build_multi_hop_program: unsupported protocol {hop.protocol!r}")
 

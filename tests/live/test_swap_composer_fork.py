@@ -22,6 +22,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import solcx
 from eth_abi import decode
 from web3.exceptions import ContractLogicError, Web3RPCError
 
@@ -35,11 +36,6 @@ from pydefi.vm.swap import (
     v3_pool_swap_calldata,
 )
 from tests.live.sol_utils import MOCK_TOKEN_SOL, compile_sol_file, compile_sol_source, deploy, ensure_solc
-
-# ---------------------------------------------------------------------------
-# Optional: skip whole module if solcx not installed
-# ---------------------------------------------------------------------------
-solcx = pytest.importorskip("solcx")
 
 # ---------------------------------------------------------------------------
 # Paths

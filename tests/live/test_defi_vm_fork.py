@@ -21,6 +21,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import solcx
 from eth_contract.erc20 import ERC20
 from web3.exceptions import ContractLogicError, Web3RPCError
 
@@ -48,11 +49,6 @@ from pydefi.vm.program import (
     swap,
 )
 from tests.live.sol_utils import MOCK_TOKEN_SOL, compile_sol_file, compile_sol_source, deploy, ensure_solc
-
-# ---------------------------------------------------------------------------
-# Optional: skip whole module if solcx not installed
-# ---------------------------------------------------------------------------
-solcx = pytest.importorskip("solcx")
 
 # ---------------------------------------------------------------------------
 # Paths

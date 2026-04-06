@@ -154,7 +154,7 @@ contract DeFiVM {
      *   • Aerodrome/Velodrome — hook                 (0x9a7bff79)
      *   • Ramses V2         — ramsesV2FlashCallback  (0xde5f4ecc)
      *
-     * Unknown selectors are silently ignored (harmless no-op).
+     * Unknown selectors revert to avoid silently accepting unexpected calls.
      */
     fallback() external {
         bytes4 sel;
@@ -233,8 +233,9 @@ contract DeFiVM {
             if (amountOwed > 0) {
                 _callTransfer(tokenIn, msg.sender, amountOwed);
             }
+        } else {
+            revert("DeFiVM: unknown callback selector");
         }
-        // Unknown selectors: silently return (no revert).
     }
 
     // -------------------------------------------------------------------------
