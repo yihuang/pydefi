@@ -67,6 +67,7 @@ from eth.vm.forks.shanghai import ShanghaiVM
 from eth.vm.message import Message
 from eth.vm.transaction_context import BaseTransactionContext
 from eth_contract.erc20 import ERC20
+from eth_contract.utils import get_initcode
 from eth_keys import keys
 
 from tests.live.sol_utils import MOCK_TOKEN_SOL, compile_sol_source, ensure_solc
@@ -408,24 +409,12 @@ class MiniEVMContext:
         Returns:
             The 20-byte canonical address of the newly deployed contract.
         """
-        import eth_abi
         compiled = compile_sol_source(
             source, contract_name, evm_version=_SOLC_EVM_VERSION
         )
-        creation_code = bytes.fromhex(compiled["bin"])
-        if constructor_args:
-            # Use the full ABI for encoding; fall back to positional if needed.
-            inputs = next(
-                (
-                    item["inputs"]
-                    for item in compiled["abi"]
-                    if item.get("type") == "constructor"
-                ),
-                [],
-            )
-            if inputs:
-                types = [inp["type"] for inp in inputs]
-                creation_code += eth_abi.encode(types, list(constructor_args))
+        # get_initcode expects 'bytecode' key; compile_sol_source returns 'bin'.
+        artifact = {"bytecode": compiled["bin"], "abi": compiled["abi"]}
+        creation_code = get_initcode(artifact, *constructor_args)
         return self.deploy(creation_code)
 
     # -----------------------------------------------------------------------
