@@ -624,10 +624,15 @@ def build_split_program(
     Args:
         amount_in: Static total input amount.  Pass ``0`` to use the value
             already stored in *amount_reg* (e.g. the output of a preceding
-            :func:`build_multi_hop_program` step).
+            :func:`build_multi_hop_program` step).  When non-zero, must not
+            exceed ``(2**256 - 1) // 10000`` to avoid on-chain overflow during
+            the ``total_in * fraction_bps`` multiplication.
         legs: List of :class:`SplitLeg` descriptors (at least one required).
-            All ``fraction_bps`` values should sum to **10000** to ensure the
-            entire input is distributed.
+            All ``fraction_bps`` values **must** sum to exactly **10000** so
+            that the entire input is distributed without dust or over-spend.
+            The same constraint applies to dynamic inputs (``amount_in=0``):
+            the value in *amount_reg* should not exceed
+            ``(2**256 - 1) // 10000`` to prevent overflow.
         min_final_out: If ``> 0``, revert when the total accumulated output is
             below this value (slippage guard).  Pass ``0`` to skip.
         amount_reg: Register index (0–15) used to carry per-leg amounts into
@@ -645,10 +650,12 @@ def build_split_program(
         A :class:`~pydefi.vm.builder.Program` ready for ``.build()``.
 
     Raises:
-        ValueError: If *legs* is empty, any ``fraction_bps`` is out of range
+        ValueError: If *legs* is empty, ``sum(fraction_bps)`` across all legs
+            is not exactly **10000**, any ``fraction_bps`` is out of range
             ``(0, 10000]``, any leg's ``hops`` list is empty, any leg contains
-            an unsupported protocol, or the four register indices are not all
-            distinct.
+            an unsupported protocol, the four register indices are not all
+            distinct, or a static *amount_in* exceeds the safe multiplication
+            range (``(2**256 - 1) // 10000``).
     """
     if not legs:
         raise ValueError("build_split_program: legs list must not be empty")
@@ -663,12 +670,20 @@ def build_split_program(
 
     for i, leg in enumerate(legs):
         if not (0 < leg.fraction_bps <= 10000):
-            raise ValueError(
-                f"build_split_program: leg {i} fraction_bps ({leg.fraction_bps}) "
-                f"must be in (0, 10000]"
-            )
+            raise ValueError(f"build_split_program: leg {i} fraction_bps ({leg.fraction_bps}) must be in (0, 10000]")
         if not leg.hops:
             raise ValueError(f"build_split_program: leg {i} hops list must not be empty")
+
+    total_bps = sum(leg.fraction_bps for leg in legs)
+    if total_bps != 10000:
+        raise ValueError(f"build_split_program: sum of fraction_bps across all legs must be 10000, got {total_bps}")
+
+    _MAX_SAFE_AMOUNT = (2**256 - 1) // 10000
+    if amount_in > _MAX_SAFE_AMOUNT:
+        raise ValueError(
+            f"build_split_program: amount_in {amount_in} exceeds safe multiplication "
+            f"range (max {_MAX_SAFE_AMOUNT}); on-chain MUL would overflow"
+        )
 
     segments: list[Program] = []
 
@@ -687,13 +702,16 @@ def build_split_program(
 
     # ── Step 2: One segment per leg ───────────────────────────────────────────
     for leg in legs:
-        # Compute leg_amount = total_in * fraction_bps / 10000
+        # Compute leg_amount = total_in * fraction_bps / 10000.
+        # EVM DIV pops TOS as numerator and 2nd-from-TOS as denominator, so we
+        # must swap after pushing 10000 to keep the product (numerator) at TOS.
         leg_init = Program()
         leg_init._emit(load_reg(total_in_reg))
         leg_init._emit(push_u256(leg.fraction_bps))
-        leg_init._emit(mul())
-        leg_init._emit(push_u256(10000))
-        leg_init._emit(div())
+        leg_init._emit(mul())  # stack: [total_in * fraction_bps]
+        leg_init._emit(push_u256(10000))  # stack: [10000, product]
+        leg_init._emit(swap())  # SWAP1 → [product, 10000]
+        leg_init._emit(div())  # product / 10000 = leg_amount
         leg_init._emit(store_reg(amount_reg))
         segments.append(leg_init)
 
@@ -702,9 +720,7 @@ def build_split_program(
             if hop.protocol == SwapProtocol.UNISWAP_V3:
                 hop_seg = _build_v3_pool_swap_segment(hop, amount_reg=amount_reg)
             elif hop.protocol == SwapProtocol.UNISWAP_V2:
-                hop_seg = _build_v2_direct_swap_segment(
-                    hop, amount_reg=amount_reg, amount_out_reg=amount_out_reg
-                )
+                hop_seg = _build_v2_direct_swap_segment(hop, amount_reg=amount_reg, amount_out_reg=amount_out_reg)
             else:
                 raise ValueError(f"build_split_program: unsupported protocol {hop.protocol!r}")
             segments.append(hop_seg)

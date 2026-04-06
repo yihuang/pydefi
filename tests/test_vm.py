@@ -1600,3 +1600,43 @@ class TestBuildSplitProgram:
                 accum_reg=2,
                 total_in_reg=3,
             )
+
+    def test_fraction_bps_sum_not_10000_raises(self):
+        """Legs whose fraction_bps values do not sum to 10000 must be rejected."""
+        hop = self._v3_hop(self.POOL1, self.TOKEN_A, self.TOKEN_B)
+        # Under-allocated: 4000 + 4000 = 8000 ≠ 10000
+        with pytest.raises(ValueError, match="sum of fraction_bps"):
+            build_split_program(
+                amount_in=100,
+                legs=[SplitLeg(4000, [hop]), SplitLeg(4000, [hop])],
+            )
+        # Over-allocated: 6000 + 6000 = 12000 ≠ 10000
+        with pytest.raises(ValueError, match="sum of fraction_bps"):
+            build_split_program(
+                amount_in=100,
+                legs=[SplitLeg(6000, [hop]), SplitLeg(6000, [hop])],
+            )
+
+    def test_static_amount_in_overflow_raises(self):
+        """amount_in that would cause on-chain MUL overflow must be rejected."""
+        hop = self._v3_hop(self.POOL1, self.TOKEN_A, self.TOKEN_B)
+        too_large = (2**256 - 1) // 10000 + 1
+        with pytest.raises(ValueError, match="overflow"):
+            build_split_program(amount_in=too_large, legs=[SplitLeg(10000, [hop])])
+
+    def test_leg_amount_division_order_correct(self):
+        """Verify the bytecode encodes product / 10000, not 10000 / product.
+
+        The EVM DIV opcode computes TOS / 2nd.  A SWAP1 (0x90) must appear
+        immediately before the DIV (0x04) so that the product (total_in *
+        fraction_bps) is at TOS when the division executes.
+        """
+        from pydefi.vm.program import OP_DIV, OP_SWAP, push_u256
+
+        hop = self._v3_hop(self.POOL1, self.TOKEN_A, self.TOKEN_B)
+        bc = build_split_program(amount_in=10**18, legs=[SplitLeg(10000, [hop])]).build()
+        # Build the exact 3-byte sequence: PUSH32(10000) tail-byte … SWAP1 DIV
+        # push_u256(10000) ends with the low byte 0x10 then next is SWAP1 DIV.
+        divisor_bytes = push_u256(10000)
+        expected_seq = divisor_bytes + bytes([OP_SWAP, OP_DIV])
+        assert expected_seq in bc, "SWAP1 DIV sequence missing — division order bug"
