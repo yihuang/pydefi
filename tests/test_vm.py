@@ -1682,20 +1682,27 @@ class TestMiniEVM:
     def _assert_stack_depth_one(bytecode: bytes) -> None:
         """Assert that *bytecode* leaves exactly one value on the stack.
 
-        Strategy: run ``bytecode + POP + PUSH1 0xCC + RETURN_TOP`` and verify
-        the result is ``0xCC``.  If *bytecode* left more than one item the
-        sentinel ``0xCC`` would be buried beneath the extra item(s) and the
-        return value would differ.  If *bytecode* left zero items, POP would
-        cause a stack underflow and the computation would revert.
+        Strategy:
+
+        - ``bytecode + POP`` must succeed, proving the program left at least
+          one item on the stack.
+        - ``bytecode + SWAP1`` must fail, proving the program left fewer than
+          two items on the stack.
+
+        Together these conditions imply the final stack depth is exactly one.
         """
-        sentinel = 0xCC
-        probe = bytecode + pop() + push_u256(sentinel) + RETURN_TOP
-        result = mini_evm(probe)
-        assert not result.is_error, (
-            f"stack depth != 1: execution reverted (underflow?): {result.output.hex()}"
+        pop_probe = bytecode + pop()
+        pop_result = mini_evm(pop_probe)
+        assert not pop_result.is_error, (
+            f"stack depth != 1: execution reverted on POP probe (empty stack?): "
+            f"{pop_result.output.hex()}"
         )
-        assert int.from_bytes(result.output, "big") == sentinel, (
-            "stack depth != 1: extra item(s) remained on stack after POP"
+
+        swap_probe = bytecode + swap()
+        swap_result = mini_evm(swap_probe)
+        assert swap_result.is_error, (
+            "stack depth != 1: SWAP1 probe succeeded, so extra item(s) remained "
+            "on stack"
         )
 
     @classmethod

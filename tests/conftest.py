@@ -207,12 +207,16 @@ def mini_evm(
         data=calldata,
         code=bytecode,
     )
-    comp = _vm.state.computation_class.apply_computation(_vm.state, msg, _TX_CTX)
-    return EVMResult(
-        output=comp.output,
-        gas_used=comp.get_gas_used(),
-        is_error=comp.is_error,
-    )
+    snapshot = _vm.state.snapshot()
+    try:
+        comp = _vm.state.computation_class.apply_computation(_vm.state, msg, _TX_CTX)
+        return EVMResult(
+            output=comp.output,
+            gas_used=comp.get_gas_used(),
+            is_error=comp.is_error,
+        )
+    finally:
+        _vm.state.revert(snapshot)
 
 
 # ---------------------------------------------------------------------------
@@ -385,11 +389,20 @@ class MiniEVMContext:
             value=value,
             data=creation_code,
         )
-        self._chain.apply_transaction(txn.as_signed_transaction(self._deployer_key))
+        _, _, computation = self._chain.apply_transaction(
+            txn.as_signed_transaction(self._deployer_key)
+        )
         addr = generate_contract_address(self.deployer, self._nonce)
         self._nonce += 1
         # Refresh cached vm so deployed code is visible.
         self._vm = self._chain.get_vm()
+        deployed_code = self._vm.state.get_code(addr)
+        if computation.is_error or deployed_code == b"":
+            error = getattr(computation, "error", None)
+            details = f": {error}" if error is not None else ""
+            raise AssertionError(
+                f"Contract deployment failed at 0x{addr.hex()}{details}"
+            )
         return addr
 
     def compile_and_deploy(
@@ -440,6 +453,12 @@ class MiniEVMContext:
     def set_balance(self, address: bytes, amount: int) -> None:
         """Set the ETH balance of *address* to *amount* wei.
 
+        .. note::
+            Like :meth:`set_code`, this mutation is applied directly to
+            ``self._vm.state`` and is **not** persisted to the chain database.
+            It will be lost if a subsequent :meth:`deploy` call refreshes the
+            VM from the chain DB.
+
         Args:
             address: 20-byte address.
             amount:  New balance in wei.
@@ -451,6 +470,12 @@ class MiniEVMContext:
 
         Useful for pre-populating contract state without going through
         function calls.
+
+        .. note::
+            Like :meth:`set_code`, this mutation is applied directly to
+            ``self._vm.state`` and is **not** persisted to the chain database.
+            It will be lost if a subsequent :meth:`deploy` call refreshes the
+            VM from the chain DB.
 
         Args:
             address: 20-byte contract address.
