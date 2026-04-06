@@ -615,22 +615,20 @@ class TestDeFiVMCallbacks:
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
 
-    async def test_unknown_selector_does_not_revert(self, ctx):
-        """An unknown callback selector should succeed silently (no revert)."""
-        w3 = ctx["w3"]
+    async def test_unknown_selector_reverts(self, ctx):
+        """An unknown callback selector should revert with 'DeFiVM: unknown callback selector'."""
         deployer = ctx["deployer"]
         vm_address = ctx["vm_address"]
 
         calldata = b"\xde\xad\xbe\xef" + b"\x00" * 32
-        tx_hash = await w3.eth.send_transaction(
-            {
-                "from": deployer,
-                "to": vm_address,
-                "data": "0x" + calldata.hex(),
-            }
-        )
-        receipt = await w3.eth.get_transaction_receipt(tx_hash)
-        assert receipt["status"] == 1, "Unknown selector should not revert"
+        with pytest.raises((ContractLogicError, Web3RPCError)):
+            await ctx["w3"].eth.send_transaction(
+                {
+                    "from": deployer,
+                    "to": vm_address,
+                    "data": "0x" + calldata.hex(),
+                }
+            )
 
 
 # ---------------------------------------------------------------------------
