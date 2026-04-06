@@ -389,9 +389,7 @@ class MiniEVMContext:
             value=value,
             data=creation_code,
         )
-        _, _, computation = self._chain.apply_transaction(
-            txn.as_signed_transaction(self._deployer_key)
-        )
+        _, _, computation = self._chain.apply_transaction(txn.as_signed_transaction(self._deployer_key))
         addr = generate_contract_address(self.deployer, self._nonce)
         self._nonce += 1
         # Refresh cached vm so deployed code is visible.
@@ -400,14 +398,10 @@ class MiniEVMContext:
         if computation.is_error or deployed_code == b"":
             error = getattr(computation, "error", None)
             details = f": {error}" if error is not None else ""
-            raise AssertionError(
-                f"Contract deployment failed at 0x{addr.hex()}{details}"
-            )
+            raise AssertionError(f"Contract deployment failed at 0x{addr.hex()}{details}")
         return addr
 
-    def compile_and_deploy(
-        self, source: str, contract_name: str, *constructor_args: object
-    ) -> bytes:
+    def compile_and_deploy(self, source: str, contract_name: str, *constructor_args: object) -> bytes:
         """Compile a Solidity source string and deploy the named contract.
 
         Uses ``py-solc-x`` with Solidity 0.8.24 and the Shanghai EVM target.
@@ -422,9 +416,7 @@ class MiniEVMContext:
         Returns:
             The 20-byte canonical address of the newly deployed contract.
         """
-        compiled = compile_sol_source(
-            source, contract_name, evm_version=_SOLC_EVM_VERSION
-        )
+        compiled = compile_sol_source(source, contract_name, evm_version=_SOLC_EVM_VERSION)
         # get_initcode expects 'bytecode' key; compile_sol_source returns 'bin'.
         artifact = {"bytecode": compiled["bin"], "abi": compiled["abi"]}
         creation_code = get_initcode(artifact, *constructor_args)
@@ -607,9 +599,7 @@ class MiniEVMContext:
         """
         calldata = bytes(ERC20.fns.mint("0x" + recipient.hex(), amount).data)
         result = self.call(token, calldata)
-        assert not result.is_error, (
-            f"mint_token failed: {result.output.hex()}"
-        )
+        assert not result.is_error, f"mint_token failed: {result.output.hex()}"
 
     def token_balance(self, token: bytes, holder: bytes) -> int:
         """Return the ERC-20 balance of *holder* in *token*.
@@ -623,9 +613,7 @@ class MiniEVMContext:
         """
         fn = ERC20.fns.balanceOf("0x" + holder.hex())
         result = self.call(token, bytes(fn.data))
-        assert not result.is_error, (
-            f"token_balance failed: {result.output.hex()}"
-        )
+        assert not result.is_error, f"token_balance failed: {result.output.hex()}"
         return fn.decode(result.output)
 
 

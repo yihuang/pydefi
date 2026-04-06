@@ -1694,16 +1694,12 @@ class TestMiniEVM:
         pop_probe = bytecode + pop()
         pop_result = mini_evm(pop_probe)
         assert not pop_result.is_error, (
-            f"stack depth != 1: execution reverted on POP probe (empty stack?): "
-            f"{pop_result.output.hex()}"
+            f"stack depth != 1: execution reverted on POP probe (empty stack?): {pop_result.output.hex()}"
         )
 
         swap_probe = bytecode + swap()
         swap_result = mini_evm(swap_probe)
-        assert swap_result.is_error, (
-            "stack depth != 1: SWAP1 probe succeeded, so extra item(s) remained "
-            "on stack"
-        )
+        assert swap_result.is_error, "stack depth != 1: SWAP1 probe succeeded, so extra item(s) remained on stack"
 
     @classmethod
     def _run_and_check_stack(cls, bytecode: bytes, expected: int) -> None:
@@ -1831,11 +1827,7 @@ class TestMiniEVM:
     def test_registers_are_independent(self):
         # Store different values in registers 0 and 5; verify no cross-contamination.
         code = (
-            push_u256(111)
-            + store_reg(0)
-            + push_u256(222)
-            + store_reg(5)
-            + load_reg(0)  # should be 111
+            push_u256(111) + store_reg(0) + push_u256(222) + store_reg(5) + load_reg(0)  # should be 111
         )
         self._run_and_check_stack(code, 111)
 
@@ -1974,14 +1966,7 @@ class TestMiniEVM:
     def test_gas_used_increases_with_complexity(self):
         # A longer program (more operations) should use more gas.
         simple = mini_evm(push_u256(1) + RETURN_TOP)
-        complex_ = mini_evm(
-            push_u256(1)
-            + push_u256(2)
-            + push_u256(3)
-            + add()
-            + add()
-            + RETURN_TOP
-        )
+        complex_ = mini_evm(push_u256(1) + push_u256(2) + push_u256(3) + add() + add() + RETURN_TOP)
         assert complex_.gas_used > simple.gas_used
 
     # ------------------------------------------------------------------
@@ -2231,9 +2216,14 @@ class TestMiniEVMContext:
         # First run_program: transfer 400e18
         cd = bytes(ERC20.fns.transfer("0x" + holder.hex(), 400 * 10**18).data)
         prog = (
-            push_u256(0) + push_u256(0)
+            push_u256(0)
+            + push_u256(0)
             + push_bytes(cd)
-            + push_u256(0) + push_addr(token.hex()) + gas_opcode() + call() + pop()
+            + push_u256(0)
+            + push_addr(token.hex())
+            + gas_opcode()
+            + call()
+            + pop()
         )
         r1 = evm_ctx.run_program(prog)
         assert not r1.is_error
