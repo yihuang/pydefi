@@ -137,18 +137,21 @@ def _validate_scalar(typ: str) -> None:
     """Raise if *typ* is not a recognised scalar type."""
     if typ in ("uint256", "int256", "address", "bool"):
         return
-    if _UINT_RE.match(typ):
-        bits = int(_UINT_RE.match(typ).group(1))  # type: ignore[union-attr]
+    m = _UINT_RE.match(typ)
+    if m:
+        bits = int(m.group(1))
         if bits % 8 != 0 or not (8 <= bits <= 256):
             raise ValueError(f"Invalid uint width: {typ}")
         return
-    if _INT_RE.match(typ):
-        bits = int(_INT_RE.match(typ).group(1))  # type: ignore[union-attr]
+    m = _INT_RE.match(typ)
+    if m:
+        bits = int(m.group(1))
         if bits % 8 != 0 or not (8 <= bits <= 256):
             raise ValueError(f"Invalid int width: {typ}")
         return
-    if _BYTES_FIXED_RE.match(typ):
-        n = int(_BYTES_FIXED_RE.match(typ).group(1))  # type: ignore[union-attr]
+    m = _BYTES_FIXED_RE.match(typ)
+    if m:
+        n = int(m.group(1))
         if not (1 <= n <= 32):
             raise ValueError(f"Invalid bytesN width: {typ}")
         return
