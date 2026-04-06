@@ -27,9 +27,11 @@ from eth_abi import decode
 from web3.exceptions import ContractLogicError, Web3RPCError
 
 from pydefi.vm.swap import (
+    SplitLeg,
     SwapHop,
     SwapProtocol,
     build_multi_hop_program,
+    build_split_program,
     encode_v2_callback_data,
     encode_v3_callback_data,
     encode_v3_path,
@@ -836,6 +838,329 @@ class TestMultiHopSwapComposer:
         ]
         # Rate is 2x, so 100 in → 200 out. Demand 500 → should revert.
         program = build_multi_hop_program(hops, min_final_out=500)
+        bytecode = program.build()
+
+        with pytest.raises((ContractLogicError, Web3RPCError)):
+            await vm.functions.execute(bytecode).transact({"from": deployer})
+
+
+# ---------------------------------------------------------------------------
+# Module-scoped fixture for split trading tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+async def split_ctx(ctx, compiled_pools):
+    """Extend *ctx* with extra pools and a third token for split trading tests.
+
+    Additions:
+    - ``v3pool_b``, ``v3pool_b_address``: second V3 pool (token0 → token1, 2:1)
+    - ``v3pool_c``, ``v3pool_c_address``: third V3 pool  (token0 → token1, 2:1)
+    - ``token2``, ``token2_address``: a third ERC-20 token (T3 in the issue)
+    - ``v3pool_1to2_a``, ``v3pool_1to2_a_address``: pool (token1 → token2, 2:1)
+    - ``v3pool_1to2_b``, ``v3pool_1to2_b_address``: pool (token1 → token2, 2:1)
+    """
+    w3 = ctx["w3"]
+    deployer = ctx["deployer"]
+    token0_address = ctx["token0_address"]
+    token1_address = ctx["token1_address"]
+    token_compiled = ctx["_token_compiled"]
+    v3pool_compiled = compiled_pools["<stdin>:MockV3Pool"]
+
+    # Two more V3 pools routing token0 → token1 (same 2:1 rate)
+    v3pool_b_address = await deploy(w3, v3pool_compiled, deployer, token0_address, token1_address, 2, 1)
+    v3pool_b = w3.eth.contract(address=v3pool_b_address, abi=v3pool_compiled["abi"])
+    v3pool_c_address = await deploy(w3, v3pool_compiled, deployer, token0_address, token1_address, 2, 1)
+    v3pool_c = w3.eth.contract(address=v3pool_c_address, abi=v3pool_compiled["abi"])
+
+    # Third token (T3 / token2)
+    token2_address = await deploy(w3, token_compiled, deployer)
+    token2 = w3.eth.contract(address=token2_address, abi=token_compiled["abi"])
+
+    # Two V3 pools routing token1 → token2 (2:1 rate)
+    v3pool_1to2_a_address = await deploy(w3, v3pool_compiled, deployer, token1_address, token2_address, 2, 1)
+    v3pool_1to2_a = w3.eth.contract(address=v3pool_1to2_a_address, abi=v3pool_compiled["abi"])
+    v3pool_1to2_b_address = await deploy(w3, v3pool_compiled, deployer, token1_address, token2_address, 2, 1)
+    v3pool_1to2_b = w3.eth.contract(address=v3pool_1to2_b_address, abi=v3pool_compiled["abi"])
+
+    return {
+        **ctx,
+        "v3pool_b": v3pool_b,
+        "v3pool_b_address": v3pool_b_address,
+        "v3pool_c": v3pool_c,
+        "v3pool_c_address": v3pool_c_address,
+        "token2": token2,
+        "token2_address": token2_address,
+        "v3pool_1to2_a": v3pool_1to2_a,
+        "v3pool_1to2_a_address": v3pool_1to2_a_address,
+        "v3pool_1to2_b": v3pool_1to2_b,
+        "v3pool_1to2_b_address": v3pool_1to2_b_address,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Fork tests: split-trading swap composition
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.fork
+class TestSplitSwapComposer:
+    """Fork tests for build_split_program() — split routing across multiple pools."""
+
+    async def test_split_two_v3_pools_50_50(self, split_ctx):
+        """Split 50/50 across two V3 pools: each receives half the input.
+
+        Setup:
+          - Mint 2000 token0 to the VM.
+          - Split 50 % via v3pool (2x rate) and 50 % via v3pool_b (2x rate).
+          - Both legs send token1 to deployer.
+          - Expected: 2000 * 2 = 4000 token1 total.
+        """
+        w3 = split_ctx["w3"]
+        deployer = split_ctx["deployer"]
+        vm_address = split_ctx["vm_address"]
+        vm = split_ctx["vm"]
+        token0_address = split_ctx["token0_address"]
+        token1_address = split_ctx["token1_address"]
+        token0 = split_ctx["token0"]
+        token1 = split_ctx["token1"]
+        v3pool_address = split_ctx["v3pool_address"]
+        v3pool_b_address = split_ctx["v3pool_b_address"]
+
+        amount_in = 2000
+        await token0.functions.mint(vm_address, amount_in).transact({"from": deployer})
+
+        bal_before = await token1.functions.balanceOf(deployer).call()
+
+        legs = [
+            SplitLeg(
+                5000,
+                [
+                    SwapHop(
+                        protocol=SwapProtocol.UNISWAP_V3,
+                        pool=v3pool_address,
+                        token_in=token0_address,
+                        token_out=token1_address,
+                        fee=500,
+                        amount_in=0,
+                        amount_out_min=0,
+                        recipient=deployer,
+                        zero_for_one=True,
+                    )
+                ],
+            ),
+            SplitLeg(
+                5000,
+                [
+                    SwapHop(
+                        protocol=SwapProtocol.UNISWAP_V3,
+                        pool=v3pool_b_address,
+                        token_in=token0_address,
+                        token_out=token1_address,
+                        fee=500,
+                        amount_in=0,
+                        amount_out_min=0,
+                        recipient=deployer,
+                        zero_for_one=True,
+                    )
+                ],
+            ),
+        ]
+        program = build_split_program(amount_in=amount_in, legs=legs)
+        bytecode = program.build()
+
+        tx = await vm.functions.execute(bytecode).transact({"from": deployer})
+        receipt = await w3.eth.get_transaction_receipt(tx)
+        assert receipt["status"] == 1, "50/50 split swap failed"
+
+        bal_after = await token1.functions.balanceOf(deployer).call()
+        received = bal_after - bal_before
+        # Each leg: 2000 * 50% * rate 2x = 2000 total; both legs = 4000
+        assert received >= 3800, f"Expected >= 3800 token1, got {received}"
+
+    async def test_split_three_v3_pools_30_30_40(self, split_ctx):
+        """Split 30/30/40 % across three V3 pools — the canonical issue example.
+
+        All three legs route token0 → token1 at 2:1 rate; the recipient for
+        every leg is the deployer so the total received equals the accumulated
+        output of all three legs.
+        """
+        w3 = split_ctx["w3"]
+        deployer = split_ctx["deployer"]
+        vm_address = split_ctx["vm_address"]
+        vm = split_ctx["vm"]
+        token0_address = split_ctx["token0_address"]
+        token1_address = split_ctx["token1_address"]
+        token0 = split_ctx["token0"]
+        token1 = split_ctx["token1"]
+        v3pool_address = split_ctx["v3pool_address"]
+        v3pool_b_address = split_ctx["v3pool_b_address"]
+        v3pool_c_address = split_ctx["v3pool_c_address"]
+
+        amount_in = 10000
+        await token0.functions.mint(vm_address, amount_in).transact({"from": deployer})
+
+        bal_before = await token1.functions.balanceOf(deployer).call()
+
+        def _v3_hop(pool_addr):
+            return SwapHop(
+                protocol=SwapProtocol.UNISWAP_V3,
+                pool=pool_addr,
+                token_in=token0_address,
+                token_out=token1_address,
+                fee=500,
+                amount_in=0,
+                amount_out_min=0,
+                recipient=deployer,
+                zero_for_one=True,
+            )
+
+        legs = [
+            SplitLeg(3000, [_v3_hop(v3pool_address)]),
+            SplitLeg(3000, [_v3_hop(v3pool_b_address)]),
+            SplitLeg(4000, [_v3_hop(v3pool_c_address)]),
+        ]
+        program = build_split_program(amount_in=amount_in, legs=legs, min_final_out=18000)
+        bytecode = program.build()
+
+        tx = await vm.functions.execute(bytecode).transact({"from": deployer})
+        receipt = await w3.eth.get_transaction_receipt(tx)
+        assert receipt["status"] == 1, "30/30/40 split swap failed"
+
+        bal_after = await token1.functions.balanceOf(deployer).call()
+        received = bal_after - bal_before
+        # 10000 * 2 = 20000 total (each leg is 2x, fractions sum to 100 %)
+        assert received >= 18000, f"Expected >= 18000 token1, got {received}"
+
+    async def test_multi_hop_then_split(self, split_ctx):
+        """Chain build_multi_hop_program + build_split_program: the full issue scenario.
+
+        Flow:
+          1. build_multi_hop: swap token0 → token1 via v3pool (2x rate, output in reg 0).
+          2. build_split: split token1 50/50 → token2 via two pools (each 2x rate).
+
+        With 1000 token0 in: hop → 2000 token1 → split 50/50 → each pool
+        produces 1000 * 2 = 2000 token2; total = 4000 token2.
+        """
+        w3 = split_ctx["w3"]
+        deployer = split_ctx["deployer"]
+        vm_address = split_ctx["vm_address"]
+        vm = split_ctx["vm"]
+        token0_address = split_ctx["token0_address"]
+        token1_address = split_ctx["token1_address"]
+        token2_address = split_ctx["token2_address"]
+        token0 = split_ctx["token0"]
+        token2 = split_ctx["token2"]
+        v3pool_address = split_ctx["v3pool_address"]
+        v3pool_1to2_a_address = split_ctx["v3pool_1to2_a_address"]
+        v3pool_1to2_b_address = split_ctx["v3pool_1to2_b_address"]
+
+        amount_in = 1000
+        await token0.functions.mint(vm_address, amount_in).transact({"from": deployer})
+
+        bal_before = await token2.functions.balanceOf(deployer).call()
+
+        # Step 1: token0 → token1 (output stored in amount_reg by build_multi_hop)
+        first_hop = build_multi_hop_program(
+            [
+                SwapHop(
+                    protocol=SwapProtocol.UNISWAP_V3,
+                    pool=v3pool_address,
+                    token_in=token0_address,
+                    token_out=token1_address,
+                    fee=500,
+                    amount_in=amount_in,
+                    amount_out_min=0,
+                    recipient=vm_address,  # keep token1 in VM for the split
+                    zero_for_one=True,
+                )
+            ]
+        )
+
+        # Step 2: split token1 50/50 → token2 via two pools (amount_in=0 → reads from reg 0)
+        split = build_split_program(
+            amount_in=0,
+            legs=[
+                SplitLeg(
+                    5000,
+                    [
+                        SwapHop(
+                            protocol=SwapProtocol.UNISWAP_V3,
+                            pool=v3pool_1to2_a_address,
+                            token_in=token1_address,
+                            token_out=token2_address,
+                            fee=500,
+                            amount_in=0,
+                            amount_out_min=0,
+                            recipient=deployer,
+                            zero_for_one=True,
+                        )
+                    ],
+                ),
+                SplitLeg(
+                    5000,
+                    [
+                        SwapHop(
+                            protocol=SwapProtocol.UNISWAP_V3,
+                            pool=v3pool_1to2_b_address,
+                            token_in=token1_address,
+                            token_out=token2_address,
+                            fee=500,
+                            amount_in=0,
+                            amount_out_min=0,
+                            recipient=deployer,
+                            zero_for_one=True,
+                        )
+                    ],
+                ),
+            ],
+            min_final_out=3600,
+        )
+
+        bytecode = (first_hop + split).build()
+
+        tx = await vm.functions.execute(bytecode).transact({"from": deployer})
+        receipt = await w3.eth.get_transaction_receipt(tx)
+        assert receipt["status"] == 1, "Multi-hop + split swap failed"
+
+        bal_after = await token2.functions.balanceOf(deployer).call()
+        received = bal_after - bal_before
+        # 1000 token0 → 2000 token1; split 50/50: 1000 + 1000 * 2x = 4000 token2
+        assert received >= 3600, f"Expected >= 3600 token2, got {received}"
+
+    async def test_split_slippage_check_reverts(self, split_ctx):
+        """build_split_program with min_final_out too high reverts correctly."""
+        deployer = split_ctx["deployer"]
+        vm_address = split_ctx["vm_address"]
+        vm = split_ctx["vm"]
+        token0_address = split_ctx["token0_address"]
+        token1_address = split_ctx["token1_address"]
+        token0 = split_ctx["token0"]
+        v3pool_address = split_ctx["v3pool_address"]
+        v3pool_b_address = split_ctx["v3pool_b_address"]
+
+        amount_in = 100
+        await token0.functions.mint(vm_address, amount_in).transact({"from": deployer})
+
+        def _v3_hop(pool_addr):
+            return SwapHop(
+                protocol=SwapProtocol.UNISWAP_V3,
+                pool=pool_addr,
+                token_in=token0_address,
+                token_out=token1_address,
+                fee=500,
+                amount_in=0,
+                amount_out_min=0,
+                recipient=deployer,
+                zero_for_one=True,
+            )
+
+        legs = [
+            SplitLeg(5000, [_v3_hop(v3pool_address)]),
+            SplitLeg(5000, [_v3_hop(v3pool_b_address)]),
+        ]
+        # 100 token0 * 2x rate = 200 token1 total; demand 1000 → should revert
+        program = build_split_program(amount_in=amount_in, legs=legs, min_final_out=1000)
         bytecode = program.build()
 
         with pytest.raises((ContractLogicError, Web3RPCError)):
