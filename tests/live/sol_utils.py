@@ -15,9 +15,6 @@ def ensure_solc(version: str = "0.8.24") -> None:
     """Install *version* of solc once (no-op if already installed)."""
     if version not in solcx.get_installed_solc_versions():
         solcx.install_solc(version, show_progress=False)
-    """Install *version* of solc once (no-op if already installed)."""
-    if version not in solcx.get_installed_solc_versions():
-        solcx.install_solc(version, show_progress=False)
 
 
 def compile_sol_file(path: Path, contract_name: str) -> dict:
