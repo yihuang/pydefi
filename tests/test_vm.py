@@ -1657,6 +1657,285 @@ class TestBuildSplitProgram:
 
 
 # ---------------------------------------------------------------------------
+# SwapProtocol — all protocol variants produce valid bytecode
+# ---------------------------------------------------------------------------
+
+
+class TestSwapProtocolVariants:
+    """Verify that all SwapProtocol enum values produce valid bytecode via
+    build_multi_hop_program and build_split_program."""
+
+    POOL = "0x" + "11" * 20
+    TOKEN_A = "0x" + "aa" * 20
+    TOKEN_B = "0x" + "bb" * 20
+    RECIPIENT = "0x" + "dd" * 20
+
+    def _hop(self, protocol: SwapProtocol) -> SwapHop:
+        return SwapHop(
+            protocol=protocol,
+            pool=self.POOL,
+            token_in=self.TOKEN_A,
+            token_out=self.TOKEN_B,
+            fee=500,
+            amount_in=10**18,
+            amount_out_min=0,
+            recipient=self.RECIPIENT,
+            zero_for_one=True,
+        )
+
+    # -- V3-style protocols ---------------------------------------------------
+
+    @pytest.mark.parametrize(
+        "protocol",
+        [
+            SwapProtocol.UNISWAP_V3,
+            SwapProtocol.ALGEBRA,
+            SwapProtocol.PANCAKE_V3,
+            SwapProtocol.SOLIDLY_V3,
+        ],
+    )
+    def test_v3_variant_multi_hop_produces_bytecode(self, protocol):
+        """All V3-compatible protocols produce valid non-empty bytecode."""
+        bc = build_multi_hop_program([self._hop(protocol)]).build()
+        assert isinstance(bc, bytes)
+        assert len(bc) > 0
+
+    @pytest.mark.parametrize(
+        "protocol",
+        [
+            SwapProtocol.UNISWAP_V3,
+            SwapProtocol.ALGEBRA,
+            SwapProtocol.PANCAKE_V3,
+            SwapProtocol.SOLIDLY_V3,
+        ],
+    )
+    def test_v3_variant_split_produces_bytecode(self, protocol):
+        """All V3-compatible protocols work inside build_split_program legs."""
+        hop = SwapHop(
+            protocol=protocol,
+            pool=self.POOL,
+            token_in=self.TOKEN_A,
+            token_out=self.TOKEN_B,
+            fee=500,
+            amount_in=0,
+            amount_out_min=0,
+            recipient=self.RECIPIENT,
+            zero_for_one=True,
+        )
+        bc = build_split_program(amount_in=10**18, legs=[SplitLeg(10000, [hop])]).build()
+        assert isinstance(bc, bytes)
+        assert len(bc) > 0
+
+    @pytest.mark.parametrize(
+        "protocol",
+        [
+            SwapProtocol.UNISWAP_V3,
+            SwapProtocol.ALGEBRA,
+            SwapProtocol.PANCAKE_V3,
+            SwapProtocol.SOLIDLY_V3,
+        ],
+    )
+    def test_v3_variants_produce_identical_bytecode(self, protocol):
+        """All V3-style protocols share the same pool.swap() interface and
+        therefore produce byte-for-byte identical programs."""
+        bc = build_multi_hop_program([self._hop(protocol)]).build()
+        bc_ref = build_multi_hop_program([self._hop(SwapProtocol.UNISWAP_V3)]).build()
+        assert bc == bc_ref
+
+    # -- V2 constant-product --------------------------------------------------
+
+    def test_uniswap_v2_multi_hop_produces_bytecode(self):
+        """UNISWAP_V2 produces valid non-empty bytecode."""
+        hop = SwapHop(
+            protocol=SwapProtocol.UNISWAP_V2,
+            pool=self.POOL,
+            token_in=self.TOKEN_A,
+            token_out=self.TOKEN_B,
+            fee=30,
+            amount_in=10**18,
+            amount_out_min=0,
+            recipient=self.RECIPIENT,
+            zero_for_one=True,
+        )
+        bc = build_multi_hop_program([hop]).build()
+        assert isinstance(bc, bytes)
+        assert len(bc) > 0
+
+    # -- Solidly V2-style protocols -------------------------------------------
+
+    @pytest.mark.parametrize(
+        "protocol",
+        [
+            SwapProtocol.SOLIDLY_V2,
+            SwapProtocol.AERODROME,
+            SwapProtocol.RAMSES_V2,
+        ],
+    )
+    def test_solidly_v2_variant_multi_hop_produces_bytecode(self, protocol):
+        """All Solidly V2-compatible protocols produce valid non-empty bytecode."""
+        bc = build_multi_hop_program([self._hop(protocol)]).build()
+        assert isinstance(bc, bytes)
+        assert len(bc) > 0
+
+    @pytest.mark.parametrize(
+        "protocol",
+        [
+            SwapProtocol.SOLIDLY_V2,
+            SwapProtocol.AERODROME,
+            SwapProtocol.RAMSES_V2,
+        ],
+    )
+    def test_solidly_v2_variant_split_produces_bytecode(self, protocol):
+        """All Solidly V2-compatible protocols work inside build_split_program legs."""
+        hop = SwapHop(
+            protocol=protocol,
+            pool=self.POOL,
+            token_in=self.TOKEN_A,
+            token_out=self.TOKEN_B,
+            fee=0,
+            amount_in=0,
+            amount_out_min=0,
+            recipient=self.RECIPIENT,
+            zero_for_one=True,
+        )
+        bc = build_split_program(amount_in=10**18, legs=[SplitLeg(10000, [hop])]).build()
+        assert isinstance(bc, bytes)
+        assert len(bc) > 0
+
+    @pytest.mark.parametrize(
+        "protocol",
+        [
+            SwapProtocol.SOLIDLY_V2,
+            SwapProtocol.AERODROME,
+            SwapProtocol.RAMSES_V2,
+        ],
+    )
+    def test_solidly_v2_variants_produce_identical_bytecode(self, protocol):
+        """SOLIDLY_V2, AERODROME, and RAMSES_V2 are aliases — identical bytecode."""
+        bc = build_multi_hop_program([self._hop(protocol)]).build()
+        bc_ref = build_multi_hop_program([self._hop(SwapProtocol.SOLIDLY_V2)]).build()
+        assert bc == bc_ref
+
+    def test_solidly_v2_differs_from_uniswap_v2(self):
+        """SOLIDLY_V2 uses getAmountOut() instead of getReserves() — different bytecode."""
+        hop_solidly = self._hop(SwapProtocol.SOLIDLY_V2)
+        hop_v2 = SwapHop(
+            protocol=SwapProtocol.UNISWAP_V2,
+            pool=self.POOL,
+            token_in=self.TOKEN_A,
+            token_out=self.TOKEN_B,
+            fee=30,
+            amount_in=10**18,
+            amount_out_min=0,
+            recipient=self.RECIPIENT,
+            zero_for_one=True,
+        )
+        bc_solidly = build_multi_hop_program([hop_solidly]).build()
+        bc_v2 = build_multi_hop_program([hop_v2]).build()
+        assert bc_solidly != bc_v2
+
+    def test_solidly_v2_zero_for_one_false_produces_bytecode(self):
+        """SOLIDLY_V2 with zero_for_one=False (token1 → token0) builds correctly."""
+        hop = SwapHop(
+            protocol=SwapProtocol.SOLIDLY_V2,
+            pool=self.POOL,
+            token_in=self.TOKEN_B,
+            token_out=self.TOKEN_A,
+            fee=0,
+            amount_in=10**18,
+            amount_out_min=0,
+            recipient=self.RECIPIENT,
+            zero_for_one=False,
+        )
+        bc = build_multi_hop_program([hop]).build()
+        assert isinstance(bc, bytes)
+        assert len(bc) > 0
+
+    def test_solidly_v2_zero_for_one_swaps_differ(self):
+        """SOLIDLY_V2 zero_for_one=True and False produce different bytecode
+        (amount0Out/amount1Out slot ordering differs)."""
+        hop_zfo = self._hop(SwapProtocol.SOLIDLY_V2)  # zero_for_one=True
+        hop_ofz = SwapHop(
+            protocol=SwapProtocol.SOLIDLY_V2,
+            pool=self.POOL,
+            token_in=self.TOKEN_B,
+            token_out=self.TOKEN_A,
+            fee=0,
+            amount_in=10**18,
+            amount_out_min=0,
+            recipient=self.RECIPIENT,
+            zero_for_one=False,
+        )
+        assert build_multi_hop_program([hop_zfo]).build() != build_multi_hop_program([hop_ofz]).build()
+
+    # -- Multi-protocol composition -------------------------------------------
+
+    def test_algebra_then_solidly_v2_composes(self):
+        """ALGEBRA (V3-style) → SOLIDLY_V2 two-hop composes into valid bytecode."""
+        hop1 = SwapHop(
+            protocol=SwapProtocol.ALGEBRA,
+            pool=self.POOL,
+            token_in=self.TOKEN_A,
+            token_out=self.TOKEN_B,
+            fee=3000,
+            amount_in=10**18,
+            amount_out_min=0,
+            recipient=self.RECIPIENT,
+            zero_for_one=True,
+        )
+        pool2 = "0x" + "22" * 20
+        hop2 = SwapHop(
+            protocol=SwapProtocol.SOLIDLY_V2,
+            pool=pool2,
+            token_in=self.TOKEN_B,
+            token_out=self.TOKEN_A,
+            fee=0,
+            amount_in=0,
+            amount_out_min=0,
+            recipient=self.RECIPIENT,
+            zero_for_one=False,
+        )
+        bc = build_multi_hop_program([hop1, hop2]).build()
+        assert isinstance(bc, bytes)
+        assert len(bc) > 0
+
+    def test_aerodrome_in_split_leg(self):
+        """AERODROME works as a hop in a split leg alongside UNISWAP_V3."""
+        pool2 = "0x" + "22" * 20
+        hop_v3 = SwapHop(
+            protocol=SwapProtocol.UNISWAP_V3,
+            pool=self.POOL,
+            token_in=self.TOKEN_A,
+            token_out=self.TOKEN_B,
+            fee=500,
+            amount_in=0,
+            amount_out_min=0,
+            recipient=self.RECIPIENT,
+            zero_for_one=True,
+        )
+        hop_aero = SwapHop(
+            protocol=SwapProtocol.AERODROME,
+            pool=pool2,
+            token_in=self.TOKEN_A,
+            token_out=self.TOKEN_B,
+            fee=0,
+            amount_in=0,
+            amount_out_min=0,
+            recipient=self.RECIPIENT,
+            zero_for_one=True,
+        )
+        bc = build_split_program(
+            amount_in=10**18,
+            legs=[
+                SplitLeg(5000, [hop_v3]),
+                SplitLeg(5000, [hop_aero]),
+            ],
+        ).build()
+        assert isinstance(bc, bytes)
+        assert len(bc) > 0
+
+
+# ---------------------------------------------------------------------------
 # In-VM ABI encoding — pydefi.vm.abi (EVM bytecode generators)
 # ---------------------------------------------------------------------------
 
