@@ -2,62 +2,34 @@
 
 Provides two complementary EVM testing facilities:
 
-1. :func:`mini_evm` / :data:`RETURN_TOP` — a stateless, single-shot executor
+1. :func:`mini_evm` / :data:`RETURN_TOP` — stateless, single-shot executor
    for quick bytecode tests (no contract setup needed).
 
-2. :class:`MiniEVMContext` — a **stateful** EVM context backed by py-evm's
-   ``ShanghaiVM``.  Contracts (mock tokens, adapters, ...) deployed via
-   :meth:`~MiniEVMContext.deploy` are committed to the chain database and
-   remain accessible to all subsequent :meth:`~MiniEVMContext.run_program` and
-   :meth:`~MiniEVMContext.call` executions.  This allows realistic tests of
-   DeFiVM programs that interact with ERC-20 tokens or other on-chain
-   contracts — without Anvil, JSON-RPC, or any external process.
+2. :class:`MiniEVMContext` — stateful EVM context backed by py-evm
+   ``ShanghaiVM`` with real DeFiVM + Analog-Labs interpreter deployed.
+   Contracts deployed via :meth:`~MiniEVMContext.deploy` persist across
+   all subsequent calls.
 
-Typical usage
--------------
+Usage::
 
-Stateless (simple opcode tests)::
-
-    from tests.conftest import mini_evm, RETURN_TOP
-    from pydefi.vm.program import push_u256, add
-
+    # Stateless
     result = mini_evm(push_u256(3) + push_u256(5) + add() + RETURN_TOP)
-    assert not result.is_error
     assert int.from_bytes(result.output, "big") == 8
 
-Stateful (programs interacting with contracts)::
-
-    from tests.conftest import MiniEVMContext, RETURN_TOP
-    from pydefi.vm.program import push_addr, push_u256, balance_of, self_addr
-
+    # Stateful
     ctx = MiniEVMContext()
     token = ctx.deploy_mock_token()
     ctx.mint_token(token, ctx.program_executor, 500 * 10**18)
-
-    result = ctx.run_program(
-        self_addr() + push_addr(token.hex()) + balance_of() + RETURN_TOP
-    )
-    assert not result.is_error
+    result = ctx.run_program(self_addr() + push_addr(token.hex()) + balance_of() + RETURN_TOP)
     assert int.from_bytes(result.output, "big") == 500 * 10**18
-
-Memory layout note
-------------------
-``memory[0x40]`` (the Solidity free-memory pointer) starts at ``0`` in the
-TestDeFiVM execution context (no initialisation by DeFiVM's execute assembly).
-:func:`~pydefi.vm.program.push_bytes` handles this transparently — it
-initialises the pointer to ``0x280`` on first use.
-Programs that rely on :func:`~pydefi.vm.program.ret_u256` or
-:func:`~pydefi.vm.program.ret_slice` require returndata from an outer call
-and therefore cannot run standalone; test those paths via Anvil fork tests
-instead.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional
 
-import eth_abi
 import pytest
 from eth import constants
 from eth._utils.address import generate_contract_address
@@ -67,12 +39,13 @@ from eth.vm.forks.london import LondonVM
 from eth.vm.forks.shanghai import ShanghaiVM
 from eth.vm.message import Message
 from eth.vm.transaction_context import BaseTransactionContext
+from eth_contract.contract import Contract
 from eth_contract.erc20 import ERC20
 from eth_contract.utils import get_initcode
 from eth_keys import keys
 
 from tests.live.conftest import _compile_interpreter_sync
-from tests.live.sol_utils import MOCK_TOKEN_SOL, compile_sol_source, ensure_solc
+from tests.live.sol_utils import MOCK_TOKEN_SOL, compile_sol_file, compile_sol_source, ensure_solc
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -271,93 +244,44 @@ def _get_mock_token_bin() -> bytes:
 
 
 # ---------------------------------------------------------------------------
-# Test-only DeFiVM wrapper contract
+# DeFiVM contract binding (for ABI-encoding execute() calls)
 # ---------------------------------------------------------------------------
 
-#: Test-only DeFiVM wrapper.  Identical to the real ``DeFiVM.execute()``
-#: dispatch logic (calldatacopy → DELEGATECALL to interpreter → revert on
-#: failure) but adds ``return(0, returndatasize())`` on the success path so
-#: callers can observe the program's output without relying on Anvil.
-_TEST_DEFI_VM_SOL: str = """\
-// SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+_DeFiVM: Contract = Contract.from_abi(["function execute(bytes calldata program) external payable"])
 
-contract TestDeFiVM {
-    address private immutable INTERPRETER;
+#: Path to the real DeFiVM.sol (relative to repo root).
+_DEFI_VM_SOL_PATH = Path(__file__).parent.parent / "pydefi" / "vm" / "DeFiVM.sol"
 
-    constructor(address interpreter) {
-        INTERPRETER = interpreter;
-    }
-
-    receive() external payable {}
-
-    function execute(bytes calldata program) external payable {
-        address interpreter = INTERPRETER;
-        assembly {
-            calldatacopy(0, program.offset, program.length)
-            let ok := delegatecall(gas(), interpreter, 0, program.length, 0, 0)
-            returndatacopy(0, 0, returndatasize())
-            if iszero(ok) {
-                revert(0, returndatasize())
-            }
-            return(0, returndatasize())
-        }
-    }
-}
-"""
-
-#: ABI selector for ``execute(bytes)`` — keccak256("execute(bytes)")[:4].
-_EXECUTE_SEL: bytes = b"\x09\xc5\xea\xbe"
-
-# Cached compiled TestDeFiVM bytecode.
-_test_defi_vm_compiled: Optional[dict] = None
+# Cached compiled DeFiVM bytecode.
+_defi_vm_compiled: Optional[dict] = None
 
 
-def _get_test_defi_vm_compiled() -> dict:
-    """Lazily compile TestDeFiVM and return ``{"bin": ..., "abi": ...}``."""
-    global _test_defi_vm_compiled
-    if _test_defi_vm_compiled is None:
-        ensure_solc("0.8.24")
-        _test_defi_vm_compiled = compile_sol_source(
-            _TEST_DEFI_VM_SOL,
-            "TestDeFiVM",
-            evm_version=_SOLC_EVM_VERSION,
-        )
-    return _test_defi_vm_compiled
+def _get_defi_vm_compiled() -> dict:
+    """Lazily compile DeFiVM.sol and return ``{"bin": ..., "abi": ...}``."""
+    global _defi_vm_compiled
+    if _defi_vm_compiled is None:
+        _defi_vm_compiled = compile_sol_file(_DEFI_VM_SOL_PATH, "DeFiVM")
+    return _defi_vm_compiled
 
 
 @dataclass
 class MiniEVMContext:
-    """Stateful in-process EVM context for realistic DeFiVM program tests.
+    """Stateful in-process EVM context backed by py-evm ``ShanghaiVM``.
 
-    Runs on py-evm ``ShanghaiVM`` so that all contracts compiled for the
-    Shanghai EVM target work correctly (including PUSH0 / EIP-3855).
-    Contract deployments via :meth:`deploy` are committed to the chain
-    database and persist across all subsequent :meth:`run_program` and
-    :meth:`call` executions.
+    Deploys the real Analog-Labs interpreter and DeFiVM on construction so
+    :meth:`run_program` exercises the authentic dispatch path.  Contract
+    deployments via :meth:`deploy` persist across all subsequent calls.
 
-    The recommended way to create a fresh context per test is the
-    :func:`evm_ctx` pytest fixture::
+    Use the :func:`evm_ctx` pytest fixture for per-test isolation::
 
         def test_transfer(evm_ctx):
             token = evm_ctx.deploy_mock_token()
             evm_ctx.mint_token(token, evm_ctx.program_executor, 1000 * 10**18)
             ...
 
-    You can also instantiate :class:`MiniEVMContext` directly when you need
-    finer control over setup::
-
-        ctx = MiniEVMContext()
-        token = ctx.deploy_mock_token()
-        ...
-
     Attributes:
-        deployer:          20-byte address of the internal funded account used
-                           to sign deployment transactions.
-        program_executor:  20-byte address of the deployed :data:`TestDeFiVM`
-                           contract.  This is the ``address(this)`` seen by
-                           programs run via :meth:`run_program`, matching the
-                           real DeFiVM on-chain execution context.
+        deployer:         20-byte address of the funded deployer account.
+        program_executor: 20-byte address of the deployed DeFiVM contract.
     """
 
     deployer: bytes = field(init=False)
@@ -389,15 +313,12 @@ class MiniEVMContext:
             },
         )
         self._vm = self._chain.get_vm()
-        # Deploy the real Analog-Labs EVM interpreter + TestDeFiVM so that
-        # run_program() goes through the authentic DeFiVM dispatch path
-        # (DELEGATECALL → interpreter → program executes in TestDeFiVM's context).
+        # Deploy the real Analog-Labs EVM interpreter + DeFiVM.
         interp_compiled = _compile_interpreter_sync()
         interp_bin = bytes.fromhex(interp_compiled["<stdin>:Interpreter"]["bin"])
         interp_addr = self.deploy(interp_bin)
-        defi_vm_info = _get_test_defi_vm_compiled()
+        defi_vm_info = _get_defi_vm_compiled()
         artifact = {"bytecode": defi_vm_info["bin"], "abi": defi_vm_info["abi"]}
-        # get_initcode expects the constructor address arg as a 0x-prefixed hex string.
         defivm_addr = self.deploy(get_initcode(artifact, "0x" + interp_addr.hex()))
         self.program_executor = defivm_addr
 
@@ -597,22 +518,16 @@ class MiniEVMContext:
         value: int = 0,
         gas: int = _CTX_DEFAULT_GAS,
     ) -> EVMResult:
-        """Execute a DeFiVM program via the deployed :class:`TestDeFiVM` contract.
+        """Execute a DeFiVM program via the deployed :class:`DeFiVM` contract.
 
-        Calls ``TestDeFiVM.execute(bytecode)``, which DELEGATECALLs to the
-        real Analog-Labs EVM interpreter.  The interpreter meta-executes
-        *bytecode* from calldata in ``TestDeFiVM``'s storage context, so
-        ``address(this)`` inside the program equals :attr:`program_executor`
-        — the same execution context as the real DeFiVM on-chain.
-
-        Storage mutations performed by the program persist in the context
-        and are visible to subsequent :meth:`call` and :meth:`run_program`
-        invocations.
+        Calls ``DeFiVM.execute(bytecode)``, which DELEGATECALLs to the
+        Analog-Labs EVM interpreter.  ``address(this)`` inside the program
+        equals :attr:`program_executor`.  Storage mutations persist and are
+        visible to subsequent :meth:`call` and :meth:`run_program` calls.
 
         Args:
             bytecode:  EVM bytecode to execute.
-            sender:    ``msg.sender`` seen by TestDeFiVM.execute; defaults to
-                       :attr:`deployer`.
+            sender:    ``msg.sender`` for the call; defaults to :attr:`deployer`.
             value:     ETH value (in wei) forwarded to the execution.
             gas:       Gas limit (default :data:`_CTX_DEFAULT_GAS`).
 
@@ -620,7 +535,7 @@ class MiniEVMContext:
             :class:`EVMResult` with ``.output``, ``.gas_used``, ``.is_error``.
         """
         effective_sender = sender if sender is not None else self.deployer
-        execute_calldata = _EXECUTE_SEL + eth_abi.encode(["bytes"], [bytecode])
+        execute_calldata = _DeFiVM.fns.execute(bytecode).data
         comp = self._apply_computation(
             to=self.program_executor,
             sender=effective_sender,
