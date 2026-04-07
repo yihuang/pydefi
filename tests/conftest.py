@@ -5,8 +5,8 @@ Provides two complementary EVM testing facilities:
 1. :func:`mini_evm` / :data:`RETURN_TOP` — stateless, single-shot executor
    for quick bytecode tests (no contract setup needed).
 
-2. :class:`MiniEVMContext` — stateful EVM context backed by py-evm
-   ``ShanghaiVM`` with real DeFiVM + Analog-Labs interpreter deployed.
+2. :class:`MiniEVMContext` — stateful EVM context backed by ethereum-execution
+   (execution-specs) Shanghai with real DeFiVM + Analog-Labs interpreter deployed.
    Contracts deployed via :meth:`~MiniEVMContext.deploy` persist across
    all subsequent calls.
 
@@ -31,18 +31,29 @@ from pathlib import Path
 from typing import Optional
 
 import pytest
-from eth import constants
-from eth._utils.address import generate_contract_address
-from eth.chains.base import MiningChain
-from eth.db.atomic import AtomicDB
-from eth.vm.forks.london import LondonVM
-from eth.vm.forks.shanghai import ShanghaiVM
-from eth.vm.message import Message
-from eth.vm.transaction_context import BaseTransactionContext
 from eth_contract.contract import Contract
 from eth_contract.erc20 import ERC20
 from eth_contract.utils import get_initcode
 from eth_keys import keys
+from ethereum.forks.shanghai.state import (
+    EMPTY_ACCOUNT,
+    State,
+    begin_transaction,
+    get_account,
+    get_account_optional,
+    get_storage,
+    increment_nonce,
+    rollback_transaction,
+    set_account,
+    set_account_balance,
+    set_code,
+    set_storage,
+)
+from ethereum.forks.shanghai.utils.address import compute_contract_address
+from ethereum.forks.shanghai.vm import BlockEnvironment, Message, TransactionEnvironment
+from ethereum.forks.shanghai.vm.interpreter import process_create_message, process_message
+from ethereum_types.bytes import Bytes0, Bytes20, Bytes32
+from ethereum_types.numeric import U64, U256, Uint
 
 from tests.live.sol_utils import (
     MOCK_TOKEN_SOL,
@@ -93,33 +104,23 @@ RETURN_TOP: bytes = bytes(
 # Module-level EVM setup for mini_evm() (shared, read-only across calls)
 # ---------------------------------------------------------------------------
 
-_GENESIS_PARAMS_LONDON: dict = {
-    "difficulty": constants.GENESIS_DIFFICULTY,
-    "gas_limit": 30_000_000,
-    "timestamp": 1,
-    "coinbase": b"\x00" * 20,
-    "extra_data": b"",
-    "nonce": constants.GENESIS_NONCE,
-    "mix_hash": constants.GENESIS_MIX_HASH,
-}
+# Build a minimal state with sender funded once; each mini_evm() call wraps
+# execution in begin_transaction / rollback_transaction so the shared state
+# remains effectively read-only across test calls.
+_mini_evm_state: State = State()
+set_account_balance(_mini_evm_state, Bytes20(MINI_EVM_SENDER), U256(MINI_EVM_SENDER_BALANCE))
 
-_GENESIS_STATE_LONDON: dict = {
-    MINI_EVM_SENDER: {
-        "balance": MINI_EVM_SENDER_BALANCE,
-        "nonce": 0,
-        "code": b"",
-        "storage": {},
-    }
-}
-
-# Build chain and vm once; memory is ephemeral per computation so the shared
-# state is effectively read-only across test calls.
-_chain = MiningChain.configure(
-    __name__="MiniEVMChain",
-    vm_configuration=((0, LondonVM),),
-).from_genesis(AtomicDB(), _GENESIS_PARAMS_LONDON, _GENESIS_STATE_LONDON)
-_vm = _chain.get_vm()
-_TX_CTX = BaseTransactionContext(gas_price=1, origin=MINI_EVM_SENDER)
+_MINI_EVM_BLOCK_ENV: BlockEnvironment = BlockEnvironment(
+    chain_id=U64(1),
+    state=_mini_evm_state,
+    block_gas_limit=Uint(30_000_000),
+    block_hashes=[],
+    coinbase=Bytes20(b"\x00" * 20),
+    number=Uint(1),
+    base_fee_per_gas=Uint(1),
+    time=U256(1),
+    prev_randao=Bytes32(b"\x00" * 32),
+)
 
 
 # ---------------------------------------------------------------------------
@@ -158,7 +159,7 @@ def mini_evm(
     calldata: bytes = b"",
     gas: int = 1_000_000,
 ) -> EVMResult:
-    """Execute *bytecode* using py-evm (LondonVM) and return the result.
+    """Execute *bytecode* using ethereum-execution (Shanghai) and return the result.
 
     Runs EVM bytecode in-process without any external processes or network
     access, making it suitable for fast unit tests that verify program logic.
@@ -180,23 +181,41 @@ def mini_evm(
         assert int.from_bytes(result.output, "big") == 42
     """
     msg = Message(
-        gas=gas,
-        to=MINI_EVM_RECEIVER,
-        sender=MINI_EVM_SENDER,
-        value=0,
+        block_env=_MINI_EVM_BLOCK_ENV,
+        tx_env=TransactionEnvironment(
+            origin=Bytes20(MINI_EVM_SENDER),
+            gas_price=Uint(1),
+            gas=Uint(gas),
+            access_list_addresses=set(),
+            access_list_storage_keys=set(),
+            index_in_block=None,
+            tx_hash=None,
+        ),
+        caller=Bytes20(MINI_EVM_SENDER),
+        target=Bytes20(MINI_EVM_RECEIVER),
+        current_target=Bytes20(MINI_EVM_RECEIVER),
+        gas=Uint(gas),
+        value=U256(0),
         data=calldata,
+        code_address=Bytes20(MINI_EVM_RECEIVER),
         code=bytecode,
+        depth=Uint(0),
+        should_transfer_value=False,
+        is_static=False,
+        accessed_addresses=set(),
+        accessed_storage_keys=set(),
+        parent_evm=None,
     )
-    snapshot = _vm.state.snapshot()
+    begin_transaction(_mini_evm_state)
     try:
-        comp = _vm.state.computation_class.apply_computation(_vm.state, msg, _TX_CTX)
+        evm = process_message(msg)
         return EVMResult(
-            output=comp.output,
-            gas_used=comp.get_gas_used(),
-            is_error=comp.is_error,
+            output=evm.output,
+            gas_used=gas - int(evm.gas_left),
+            is_error=evm.error is not None,
         )
     finally:
-        _vm.state.revert(snapshot)
+        rollback_transaction(_mini_evm_state)
 
 
 # ---------------------------------------------------------------------------
@@ -207,19 +226,6 @@ def mini_evm(
 #: :class:`MiniEVMContext`.  ``"shanghai"`` enables PUSH0 (required by the
 #: Analog-Labs interpreter) while remaining compatible with Solidity 0.8.24.
 _SOLC_EVM_VERSION: str = "shanghai"
-
-#: Genesis parameters for the ShanghaiVM chain used by :class:`MiniEVMContext`.
-#: Post-merge: ``difficulty=0``, ``nonce=b'\x00'*8``, ``mix_hash`` used as
-#: ``prevrandao`` (zero is fine for tests).
-_GENESIS_PARAMS_SHANGHAI: dict = {
-    "difficulty": 0,
-    "gas_limit": 30_000_000,
-    "timestamp": 1,
-    "coinbase": b"\x00" * 20,
-    "extra_data": b"",
-    "nonce": b"\x00" * 8,
-    "mix_hash": b"\x00" * 32,
-}
 
 #: EIP-4844 is not used; gas price for deploy transactions in MiniEVMContext.
 _CTX_GAS_PRICE: int = 10**9
@@ -284,7 +290,7 @@ def _get_defi_vm_compiled() -> dict:
 
 @dataclass
 class MiniEVMContext:
-    """Stateful in-process EVM context backed by py-evm ``ShanghaiVM``.
+    """Stateful in-process EVM context backed by ethereum-execution Shanghai.
 
     Deploys the real Analog-Labs interpreter and DeFiVM on construction so
     :meth:`run_program` exercises the authentic dispatch path.  Contract
@@ -306,31 +312,26 @@ class MiniEVMContext:
     program_executor: bytes = field(init=False)
 
     # ---- private fields (not exposed to callers) --------------------------
-    _chain: MiningChain = field(init=False, repr=False)
     _deployer_key: keys.PrivateKey = field(init=False, repr=False)
-    _nonce: int = field(init=False, repr=False)
-    _vm: object = field(init=False, repr=False)  # cached vm, invalidated on deploy
+    _state: State = field(init=False, repr=False)
+    _block_env: BlockEnvironment = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         self._deployer_key = keys.PrivateKey(b"\x01" * 32)
         self.deployer = self._deployer_key.public_key.to_canonical_address()
-        self._nonce = 0
-        self._chain = MiningChain.configure(
-            __name__="MiniEVMContextChain",
-            vm_configuration=((0, ShanghaiVM),),
-        ).from_genesis(
-            AtomicDB(),
-            _GENESIS_PARAMS_SHANGHAI,
-            {
-                self.deployer: {
-                    "balance": 10**22,
-                    "nonce": 0,
-                    "code": b"",
-                    "storage": {},
-                }
-            },
+        self._state = State()
+        set_account_balance(self._state, Bytes20(self.deployer), U256(10**22))
+        self._block_env = BlockEnvironment(
+            chain_id=U64(1),
+            state=self._state,
+            block_gas_limit=Uint(30_000_000),
+            block_hashes=[],
+            coinbase=Bytes20(b"\x00" * 20),
+            number=Uint(1),
+            base_fee_per_gas=Uint(1),
+            time=U256(1),
+            prev_randao=Bytes32(b"\x00" * 32),
         )
-        self._vm = self._chain.get_vm()
         # Deploy the real Analog-Labs EVM interpreter + DeFiVM.
         interp_addr = self.deploy(_get_interpreter_bin())
         defi_vm_info = _get_defi_vm_compiled()
@@ -342,8 +343,23 @@ class MiniEVMContext:
     # Internal helpers
     # -----------------------------------------------------------------------
 
-    def _tx_ctx(self) -> BaseTransactionContext:
-        return BaseTransactionContext(gas_price=_CTX_GAS_PRICE, origin=self.deployer)
+    def _make_tx_env(self, gas: int) -> TransactionEnvironment:
+        return TransactionEnvironment(
+            origin=Bytes20(self.deployer),
+            gas_price=Uint(_CTX_GAS_PRICE),
+            gas=Uint(gas),
+            access_list_addresses=set(),
+            access_list_storage_keys=set(),
+            index_in_block=None,
+            tx_hash=None,
+        )
+
+    def _get_code_at(self, address: bytes) -> bytes:
+        """Return the runtime bytecode stored at *address* (empty if none)."""
+        acc = get_account_optional(self._state, Bytes20(address))
+        if acc is None:
+            return b""
+        return acc.code
 
     def _apply_computation(
         self,
@@ -353,18 +369,28 @@ class MiniEVMContext:
         value: int,
         gas: int,
     ) -> object:
-        """Run a computation on the cached vm.state and return the result."""
-        vm = self._vm
-        code = vm.state.get_code(to)
+        """Run a call computation against the shared state and return the Evm."""
+        to_b20 = Bytes20(to)
+        code = self._get_code_at(to)
         msg = Message(
-            gas=gas,
-            to=to,
-            sender=sender,
-            value=value,
+            block_env=self._block_env,
+            tx_env=self._make_tx_env(gas),
+            caller=Bytes20(sender),
+            target=to_b20,
+            current_target=to_b20,
+            gas=Uint(gas),
+            value=U256(value),
             data=calldata,
+            code_address=to_b20,
             code=code,
+            depth=Uint(0),
+            should_transfer_value=value > 0,
+            is_static=False,
+            accessed_addresses=set(),
+            accessed_storage_keys=set(),
+            parent_evm=None,
         )
-        return vm.state.computation_class.apply_computation(vm.state, msg, self._tx_ctx())
+        return process_message(msg)
 
     # -----------------------------------------------------------------------
     # Contract deployment
@@ -374,7 +400,7 @@ class MiniEVMContext:
         """Deploy a contract via a CREATE transaction.
 
         The creation code is executed and the resulting runtime bytecode is
-        committed to the chain database.  This guarantees that the deployed
+        committed to the shared state.  This guarantees that the deployed
         contract is visible to all subsequent :meth:`call` and
         :meth:`run_program` executions.
 
@@ -385,24 +411,34 @@ class MiniEVMContext:
         Returns:
             The 20-byte canonical address of the newly deployed contract.
         """
-        txn = self._chain.create_unsigned_transaction(
-            nonce=self._nonce,
-            gas_price=_CTX_GAS_PRICE,
-            gas=5_000_000,
-            to=b"",
-            value=value,
-            data=creation_code,
+        deployer_b20 = Bytes20(self.deployer)
+        deployer_nonce = get_account(self._state, deployer_b20).nonce
+        contract_addr = compute_contract_address(deployer_b20, deployer_nonce)
+        msg = Message(
+            block_env=self._block_env,
+            tx_env=self._make_tx_env(5_000_000),
+            caller=deployer_b20,
+            target=Bytes0(b""),
+            current_target=contract_addr,
+            gas=Uint(5_000_000),
+            value=U256(value),
+            data=b"",
+            code_address=None,
+            code=creation_code,
+            depth=Uint(0),
+            should_transfer_value=value > 0,
+            is_static=False,
+            accessed_addresses=set(),
+            accessed_storage_keys=set(),
+            parent_evm=None,
         )
-        _, _, computation = self._chain.apply_transaction(txn.as_signed_transaction(self._deployer_key))
-        addr = generate_contract_address(self.deployer, self._nonce)
-        self._nonce += 1
-        # Refresh cached vm so deployed code is visible.
-        self._vm = self._chain.get_vm()
-        deployed_code = self._vm.state.get_code(addr)
-        if computation.is_error or deployed_code == b"":
-            error = getattr(computation, "error", None)
-            details = f": {error}" if error is not None else ""
+        evm = process_create_message(msg)
+        addr = bytes(contract_addr)
+        deployed_code = self._get_code_at(addr)
+        if evm.error is not None or deployed_code == b"":
+            details = f": {evm.error}" if evm.error is not None else ""
             raise AssertionError(f"Contract deployment failed at 0x{addr.hex()}{details}")
+        increment_nonce(self._state, deployer_b20)
         return addr
 
     def compile_and_deploy(self, source: str, contract_name: str, *constructor_args: object) -> bytes:
@@ -433,52 +469,43 @@ class MiniEVMContext:
     def set_code(self, address: bytes, code: bytes) -> None:
         """Inject runtime bytecode at *address* without running a constructor.
 
-        Changes applied via this method are visible to subsequent
-        :meth:`call` and :meth:`run_program` calls **as long as** no further
-        :meth:`deploy` call intervenes (each :meth:`deploy` refreshes the VM
-        from the chain database, discarding any previous :meth:`set_code`
-        mutations).  For contracts that require a constructor, use
-        :meth:`deploy` instead.
+        Changes applied via this method are persisted directly in the shared
+        state and are visible to subsequent :meth:`call` and
+        :meth:`run_program` calls.  For contracts that require a constructor,
+        use :meth:`deploy` instead.
 
         Args:
             address: 20-byte address at which to place the bytecode.
             code:    Runtime bytecode to store.
         """
-        self._vm.state.set_code(address, code)
+        set_code(self._state, Bytes20(address), code)
 
     def set_balance(self, address: bytes, amount: int) -> None:
         """Set the ETH balance of *address* to *amount* wei.
-
-        .. note::
-            Like :meth:`set_code`, this mutation is applied directly to
-            ``self._vm.state`` and is **not** persisted to the chain database.
-            It will be lost if a subsequent :meth:`deploy` call refreshes the
-            VM from the chain DB.
 
         Args:
             address: 20-byte address.
             amount:  New balance in wei.
         """
-        self._vm.state.set_balance(address, amount)
+        set_account_balance(self._state, Bytes20(address), U256(amount))
 
     def set_storage(self, address: bytes, slot: int, value: int) -> None:
         """Write *value* to contract storage slot *slot* at *address*.
 
         Useful for pre-populating contract state without going through
-        function calls.
-
-        .. note::
-            Like :meth:`set_code`, this mutation is applied directly to
-            ``self._vm.state`` and is **not** persisted to the chain database.
-            It will be lost if a subsequent :meth:`deploy` call refreshes the
-            VM from the chain DB.
+        function calls.  If no account exists at *address* yet, a minimal
+        empty account is created automatically.
 
         Args:
             address: 20-byte contract address.
             slot:    Storage slot index.
             value:   Value to store (uint256).
         """
-        self._vm.state.set_storage(address, slot, value)
+        addr_b20 = Bytes20(address)
+        if get_account_optional(self._state, addr_b20) is None:
+            set_account(self._state, addr_b20, EMPTY_ACCOUNT)
+        key = Bytes32(slot.to_bytes(32, "big"))
+        set_storage(self._state, addr_b20, key, U256(value))
 
     def get_storage(self, address: bytes, slot: int) -> int:
         """Read a contract storage slot.
@@ -490,7 +517,8 @@ class MiniEVMContext:
         Returns:
             The stored uint256 value (0 for uninitialised slots).
         """
-        return self._vm.state.get_storage(address, slot)
+        key = Bytes32(slot.to_bytes(32, "big"))
+        return int(get_storage(self._state, Bytes20(address), key))
 
     # -----------------------------------------------------------------------
     # Execution
@@ -522,8 +550,8 @@ class MiniEVMContext:
         comp = self._apply_computation(to, self.deployer, calldata, value, gas)
         return EVMResult(
             output=comp.output,
-            gas_used=comp.get_gas_used(),
-            is_error=comp.is_error,
+            gas_used=gas - int(comp.gas_left),
+            is_error=comp.error is not None,
         )
 
     def run_program(
@@ -561,8 +589,8 @@ class MiniEVMContext:
         )
         return EVMResult(
             output=comp.output,
-            gas_used=comp.get_gas_used(),
-            is_error=comp.is_error,
+            gas_used=gas - int(comp.gas_left),
+            is_error=comp.error is not None,
         )
 
     # -----------------------------------------------------------------------
