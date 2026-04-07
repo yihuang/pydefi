@@ -707,10 +707,7 @@ def build_multi_hop_program(
         if i == 0:
             segments.append(Program()._emit(push_u256(hop.amount_in))._emit(store_reg(amount_reg)))
 
-        try:
-            swap_seg = _build_hop_segment(hop, amount_reg=amount_reg, amount_out_reg=amount_out_reg)
-        except ValueError as exc:
-            raise ValueError(f"build_multi_hop_program: {exc}") from exc
+        swap_seg = _build_hop_segment(hop, amount_reg=amount_reg, amount_out_reg=amount_out_reg)
 
         segments.append(swap_seg)
 
@@ -903,10 +900,7 @@ def build_split_program(
 
         # Execute every hop in this leg (each hop reads/writes amount_reg)
         for hop in leg.hops:
-            try:
-                hop_seg = _build_hop_segment(hop, amount_reg=amount_reg, amount_out_reg=amount_out_reg)
-            except ValueError as exc:
-                raise ValueError(f"build_split_program: {exc}") from exc
+            hop_seg = _build_hop_segment(hop, amount_reg=amount_reg, amount_out_reg=amount_out_reg)
             segments.append(hop_seg)
 
         # Accumulate this leg's output: accum_reg += amount_reg
