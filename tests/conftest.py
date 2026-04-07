@@ -41,7 +41,6 @@ from ethereum.forks.shanghai.state import (
     begin_transaction,
     get_account,
     get_account_optional,
-    get_code,
     get_storage,
     increment_nonce,
     rollback_transaction,
@@ -360,7 +359,7 @@ class MiniEVMContext:
         acc = get_account_optional(self._state, Bytes20(address))
         if acc is None:
             return b""
-        return get_code(self._state, acc.code_hash)
+        return acc.code
 
     def _apply_computation(
         self,
