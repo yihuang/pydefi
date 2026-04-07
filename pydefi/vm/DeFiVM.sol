@@ -117,16 +117,13 @@ contract DeFiVM {
     function execute(bytes calldata program) external payable {
         address interpreter = INTERPRETER;
         assembly {
-            // Copy the program bytecode to the start of memory so it can be
-            // passed as calldata to the interpreter via delegatecall.
-            // Inside the interpreted program, CALLDATACOPY reads from these
-            // bytes, enabling PC-relative inline data loads.
             calldatacopy(0, program.offset, program.length)
             let ok := delegatecall(gas(), interpreter, 0, program.length, 0, 0)
             returndatacopy(0, 0, returndatasize())
             if iszero(ok) {
                 revert(0, returndatasize())
             }
+            return(0, returndatasize())
         }
     }
 

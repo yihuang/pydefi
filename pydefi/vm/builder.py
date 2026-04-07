@@ -596,10 +596,10 @@ class Program:
 
             bytecode = (
                 Program()
-                .load_reg(0)                        # arg 0: uint256 (deepest)
-                .load_reg(1)                        # arg 1: address (TOS)
+                .load_reg(0)                        # arg 0: address (deepest)
+                .load_reg(1)                        # arg 1: uint256 (TOS)
                 .abi_encode(
-                    ["uint256", "address"],
+                    ["address", "uint256"],
                     selector=bytes.fromhex("a9059cbb"),  # transfer(address,uint256)
                 )
                 .push_u256(0)                       # value

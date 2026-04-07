@@ -208,10 +208,6 @@ def _natural_byte_size(typ: str) -> int:
     m = _BYTES_FIXED_RE.match(typ)
     if m:
         return int(m.group(1))
-    if typ == "uint256":
-        return 32
-    if typ == "int256":
-        return 32
     raise ValueError(f"Cannot determine natural size for type: {typ!r}")
 
 
@@ -273,10 +269,11 @@ def _emit_clean(typ: str) -> bytes:
 
 
 def _emit_fp_init() -> bytes:
-    """Push ``max(mem[0x40], 0x280)`` onto the stack.
+    """Push ``fp if fp != 0 else 0x280`` onto the stack.
 
-    Same logic as ``push_bytes``: ensures the free-memory pointer is at
-    least 0x280 (past the register area).
+    Same logic as ``push_bytes``: if the free-memory pointer
+    (``mem[0x40]``) is zero (uninitialised), defaults to ``0x280``
+    (past the register area).
     """
     return bytes(
         [
@@ -375,7 +372,7 @@ def emit_abi_encode(
     parts: list[bytes] = []
 
     # ── 1. Initialise free-memory pointer ──────────────────────────────
-    # Stack after: [max_fp, val_{n-1}, …, val_0, <rest>]
+    # Stack after (TOS first): [max_fp, val_{n-1}, …, val_0, <rest>]
     parts.append(_emit_fp_init())
 
     # ── 2. Write function selector (if any) ────────────────────────────
@@ -475,7 +472,7 @@ def emit_abi_encode_packed(types: Sequence[str]) -> bytes:
     parts: list[bytes] = []
 
     # ── 1. Initialise free-memory pointer ──────────────────────────────
-    # Stack after: [max_fp, val_{n-1}, …, val_0, <rest>]
+    # Stack after (TOS first): [max_fp, val_{n-1}, …, val_0, <rest>]
     parts.append(_emit_fp_init())
 
     # ── 2. Write values in FORWARD order (val_0 first) ─────────────────
