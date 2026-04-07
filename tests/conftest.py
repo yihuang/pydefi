@@ -327,7 +327,7 @@ class MiniEVMContext:
     # -----------------------------------------------------------------------
 
     def _tx_ctx(self) -> BaseTransactionContext:
-        return BaseTransactionContext(gas_price=0, origin=self.deployer)
+        return BaseTransactionContext(gas_price=_CTX_GAS_PRICE, origin=self.deployer)
 
     def _apply_computation(
         self,
