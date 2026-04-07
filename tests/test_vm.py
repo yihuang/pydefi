@@ -2028,7 +2028,7 @@ class TestMiniEVMContext:
         ctx_b = MiniEVMContext()
         tok_a = ctx_a.deploy_mock_token()
         # ctx_b should have no code at tok_a's address.
-        assert ctx_b._vm.state.get_code(tok_a) == b""
+        assert ctx_b._get_code_at(tok_a) == b""
 
     # ------------------------------------------------------------------
     # MockToken deployment
@@ -2046,7 +2046,7 @@ class TestMiniEVMContext:
 
     def test_deployed_token_has_code(self, evm_ctx):
         token = evm_ctx.deploy_mock_token()
-        assert len(evm_ctx._vm.state.get_code(token)) > 0
+        assert len(evm_ctx._get_code_at(token)) > 0
 
     # ------------------------------------------------------------------
     # mint_token / token_balance
