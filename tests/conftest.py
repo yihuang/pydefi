@@ -71,6 +71,7 @@ from eth_contract.erc20 import ERC20
 from eth_contract.utils import get_initcode
 from eth_keys import keys
 
+from tests.live.conftest import _compile_interpreter_sync
 from tests.live.sol_utils import MOCK_TOKEN_SOL, compile_sol_source, ensure_solc
 
 # ---------------------------------------------------------------------------
@@ -270,51 +271,10 @@ def _get_mock_token_bin() -> bytes:
 
 
 # ---------------------------------------------------------------------------
-# Test-only interpreter + DeFiVM contract
+# Test-only DeFiVM wrapper contract
 # ---------------------------------------------------------------------------
 
-#: Minimal test interpreter.  Called via DELEGATECALL from
-#: :data:`_TEST_DEFI_VM_SOL`.  Receives the DeFiVM program as calldata,
-#: deploys it as a temporary contract (so it runs as native EVM bytecode),
-#: then DELEGATECALLs to it in the caller's (TestDeFiVM's) context.
-#: On success it RETURNs the program's output; on failure it REVERTs.
-_MINIMAL_INTERPRETER_SOL: str = """\
-// SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
-
-contract MinimalInterpreter {
-    fallback() external payable {
-        assembly {
-            let prog_size := calldatasize()
-            // Build the deployer init-code at memory[prog_size].
-            // The 11-byte prefix copies code[11..11+prog_size] to memory[0]
-            // and returns it, so the deployed runtime code IS the program.
-            //   60 0b 38 03 80 60 0b 3d 39 3d f3
-            //   PUSH1(11) CODESIZE SUB DUP1 PUSH1(11) RETURNDATASIZE CODECOPY RETURNDATASIZE RETURN
-            mstore(
-                prog_size,
-                0x600b380380600b3d393df3000000000000000000000000000000000000000000
-            )
-            // Copy the program (calldata) right after the prefix.
-            calldatacopy(add(prog_size, 11), 0, prog_size)
-            // CREATE: init code = memory[prog_size .. prog_size + 11 + prog_size]
-            let prog := create(0, prog_size, add(prog_size, 11))
-            if iszero(prog) {
-                revert(0, 0)
-            }
-            // DELEGATECALL: program runs with address(this) == TestDeFiVM.
-            let ok := delegatecall(gas(), prog, 0, 0, 0, 0)
-            returndatacopy(0, 0, returndatasize())
-            if iszero(ok) {
-                revert(0, returndatasize())
-            }
-            return(0, returndatasize())
-        }
-    }
-}
-"""
-
-#: Test-only DeFiVM contract.  Identical to the real ``DeFiVM.execute()``
+#: Test-only DeFiVM wrapper.  Identical to the real ``DeFiVM.execute()``
 #: dispatch logic (calldatacopy → DELEGATECALL to interpreter → revert on
 #: failure) but adds ``return(0, returndatasize())`` on the success path so
 #: callers can observe the program's output without relying on Anvil.
@@ -349,23 +309,8 @@ contract TestDeFiVM {
 #: ABI selector for ``execute(bytes)`` — keccak256("execute(bytes)")[:4].
 _EXECUTE_SEL: bytes = b"\x09\xc5\xea\xbe"
 
-# Cached compiled bytecodes for the test interpreter and TestDeFiVM.
-_minimal_interp_bin: Optional[bytes] = None
+# Cached compiled TestDeFiVM bytecode.
 _test_defi_vm_compiled: Optional[dict] = None
-
-
-def _get_minimal_interp_bin() -> bytes:
-    """Lazily compile MinimalInterpreter and return its creation bytecode."""
-    global _minimal_interp_bin
-    if _minimal_interp_bin is None:
-        ensure_solc("0.8.24")
-        compiled = compile_sol_source(
-            _MINIMAL_INTERPRETER_SOL,
-            "MinimalInterpreter",
-            evm_version=_SOLC_EVM_VERSION,
-        )
-        _minimal_interp_bin = bytes.fromhex(compiled["bin"])
-    return _minimal_interp_bin
 
 
 def _get_test_defi_vm_compiled() -> dict:
@@ -444,10 +389,12 @@ class MiniEVMContext:
             },
         )
         self._vm = self._chain.get_vm()
-        # Deploy MinimalInterpreter + TestDeFiVM so that run_program() goes
-        # through the real DeFiVM dispatch path (DELEGATECALL → interpreter →
-        # program runs in TestDeFiVM's context).
-        interp_addr = self.deploy(_get_minimal_interp_bin())
+        # Deploy the real Analog-Labs EVM interpreter + TestDeFiVM so that
+        # run_program() goes through the authentic DeFiVM dispatch path
+        # (DELEGATECALL → interpreter → program executes in TestDeFiVM's context).
+        interp_compiled = _compile_interpreter_sync()
+        interp_bin = bytes.fromhex(interp_compiled["<stdin>:Interpreter"]["bin"])
+        interp_addr = self.deploy(interp_bin)
         defi_vm_info = _get_test_defi_vm_compiled()
         artifact = {"bytecode": defi_vm_info["bin"], "abi": defi_vm_info["abi"]}
         # get_initcode expects the constructor address arg as a 0x-prefixed hex string.
@@ -652,11 +599,11 @@ class MiniEVMContext:
     ) -> EVMResult:
         """Execute a DeFiVM program via the deployed :class:`TestDeFiVM` contract.
 
-        Calls ``TestDeFiVM.execute(bytecode)``, which DELEGATECALLs to
-        :class:`MinimalInterpreter`.  The interpreter deploys *bytecode* as a
-        temporary contract and DELEGATECALLs to it, so the program runs with
-        ``address(this)`` equal to :attr:`program_executor` (the TestDeFiVM
-        address) — the same execution context as the real DeFiVM on-chain.
+        Calls ``TestDeFiVM.execute(bytecode)``, which DELEGATECALLs to the
+        real Analog-Labs EVM interpreter.  The interpreter meta-executes
+        *bytecode* from calldata in ``TestDeFiVM``'s storage context, so
+        ``address(this)`` inside the program equals :attr:`program_executor`
+        — the same execution context as the real DeFiVM on-chain.
 
         Storage mutations performed by the program persist in the context
         and are visible to subsequent :meth:`call` and :meth:`run_program`
