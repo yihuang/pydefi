@@ -68,19 +68,16 @@ from typing import Sequence
 from pydefi.vm.program import (
     _DUP2,
     _PUSH1,
-    _PUSH2,
     OP_ADD,
     OP_AND,
     OP_DUP,
     OP_ISZERO,
-    OP_MLOAD,
     OP_MSTORE,
-    OP_MUL,
-    OP_OR,
     OP_POP,
     OP_PUSH_U256,
     OP_SHL,
     OP_SWAP,
+    fp_init,
 )
 
 # Internal EVM opcode not exposed from program.py
@@ -268,29 +265,6 @@ def _emit_clean(typ: str) -> bytes:
 # ---------------------------------------------------------------------------
 
 
-def _emit_fp_init() -> bytes:
-    """Push ``fp if fp != 0 else 0x280`` onto the stack.
-
-    Same logic as ``push_bytes``: if the free-memory pointer
-    (``mem[0x40]``) is zero (uninitialised), defaults to ``0x280``
-    (past the register area).
-    """
-    return bytes(
-        [
-            _PUSH1,
-            0x40,  # PUSH1 0x40
-            OP_MLOAD,  # MLOAD         → [fp]
-            _PUSH2,
-            0x02,
-            0x80,  # PUSH2 0x0280  → [0x280, fp]
-            _DUP2,  # DUP2          → [fp, 0x280, fp]
-            OP_ISZERO,  # ISZERO        → [fp==0, 0x280, fp]
-            OP_MUL,  # MUL           → [0x280*(fp==0), fp]
-            OP_OR,  # OR            → [max_fp]
-        ]
-    )
-
-
 def _emit_fp_update(padded_size: int) -> bytes:
     """``mem[0x40] = TOS + padded_size``.  TOS (max_fp) is preserved."""
     return (
@@ -373,7 +347,7 @@ def emit_abi_encode(
 
     # ── 1. Initialise free-memory pointer ──────────────────────────────
     # Stack after (TOS first): [max_fp, val_{n-1}, …, val_0, <rest>]
-    parts.append(_emit_fp_init())
+    parts.append(fp_init())
 
     # ── 2. Write function selector (if any) ────────────────────────────
     if selector is not None:
@@ -473,7 +447,7 @@ def emit_abi_encode_packed(types: Sequence[str]) -> bytes:
 
     # ── 1. Initialise free-memory pointer ──────────────────────────────
     # Stack after (TOS first): [max_fp, val_{n-1}, …, val_0, <rest>]
-    parts.append(_emit_fp_init())
+    parts.append(fp_init())
 
     # ── 2. Write values in FORWARD order (val_0 first) ─────────────────
     # Forward order is required because each MSTORE writes 32 bytes — the

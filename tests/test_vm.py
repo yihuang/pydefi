@@ -26,6 +26,7 @@ import struct
 import pytest
 
 from pydefi.vm import Program
+from pydefi.vm.abi import emit_abi_encode, emit_abi_encode_packed
 from pydefi.vm.program import (
     OP_ADD,
     OP_AND,
@@ -1689,8 +1690,6 @@ class TestEmitAbiEncode:
 
     def test_single_uint256(self):
         """A single uint256 encodes as 32 bytes."""
-        from pydefi.vm.abi import emit_abi_encode
-
         code = push_u256(42) + emit_abi_encode(["uint256"])
         buf = _abi_result(code)
         assert len(buf) == 32
@@ -1698,8 +1697,6 @@ class TestEmitAbiEncode:
 
     def test_two_uint256(self):
         """Two uint256 values encode as consecutive 32-byte words."""
-        from pydefi.vm.abi import emit_abi_encode
-
         code = push_u256(100) + push_u256(200) + emit_abi_encode(["uint256", "uint256"])
         buf = _abi_result(code)
         assert len(buf) == 64
@@ -1708,8 +1705,6 @@ class TestEmitAbiEncode:
 
     def test_address_masking(self):
         """Address type masks the value to 160 bits."""
-        from pydefi.vm.abi import emit_abi_encode
-
         clean_addr = int("aa" * 20, 16)
         dirty_addr = (0xDEAD << 160) | clean_addr
         code = push_u256(dirty_addr) + emit_abi_encode(["address"])
@@ -1719,8 +1714,6 @@ class TestEmitAbiEncode:
 
     def test_bool_normalisation(self):
         """Bool type normalises any non-zero to 1."""
-        from pydefi.vm.abi import emit_abi_encode
-
         code_true = push_u256(42) + emit_abi_encode(["bool"])
         buf_true = _abi_result(code_true)
         assert int.from_bytes(buf_true, "big") == 1
@@ -1731,16 +1724,12 @@ class TestEmitAbiEncode:
 
     def test_uint8_masking(self):
         """uint8 masks to 8 bits."""
-        from pydefi.vm.abi import emit_abi_encode
-
         code = push_u256(0x1FF) + emit_abi_encode(["uint8"])
         buf = _abi_result(code)
         assert int.from_bytes(buf, "big") == 0xFF
 
     def test_int8_sign_extension(self):
         """int8 sign-extends the value."""
-        from pydefi.vm.abi import emit_abi_encode
-
         code = push_u256(0xFF) + emit_abi_encode(["int8"])
         buf = _abi_result(code)
         stored = int.from_bytes(buf, "big")
@@ -1748,8 +1737,6 @@ class TestEmitAbiEncode:
 
     def test_bytes4_left_aligned(self):
         """bytes4 preserves left-aligned value, zeroing trailing bytes."""
-        from pydefi.vm.abi import emit_abi_encode
-
         val = 0xDEADBEEF << 224
         code = push_u256(val) + emit_abi_encode(["bytes4"])
         buf = _abi_result(code)
@@ -1757,8 +1744,6 @@ class TestEmitAbiEncode:
 
     def test_mixed_types(self):
         """Mixed static types encode correctly."""
-        from pydefi.vm.abi import emit_abi_encode
-
         addr = int("ab" * 20, 16)
         code = push_u256(42) + push_u256(addr) + push_u256(7) + emit_abi_encode(["uint256", "address", "bool"])
         buf = _abi_result(code)
@@ -1769,8 +1754,6 @@ class TestEmitAbiEncode:
 
     def test_with_selector(self):
         """Selector is written as a 4-byte prefix."""
-        from pydefi.vm.abi import emit_abi_encode
-
         sel = bytes.fromhex("a9059cbb")
         code = push_u256(42) + emit_abi_encode(["uint256"], selector=sel)
         buf = _abi_result(code)
@@ -1780,8 +1763,6 @@ class TestEmitAbiEncode:
 
     def test_with_selector_two_args(self):
         """Selector + two args: full calldata layout."""
-        from pydefi.vm.abi import emit_abi_encode
-
         sel = bytes.fromhex("a9059cbb")
         addr = int("ab" * 20, 16)
         code = push_u256(addr) + push_u256(10**18) + emit_abi_encode(["address", "uint256"], selector=sel)
@@ -1793,8 +1774,6 @@ class TestEmitAbiEncode:
 
     def test_tuple_flattening(self):
         """Static tuple types are flattened into leaf scalars."""
-        from pydefi.vm.abi import emit_abi_encode
-
         addr = int("cc" * 20, 16)
         code = push_u256(42) + push_u256(addr) + emit_abi_encode(["(uint256,address)"])
         buf = _abi_result(code)
@@ -1804,8 +1783,6 @@ class TestEmitAbiEncode:
 
     def test_fixed_array_flattening(self):
         """Fixed-size arrays are flattened into repeated leaf types."""
-        from pydefi.vm.abi import emit_abi_encode
-
         code = push_u256(10) + push_u256(20) + push_u256(30) + emit_abi_encode(["uint256[3]"])
         buf = _abi_result(code)
         assert len(buf) == 96
@@ -1815,8 +1792,6 @@ class TestEmitAbiEncode:
 
     def test_dynamic_type_raises(self):
         """Dynamic types are rejected with a clear error."""
-        from pydefi.vm.abi import emit_abi_encode
-
         with pytest.raises(ValueError, match="Dynamic type"):
             emit_abi_encode(["bytes"])
         with pytest.raises(ValueError, match="Dynamic type"):
@@ -1826,22 +1801,16 @@ class TestEmitAbiEncode:
 
     def test_empty_types_raises(self):
         """Empty types without selector raises."""
-        from pydefi.vm.abi import emit_abi_encode
-
         with pytest.raises(ValueError):
             emit_abi_encode([])
 
     def test_bad_selector_length_raises(self):
         """Selector must be exactly 4 bytes."""
-        from pydefi.vm.abi import emit_abi_encode
-
         with pytest.raises(ValueError, match="4 bytes"):
             emit_abi_encode(["uint256"], selector=b"\x00\x00")
 
     def test_fp_update(self):
         """Free-memory pointer is advanced past the encoded buffer."""
-        from pydefi.vm.abi import emit_abi_encode
-
         # Encode then read mem[0x40] (free-memory pointer)
         # After encoding: stack = [argsOffset, argsLen]
         # Pop both, then read mem[0x40]
@@ -1862,8 +1831,6 @@ class TestEmitAbiEncode:
 
     def test_selector_only_no_args(self):
         """Selector with empty types produces 4-byte buffer."""
-        from pydefi.vm.abi import emit_abi_encode
-
         sel = bytes.fromhex("18160ddd")
         code = emit_abi_encode([], selector=sel)
         buf = _abi_result(code)
@@ -1881,8 +1848,6 @@ class TestEmitAbiEncodePacked:
 
     def test_single_uint256(self):
         """uint256 packed is 32 bytes."""
-        from pydefi.vm.abi import emit_abi_encode_packed
-
         code = push_u256(42) + emit_abi_encode_packed(["uint256"])
         buf = _abi_result(code)
         assert len(buf) == 32
@@ -1890,8 +1855,6 @@ class TestEmitAbiEncodePacked:
 
     def test_single_uint8(self):
         """uint8 packed is 1 byte."""
-        from pydefi.vm.abi import emit_abi_encode_packed
-
         code = push_u256(0xFF) + emit_abi_encode_packed(["uint8"])
         buf = _abi_result(code)
         assert len(buf) == 1
@@ -1899,8 +1862,6 @@ class TestEmitAbiEncodePacked:
 
     def test_single_address(self):
         """address packed is 20 bytes."""
-        from pydefi.vm.abi import emit_abi_encode_packed
-
         addr = int("ab" * 20, 16)
         code = push_u256(addr) + emit_abi_encode_packed(["address"])
         buf = _abi_result(code)
@@ -1909,8 +1870,6 @@ class TestEmitAbiEncodePacked:
 
     def test_single_bool(self):
         """bool packed is 1 byte (normalised)."""
-        from pydefi.vm.abi import emit_abi_encode_packed
-
         code = push_u256(42) + emit_abi_encode_packed(["bool"])
         buf = _abi_result(code)
         assert len(buf) == 1
@@ -1918,8 +1877,6 @@ class TestEmitAbiEncodePacked:
 
     def test_uint8_address_combined(self):
         """Packed encoding of (uint8, address) = 21 bytes."""
-        from pydefi.vm.abi import emit_abi_encode_packed
-
         addr = int("cc" * 20, 16)
         code = push_u256(0x42) + push_u256(addr) + emit_abi_encode_packed(["uint8", "address"])
         buf = _abi_result(code)
@@ -1929,8 +1886,6 @@ class TestEmitAbiEncodePacked:
 
     def test_address_uint256(self):
         """Packed (address, uint256) = 52 bytes."""
-        from pydefi.vm.abi import emit_abi_encode_packed
-
         addr = int("ab" * 20, 16)
         code = push_u256(addr) + push_u256(10**18) + emit_abi_encode_packed(["address", "uint256"])
         buf = _abi_result(code)
@@ -1940,8 +1895,6 @@ class TestEmitAbiEncodePacked:
 
     def test_bytes4(self):
         """bytes4 packed is 4 bytes (left-aligned)."""
-        from pydefi.vm.abi import emit_abi_encode_packed
-
         val = 0xDEADBEEF << 224
         code = push_u256(val) + emit_abi_encode_packed(["bytes4"])
         buf = _abi_result(code)
@@ -1950,8 +1903,6 @@ class TestEmitAbiEncodePacked:
 
     def test_three_uint8(self):
         """Three uint8 values packed = 3 bytes."""
-        from pydefi.vm.abi import emit_abi_encode_packed
-
         code = push_u256(0x11) + push_u256(0x22) + push_u256(0x33) + emit_abi_encode_packed(["uint8", "uint8", "uint8"])
         buf = _abi_result(code)
         assert len(buf) == 3
@@ -1959,22 +1910,16 @@ class TestEmitAbiEncodePacked:
 
     def test_too_many_values_raises(self):
         """More than 15 leaf values raise ValueError."""
-        from pydefi.vm.abi import emit_abi_encode_packed
-
         with pytest.raises(ValueError, match="max 15"):
             emit_abi_encode_packed(["uint8"] * 16)
 
     def test_dynamic_type_raises(self):
         """Dynamic types are rejected."""
-        from pydefi.vm.abi import emit_abi_encode_packed
-
         with pytest.raises(ValueError, match="Dynamic type"):
             emit_abi_encode_packed(["bytes"])
 
     def test_fp_update(self):
         """Free-memory pointer is updated correctly for packed encoding."""
-        from pydefi.vm.abi import emit_abi_encode_packed
-
         code = (
             push_u256(0xFF)
             + emit_abi_encode_packed(["uint8"])
@@ -2023,8 +1968,6 @@ class TestProgramAbiEncode:
 
     def test_program_abi_encode_execution(self):
         """End-to-end: Program.abi_encode generates correct memory layout."""
-        from pydefi.vm.abi import emit_abi_encode
-
         sel = bytes.fromhex("a9059cbb")
         addr = int("ab" * 20, 16)
         code = push_u256(addr) + push_u256(10**18) + emit_abi_encode(["address", "uint256"], selector=sel)
@@ -2052,8 +1995,6 @@ class TestAbiTypeValidation:
 
     def test_nested_tuple(self):
         """Nested static tuple is flattened correctly."""
-        from pydefi.vm.abi import emit_abi_encode
-
         addr = int("ab" * 20, 16)
         code = push_u256(42) + push_u256(addr) + push_u256(1) + emit_abi_encode(["((uint256,address),bool)"])
         buf = _abi_result(code)
@@ -2061,15 +2002,11 @@ class TestAbiTypeValidation:
 
     def test_invalid_uint_width(self):
         """uint with non-multiple-of-8 width raises."""
-        from pydefi.vm.abi import emit_abi_encode
-
         with pytest.raises(ValueError, match="Invalid uint width"):
             emit_abi_encode(["uint7"])
 
     def test_invalid_bytes_width(self):
         """bytes0 and bytes33 raise."""
-        from pydefi.vm.abi import emit_abi_encode
-
         with pytest.raises(ValueError, match="Invalid bytesN width"):
             emit_abi_encode(["bytes0"])
         with pytest.raises(ValueError, match="Invalid bytesN width"):
@@ -2077,15 +2014,11 @@ class TestAbiTypeValidation:
 
     def test_unknown_type_raises(self):
         """Unknown type string raises ValueError."""
-        from pydefi.vm.abi import emit_abi_encode
-
         with pytest.raises(ValueError, match="Unsupported ABI scalar type"):
             emit_abi_encode(["foobar"])
 
     def test_dynamic_in_tuple_raises(self):
         """Tuple containing a dynamic type raises."""
-        from pydefi.vm.abi import emit_abi_encode
-
         with pytest.raises(ValueError, match="Dynamic type"):
             emit_abi_encode(["(uint256,bytes)"])
 

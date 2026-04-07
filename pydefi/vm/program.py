@@ -108,6 +108,32 @@ def gas_opcode() -> bytes:
     return bytes([OP_GAS])
 
 
+def fp_init() -> bytes:
+    """Emit opcodes that push the current free-memory pointer onto the stack.
+
+    Computes ``fp if fp != 0 else 0x280`` where ``fp = mem[0x40]``.
+    If the free-memory pointer has not been initialised yet (zero), defaults
+    to ``0x280`` (past the register area).
+
+    This preamble is shared between :func:`push_bytes`, :func:`emit_abi_encode`,
+    and :func:`emit_abi_encode_packed`.
+    """
+    return bytes(
+        [
+            _PUSH1,
+            0x40,  # PUSH1 0x40
+            OP_MLOAD,  # MLOAD           → [fp]
+            _PUSH2,
+            0x02,
+            0x80,  # PUSH2 0x0280    → [0x280, fp]
+            _DUP2,  # DUP2            → [fp, 0x280, fp]
+            OP_ISZERO,  # ISZERO          → [fp==0, 0x280, fp]
+            OP_MUL,  # MUL             → [0x280*(fp==0), fp]
+            OP_OR,  # OR              → [max_fp]
+        ]
+    )
+
+
 def push_bytes(data: bytes) -> bytes:
     """Copy *data* into free memory and leave ``[argsOffset(TOS), argsLen(2nd)]``.
 
@@ -139,22 +165,7 @@ def push_bytes(data: bytes) -> bytes:
     parts: list[bytes] = []
 
     # Compute max_fp = fp | (0x280 * (fp == 0))
-    parts.append(
-        bytes(
-            [
-                _PUSH1,
-                0x40,  # PUSH1 0x40
-                OP_MLOAD,  # MLOAD           → [fp]
-                _PUSH2,
-                0x02,
-                0x80,  # PUSH2 0x0280    → [0x280, fp]
-                _DUP2,  # DUP2            → [fp, 0x280, fp]
-                OP_ISZERO,  # ISZERO          → [fp==0, 0x280, fp]
-                OP_MUL,  # MUL             → [0x280*(fp==0), fp]
-                OP_OR,  # OR              → [max_fp]
-            ]
-        )
-    )
+    parts.append(fp_init())
 
     # Store each 32-byte chunk; max_fp stays at TOS between iterations.
     for i in range(0, blen_padded, 32):
