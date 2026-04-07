@@ -44,8 +44,13 @@ from eth_contract.erc20 import ERC20
 from eth_contract.utils import get_initcode
 from eth_keys import keys
 
-from tests.live.conftest import _compile_interpreter_sync
-from tests.live.sol_utils import MOCK_TOKEN_SOL, compile_sol_file, compile_sol_source, ensure_solc
+from tests.live.sol_utils import (
+    MOCK_TOKEN_SOL,
+    compile_interpreter_sync,
+    compile_sol_file,
+    compile_sol_source,
+    ensure_solc,
+)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -243,6 +248,19 @@ def _get_mock_token_bin() -> bytes:
     return _mock_token_bin
 
 
+# Cached compiled interpreter creation bytecode.
+_interpreter_bin: Optional[bytes] = None
+
+
+def _get_interpreter_bin() -> bytes:
+    """Lazily compile the Analog-Labs interpreter and return its creation bytecode."""
+    global _interpreter_bin
+    if _interpreter_bin is None:
+        compiled = compile_interpreter_sync()
+        _interpreter_bin = bytes.fromhex(compiled["<stdin>:Interpreter"]["bin"])
+    return _interpreter_bin
+
+
 # ---------------------------------------------------------------------------
 # DeFiVM contract binding (for ABI-encoding execute() calls)
 # ---------------------------------------------------------------------------
@@ -314,9 +332,7 @@ class MiniEVMContext:
         )
         self._vm = self._chain.get_vm()
         # Deploy the real Analog-Labs EVM interpreter + DeFiVM.
-        interp_compiled = _compile_interpreter_sync()
-        interp_bin = bytes.fromhex(interp_compiled["<stdin>:Interpreter"]["bin"])
-        interp_addr = self.deploy(interp_bin)
+        interp_addr = self.deploy(_get_interpreter_bin())
         defi_vm_info = _get_defi_vm_compiled()
         artifact = {"bytecode": defi_vm_info["bin"], "abi": defi_vm_info["abi"]}
         defivm_addr = self.deploy(get_initcode(artifact, "0x" + interp_addr.hex()))
