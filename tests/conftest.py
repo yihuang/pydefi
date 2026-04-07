@@ -39,6 +39,7 @@ from ethereum.forks.shanghai.state import (
     EMPTY_ACCOUNT,
     State,
     begin_transaction,
+    get_account,
     get_account_optional,
     get_code,
     get_storage,
@@ -313,14 +314,12 @@ class MiniEVMContext:
 
     # ---- private fields (not exposed to callers) --------------------------
     _deployer_key: keys.PrivateKey = field(init=False, repr=False)
-    _nonce: int = field(init=False, repr=False)
     _state: State = field(init=False, repr=False)
     _block_env: BlockEnvironment = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         self._deployer_key = keys.PrivateKey(b"\x01" * 32)
         self.deployer = self._deployer_key.public_key.to_canonical_address()
-        self._nonce = 0
         self._state = State()
         set_account_balance(self._state, Bytes20(self.deployer), U256(10**22))
         self._block_env = BlockEnvironment(
@@ -414,7 +413,8 @@ class MiniEVMContext:
             The 20-byte canonical address of the newly deployed contract.
         """
         deployer_b20 = Bytes20(self.deployer)
-        contract_addr = compute_contract_address(deployer_b20, Uint(self._nonce))
+        deployer_nonce = get_account(self._state, deployer_b20).nonce
+        contract_addr = compute_contract_address(deployer_b20, deployer_nonce)
         msg = Message(
             block_env=self._block_env,
             tx_env=self._make_tx_env(5_000_000),
@@ -440,7 +440,6 @@ class MiniEVMContext:
             details = f": {evm.error}" if evm.error is not None else ""
             raise AssertionError(f"Contract deployment failed at 0x{addr.hex()}{details}")
         increment_nonce(self._state, deployer_b20)
-        self._nonce += 1
         return addr
 
     def compile_and_deploy(self, source: str, contract_name: str, *constructor_args: object) -> bytes:
