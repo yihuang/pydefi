@@ -119,9 +119,9 @@ async def sim_ctx(fork_w3_module, interpreter_addr):
     token_address = await deploy(w3, compiled_token, deployer)
     token = w3.eth.contract(address=token_address, abi=compiled_token["abi"])
 
-    MINT_AMOUNT = 1_000 * 10**18
+    mint_amount = 1_000 * 10**18
     for addr in [user, vm_address]:
-        tx = await token.functions.mint(addr, MINT_AMOUNT).transact({"from": deployer})
+        tx = await token.functions.mint(addr, mint_amount).transact({"from": deployer})
         await w3.eth.get_transaction_receipt(tx)
 
     return {
@@ -133,7 +133,7 @@ async def sim_ctx(fork_w3_module, interpreter_addr):
         "deployer": deployer,
         "user": user,
         "recipient": recipient,
-        "mint_amount": MINT_AMOUNT,
+        "mint_amount": mint_amount,
     }
 
 
