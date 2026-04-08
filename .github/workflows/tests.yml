@@ -24,7 +24,7 @@ jobs:
         uses: astral-sh/setup-uv@v5
 
       - name: Verify uv sync for dev dependencies
-        run: uv lock --locked --extra dev
+        run: uv sync --locked --extra dev
 
   lint:
     runs-on: ubuntu-latest
