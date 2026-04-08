@@ -7,6 +7,25 @@ on:
     branches: ["**"]
 
 jobs:
+  uv-sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Verify uv sync for dev dependencies
+        run: uv sync --locked --extra dev
+
   lint:
     runs-on: ubuntu-latest
     permissions:
