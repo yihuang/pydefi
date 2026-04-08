@@ -59,11 +59,14 @@ from pydefi.exceptions import (
 from pydefi.pool_data.base import BasePoolDataProvider, PoolData
 from pydefi.rpc import MultiRpcProvider, fetch_chain_rpcs, get_w3
 from pydefi.simulate import (
+    MAX_UINT256,
     BalanceChange,
     SimulationResult,
     TokenTransfer,
     build_allowance_state_override,
+    build_balance_state_override,
     detect_allowance_slot,
+    detect_balance_slot,
     simulate_tx,
     simulate_with_debug_trace_call,
     simulate_with_eth_call,
@@ -99,10 +102,13 @@ __all__ = [
     "get_w3",
     # Simulation
     "BalanceChange",
+    "MAX_UINT256",
     "SimulationResult",
     "TokenTransfer",
     "build_allowance_state_override",
+    "build_balance_state_override",
     "detect_allowance_slot",
+    "detect_balance_slot",
     "simulate_tx",
     "simulate_with_debug_trace_call",
     "simulate_with_eth_call",

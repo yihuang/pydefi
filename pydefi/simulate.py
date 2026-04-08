@@ -50,10 +50,13 @@ from web3.types import BlockIdentifier
 
 __all__ = [
     "BalanceChange",
+    "MAX_UINT256",
     "SimulationResult",
     "TokenTransfer",
     "build_allowance_state_override",
+    "build_balance_state_override",
     "detect_allowance_slot",
+    "detect_balance_slot",
     "simulate_tx",
     "simulate_with_debug_trace_call",
     "simulate_with_eth_call",
@@ -72,9 +75,14 @@ _PANIC_SELECTOR: bytes = bytes.fromhex("4e487b71")
 
 # ERC-20 function selectors
 _ALLOWANCE_SELECTOR: bytes = bytes.fromhex("dd62ed3e")  # allowance(address,address)
+_BALANCE_OF_SELECTOR: bytes = bytes.fromhex("70a08231")  # balanceOf(address)
 
 # Sentinel for zero address (used in synthetic ETH transfer events)
 _ZERO_ADDRESS: str = "0x0000000000000000000000000000000000000000"
+
+#: Maximum ``uint256`` value — use as the *amount* in
+#: :func:`build_allowance_state_override` for an unlimited approval.
+MAX_UINT256: int = 2**256 - 1
 
 
 # ── Data classes ─────────────────────────────────────────────────────────────
@@ -312,7 +320,14 @@ async def detect_allowance_slot(
             [
                 {"from": owner, "to": token, "data": "0x" + calldata.hex()},
                 block_param,
-                {"disableStorage": True, "disableReturnData": True},
+                {
+                    # stack and memory are required by parse_allowance_slot for
+                    # KECCAK256 pre-image extraction and SLOAD slot detection.
+                    # Disabling the per-step storage field saves bandwidth without
+                    # affecting correctness (we only need the opcode + stack + memory).
+                    "disableStorage": True,
+                    "disableReturnData": True,
+                },
             ],
         )
     except Exception as exc:  # noqa: BLE001
@@ -338,7 +353,7 @@ async def build_allowance_state_override(
     token: str,
     owner: str,
     spender: str,
-    amount: int = 2**256 - 1,
+    amount: int = MAX_UINT256,
     block: BlockIdentifier = "latest",
 ) -> dict:
     """Build an ``eth_call`` / ``debug_traceCall`` state-override dict for an ERC-20 allowance.
@@ -382,6 +397,115 @@ async def build_allowance_state_override(
     # Compute the final storage slot: allowances[owner][spender]
     allowance_slot = slot.value(owner_padded).value(spender_padded)
     slot_hex = "0x" + allowance_slot.slot.hex()
+    amount_hex = "0x" + amount.to_bytes(32, "big").hex()
+
+    return {
+        Web3.to_checksum_address(token): {
+            "stateDiff": {slot_hex: amount_hex},
+        }
+    }
+
+
+async def detect_balance_slot(
+    w3: AsyncWeb3,
+    token: str,
+    holder: str,
+    block: BlockIdentifier = "latest",
+):
+    """Detect the ERC-20 ``balances`` mapping storage slot via ``debug_traceCall``.
+
+    Traces a ``balanceOf(holder)`` call on *token* and parses the resulting
+    structLogs with :func:`eth_contract.slots.parse_balance_slot` to find the
+    base slot of the ``balances`` mapping.
+
+    Args:
+        w3: Async web3 instance.
+        token: Checksum address of the ERC-20 token contract.
+        holder: Checksum address of the token holder to trace.
+        block: Block identifier to trace against.
+
+    Returns:
+        A :class:`~eth_contract.slots.MappingSlot` representing the base slot
+        of the ``balances`` mapping, or ``None`` if detection fails.
+    """
+    from eth_contract.slots import parse_balance_slot
+
+    calldata = _BALANCE_OF_SELECTOR + abi_encode(["address"], [holder])
+    block_param = block if isinstance(block, str) else hex(block)
+
+    try:
+        response = await w3.provider.make_request(
+            "debug_traceCall",
+            [
+                {"from": holder, "to": token, "data": "0x" + calldata.hex()},
+                block_param,
+                {
+                    # stack and memory are required for KECCAK256 pre-image extraction.
+                    "disableStorage": True,
+                    "disableReturnData": True,
+                },
+            ],
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("debug_traceCall failed for detect_balance_slot: %s", exc)
+        return None
+
+    if "error" in response:
+        logger.debug("debug_traceCall error: %s", response["error"])
+        return None
+
+    result = response.get("result", {})
+    struct_logs = result.get("structLogs", [])
+
+    token_bytes = bytes.fromhex(Web3.to_checksum_address(token).removeprefix("0x"))
+    holder_bytes = bytes.fromhex(Web3.to_checksum_address(holder).removeprefix("0x"))
+
+    return parse_balance_slot(token_bytes, holder_bytes, struct_logs)
+
+
+async def build_balance_state_override(
+    w3: AsyncWeb3,
+    token: str,
+    holder: str,
+    amount: int,
+    block: BlockIdentifier = "latest",
+) -> dict:
+    """Build an ``eth_call`` / ``debug_traceCall`` state-override dict to set an ERC-20 balance.
+
+    Uses :func:`detect_balance_slot` (which requires ``debug_traceCall``) to
+    find where the token stores ``balances[holder]``, then returns a state
+    override that injects *amount* into that slot.
+
+    This works for any standard ERC-20 token whose balances are stored in a
+    Solidity or Vyper mapping.
+
+    Args:
+        w3: Async web3 instance.
+        token: Checksum address of the ERC-20 token.
+        holder: Checksum address of the account whose balance to override.
+        amount: Balance amount to inject (in the token's smallest unit).
+        block: Block to detect the slot against.
+
+    Returns:
+        A state-override dict suitable for the *state_overrides* parameter of
+        :func:`simulate_with_eth_call`, :func:`simulate_with_debug_trace_call`,
+        or :func:`simulate_with_eth_simulate_v1`.
+
+    Raises:
+        ValueError: If the storage slot cannot be detected.
+    """
+    slot = await detect_balance_slot(w3, token, holder, block)
+    if slot is None:
+        raise ValueError(
+            f"Could not detect balance storage slot for token {token}. "
+            "Ensure the RPC supports debug_traceCall."
+        )
+
+    holder_padded = bytes.fromhex(Web3.to_checksum_address(holder).removeprefix("0x")).rjust(32, b"\x00")
+
+    # Compute the final storage slot: balances[holder]
+    balance_slot = slot.value(holder_padded)
+    slot_hex = "0x" + balance_slot.slot.hex()
     amount_hex = "0x" + amount.to_bytes(32, "big").hex()
 
     return {

@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import pytest
 from eth_abi import encode as abi_encode
-from eth_contract.erc20 import ERC20
 from web3 import AsyncWeb3, Web3
 
 from pydefi.simulate import (
@@ -309,16 +308,24 @@ class TestSimulateEthSimulateV1:
         assert allowance == 10**18
 
     async def test_simulate_v1_erc20_transfer_event(self, fork_w3):
-        """eth_simulateV1 captures ERC-20 Transfer events in logs."""
-        await _impersonate(fork_w3, ETH_WHALE)
+        """eth_simulateV1 captures ERC-20 Transfer events in logs.
 
-        # Check if whale has USDC; if not, skip
-        usdc_balance = await ERC20.fns.balanceOf(ETH_WHALE).call(fork_w3, to=USDC.address)
-        if usdc_balance == 0:
-            pytest.skip("ETH_WHALE has no USDC on this fork")
+        Uses ``build_balance_state_override`` to inject USDC into the whale's
+        balance so the test is deterministic regardless of on-chain state.
+        """
+        from pydefi.simulate import build_balance_state_override
 
-        transfer_amount = min(usdc_balance, 10**6)  # transfer at most 1 USDC
+        transfer_amount = 10**6  # 1 USDC
         recipient = "0x000000000000000000000000000000000000dEaD"
+
+        # Inject the balance via state override so the test works
+        # independently of the whale's actual on-chain USDC holdings.
+        balance_override = await build_balance_state_override(
+            fork_w3,
+            token=USDC.address,
+            holder=ETH_WHALE,
+            amount=transfer_amount,
+        )
 
         # ERC-20 transfer(address,uint256) selector
         _TRANSFER_SEL = bytes.fromhex("a9059cbb")
@@ -327,10 +334,11 @@ class TestSimulateEthSimulateV1:
         results = await simulate_with_eth_simulate_v1(
             fork_w3,
             [{"from": ETH_WHALE, "to": USDC.address, "data": calldata}],
+            state_overrides=balance_override,
         )
         assert len(results) == 1
         result = results[0]
-        assert result.success is True
+        assert result.success is True, f"Transfer failed: {result.revert_reason}"
 
         # There should be a Transfer event
         transfers = result.transfers
