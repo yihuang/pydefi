@@ -63,10 +63,10 @@ from __future__ import annotations
 from typing import Any
 
 import aiohttp
-from eth_contract import Contract
 from hexbytes import HexBytes
 from web3 import AsyncWeb3, Web3
 
+from pydefi.abi.bridge import CCTP_TOKEN_MESSENGER_V2
 from pydefi.bridge.base import BaseBridge
 from pydefi.exceptions import BridgeError
 from pydefi.types import BridgeQuote, ChainId, Token, TokenAmount
@@ -97,17 +97,6 @@ HYPERCORE_DEX_SPOT: int = 0xFFFFFFFF  # uint32 max — spot balance on HyperCore
 # ---------------------------------------------------------------------------
 
 _IRIS_API_BASE = "https://iris-api.circle.com"
-
-# ---------------------------------------------------------------------------
-# ABI fragments — TokenMessengerV2
-# ---------------------------------------------------------------------------
-
-_TOKEN_MESSENGER_V2_ABI = [
-    # depositForBurn — standard transfer (no compose hook)
-    "function depositForBurn(uint256 amount, uint32 destinationDomain, bytes32 mintRecipient, address burnToken, bytes32 destinationCaller, uint256 maxFee, uint32 minFinalityThreshold) external",
-    # depositForBurnWithHook — compose transfer; DeFiVM program passed as hookData
-    "function depositForBurnWithHook(uint256 amount, uint32 destinationDomain, bytes32 mintRecipient, address burnToken, bytes32 destinationCaller, uint256 maxFee, uint32 minFinalityThreshold, bytes calldata hookData) external",
-]
 
 # ---------------------------------------------------------------------------
 # Well-known CCTP v2 contract addresses
@@ -303,8 +292,6 @@ class CCTP(BaseBridge):
             )
 
         self.cctp_forwarder_address = cctp_forwarder_address or _CCTP_FORWARDER[is_mainnet]
-
-        self._token_messenger = Contract.from_abi(_TOKEN_MESSENGER_V2_ABI, to=self.token_messenger_address)
 
     @property
     def protocol_name(self) -> str:
@@ -512,7 +499,7 @@ class CCTP(BaseBridge):
             dst_caller_bytes = self._address_to_bytes32(forwarder)
             hook_data = encode_cctp_forward_hook_data(recipient, hypercore_dex)
 
-            call_data = self._token_messenger.fns.depositForBurnWithHook(
+            call_data = CCTP_TOKEN_MESSENGER_V2.fns.depositForBurnWithHook(
                 amount_in.amount,
                 _dst_domain,
                 mint_recipient,
@@ -526,7 +513,7 @@ class CCTP(BaseBridge):
             mint_recipient = self._address_to_bytes32(recipient)
             dst_caller_bytes = self._address_to_bytes32(destination_caller) if destination_caller else b"\x00" * 32
 
-            call_data = self._token_messenger.fns.depositForBurn(
+            call_data = CCTP_TOKEN_MESSENGER_V2.fns.depositForBurn(
                 amount_in.amount,
                 _dst_domain,
                 mint_recipient,
@@ -593,7 +580,7 @@ class CCTP(BaseBridge):
         mint_recipient = self._address_to_bytes32(composer_address)
         destination_caller = self._address_to_bytes32(composer_address)
 
-        call_data = self._token_messenger.fns.depositForBurnWithHook(
+        call_data = CCTP_TOKEN_MESSENGER_V2.fns.depositForBurnWithHook(
             amount_in.amount,
             _dst_domain,
             mint_recipient,

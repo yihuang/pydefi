@@ -813,16 +813,16 @@ class TestLayerZeroOFT:
             dst_chain_id=42161,
             oft_address=OFT_ADDRESS,
         )
-        # Mock the underlying OFT contract call so we exercise the real
+        # Mock the module-level LAYERZERO_OFT constant so we exercise the real
         # quote_send_fee logic (EID mapping, send_param construction, contract wiring)
         # rather than patching quote_send_fee itself.
         mock_call = AsyncMock(return_value=(5 * 10**15, 0))
         mock_quote_send = MagicMock(return_value=MagicMock(call=mock_call))
-        oft._oft = MagicMock()
-        oft._oft.fns = MagicMock()
-        oft._oft.fns.quoteSend = mock_quote_send
+        mock_contract = MagicMock()
+        mock_contract.fns.quoteSend = mock_quote_send
 
-        fee = await oft.quote_send_fee(1_000_000, "0x" + "AA" * 20)
+        with patch("pydefi.bridge.layerzero_oft.LAYERZERO_OFT", mock_contract):
+            fee = await oft.quote_send_fee(1_000_000, "0x" + "AA" * 20)
 
         assert fee == 5 * 10**15
         mock_quote_send.assert_called_once()

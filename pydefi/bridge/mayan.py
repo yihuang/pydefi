@@ -13,11 +13,11 @@ from __future__ import annotations
 
 import os
 from decimal import Decimal
-from typing import Annotated, Any, Optional
+from typing import Any, Optional
 
 import aiohttp
-from eth_contract import ABIStruct, Contract
 
+from pydefi.abi.bridge import MAYAN_FORWARDER, MAYAN_SWIFT_V2, MayanSwiftOrderParams
 from pydefi.bridge.base import BaseBridge
 from pydefi.exceptions import BridgeError
 from pydefi.types import BridgeQuote, Token, TokenAmount
@@ -85,55 +85,6 @@ _CHAIN_WETH: dict[int, str] = {
     43114: "0x49D5c2BdFfac6CE2BFdB6640F4F80f226bc10bAB",  # Avalanche
     59144: "0xe5D7C2a44FfDDf6b295A15c148167daaAf5Cf34f",  # Linea
 }
-
-# ---------------------------------------------------------------------------
-# ABI struct definitions (annotated classes)
-# ---------------------------------------------------------------------------
-
-
-class MayanSwiftOrderParams(ABIStruct):
-    """OrderParams struct for ``MayanSwift.createOrderWithToken`` (V2)."""
-
-    payloadType: Annotated[int, "uint8"]
-    trader: Annotated[bytes, "bytes32"]
-    destAddr: Annotated[bytes, "bytes32"]
-    destChainId: Annotated[int, "uint16"]
-    referrerAddr: Annotated[bytes, "bytes32"]
-    tokenOut: Annotated[bytes, "bytes32"]
-    minAmountOut: Annotated[int, "uint64"]
-    gasDrop: Annotated[int, "uint64"]
-    cancelFee: Annotated[int, "uint64"]
-    refundFee: Annotated[int, "uint64"]
-    deadline: Annotated[int, "uint64"]
-    referrerBps: Annotated[int, "uint8"]
-    auctionMode: Annotated[int, "uint8"]
-    random: Annotated[bytes, "bytes32"]
-
-
-# MayanForwarder ABI fragments (only the methods we use)
-_FORWARDER_ABI = [
-    "function forwardEth(address mayanProtocol, bytes protocolData) external payable",
-    "function swapAndForwardEth("
-    "  uint256 amountIn,"
-    "  address swapProtocol,"
-    "  bytes swapData,"
-    "  address middleToken,"
-    "  uint256 minMiddleAmount,"
-    "  address mayanProtocol,"
-    "  bytes mayanData"
-    ") external payable",
-]
-
-# MayanSwift V2 ABI fragment for createOrderWithToken.
-# The OrderParams struct field order differs from V1.
-_SWIFT_V2_ABI = MayanSwiftOrderParams.human_readable_abi() + [
-    "function createOrderWithToken("
-    "  address tokenIn,"
-    "  uint256 amountIn,"
-    "  MayanSwiftOrderParams params,"
-    "  bytes customPayload"
-    ") external returns (bytes32 orderHash)",
-]
 
 
 def _addr_to_bytes32(addr: str) -> bytes:
@@ -476,8 +427,7 @@ class Mayan(BaseBridge):
             raise BridgeError("Mayan: missing swapRouterAddress or swapRouterCalldata")
 
         # Step 4 — ABI-encode createOrderWithToken for MayanSwift V2
-        swift_c = Contract.from_abi(_SWIFT_V2_ABI, to=swift_contract)
-        swift_calldata: bytes = swift_c.fns.createOrderWithToken(
+        swift_calldata: bytes = MAYAN_SWIFT_V2.fns.createOrderWithToken(
             swift_input_contract,  # address tokenIn (the WETH the SWIFT contract receives)
             effective_amount_in,  # uint256 amountIn
             order_params,  # OrderParams
@@ -485,8 +435,7 @@ class Mayan(BaseBridge):
         ).data
 
         # Step 5 — ABI-encode swapAndForwardEth on the Mayan Forwarder
-        forwarder = Contract.from_abi(_FORWARDER_ABI, to=_MAYAN_FORWARDER)
-        forward_calldata: bytes = forwarder.fns.swapAndForwardEth(
+        forward_calldata: bytes = MAYAN_FORWARDER.fns.swapAndForwardEth(
             amount_in.amount,  # uint256 amountIn (ETH to swap)
             swap_router_address,  # address swapProtocol (DEX router)
             bytes.fromhex(swap_router_calldata.removeprefix("0x")),  # bytes swapData

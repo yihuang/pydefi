@@ -9,112 +9,20 @@ Uniswap V3 uses concentrated liquidity with discrete fee tiers:
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import Annotated
 
-from eth_contract import ABIStruct, Contract
+from eth_contract import Contract
 from web3 import AsyncWeb3
 
+from pydefi.abi.amm import (
+    UNISWAP_V3_FACTORY,
+    UNISWAP_V3_POOL,
+    UNISWAP_V3_QUOTER_V2,
+    QuoteExactInputSingleParams,
+    QuoteExactOutputSingleParams,
+)
 from pydefi.amm.base import BaseAMM
 from pydefi.exceptions import InsufficientLiquidityError
 from pydefi.types import SwapRoute, SwapStep, Token, TokenAmount
-
-# ---------------------------------------------------------------------------
-# ABI struct definitions (annotated classes)
-# ---------------------------------------------------------------------------
-
-
-class QuoteExactInputSingleParams(ABIStruct):
-    """Params struct for ``QuoterV2.quoteExactInputSingle``."""
-
-    tokenIn: Annotated[str, "address"]
-    tokenOut: Annotated[str, "address"]
-    amountIn: Annotated[int, "uint256"]
-    fee: Annotated[int, "uint24"]
-    sqrtPriceLimitX96: Annotated[int, "uint160"]
-
-
-class QuoteExactOutputSingleParams(ABIStruct):
-    """Params struct for ``QuoterV2.quoteExactOutputSingle``."""
-
-    tokenIn: Annotated[str, "address"]
-    tokenOut: Annotated[str, "address"]
-    amount: Annotated[int, "uint256"]
-    fee: Annotated[int, "uint24"]
-    sqrtPriceLimitX96: Annotated[int, "uint160"]
-
-
-class ExactInputSingleParams(ABIStruct):
-    """Params struct for ``SwapRouter.exactInputSingle``."""
-
-    tokenIn: Annotated[str, "address"]
-    tokenOut: Annotated[str, "address"]
-    fee: Annotated[int, "uint24"]
-    recipient: Annotated[str, "address"]
-    deadline: Annotated[int, "uint256"]
-    amountIn: Annotated[int, "uint256"]
-    amountOutMinimum: Annotated[int, "uint256"]
-    sqrtPriceLimitX96: Annotated[int, "uint160"]
-
-
-class ExactInputParams(ABIStruct):
-    """Params struct for ``SwapRouter.exactInput``."""
-
-    path: Annotated[bytes, "bytes"]
-    recipient: Annotated[str, "address"]
-    deadline: Annotated[int, "uint256"]
-    amountIn: Annotated[int, "uint256"]
-    amountOutMinimum: Annotated[int, "uint256"]
-
-
-class ExactOutputSingleParams(ABIStruct):
-    """Params struct for ``SwapRouter.exactOutputSingle``."""
-
-    tokenIn: Annotated[str, "address"]
-    tokenOut: Annotated[str, "address"]
-    fee: Annotated[int, "uint24"]
-    recipient: Annotated[str, "address"]
-    deadline: Annotated[int, "uint256"]
-    amountOut: Annotated[int, "uint256"]
-    amountInMaximum: Annotated[int, "uint256"]
-    sqrtPriceLimitX96: Annotated[int, "uint160"]
-
-
-# ---------------------------------------------------------------------------
-# ABI fragments
-# ---------------------------------------------------------------------------
-
-_QUOTER_V2_ABI = (
-    QuoteExactInputSingleParams.human_readable_abi()
-    + QuoteExactOutputSingleParams.human_readable_abi()
-    + [
-        "function quoteExactInputSingle(QuoteExactInputSingleParams params) external returns (uint256 amountOut, uint160 sqrtPriceX96After, uint32 initializedTicksCrossed, uint256 gasEstimate)",
-        "function quoteExactOutputSingle(QuoteExactOutputSingleParams params) external returns (uint256 amountIn, uint160 sqrtPriceX96After, uint32 initializedTicksCrossed, uint256 gasEstimate)",
-        "function quoteExactInput(bytes path, uint256 amountIn) external returns (uint256 amountOut, uint160[] sqrtPriceX96AfterList, uint32[] initializedTicksCrossedList, uint256 gasEstimate)",
-    ]
-)
-
-_ROUTER_V3_ABI = (
-    ExactInputSingleParams.human_readable_abi()
-    + ExactInputParams.human_readable_abi()
-    + ExactOutputSingleParams.human_readable_abi()
-    + [
-        "function exactInputSingle(ExactInputSingleParams params) external payable returns (uint256 amountOut)",
-        "function exactInput(ExactInputParams params) external payable returns (uint256 amountOut)",
-        "function exactOutputSingle(ExactOutputSingleParams params) external payable returns (uint256 amountIn)",
-    ]
-)
-
-_FACTORY_V3_ABI = [
-    "function getPool(address tokenA, address tokenB, uint24 fee) external view returns (address pool)",
-]
-
-_POOL_V3_ABI = [
-    "function slot0() external view returns (uint160 sqrtPriceX96, int24 tick, uint16 observationIndex, uint16 observationCardinality, uint16 observationCardinalityNext, uint8 feeProtocol, bool unlocked)",
-    "function liquidity() external view returns (uint128)",
-    "function fee() external view returns (uint24)",
-    "function token0() external view returns (address)",
-    "function token1() external view returns (address)",
-]
 
 # Canonical fee tiers (in hundredths of a basis point)
 FEE_TIERS: tuple[int, ...] = (100, 500, 3000, 10000)
@@ -143,8 +51,7 @@ class UniswapV3(BaseAMM):
         super().__init__(w3, router_address)
         self._protocol_name = protocol_name
         self.default_fee = default_fee
-        self._router = Contract.from_abi(_ROUTER_V3_ABI, to=router_address)
-        self._quoter = Contract.from_abi(_QUOTER_V2_ABI, to=quoter_address)
+        self.quoter_address = quoter_address
 
     @property
     def protocol_name(self) -> str:
@@ -152,11 +59,11 @@ class UniswapV3(BaseAMM):
 
     def get_factory_contract(self, factory_address: str) -> Contract:
         """Return a contract bound to a V3 factory."""
-        return Contract.from_abi(_FACTORY_V3_ABI, to=factory_address)
+        return UNISWAP_V3_FACTORY(to=factory_address)
 
     def get_pool_contract(self, pool_address: str) -> Contract:
         """Return a contract bound to a V3 pool."""
-        return Contract.from_abi(_POOL_V3_ABI, to=pool_address)
+        return UNISWAP_V3_POOL(to=pool_address)
 
     # ------------------------------------------------------------------
     # Price queries (via QuoterV2)
@@ -191,7 +98,7 @@ class UniswapV3(BaseAMM):
             sqrtPriceLimitX96=0,
         )
         try:
-            result = await self._quoter.fns.quoteExactInputSingle(params).call(self.w3)
+            result = await UNISWAP_V3_QUOTER_V2.fns.quoteExactInputSingle(params).call(self.w3, to=self.quoter_address)
             amount_out = result[0] if isinstance(result, (list, tuple)) else result
         except Exception as exc:
             raise InsufficientLiquidityError(f"quoteExactInputSingle failed: {exc}") from exc
@@ -233,7 +140,9 @@ class UniswapV3(BaseAMM):
         # Multi-hop: encode path as bytes (tokenA + fee + tokenB + fee + tokenC …)
         encoded_path = self._encode_path(path, hop_fees)
         try:
-            result = await self._quoter.fns.quoteExactInput(encoded_path, amount_in.amount).call(self.w3)
+            result = await UNISWAP_V3_QUOTER_V2.fns.quoteExactInput(encoded_path, amount_in.amount).call(
+                self.w3, to=self.quoter_address
+            )
             final_amount_out = result[0] if isinstance(result, (list, tuple)) else result
         except Exception as exc:
             raise InsufficientLiquidityError(f"quoteExactInput failed: {exc}") from exc
@@ -267,7 +176,7 @@ class UniswapV3(BaseAMM):
             sqrtPriceLimitX96=0,
         )
         try:
-            result = await self._quoter.fns.quoteExactOutputSingle(params).call(self.w3)
+            result = await UNISWAP_V3_QUOTER_V2.fns.quoteExactOutputSingle(params).call(self.w3, to=self.quoter_address)
             amount_in_raw = result[0] if isinstance(result, (list, tuple)) else result
         except Exception as exc:
             raise InsufficientLiquidityError(f"quoteExactOutputSingle failed: {exc}") from exc

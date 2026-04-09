@@ -13,36 +13,10 @@ from decimal import Decimal
 from eth_contract import Contract
 from web3 import AsyncWeb3
 
+from pydefi.abi.amm import UNISWAP_V2_FACTORY, UNISWAP_V2_PAIR, UNISWAP_V2_ROUTER
 from pydefi.amm.base import BaseAMM
 from pydefi.exceptions import InsufficientLiquidityError
 from pydefi.types import SwapRoute, SwapStep, Token, TokenAmount
-
-# ---------------------------------------------------------------------------
-# ABI fragments (human-readable signatures)
-# ---------------------------------------------------------------------------
-
-_ROUTER_ABI = [
-    "function getAmountsOut(uint amountIn, address[] calldata path) external view returns (uint[] memory amounts)",
-    "function getAmountsIn(uint amountOut, address[] calldata path) external view returns (uint[] memory amounts)",
-    "function swapExactTokensForTokens(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline) external returns (uint[] memory amounts)",
-    "function swapTokensForExactTokens(uint amountOut, uint amountInMax, address[] calldata path, address to, uint deadline) external returns (uint[] memory amounts)",
-    "function swapExactETHForTokens(uint amountOutMin, address[] calldata path, address to, uint deadline) external payable returns (uint[] memory amounts)",
-    "function swapExactTokensForETH(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline) external returns (uint[] memory amounts)",
-    "function factory() external pure returns (address)",
-    "function WETH() external pure returns (address)",
-]
-
-_FACTORY_ABI = [
-    "function getPair(address tokenA, address tokenB) external view returns (address pair)",
-    "function allPairs(uint) external view returns (address pair)",
-    "function allPairsLength() external view returns (uint)",
-]
-
-_PAIR_ABI = [
-    "function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast)",
-    "function token0() external view returns (address)",
-    "function token1() external view returns (address)",
-]
 
 
 class UniswapV2(BaseAMM):
@@ -65,7 +39,6 @@ class UniswapV2(BaseAMM):
     ) -> None:
         super().__init__(w3, router_address)
         self._protocol_name = protocol_name
-        self._router = Contract.from_abi(_ROUTER_ABI, to=router_address)
 
     @property
     def protocol_name(self) -> str:
@@ -77,11 +50,11 @@ class UniswapV2(BaseAMM):
 
     def get_factory_contract(self, factory_address: str) -> Contract:
         """Return a :class:`~eth_contract.Contract` bound to a V2 factory."""
-        return Contract.from_abi(_FACTORY_ABI, to=factory_address)
+        return UNISWAP_V2_FACTORY(to=factory_address)
 
     def get_pair_contract(self, pair_address: str) -> Contract:
         """Return a :class:`~eth_contract.Contract` bound to a V2 pair."""
-        return Contract.from_abi(_PAIR_ABI, to=pair_address)
+        return UNISWAP_V2_PAIR(to=pair_address)
 
     # ------------------------------------------------------------------
     # Price queries
@@ -108,7 +81,9 @@ class UniswapV2(BaseAMM):
 
         addresses = [t.address for t in path]
         try:
-            raw_amounts: list[int] = await self._router.fns.getAmountsOut(amount_in.amount, addresses).call(self.w3)
+            raw_amounts: list[int] = await UNISWAP_V2_ROUTER.fns.getAmountsOut(amount_in.amount, addresses).call(
+                self.w3, to=self.router_address
+            )
         except Exception as exc:
             raise InsufficientLiquidityError(f"getAmountsOut failed: {exc}") from exc
 
@@ -133,7 +108,9 @@ class UniswapV2(BaseAMM):
 
         addresses = [t.address for t in path]
         try:
-            raw_amounts: list[int] = await self._router.fns.getAmountsIn(amount_out.amount, addresses).call(self.w3)
+            raw_amounts: list[int] = await UNISWAP_V2_ROUTER.fns.getAmountsIn(amount_out.amount, addresses).call(
+                self.w3, to=self.router_address
+            )
         except Exception as exc:
             raise InsufficientLiquidityError(f"getAmountsIn failed: {exc}") from exc
 
