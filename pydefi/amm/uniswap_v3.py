@@ -17,7 +17,6 @@ from pydefi.abi.amm import (
     UNISWAP_V3_FACTORY,
     UNISWAP_V3_POOL,
     UNISWAP_V3_QUOTER_V2,
-    UNISWAP_V3_ROUTER,
     QuoteExactInputSingleParams,
     QuoteExactOutputSingleParams,
 )
@@ -52,8 +51,7 @@ class UniswapV3(BaseAMM):
         super().__init__(w3, router_address)
         self._protocol_name = protocol_name
         self.default_fee = default_fee
-        self._router = UNISWAP_V3_ROUTER(to=router_address)
-        self._quoter = UNISWAP_V3_QUOTER_V2(to=quoter_address)
+        self.quoter_address = quoter_address
 
     @property
     def protocol_name(self) -> str:
@@ -100,7 +98,7 @@ class UniswapV3(BaseAMM):
             sqrtPriceLimitX96=0,
         )
         try:
-            result = await self._quoter.fns.quoteExactInputSingle(params).call(self.w3)
+            result = await UNISWAP_V3_QUOTER_V2.fns.quoteExactInputSingle(params).call(self.w3, to=self.quoter_address)
             amount_out = result[0] if isinstance(result, (list, tuple)) else result
         except Exception as exc:
             raise InsufficientLiquidityError(f"quoteExactInputSingle failed: {exc}") from exc
@@ -142,7 +140,7 @@ class UniswapV3(BaseAMM):
         # Multi-hop: encode path as bytes (tokenA + fee + tokenB + fee + tokenC …)
         encoded_path = self._encode_path(path, hop_fees)
         try:
-            result = await self._quoter.fns.quoteExactInput(encoded_path, amount_in.amount).call(self.w3)
+            result = await UNISWAP_V3_QUOTER_V2.fns.quoteExactInput(encoded_path, amount_in.amount).call(self.w3, to=self.quoter_address)
             final_amount_out = result[0] if isinstance(result, (list, tuple)) else result
         except Exception as exc:
             raise InsufficientLiquidityError(f"quoteExactInput failed: {exc}") from exc
@@ -176,7 +174,7 @@ class UniswapV3(BaseAMM):
             sqrtPriceLimitX96=0,
         )
         try:
-            result = await self._quoter.fns.quoteExactOutputSingle(params).call(self.w3)
+            result = await UNISWAP_V3_QUOTER_V2.fns.quoteExactOutputSingle(params).call(self.w3, to=self.quoter_address)
             amount_in_raw = result[0] if isinstance(result, (list, tuple)) else result
         except Exception as exc:
             raise InsufficientLiquidityError(f"quoteExactOutputSingle failed: {exc}") from exc

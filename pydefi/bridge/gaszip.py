@@ -64,7 +64,6 @@ class GasZip(BaseBridge):
         super().__init__(src_chain_id, dst_chain_id)
         self.contract_address = contract_address
         self._api_base = api_base_url.rstrip("/")
-        self._contract = GASZIP(to=contract_address)
 
     @property
     def protocol_name(self) -> str:
@@ -175,7 +174,7 @@ class GasZip(BaseBridge):
         except ValueError as exc:
             raise BridgeError(f"Invalid recipient address '{recipient}': {exc}") from exc
 
-        call_data: bytes = self._contract.fns.deposit(
+        call_data: bytes = GASZIP.fns.deposit(
             to_uint256,
             [self.dst_chain_id],
         ).data

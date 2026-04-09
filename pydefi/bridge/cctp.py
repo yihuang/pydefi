@@ -293,8 +293,6 @@ class CCTP(BaseBridge):
 
         self.cctp_forwarder_address = cctp_forwarder_address or _CCTP_FORWARDER[is_mainnet]
 
-        self._token_messenger = CCTP_TOKEN_MESSENGER_V2(to=self.token_messenger_address)
-
     @property
     def protocol_name(self) -> str:
         return "CCTP"
@@ -501,7 +499,7 @@ class CCTP(BaseBridge):
             dst_caller_bytes = self._address_to_bytes32(forwarder)
             hook_data = encode_cctp_forward_hook_data(recipient, hypercore_dex)
 
-            call_data = self._token_messenger.fns.depositForBurnWithHook(
+            call_data = CCTP_TOKEN_MESSENGER_V2.fns.depositForBurnWithHook(
                 amount_in.amount,
                 _dst_domain,
                 mint_recipient,
@@ -515,7 +513,7 @@ class CCTP(BaseBridge):
             mint_recipient = self._address_to_bytes32(recipient)
             dst_caller_bytes = self._address_to_bytes32(destination_caller) if destination_caller else b"\x00" * 32
 
-            call_data = self._token_messenger.fns.depositForBurn(
+            call_data = CCTP_TOKEN_MESSENGER_V2.fns.depositForBurn(
                 amount_in.amount,
                 _dst_domain,
                 mint_recipient,
@@ -582,7 +580,7 @@ class CCTP(BaseBridge):
         mint_recipient = self._address_to_bytes32(composer_address)
         destination_caller = self._address_to_bytes32(composer_address)
 
-        call_data = self._token_messenger.fns.depositForBurnWithHook(
+        call_data = CCTP_TOKEN_MESSENGER_V2.fns.depositForBurnWithHook(
             amount_in.amount,
             _dst_domain,
             mint_recipient,

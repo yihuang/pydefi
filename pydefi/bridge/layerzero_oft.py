@@ -80,7 +80,6 @@ class LayerZeroOFT(BaseBridge):
         self.w3 = w3
         self.oft_address = oft_address
         self.dst_oft_address = dst_oft_address or oft_address
-        self._oft = LAYERZERO_OFT(to=oft_address)
 
     @property
     def protocol_name(self) -> str:
@@ -156,7 +155,7 @@ class LayerZeroOFT(BaseBridge):
         )
 
         try:
-            result = await self._oft.fns.quoteSend(send_param, False).call(self.w3)
+            result = await LAYERZERO_OFT.fns.quoteSend(send_param, False).call(self.w3, to=self.oft_address)
             # quoteSend returns (nativeFee, lzTokenFee)
             native_fee: int = result[0] if isinstance(result, (list, tuple)) else result
         except Exception as exc:
@@ -251,7 +250,7 @@ class LayerZeroOFT(BaseBridge):
         native_fee = await self.quote_send_fee(amount_in.amount, recipient, slippage_bps)
         messaging_fee = MessagingFee(nativeFee=native_fee, lzTokenFee=0)
 
-        call_data = self._oft.fns.send(send_param, messaging_fee, _refund).data
+        call_data = LAYERZERO_OFT.fns.send(send_param, messaging_fee, _refund).data
 
         return {
             "to": self.oft_address,

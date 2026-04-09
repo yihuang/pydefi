@@ -74,7 +74,6 @@ class Stargate(BaseBridge):
         super().__init__(src_chain_id, dst_chain_id)
         self.w3 = w3
         self.router_address = router_address
-        self._router = STARGATE_ROUTER(to=router_address)
 
     @property
     def protocol_name(self) -> str:
@@ -114,13 +113,13 @@ class Stargate(BaseBridge):
         lz_tx_params = (dst_gas, 0, b"")
         to_bytes = bytes.fromhex(recipient[2:].lower().zfill(40))
         try:
-            result = await self._router.fns.quoteLayerZeroFee(
+            result = await STARGATE_ROUTER.fns.quoteLayerZeroFee(
                 lz_dst_chain,
                 1,  # TYPE_SWAP_REMOTE
                 to_bytes,
                 b"",
                 lz_tx_params,
-            ).call(self.w3)
+            ).call(self.w3, to=self.router_address)
             fee: int = result[0] if isinstance(result, (list, tuple)) else result
         except Exception as exc:
             raise BridgeError(f"Stargate: quoteLayerZeroFee failed: {exc}") from exc
@@ -195,7 +194,7 @@ class Stargate(BaseBridge):
         to_bytes = bytes.fromhex(recipient[2:].lower().zfill(40))
 
         # Build call data via the Contract ABI
-        call_data = self._router.fns.swap(
+        call_data = STARGATE_ROUTER.fns.swap(
             lz_dst_chain,
             src_pool_id,
             dst_pool_id,

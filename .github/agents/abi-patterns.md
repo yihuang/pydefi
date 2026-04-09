@@ -81,10 +81,12 @@ Rules:
 
 ## 3. Using ABIs in Implementation Files
 
-### Binding a Contract to an Address
+### The Preferred Pattern: Pass `to=` at Call Time
 
-`Contract.from_abi(...)` returns an unbound contract class.  Bind it to a
-specific on-chain address with the `to=` keyword argument:
+The ABI definition and the contract address are **intentionally decoupled**.
+Import the unbound contract constant and pass the on-chain address directly in
+the `.call()` or `.transact()` call via the `to=` keyword argument.  There is
+no need to store a bound contract instance:
 
 ```python
 # pydefi/amm/uniswap_v2.py
@@ -92,28 +94,33 @@ from pydefi.abi.amm import UNISWAP_V2_ROUTER
 
 class UniswapV2(BaseAMM):
     def __init__(self, w3, router_address):
-        self._router = UNISWAP_V2_ROUTER(to=router_address)
+        self.w3 = w3
+        self.router_address = router_address  # plain string, no binding
+
+    async def get_amounts_out(self, amount_in, path):
+        # Pass the address at call time via to=
+        return await UNISWAP_V2_ROUTER.fns.getAmountsOut(
+            amount_in, path
+        ).call(self.w3, to=self.router_address)
 ```
 
-Do **not** call `Contract.from_abi(abi_list, to=address)` directly in
-implementation files.  The ABI list belongs in `pydefi/abi/`, and the address
-binding happens at instantiation time.
-
-### Calling Contract Functions
+The same principle applies to `transact()`:
 
 ```python
-# Read call (no gas, returns decoded value)
-amounts = await self._router.fns.getAmountsOut(amount_in, path).call(w3)
-
-# State-changing transaction
-receipt = await self._router.fns.swapExactTokensForTokens(
+receipt = await UNISWAP_V2_ROUTER.fns.swapExactTokensForTokens(
     amount_in, min_out, path, recipient, deadline
-).transact(w3, account)
+).transact(w3, account, to=router_address)
+```
 
-# Build calldata without a provider
-calldata = self._router.fns.swapExactTokensForTokens(
-    amount_in, min_out, path, recipient, deadline
+For encoding calldata (no network call), the `to=` address is not part of the
+calldata itself and should **not** be passed — just use `.data` directly:
+
+```python
+calldata = STARGATE_ROUTER.fns.swap(
+    dst_chain, src_pool, dst_pool, ...
 ).data
+# Then include the address separately in the tx dict:
+return {"to": router_address, "data": "0x" + calldata.hex(), ...}
 ```
 
 ### Passing Struct Arguments
@@ -121,7 +128,7 @@ calldata = self._router.fns.swapExactTokensForTokens(
 Instantiate the `ABIStruct` subclass and pass it directly to the function:
 
 ```python
-from pydefi.abi.amm import ExactInputSingleParams, UNISWAP_V3_ROUTER
+from pydefi.abi.amm import ExactInputSingleParams, UNISWAP_V3_QUOTER_V2
 
 params = ExactInputSingleParams(
     tokenIn=token_in.address,
@@ -131,7 +138,9 @@ params = ExactInputSingleParams(
     amountIn=amount_in,
     amountOutMinimum=min_out,
 )
-result = await self._router.fns.exactInputSingle(params).call(w3)
+result = await UNISWAP_V3_QUOTER_V2.fns.quoteExactInputSingle(params).call(
+    w3, to=quoter_address
+)
 ```
 
 ---
@@ -145,12 +154,13 @@ result = await self._router.fns.exactInputSingle(params).call(w3)
 2. Add any `ABIStruct` subclasses first (if the contract uses Solidity structs).
 
 3. Add a module-level `Contract.from_abi(...)` constant for each logical
-   contract interface (router, factory, pool, etc.).
+   contract interface (router, factory, pool, etc.).  **Do not** pass `to=`
+   here — the constant is unbound by design.
 
 4. Export the new names from `pydefi/abi/__init__.py`.
 
-5. Import the constant(s) in the implementation file and use them with
-   `CONTRACT_NAME(to=address)` to bind addresses.
+5. Import the constant(s) in the implementation file and pass the on-chain
+   address via `to=` at call/transact time.
 
 ---
 
@@ -160,7 +170,7 @@ result = await self._router.fns.exactInputSingle(params).call(w3)
 |--------|-----------|---------|
 | `ABIStruct` class | `PascalCase`, Solidity name | `ExactInputSingleParams` |
 | Unbound `Contract` constant | `UPPER_SNAKE_CASE`, protocol + role | `UNISWAP_V3_ROUTER` |
-| Bound contract instance | `_snake_case` (private attr) | `self._router` |
+| Address attribute | plain `str` attribute on the class | `self.router_address` |
 
 ---
 
@@ -194,5 +204,11 @@ from pydefi.abi.lending import AAVE_V3_POOL
 
 class AaveV3:
     def __init__(self, w3, pool_address):
-        self._pool = AAVE_V3_POOL(to=pool_address)
+        self.w3 = w3
+        self.pool_address = pool_address
+
+    async def supply(self, asset, amount, recipient, referral=0):
+        return await AAVE_V3_POOL.fns.supply(
+            asset, amount, recipient, referral
+        ).transact(self.w3, account, to=self.pool_address)
 ```

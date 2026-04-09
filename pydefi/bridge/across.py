@@ -54,7 +54,6 @@ class Across(BaseBridge):
         self.w3 = w3
         self.spoke_pool_address = spoke_pool_address
         self._api_base = api_base_url.rstrip("/")
-        self._spoke_pool = ACROSS_SPOKE_POOL(to=spoke_pool_address)
 
     @property
     def protocol_name(self) -> str:
@@ -163,7 +162,7 @@ class Across(BaseBridge):
         quote_timestamp = int(fees_data.get("timestamp", 0))
         fill_deadline = quote_timestamp + 18_000  # 5 hours
 
-        call_data = self._spoke_pool.fns.depositV3(
+        call_data = ACROSS_SPOKE_POOL.fns.depositV3(
             depositor,
             recipient,
             token_in.address,

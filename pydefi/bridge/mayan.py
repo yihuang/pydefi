@@ -426,8 +426,7 @@ class Mayan(BaseBridge):
             raise BridgeError("Mayan: missing swapRouterAddress or swapRouterCalldata")
 
         # Step 4 — ABI-encode createOrderWithToken for MayanSwift V2
-        swift_c = MAYAN_SWIFT_V2(to=swift_contract)
-        swift_calldata: bytes = swift_c.fns.createOrderWithToken(
+        swift_calldata: bytes = MAYAN_SWIFT_V2.fns.createOrderWithToken(
             swift_input_contract,  # address tokenIn (the WETH the SWIFT contract receives)
             effective_amount_in,  # uint256 amountIn
             order_params,  # OrderParams
@@ -435,8 +434,7 @@ class Mayan(BaseBridge):
         ).data
 
         # Step 5 — ABI-encode swapAndForwardEth on the Mayan Forwarder
-        forwarder = MAYAN_FORWARDER(to=_MAYAN_FORWARDER)
-        forward_calldata: bytes = forwarder.fns.swapAndForwardEth(
+        forward_calldata: bytes = MAYAN_FORWARDER.fns.swapAndForwardEth(
             amount_in.amount,  # uint256 amountIn (ETH to swap)
             swap_router_address,  # address swapProtocol (DEX router)
             bytes.fromhex(swap_router_calldata.removeprefix("0x")),  # bytes swapData
