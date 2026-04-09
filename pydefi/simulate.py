@@ -42,9 +42,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from eth_abi import decode as abi_decode
-from eth_abi import encode as abi_encode
 from hexbytes import HexBytes
 from web3 import AsyncWeb3, Web3
+from web3._utils.type_conversion import to_hex_if_bytes
 from web3.exceptions import ContractLogicError, Web3RPCError
 from web3.types import BlockIdentifier
 
@@ -74,16 +74,28 @@ _ERROR_SELECTOR: bytes = bytes.fromhex("08c379a0")
 # keccak256("Panic(uint256)")[:4]
 _PANIC_SELECTOR: bytes = bytes.fromhex("4e487b71")
 
-# ERC-20 function selectors
-_ALLOWANCE_SELECTOR: bytes = bytes.fromhex("dd62ed3e")  # allowance(address,address)
-_BALANCE_OF_SELECTOR: bytes = bytes.fromhex("70a08231")  # balanceOf(address)
-
 # Sentinel for zero address (used in synthetic ETH transfer events)
 _ZERO_ADDRESS: str = "0x0000000000000000000000000000000000000000"
 
 #: Maximum ``uint256`` value — use as the *amount* in
 #: :func:`build_allowance_state_override` for an unlimited approval.
 MAX_UINT256: int = 2**256 - 1
+
+
+# ── Internal helpers ──────────────────────────────────────────────────────────
+
+
+def _to_block_param(block: BlockIdentifier) -> str:
+    """Convert a ``BlockIdentifier`` to a JSON-RPC block parameter string.
+
+    Handles all three ``BlockIdentifier`` forms: tag strings (``"latest"``),
+    integers, and block hashes (raw ``bytes`` / ``HexBytes``).
+    """
+    if isinstance(block, (bytes, HexBytes)):
+        return "0x" + bytes(block).hex()
+    if isinstance(block, int):
+        return hex(block)
+    return str(block)
 
 
 # ── Data classes ─────────────────────────────────────────────────────────────
@@ -306,16 +318,16 @@ async def detect_allowance_slot(
         of the ``allowances`` mapping, or ``None`` if detection fails (e.g.
         the RPC does not support ``debug_traceCall``).
     """
+    from eth_contract.erc20 import ERC20
     from eth_contract.slots import parse_allowance_slot
 
-    calldata = _ALLOWANCE_SELECTOR + abi_encode(["address", "address"], [owner, spender])
-    block_param = block if isinstance(block, str) else hex(block)
+    block_param = _to_block_param(block)
 
     try:
         response = await w3.provider.make_request(
             "debug_traceCall",
             [
-                {"from": owner, "to": token, "data": "0x" + calldata.hex()},
+                {"from": owner, "to": token, "data": ERC20.fns.allowance(owner, spender).data},
                 block_param,
                 {
                     # stack and memory are required by parse_allowance_slot for
@@ -426,16 +438,16 @@ async def detect_balance_slot(
         A :class:`~eth_contract.slots.MappingSlot` representing the base slot
         of the ``balances`` mapping, or ``None`` if detection fails.
     """
+    from eth_contract.erc20 import ERC20
     from eth_contract.slots import parse_balance_slot
 
-    calldata = _BALANCE_OF_SELECTOR + abi_encode(["address"], [holder])
-    block_param = block if isinstance(block, str) else hex(block)
+    block_param = _to_block_param(block)
 
     try:
         response = await w3.provider.make_request(
             "debug_traceCall",
             [
-                {"from": holder, "to": token, "data": "0x" + calldata.hex()},
+                {"from": holder, "to": token, "data": ERC20.fns.balanceOf(holder).data},
                 block_param,
                 {
                     # stack and memory are required for KECCAK256 pre-image extraction.
@@ -624,7 +636,12 @@ async def simulate_with_eth_simulate_v1(
     results: list[SimulationResult] = []
     for block_result in sim_blocks:
         for call_result in block_result.get("calls", []):
-            success = int(call_result.get("status", 0)) == 1
+            status_raw = call_result.get("status", 0)
+            if isinstance(status_raw, str):
+                status = int(status_raw, 0)
+            else:
+                status = int(status_raw)
+            success = status == 1
 
             raw_return = call_result.get("returnData", b"")
             if isinstance(raw_return, str):
@@ -697,7 +714,7 @@ async def simulate_with_debug_trace_call(
     Raises:
         Exception: Propagates if the RPC returns an unexpected error.
     """
-    block_param = block if isinstance(block, str) else hex(block)
+    block_param = _to_block_param(block)
 
     tracer_config: dict = {
         "tracer": "callTracer",
@@ -723,11 +740,7 @@ async def simulate_with_debug_trace_call(
     result = response.get("result", {})
     success = not result.get("error") and not result.get("failed", False)
 
-    raw_output = result.get("output") or result.get("returnValue") or ""
-    if isinstance(raw_output, (bytes, HexBytes)):
-        return_data = bytes(raw_output)
-    else:
-        return_data = bytes.fromhex(str(raw_output).removeprefix("0x")) if raw_output else b""
+    return_data = HexBytes(result.get("output") or result.get("returnValue") or "0x")
 
     revert_reason: str | None = None
     if not success:
@@ -735,9 +748,14 @@ async def simulate_with_debug_trace_call(
         if not revert_reason and return_data:
             revert_reason = _decode_revert_reason(return_data)
 
-    raw_logs = _collect_call_tree_logs(result)
-    transfers = _parse_transfer_logs(raw_logs)
-    balance_changes = _aggregate_balance_changes(transfers)
+    if success:
+        raw_logs = _collect_call_tree_logs(result)
+        transfers = _parse_transfer_logs(raw_logs)
+        balance_changes = _aggregate_balance_changes(transfers)
+    else:
+        raw_logs = []
+        transfers = []
+        balance_changes = []
 
     gas_used_raw = result.get("gasUsed", "0x0")
     gas_used = int(str(gas_used_raw), 16) if isinstance(gas_used_raw, str) else int(gas_used_raw or 0)
@@ -745,7 +763,7 @@ async def simulate_with_debug_trace_call(
     return SimulationResult(
         success=success,
         revert_reason=revert_reason,
-        return_data=return_data if success else b"",
+        return_data=bytes(return_data) if success else b"",
         transfers=transfers,
         balance_changes=balance_changes,
         gas_used=gas_used,
@@ -753,12 +771,69 @@ async def simulate_with_debug_trace_call(
     )
 
 
+def _approvals_to_calls(approvals: list[dict]) -> list[dict]:
+    """Convert approval specs to ERC-20 ``approve`` transaction dicts.
+
+    Each entry in *approvals* must contain ``token``, ``owner``, and
+    ``spender`` keys, plus an optional ``amount`` (defaults to
+    :data:`MAX_UINT256`).
+    """
+    from eth_contract.erc20 import ERC20
+
+    calls = []
+    for approval in approvals:
+        amount = approval.get("amount", MAX_UINT256)
+        calls.append(
+            {
+                "from": approval["owner"],
+                "to": approval["token"],
+                "data": ERC20.fns.approve(approval["spender"], amount).data,
+            }
+        )
+    return calls
+
+
+async def _approvals_to_state_overrides(
+    w3: AsyncWeb3,
+    approvals: list[dict],
+    block: BlockIdentifier,
+) -> dict:
+    """Build a merged state-override dict from a list of approval specs.
+
+    Uses :func:`build_allowance_state_override` for each entry.  Entries whose
+    slot cannot be detected are skipped (logged at DEBUG level).
+    """
+    merged: dict = {}
+    for approval in approvals:
+        try:
+            amount = approval.get("amount", MAX_UINT256)
+            override = await build_allowance_state_override(
+                w3,
+                token=approval["token"],
+                owner=approval["owner"],
+                spender=approval["spender"],
+                amount=amount,
+                block=block,
+            )
+            for addr, state in override.items():
+                if addr not in merged:
+                    merged[addr] = {}
+                for key, val in state.items():
+                    if key == "stateDiff":
+                        merged[addr].setdefault("stateDiff", {}).update(val)
+                    else:
+                        merged[addr][key] = val
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Could not build state override for approval %s: %s", approval, exc)
+    return merged
+
+
 async def simulate_tx(
     w3: AsyncWeb3,
     tx: dict,
     *,
+    approvals: list[dict] | None = None,
     state_overrides: dict | None = None,
-    prepend_calls: list[dict] | None = None,
     block: BlockIdentifier = "latest",
 ) -> SimulationResult:
     """Simulate a transaction using the best available RPC method.
@@ -766,44 +841,68 @@ async def simulate_tx(
     Auto-detects which simulation method the connected RPC supports and
     chooses accordingly:
 
-    1. **eth_simulateV1** — when *prepend_calls* is provided (multi-message).
+    1. **eth_simulateV1** — tried first (multi-message, broadest capability).
+       When *approvals* are provided, ``approve`` calls are prepended.
     2. **debug_traceCall** — when available (logs + gas, single message).
-    3. **eth_call** — always available (return data only, no logs).
+       When *approvals* are provided, state overrides are generated via
+       :func:`build_allowance_state_override` so the simulated call sees the
+       required allowances without sending real approval transactions.
+    3. **eth_call** — always available (return data only, no logs).  Same
+       allowance state overrides as for ``debug_traceCall``.
 
     Args:
         w3: Async web3 instance.
         tx: Transaction dict (``from``, ``to``, ``data``, ``value``, …).
-        state_overrides: Optional EVM state overrides applied before the call.
-        prepend_calls: Additional calls to execute *before* the main *tx*
-            within the same ``eth_simulateV1`` block call.  Useful for
-            simulating an ERC-20 ``approve`` before the main swap transaction
-            without sending a real approval on chain.
+        approvals: Optional list of ERC-20 approval specs, each a dict with
+            ``token``, ``owner``, ``spender``, and an optional ``amount``
+            (defaults to :data:`MAX_UINT256`).  The implementation translates
+            these into ``approve`` prepend-calls for ``eth_simulateV1`` or
+            storage-slot state-overrides for ``debug_traceCall`` / ``eth_call``
+            — callers do not need to know which backend is used.
+        state_overrides: Additional EVM state overrides applied before the
+            call (e.g. ETH balance injections).  Merged with any overrides
+            derived from *approvals*.
         block: Block identifier to simulate against.
 
     Returns:
         A :class:`SimulationResult` for the main transaction *tx*.
     """
     # ── 1. eth_simulateV1 (multi-message) ────────────────────────────────────
-    if prepend_calls:
-        all_calls = list(prepend_calls) + [tx]
-        try:
-            results = await simulate_with_eth_simulate_v1(
-                w3,
-                all_calls,
-                state_overrides=state_overrides,
-                block=block,
-            )
-            if results:
-                return results[-1]
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("eth_simulateV1 failed (%s); falling back to debug_traceCall", exc)
+    try:
+        prepend_calls = _approvals_to_calls(approvals) if approvals else []
+        all_calls = prepend_calls + [tx]
+        results = await simulate_with_eth_simulate_v1(
+            w3,
+            all_calls,
+            state_overrides=state_overrides,
+            block=block,
+        )
+        if results:
+            return results[-1]
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("eth_simulateV1 failed (%s); falling back to debug_traceCall", exc)
+
+    # ── Build state overrides from approvals for debug_traceCall / eth_call ──
+    approval_overrides = await _approvals_to_state_overrides(w3, approvals, block) if approvals else {}
+    combined: dict = {}
+    if state_overrides:
+        combined.update(state_overrides)
+    for addr, state in approval_overrides.items():
+        if addr not in combined:
+            combined[addr] = {}
+        for key, val in state.items():
+            if key == "stateDiff":
+                combined[addr].setdefault("stateDiff", {}).update(val)
+            else:
+                combined[addr][key] = val
+    merged_overrides: dict | None = combined or None
 
     # ── 2. debug_traceCall ────────────────────────────────────────────────────
     try:
         return await simulate_with_debug_trace_call(
             w3,
             tx,
-            state_overrides=state_overrides,
+            state_overrides=merged_overrides,
             block=block,
         )
     except Exception as exc:  # noqa: BLE001
@@ -813,7 +912,7 @@ async def simulate_tx(
     return await simulate_with_eth_call(
         w3,
         tx,
-        state_overrides=state_overrides,
+        state_overrides=merged_overrides,
         block=block,
     )
 
@@ -844,10 +943,7 @@ async def trace_transaction(
     Raises:
         Exception: Propagates if the RPC returns an unexpected error.
     """
-    if isinstance(tx_hash, (bytes, HexBytes)):
-        hash_param = "0x" + bytes(tx_hash).hex()
-    else:
-        hash_param = str(tx_hash)
+    hash_param = to_hex_if_bytes(tx_hash)
 
     response = await w3.provider.make_request(
         "debug_traceTransaction",
@@ -869,11 +965,7 @@ async def trace_transaction(
     result = response.get("result", {})
     success = not result.get("error") and not result.get("failed", False)
 
-    raw_output = result.get("output") or result.get("returnValue") or ""
-    if isinstance(raw_output, (bytes, HexBytes)):
-        return_data = bytes(raw_output)
-    else:
-        return_data = bytes.fromhex(str(raw_output).removeprefix("0x")) if raw_output else b""
+    return_data = HexBytes(result.get("output") or result.get("returnValue") or "0x")
 
     revert_reason: str | None = None
     if not success:
@@ -881,9 +973,14 @@ async def trace_transaction(
         if not revert_reason and return_data:
             revert_reason = _decode_revert_reason(return_data)
 
-    raw_logs = _collect_call_tree_logs(result)
-    transfers = _parse_transfer_logs(raw_logs)
-    balance_changes = _aggregate_balance_changes(transfers)
+    if success:
+        raw_logs = _collect_call_tree_logs(result)
+        transfers = _parse_transfer_logs(raw_logs)
+        balance_changes = _aggregate_balance_changes(transfers)
+    else:
+        raw_logs = []
+        transfers = []
+        balance_changes = []
 
     gas_used_raw = result.get("gasUsed", "0x0")
     gas_used = int(str(gas_used_raw), 16) if isinstance(gas_used_raw, str) else int(gas_used_raw or 0)
@@ -891,7 +988,7 @@ async def trace_transaction(
     return SimulationResult(
         success=success,
         revert_reason=revert_reason,
-        return_data=return_data if success else b"",
+        return_data=bytes(return_data) if success else b"",
         transfers=transfers,
         balance_changes=balance_changes,
         gas_used=gas_used,

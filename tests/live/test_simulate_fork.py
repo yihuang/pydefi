@@ -50,21 +50,12 @@ from pydefi.simulate import (
 )
 from pydefi.vm import Program
 
-from .conftest import USDC
+from .conftest import ETH_WHALE, USDC
 from .sol_utils import MOCK_TOKEN_SOL, compile_sol_file, compile_sol_source, deploy
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-
-# Well-known Ethereum addresses
-ETH_WHALE = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"  # vitalik.eth
-
-# 0.1 ETH in wei
-ETH_AMOUNT = 10**17
-
-# Minimum plausible USDC amount for any operation (sanity guard)
-MIN_USDC = 1 * 10**6  # $1
 
 # Path to the DeFiVM.sol contract
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -479,15 +470,15 @@ class TestSimulateEthSimulateV1:
         assert result.success is True
 
         # With traceTransfers, native ETH shows as a Transfer from zero-address token
-        if result.transfers:
-            eth_transfers = [t for t in result.transfers if t.token == "0x0000000000000000000000000000000000000000"]
-            if eth_transfers:
-                assert any(
-                    t.from_address == Web3.to_checksum_address(ETH_WHALE)
-                    and t.to_address == Web3.to_checksum_address(recipient)
-                    and t.amount == eth_amount
-                    for t in eth_transfers
-                )
+        assert result.transfers, "Expected transfers when trace_transfers=True"
+        eth_transfers = [t for t in result.transfers if t.token == "0x0000000000000000000000000000000000000000"]
+        assert eth_transfers, "Expected at least one synthetic ETH transfer"
+        assert any(
+            t.from_address == Web3.to_checksum_address(ETH_WHALE)
+            and t.to_address == Web3.to_checksum_address(recipient)
+            and t.amount == eth_amount
+            for t in eth_transfers
+        )
 
 
 @pytest.mark.fork
@@ -504,21 +495,19 @@ class TestSimulateTx:
         assert isinstance(result, SimulationResult)
         assert result.success is True
 
-    async def test_simulate_tx_with_prepend_calls(self, sim_ctx):
-        """simulate_tx routes to eth_simulateV1 when prepend_calls is provided.
+    async def test_simulate_tx_with_approvals(self, sim_ctx):
+        """simulate_tx handles ERC-20 approval automatically via the approvals param.
 
-        Simulates prepending an ``approve`` on MockToken before checking the
-        allowance for the VM contract — the realistic approve-before-swap pattern.
+        Simulates an ``approve`` on MockToken before checking the allowance for
+        the VM contract — the realistic approve-before-swap pattern.  The
+        implementation picks the right backend encoding (prepend-call for
+        eth_simulateV1, state-override for debug_traceCall/eth_call) without the
+        caller needing to know which method is used.
         """
         w3 = sim_ctx["w3"]
         user = sim_ctx["user"]
         vm_address = sim_ctx["vm_address"]
         token_address = sim_ctx["token_address"]
-        approve_call = {
-            "from": user,
-            "to": token_address,
-            "data": ERC20.fns.approve(vm_address, 10**18).data,
-        }
         check_call = {
             "to": token_address,
             "data": ERC20.fns.allowance(user, vm_address).data,
@@ -526,7 +515,7 @@ class TestSimulateTx:
         result = await simulate_tx(
             w3,
             check_call,
-            prepend_calls=[approve_call],
+            approvals=[{"token": token_address, "owner": user, "spender": vm_address, "amount": 10**18}],
         )
         assert isinstance(result, SimulationResult)
         assert result.success is True
@@ -562,10 +551,10 @@ class TestSimulateTx:
         assert isinstance(result, SimulationResult)
         assert result.success is True
         # Transfer events are exposed by eth_simulateV1 / debug_traceCall
-        if result.transfers:
-            token_transfers = [t for t in result.transfers if t.token == Web3.to_checksum_address(token_address)]
-            if token_transfers:
-                assert any(t.amount == transfer_amount for t in token_transfers)
+        assert result.transfers, "Expected simulate_tx to return parsed transfers for the VM-emitted MockToken transfer"
+        token_transfers = [t for t in result.transfers if t.token == Web3.to_checksum_address(token_address)]
+        assert token_transfers, "Expected simulate_tx to include at least one MockToken transfer"
+        assert any(t.amount == transfer_amount for t in token_transfers)
 
     async def test_simulate_tx_revert(self, sim_ctx):
         """simulate_tx reports failure for a reverted call."""

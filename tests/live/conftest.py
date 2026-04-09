@@ -56,6 +56,9 @@ SOLANA_RPC_URL = os.environ.get("SOLANA_RPC_URL", "https://api.mainnet-beta.sola
 # Well-known Ethereum mainnet tokens
 # ---------------------------------------------------------------------------
 
+# vitalik.eth — a well-funded address useful as a test sender/whale.
+ETH_WHALE = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"
+
 WETH = Token(
     chain_id=ChainId.ETHEREUM,
     address="0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
