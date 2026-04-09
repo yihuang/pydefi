@@ -261,11 +261,7 @@ def _aggregate_balance_changes(transfers: list[TokenTransfer]) -> list[BalanceCh
         key_to = (t.to_address, token)
         deltas[key_to] = deltas.get(key_to, 0) + t.amount
 
-    return [
-        BalanceChange(address=addr, token=tok, delta=delta)
-        for (addr, tok), delta in deltas.items()
-        if delta != 0
-    ]
+    return [BalanceChange(address=addr, token=tok, delta=delta) for (addr, tok), delta in deltas.items() if delta != 0]
 
 
 def _collect_call_tree_logs(call: dict) -> list[dict]:
@@ -325,8 +321,10 @@ async def detect_allowance_slot(
                     # KECCAK256 pre-image extraction and SLOAD slot detection.
                     # Disabling the per-step storage field saves bandwidth without
                     # affecting correctness (we only need the opcode + stack + memory).
+                    # enableMemory must be true — newer Geth/Anvil default to false.
                     "disableStorage": True,
                     "disableReturnData": True,
+                    "enableMemory": True,
                 },
             ],
         )
@@ -387,8 +385,7 @@ async def build_allowance_state_override(
     slot = await detect_allowance_slot(w3, token, owner, spender, block)
     if slot is None:
         raise ValueError(
-            f"Could not detect allowance storage slot for token {token}. "
-            "Ensure the RPC supports debug_traceCall."
+            f"Could not detect allowance storage slot for token {token}. Ensure the RPC supports debug_traceCall."
         )
 
     owner_padded = bytes.fromhex(Web3.to_checksum_address(owner).removeprefix("0x")).rjust(32, b"\x00")
@@ -441,8 +438,10 @@ async def detect_balance_slot(
                 block_param,
                 {
                     # stack and memory are required for KECCAK256 pre-image extraction.
+                    # enableMemory must be true — newer Geth/Anvil default to false.
                     "disableStorage": True,
                     "disableReturnData": True,
+                    "enableMemory": True,
                 },
             ],
         )
@@ -497,8 +496,7 @@ async def build_balance_state_override(
     slot = await detect_balance_slot(w3, token, holder, block)
     if slot is None:
         raise ValueError(
-            f"Could not detect balance storage slot for token {token}. "
-            "Ensure the RPC supports debug_traceCall."
+            f"Could not detect balance storage slot for token {token}. Ensure the RPC supports debug_traceCall."
         )
 
     holder_padded = bytes.fromhex(Web3.to_checksum_address(holder).removeprefix("0x")).rjust(32, b"\x00")

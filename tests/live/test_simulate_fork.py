@@ -440,10 +440,7 @@ class TestSimulateEthSimulateV1:
 
         # Build DeFiVM composition bytecodes: call token.transfer(recipient, amount)
         program = (
-            Program()
-            .call_contract(token_address, ERC20.fns.transfer(recipient, transfer_amount).data)
-            .pop()
-            .build()
+            Program().call_contract(token_address, ERC20.fns.transfer(recipient, transfer_amount).data).pop().build()
         )
 
         # Encode DeFiVM.execute(program) calldata
@@ -554,10 +551,7 @@ class TestSimulateTx:
 
         # Build DeFiVM composition bytecodes
         program = (
-            Program()
-            .call_contract(token_address, ERC20.fns.transfer(recipient, transfer_amount).data)
-            .pop()
-            .build()
+            Program().call_contract(token_address, ERC20.fns.transfer(recipient, transfer_amount).data).pop().build()
         )
         execute_calldata = vm.functions.execute(program)._encode_transaction_data()
 
