@@ -140,7 +140,9 @@ class UniswapV3(BaseAMM):
         # Multi-hop: encode path as bytes (tokenA + fee + tokenB + fee + tokenC …)
         encoded_path = self._encode_path(path, hop_fees)
         try:
-            result = await UNISWAP_V3_QUOTER_V2.fns.quoteExactInput(encoded_path, amount_in.amount).call(self.w3, to=self.quoter_address)
+            result = await UNISWAP_V3_QUOTER_V2.fns.quoteExactInput(encoded_path, amount_in.amount).call(
+                self.w3, to=self.quoter_address
+            )
             final_amount_out = result[0] if isinstance(result, (list, tuple)) else result
         except Exception as exc:
             raise InsufficientLiquidityError(f"quoteExactInput failed: {exc}") from exc

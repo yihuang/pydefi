@@ -81,7 +81,9 @@ class UniswapV2(BaseAMM):
 
         addresses = [t.address for t in path]
         try:
-            raw_amounts: list[int] = await UNISWAP_V2_ROUTER.fns.getAmountsOut(amount_in.amount, addresses).call(self.w3, to=self.router_address)
+            raw_amounts: list[int] = await UNISWAP_V2_ROUTER.fns.getAmountsOut(amount_in.amount, addresses).call(
+                self.w3, to=self.router_address
+            )
         except Exception as exc:
             raise InsufficientLiquidityError(f"getAmountsOut failed: {exc}") from exc
 
@@ -106,7 +108,9 @@ class UniswapV2(BaseAMM):
 
         addresses = [t.address for t in path]
         try:
-            raw_amounts: list[int] = await UNISWAP_V2_ROUTER.fns.getAmountsIn(amount_out.amount, addresses).call(self.w3, to=self.router_address)
+            raw_amounts: list[int] = await UNISWAP_V2_ROUTER.fns.getAmountsIn(amount_out.amount, addresses).call(
+                self.w3, to=self.router_address
+            )
         except Exception as exc:
             raise InsufficientLiquidityError(f"getAmountsIn failed: {exc}") from exc
 

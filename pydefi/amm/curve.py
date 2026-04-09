@@ -85,7 +85,9 @@ class CurvePool(BaseAMM):
         j = self._coin_index(token_out)
         fn_name = "get_dy_underlying" if self._use_underlying else "get_dy"
         try:
-            amount_out: int = await getattr(CURVE_POOL.fns, fn_name)(i, j, amount_in).call(self.w3, to=self.router_address)
+            amount_out: int = await getattr(CURVE_POOL.fns, fn_name)(i, j, amount_in).call(
+                self.w3, to=self.router_address
+            )
         except Exception as exc:
             raise InsufficientLiquidityError(f"get_dy failed: {exc}") from exc
         return amount_out

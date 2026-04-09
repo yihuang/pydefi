@@ -86,6 +86,7 @@ _CHAIN_WETH: dict[int, str] = {
     59144: "0xe5D7C2a44FfDDf6b295A15c148167daaAf5Cf34f",  # Linea
 }
 
+
 def _addr_to_bytes32(addr: str) -> bytes:
     """Left-pad an EVM address into a 32-byte Wormhole representation."""
     hex_addr = addr[2:] if addr.startswith("0x") else addr
