@@ -110,7 +110,11 @@ class UniswapV2(BaseAMM):
         try:
             raw_amounts: list[int] = await self._router.fns.getAmountsOut(amount_in.amount, addresses).call(self.w3)
         except Exception as exc:
-            raise InsufficientLiquidityError(f"getAmountsOut failed: {exc}") from exc
+            # Only convert to InsufficientLiquidityError for contract reverts.
+            # Other exceptions (RPC timeout, connection error, etc.) propagate as-is.
+            if "revert" in str(exc).lower() or "insufficient" in str(exc).lower():
+                raise InsufficientLiquidityError(f"getAmountsOut failed: {exc}") from exc
+            raise
 
         return [TokenAmount(token=path[i], amount=raw_amounts[i]) for i in range(len(path))]
 
@@ -135,7 +139,9 @@ class UniswapV2(BaseAMM):
         try:
             raw_amounts: list[int] = await self._router.fns.getAmountsIn(amount_out.amount, addresses).call(self.w3)
         except Exception as exc:
-            raise InsufficientLiquidityError(f"getAmountsIn failed: {exc}") from exc
+            if "revert" in str(exc).lower() or "insufficient" in str(exc).lower():
+                raise InsufficientLiquidityError(f"getAmountsIn failed: {exc}") from exc
+            raise
 
         return [TokenAmount(token=path[i], amount=raw_amounts[i]) for i in range(len(path))]
 
@@ -171,10 +177,37 @@ class UniswapV2(BaseAMM):
             fee=3000,
         )
 
+        # Estimate price impact using pool reserves.
+        price_impact = Decimal(0)
+        try:
+            factory_addr = await self._router.fns.factory().call(self.w3)
+            factory = self.get_factory_contract(factory_addr)
+            pair_addr = await factory.fns.getPair(
+                amount_in.token.address, token_out.address
+            ).call(self.w3)
+            if pair_addr != "0x0000000000000000000000000000000000000000":
+                pair = self.get_pair_contract(pair_addr)
+                reserves = await pair.fns.getReserves().call(self.w3)
+                reserve_0, reserve_1, _ = reserves
+                token_0_addr = await pair.fns.token0().call(self.w3)
+                # Determine which reserve belongs to token_in
+                if token_0_addr.lower() == amount_in.token.address.lower():
+                    reserve_in = reserve_0
+                    reserve_out = reserve_1
+                else:
+                    reserve_in = reserve_1
+                    reserve_out = reserve_0
+                if reserve_in > 0:
+                    price_impact = Decimal(amount_in.amount) / Decimal(reserve_in + amount_in.amount)
+        except Exception:
+            # Fallback to 0 if reserve lookup fails
+            pass
+
         return SwapRoute(
             steps=[step],
             amount_in=amount_in,
             amount_out=amount_out,
+            price_impact=price_impact,
         )
 
     # ------------------------------------------------------------------

@@ -109,7 +109,9 @@ class CurvePool(BaseAMM):
         try:
             amount_out: int = await getattr(self._pool.fns, fn_name)(i, j, amount_in).call(self.w3)
         except Exception as exc:
-            raise InsufficientLiquidityError(f"get_dy failed: {exc}") from exc
+            if "revert" in str(exc).lower() or "insufficient" in str(exc).lower():
+                raise InsufficientLiquidityError(f"get_dy failed: {exc}") from exc
+            raise
         return amount_out
 
     async def get_amounts_out(self, amount_in: TokenAmount, path: list[Token]) -> list[TokenAmount]:
@@ -184,19 +186,39 @@ class CurvePool(BaseAMM):
         amount_out_raw = await self.get_dy(amount_in.token, token_out, amount_in.amount)
         amount_out = TokenAmount(token=token_out, amount=amount_out_raw)
 
+        # Get actual fee from pool
+        try:
+            pool_fee = await self._pool.fns.fee().call(self.w3)
+            # Curve fee is in bps (e.g. 4 = 0.04%), SwapStep needs hundredths of bps (400)
+            actual_fee = int(pool_fee) * 100
+        except:
+            actual_fee = 400  # fallback
+
+        # Estimate price impact using pool balances
+        price_impact = Decimal(0)
+        try:
+            i = self._coin_index(amount_in.token)
+            j = self._coin_index(token_out)
+            reserve_in = await self._pool.fns.balances(i).call(self.w3)
+            reserve_out = await self._pool.fns.balances(j).call(self.w3)
+            if reserve_in > 0:
+                price_impact = Decimal(amount_in.amount) / Decimal(reserve_in + amount_in.amount)
+        except:
+            pass  # fallback to 0
+
         step = SwapStep(
             token_in=amount_in.token,
             token_out=token_out,
             pool_address=self.router_address,
             protocol=self.protocol_name,
-            fee=400,  # Curve base fee is 0.04% (4 bps = 400 hundredths of a bp)
+            fee=actual_fee,
         )
 
         return SwapRoute(
             steps=[step],
             amount_in=amount_in,
             amount_out=amount_out,
-            price_impact=Decimal(0),
+            price_impact=price_impact,
         )
 
     def get_registry_contract(self, registry_address: str) -> Contract:

@@ -137,6 +137,7 @@ class UniswapV3(BaseAMM):
         w3: AsyncWeb3,
         router_address: str,
         quoter_address: str,
+        factory_address: str | None = None,
         protocol_name: str = "UniswapV3",
         default_fee: int = 3000,
     ) -> None:
@@ -145,6 +146,7 @@ class UniswapV3(BaseAMM):
         self.default_fee = default_fee
         self._router = Contract.from_abi(_ROUTER_V3_ABI, to=router_address)
         self._quoter = Contract.from_abi(_QUOTER_V2_ABI, to=quoter_address)
+        self._factory_address = factory_address
 
     @property
     def protocol_name(self) -> str:
@@ -194,7 +196,9 @@ class UniswapV3(BaseAMM):
             result = await self._quoter.fns.quoteExactInputSingle(params).call(self.w3)
             amount_out = result[0] if isinstance(result, (list, tuple)) else result
         except Exception as exc:
-            raise InsufficientLiquidityError(f"quoteExactInputSingle failed: {exc}") from exc
+            if "revert" in str(exc).lower() or "insufficient" in str(exc).lower():
+                raise InsufficientLiquidityError(f"quoteExactInputSingle failed: {exc}") from exc
+            raise
 
         return TokenAmount(token=token_out, amount=amount_out)
 
@@ -236,7 +240,9 @@ class UniswapV3(BaseAMM):
             result = await self._quoter.fns.quoteExactInput(encoded_path, amount_in.amount).call(self.w3)
             final_amount_out = result[0] if isinstance(result, (list, tuple)) else result
         except Exception as exc:
-            raise InsufficientLiquidityError(f"quoteExactInput failed: {exc}") from exc
+            if "revert" in str(exc).lower() or "insufficient" in str(exc).lower():
+                raise InsufficientLiquidityError(f"quoteExactInput failed: {exc}") from exc
+            raise
 
         # We only have the final output; intermediate amounts are unavailable
         # from quoteExactInput — return just start and end.
@@ -270,13 +276,44 @@ class UniswapV3(BaseAMM):
             result = await self._quoter.fns.quoteExactOutputSingle(params).call(self.w3)
             amount_in_raw = result[0] if isinstance(result, (list, tuple)) else result
         except Exception as exc:
-            raise InsufficientLiquidityError(f"quoteExactOutputSingle failed: {exc}") from exc
+            if "revert" in str(exc).lower() or "insufficient" in str(exc).lower():
+                raise InsufficientLiquidityError(f"quoteExactOutputSingle failed: {exc}") from exc
+            raise
 
         return [TokenAmount(token=path[0], amount=amount_in_raw), amount_out]
 
     # ------------------------------------------------------------------
     # Route builder
     # ------------------------------------------------------------------
+
+    async def _get_pool_address(self, token_a: Token, token_b: Token, fee: int) -> str | None:
+        """Return the V3 pool address for a token pair and fee tier.
+
+        Args:
+            token_a: First token in the pair.
+            token_b: Second token in the pair.
+            fee: Fee tier.
+
+        Returns:
+            Pool address, or None if factory_address is not configured.
+        """
+        if not self._factory_address:
+            return None
+        # Normalize token order for factory (tokenA < tokenB by address)
+        token_a_addr = token_a.address
+        token_b_addr = token_b.address
+        if token_a_addr > token_b_addr:
+            token_a_addr, token_b_addr = token_b_addr, token_a_addr
+        factory = self.get_factory_contract(self._factory_address)
+        try:
+            result = await self.w3.eth.call(
+                {"to": factory.address, "data": factory.fns.getPool.encode_input(token_a_addr, token_b_addr, fee)}
+            )
+            # The result is a 32-byte value with the address in the lower 20 bytes
+            addr_bytes = bytes.fromhex(result[2:])[-20:]
+            return "0x" + addr_bytes.hex()
+        except Exception:
+            return None
 
     async def build_swap_route(
         self,
@@ -296,6 +333,38 @@ class UniswapV3(BaseAMM):
         """
         amount_out = await self.quote_exact_input_single(amount_in, token_out)
 
+        # Estimate price impact using sqrtPriceX96 from slot0 and quoter result
+        price_impact = Decimal(0)
+        try:
+            pool_addr = await self._get_pool_address(amount_in.token, token_out, self.default_fee)
+            if pool_addr:
+                pool = self.get_pool_contract(pool_addr)
+                # Get current sqrtPriceX96 before the trade
+                slot0_result = await self.w3.eth.call(
+                    {"to": pool.address, "data": pool.fns.slot0.encode_input()}
+                )
+                sqrt_price_before = pool.fns.slot0.decode_output(slot0_result)[0]
+
+                # Get quoter result with sqrtPriceX96After
+                params = QuoteExactInputSingleParams(
+                    tokenIn=amount_in.token.address,
+                    tokenOut=token_out.address,
+                    amountIn=amount_in.amount,
+                    fee=self.default_fee,
+                    sqrtPriceLimitX96=0,
+                )
+                quote_result = await self._quoter.fns.quoteExactInputSingle(params).call(self.w3)
+                sqrt_price_after = quote_result[1] if isinstance(quote_result, (list, tuple)) else None
+
+                if sqrt_price_before and sqrt_price_after and sqrt_price_before > 0:
+                    # Price impact as fractional price change
+                    price_impact = abs(Decimal(sqrt_price_after) - Decimal(sqrt_price_before)) / Decimal(sqrt_price_before)
+                    # Cap at 100% impact
+                    price_impact = min(price_impact, Decimal(1))
+        except Exception:
+            # If we can't compute price impact, fall back to 0
+            price_impact = Decimal(0)
+
         step = SwapStep(
             token_in=amount_in.token,
             token_out=token_out,
@@ -308,7 +377,7 @@ class UniswapV3(BaseAMM):
             steps=[step],
             amount_in=amount_in,
             amount_out=amount_out,
-            price_impact=Decimal(0),
+            price_impact=price_impact,
         )
 
     # ------------------------------------------------------------------
