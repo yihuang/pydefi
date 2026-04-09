@@ -74,8 +74,9 @@ _ERROR_SELECTOR: bytes = bytes.fromhex("08c379a0")
 # keccak256("Panic(uint256)")[:4]
 _PANIC_SELECTOR: bytes = bytes.fromhex("4e487b71")
 
-# Sentinel for zero address (used in synthetic ETH transfer events)
-_ZERO_ADDRESS: str = "0x0000000000000000000000000000000000000000"
+# Sentinel address that ``eth_simulateV1`` (Anvil/Geth) emits as the token
+# ``address`` in synthetic Transfer events for native ETH value transfers.
+_NATIVE_ETH_SENTINEL: str = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"
 
 #: Maximum ``uint256`` value — use as the *amount* in
 #: :func:`build_allowance_state_override` for an unlimited approval.
@@ -107,12 +108,12 @@ class TokenTransfer:
 
     When :func:`simulate_with_eth_simulate_v1` is called with
     ``trace_transfers=True``, native ETH value transfers also appear as
-    synthetic Transfer events where :attr:`token` is the zero address
-    (``"0x0000000000000000000000000000000000000000"``).
+    synthetic Transfer events where :attr:`token` is the native-ETH sentinel
+    address (``"0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"``).
 
     Attributes:
-        token: Checksum address of the ERC-20 contract (or the zero address
-            for native ETH synthetic events).
+        token: Checksum address of the ERC-20 contract (or the native-ETH
+            sentinel for native ETH synthetic events).
         from_address: Sender checksum address (``address(0)`` for mints).
         to_address: Recipient checksum address (``address(0)`` for burns).
         amount: Raw token amount (in the token's smallest unit).
@@ -242,7 +243,7 @@ def _parse_transfer_logs(logs: list) -> list[TokenTransfer]:
 
         amount = int.from_bytes(amount_bytes[:32], "big") if len(amount_bytes) >= 32 else 0
 
-        token_raw = log.get("address", _ZERO_ADDRESS)
+        token_raw = log.get("address", "0x0000000000000000000000000000000000000000")
         token = Web3.to_checksum_address(token_raw)
 
         transfers.append(
@@ -259,14 +260,16 @@ def _parse_transfer_logs(logs: list) -> list[TokenTransfer]:
 def _aggregate_balance_changes(transfers: list[TokenTransfer]) -> list[BalanceChange]:
     """Compute net balance changes from a list of :class:`TokenTransfer` events.
 
-    Native ETH synthetic transfers (token == zero address) produce a
+    Native ETH synthetic transfers (token == native-ETH sentinel) produce a
     ``BalanceChange`` with ``token=None``.
     """
     # (address, token_or_None) -> signed delta
     deltas: dict[tuple[str, str | None], int] = {}
 
+    native_sentinel = Web3.to_checksum_address(_NATIVE_ETH_SENTINEL)
+
     for t in transfers:
-        token: str | None = t.token if t.token != _ZERO_ADDRESS else None
+        token: str | None = t.token if t.token != native_sentinel else None
 
         key_from = (t.from_address, token)
         deltas[key_from] = deltas.get(key_from, 0) - t.amount

@@ -40,6 +40,7 @@ from eth_contract.erc20 import ERC20
 from web3 import AsyncWeb3, Web3
 
 from pydefi.simulate import (
+    _NATIVE_ETH_SENTINEL,
     SimulationResult,
     build_allowance_state_override,
     detect_allowance_slot,
@@ -469,9 +470,10 @@ class TestSimulateEthSimulateV1:
         result = results[0]
         assert result.success is True
 
-        # With traceTransfers, native ETH shows as a Transfer from zero-address token
+        # With traceTransfers, native ETH shows as a Transfer from the native-ETH sentinel
+        native_sentinel = Web3.to_checksum_address(_NATIVE_ETH_SENTINEL)
         assert result.transfers, "Expected transfers when trace_transfers=True"
-        eth_transfers = [t for t in result.transfers if t.token == "0x0000000000000000000000000000000000000000"]
+        eth_transfers = [t for t in result.transfers if t.token == native_sentinel]
         assert eth_transfers, "Expected at least one synthetic ETH transfer"
         assert any(
             t.from_address == Web3.to_checksum_address(ETH_WHALE)
