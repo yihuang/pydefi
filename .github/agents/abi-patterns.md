@@ -128,15 +128,14 @@ return {"to": router_address, "data": "0x" + calldata.hex(), ...}
 Instantiate the `ABIStruct` subclass and pass it directly to the function:
 
 ```python
-from pydefi.abi.amm import ExactInputSingleParams, UNISWAP_V3_QUOTER_V2
+from pydefi.abi.amm import QuoteExactInputSingleParams, UNISWAP_V3_QUOTER_V2
 
-params = ExactInputSingleParams(
+params = QuoteExactInputSingleParams(
     tokenIn=token_in.address,
     tokenOut=token_out.address,
-    fee=3000,
-    recipient=recipient,
     amountIn=amount_in,
-    amountOutMinimum=min_out,
+    fee=3000,
+    sqrtPriceLimitX96=0,
 )
 result = await UNISWAP_V3_QUOTER_V2.fns.quoteExactInputSingle(params).call(
     w3, to=quoter_address
