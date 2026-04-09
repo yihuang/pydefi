@@ -40,7 +40,6 @@ from eth_contract.erc20 import ERC20
 from web3 import AsyncWeb3, Web3
 
 from pydefi.simulate import (
-    _NATIVE_ETH_SENTINEL,
     SimulationResult,
     build_allowance_state_override,
     detect_allowance_slot,
@@ -48,6 +47,7 @@ from pydefi.simulate import (
     simulate_with_debug_trace_call,
     simulate_with_eth_call,
     simulate_with_eth_simulate_v1,
+    trace_transaction,
 )
 from pydefi.vm import Program
 
@@ -328,6 +328,65 @@ class TestSimulateDebugTraceCall:
         allowance = int.from_bytes(result.return_data, "big")
         assert allowance == 10**10
 
+    async def test_debug_trace_call_native_eth_transfer(self, sim_ctx):
+        """debug_traceCall captures native ETH transfers via callTracer logs."""
+        w3 = sim_ctx["w3"]
+        sender = sim_ctx["deployer"]
+        recipient = sim_ctx["recipient"]
+        eth_amount = 10**17  # 0.1 ETH
+
+        await _set_eth_balance(w3, sender, 10**20)
+
+        result = await simulate_with_debug_trace_call(
+            w3,
+            {"from": sender, "to": recipient, "value": hex(eth_amount), "data": "0x"},
+        )
+        assert result.success is True
+        assert result.gas_used is not None and result.gas_used > 0
+
+
+@pytest.mark.fork
+class TestTraceTransaction:
+    """Tests for trace_transaction (debug_traceTransaction)."""
+
+    async def test_trace_erc20_transfer(self, sim_ctx):
+        """trace_transaction captures ERC-20 Transfer events from an on-chain tx."""
+        w3 = sim_ctx["w3"]
+        user = sim_ctx["user"]
+        token_address = sim_ctx["token_address"]
+        recipient = sim_ctx["recipient"]
+        transfer_amount = 10**18
+
+        tx_hash = await w3.eth.send_transaction(
+            {"from": user, "to": token_address, "data": ERC20.fns.transfer(recipient, transfer_amount).data},
+        )
+        await w3.eth.wait_for_transaction_receipt(tx_hash)
+
+        result = await trace_transaction(w3, tx_hash)
+        assert result.success is True
+        assert result.gas_used is not None and result.gas_used > 0
+        token_transfers = [t for t in result.transfers if t.token == Web3.to_checksum_address(token_address)]
+        assert token_transfers, "Expected at least one MockToken transfer"
+        assert any(t.amount == transfer_amount for t in token_transfers)
+
+    async def test_trace_native_eth_transfer(self, sim_ctx):
+        """trace_transaction captures native ETH transfers from an on-chain tx."""
+        w3 = sim_ctx["w3"]
+        sender = sim_ctx["deployer"]
+        recipient = sim_ctx["recipient"]
+        eth_amount = 10**17  # 0.1 ETH
+
+        await _set_eth_balance(w3, sender, 10**20)
+
+        tx_hash = await w3.eth.send_transaction(
+            {"from": sender, "to": recipient, "value": eth_amount},
+        )
+        await w3.eth.wait_for_transaction_receipt(tx_hash)
+
+        result = await trace_transaction(w3, tx_hash)
+        assert result.success is True
+        assert result.gas_used is not None and result.gas_used > 0
+
 
 @pytest.mark.fork
 class TestSimulateEthSimulateV1:
@@ -470,10 +529,9 @@ class TestSimulateEthSimulateV1:
         result = results[0]
         assert result.success is True
 
-        # With traceTransfers, native ETH shows as a Transfer from the native-ETH sentinel
-        native_sentinel = Web3.to_checksum_address(_NATIVE_ETH_SENTINEL)
+        # With traceTransfers, native ETH shows as a Transfer with token=None
         assert result.transfers, "Expected transfers when trace_transfers=True"
-        eth_transfers = [t for t in result.transfers if t.token == native_sentinel]
+        eth_transfers = [t for t in result.transfers if t.token is None]
         assert eth_transfers, "Expected at least one synthetic ETH transfer"
         assert any(
             t.from_address == Web3.to_checksum_address(ETH_WHALE)

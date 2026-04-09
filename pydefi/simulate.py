@@ -42,11 +42,13 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from eth_abi import decode as abi_decode
+from eth_contract.erc20 import ERC20
+from eth_contract.slots import parse_allowance_slot, parse_balance_slot
 from hexbytes import HexBytes
 from web3 import AsyncWeb3, Web3
 from web3._utils.type_conversion import to_hex_if_bytes
 from web3.exceptions import ContractLogicError, Web3RPCError
-from web3.types import BlockIdentifier
+from web3.types import BlockIdentifier, BlockStateCallV1, SimulateV1Payload
 
 __all__ = [
     "BalanceChange",
@@ -76,7 +78,7 @@ _PANIC_SELECTOR: bytes = bytes.fromhex("4e487b71")
 
 # Sentinel address that ``eth_simulateV1`` (Anvil/Geth) emits as the token
 # ``address`` in synthetic Transfer events for native ETH value transfers.
-_NATIVE_ETH_SENTINEL: str = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"
+_NATIVE_ETH_SENTINEL: str = Web3.to_checksum_address("0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE")
 
 #: Maximum ``uint256`` value — use as the *amount* in
 #: :func:`build_allowance_state_override` for an unlimited approval.
@@ -108,18 +110,17 @@ class TokenTransfer:
 
     When :func:`simulate_with_eth_simulate_v1` is called with
     ``trace_transfers=True``, native ETH value transfers also appear as
-    synthetic Transfer events where :attr:`token` is the native-ETH sentinel
-    address (``"0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"``).
+    synthetic Transfer events where :attr:`token` is ``None``.
 
     Attributes:
-        token: Checksum address of the ERC-20 contract (or the native-ETH
-            sentinel for native ETH synthetic events).
+        token: Checksum address of the ERC-20 contract, or ``None`` for
+            native ETH synthetic events.
         from_address: Sender checksum address (``address(0)`` for mints).
         to_address: Recipient checksum address (``address(0)`` for burns).
         amount: Raw token amount (in the token's smallest unit).
     """
 
-    token: str
+    token: str | None
     from_address: str
     to_address: str
     amount: int
@@ -244,7 +245,8 @@ def _parse_transfer_logs(logs: list) -> list[TokenTransfer]:
         amount = int.from_bytes(amount_bytes[:32], "big") if len(amount_bytes) >= 32 else 0
 
         token_raw = log.get("address", "0x0000000000000000000000000000000000000000")
-        token = Web3.to_checksum_address(token_raw)
+        token_cs = Web3.to_checksum_address(token_raw)
+        token: str | None = None if token_cs == _NATIVE_ETH_SENTINEL else token_cs
 
         transfers.append(
             TokenTransfer(
@@ -260,21 +262,17 @@ def _parse_transfer_logs(logs: list) -> list[TokenTransfer]:
 def _aggregate_balance_changes(transfers: list[TokenTransfer]) -> list[BalanceChange]:
     """Compute net balance changes from a list of :class:`TokenTransfer` events.
 
-    Native ETH synthetic transfers (token == native-ETH sentinel) produce a
+    Native ETH synthetic transfers (``token is None``) produce a
     ``BalanceChange`` with ``token=None``.
     """
     # (address, token_or_None) -> signed delta
     deltas: dict[tuple[str, str | None], int] = {}
 
-    native_sentinel = Web3.to_checksum_address(_NATIVE_ETH_SENTINEL)
-
     for t in transfers:
-        token: str | None = t.token if t.token != native_sentinel else None
-
-        key_from = (t.from_address, token)
+        key_from = (t.from_address, t.token)
         deltas[key_from] = deltas.get(key_from, 0) - t.amount
 
-        key_to = (t.to_address, token)
+        key_to = (t.to_address, t.token)
         deltas[key_to] = deltas.get(key_to, 0) + t.amount
 
     return [BalanceChange(address=addr, token=tok, delta=delta) for (addr, tok), delta in deltas.items() if delta != 0]
@@ -321,9 +319,6 @@ async def detect_allowance_slot(
         of the ``allowances`` mapping, or ``None`` if detection fails (e.g.
         the RPC does not support ``debug_traceCall``).
     """
-    from eth_contract.erc20 import ERC20
-    from eth_contract.slots import parse_allowance_slot
-
     block_param = _to_block_param(block)
 
     try:
@@ -355,9 +350,9 @@ async def detect_allowance_slot(
     result = response.get("result", {})
     struct_logs = result.get("structLogs", [])
 
-    token_bytes = bytes.fromhex(Web3.to_checksum_address(token).removeprefix("0x"))
-    owner_bytes = bytes.fromhex(Web3.to_checksum_address(owner).removeprefix("0x"))
-    spender_bytes = bytes.fromhex(Web3.to_checksum_address(spender).removeprefix("0x"))
+    token_bytes = HexBytes(Web3.to_checksum_address(token))
+    owner_bytes = HexBytes(Web3.to_checksum_address(owner))
+    spender_bytes = HexBytes(Web3.to_checksum_address(spender))
 
     return parse_allowance_slot(token_bytes, owner_bytes, spender_bytes, struct_logs)
 
@@ -404,8 +399,8 @@ async def build_allowance_state_override(
             f"Could not detect allowance storage slot for token {token}. Ensure the RPC supports debug_traceCall."
         )
 
-    owner_padded = bytes.fromhex(Web3.to_checksum_address(owner).removeprefix("0x")).rjust(32, b"\x00")
-    spender_padded = bytes.fromhex(Web3.to_checksum_address(spender).removeprefix("0x")).rjust(32, b"\x00")
+    owner_padded = HexBytes(Web3.to_checksum_address(owner)).rjust(32, b"\x00")
+    spender_padded = HexBytes(Web3.to_checksum_address(spender)).rjust(32, b"\x00")
 
     # Compute the final storage slot: allowances[owner][spender]
     allowance_slot = slot.value(owner_padded).value(spender_padded)
@@ -441,9 +436,6 @@ async def detect_balance_slot(
         A :class:`~eth_contract.slots.MappingSlot` representing the base slot
         of the ``balances`` mapping, or ``None`` if detection fails.
     """
-    from eth_contract.erc20 import ERC20
-    from eth_contract.slots import parse_balance_slot
-
     block_param = _to_block_param(block)
 
     try:
@@ -472,8 +464,8 @@ async def detect_balance_slot(
     result = response.get("result", {})
     struct_logs = result.get("structLogs", [])
 
-    token_bytes = bytes.fromhex(Web3.to_checksum_address(token).removeprefix("0x"))
-    holder_bytes = bytes.fromhex(Web3.to_checksum_address(holder).removeprefix("0x"))
+    token_bytes = HexBytes(Web3.to_checksum_address(token))
+    holder_bytes = HexBytes(Web3.to_checksum_address(holder))
 
     return parse_balance_slot(token_bytes, holder_bytes, struct_logs)
 
@@ -515,7 +507,7 @@ async def build_balance_state_override(
             f"Could not detect balance storage slot for token {token}. Ensure the RPC supports debug_traceCall."
         )
 
-    holder_padded = bytes.fromhex(Web3.to_checksum_address(holder).removeprefix("0x")).rjust(32, b"\x00")
+    holder_padded = HexBytes(Web3.to_checksum_address(holder)).rjust(32, b"\x00")
 
     # Compute the final storage slot: balances[holder]
     balance_slot = slot.value(holder_padded)
@@ -623,8 +615,6 @@ async def simulate_with_eth_simulate_v1(
     Raises:
         Exception: Propagates any RPC error (e.g. method not supported).
     """
-    from web3.types import BlockStateCallV1, SimulateV1Payload
-
     block_state_call: BlockStateCallV1 = {"calls": calls}
     if state_overrides:
         block_state_call["stateOverrides"] = state_overrides
@@ -781,8 +771,6 @@ def _approvals_to_calls(approvals: list[dict]) -> list[dict]:
     ``spender`` keys, plus an optional ``amount`` (defaults to
     :data:`MAX_UINT256`).
     """
-    from eth_contract.erc20 import ERC20
-
     calls = []
     for approval in approvals:
         amount = approval.get("amount", MAX_UINT256)
