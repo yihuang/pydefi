@@ -14,31 +14,10 @@ from decimal import Decimal
 from eth_contract import Contract
 from web3 import AsyncWeb3
 
+from pydefi.abi.amm import CURVE_POOL, CURVE_REGISTRY
 from pydefi.amm.base import BaseAMM
 from pydefi.exceptions import InsufficientLiquidityError
 from pydefi.types import SwapRoute, SwapStep, Token, TokenAmount
-
-# ---------------------------------------------------------------------------
-# ABI fragments
-# ---------------------------------------------------------------------------
-
-_CURVE_POOL_ABI = [
-    "function get_dy(int128 i, int128 j, uint256 dx) external view returns (uint256)",
-    "function get_dy_underlying(int128 i, int128 j, uint256 dx) external view returns (uint256)",
-    "function exchange(int128 i, int128 j, uint256 dx, uint256 min_dy) external returns (uint256)",
-    "function exchange_underlying(int128 i, int128 j, uint256 dx, uint256 min_dy) external returns (uint256)",
-    "function coins(uint256 i) external view returns (address)",
-    "function balances(uint256 i) external view returns (uint256)",
-    "function A() external view returns (uint256)",
-    "function fee() external view returns (uint256)",
-]
-
-_CURVE_REGISTRY_ABI = [
-    "function find_pool_for_coins(address from, address to) external view returns (address)",
-    "function find_pool_for_coins(address from, address to, uint256 i) external view returns (address)",
-    "function get_coin_indices(address pool, address from, address to) external view returns (int128, int128, bool)",
-    "function get_best_rate(address from, address to, uint256 amount) external view returns (address, uint256)",
-]
 
 
 class CurvePool(BaseAMM):
@@ -67,7 +46,7 @@ class CurvePool(BaseAMM):
         super().__init__(w3, pool_address)
         self._tokens = tokens
         self._use_underlying = use_underlying
-        self._pool = Contract.from_abi(_CURVE_POOL_ABI, to=pool_address)
+        self._pool = CURVE_POOL(to=pool_address)
 
     @property
     def protocol_name(self) -> str:
@@ -201,4 +180,4 @@ class CurvePool(BaseAMM):
 
     def get_registry_contract(self, registry_address: str) -> Contract:
         """Return a :class:`~eth_contract.Contract` bound to a Curve registry."""
-        return Contract.from_abi(_CURVE_REGISTRY_ABI, to=registry_address)
+        return CURVE_REGISTRY(to=registry_address)

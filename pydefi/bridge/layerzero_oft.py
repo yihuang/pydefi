@@ -11,54 +11,15 @@ Docs: https://docs.layerzero.network/v2/developers/evm/oft/quickstart
 
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Any
 
-from eth_contract import ABIStruct, Contract
 from hexbytes import HexBytes
 from web3 import AsyncWeb3, Web3
 
+from pydefi.abi.bridge import LAYERZERO_OFT, MessagingFee, OFTSendParam
 from pydefi.bridge.base import BaseBridge
 from pydefi.exceptions import BridgeError
 from pydefi.types import BridgeQuote, Token, TokenAmount
-
-# ---------------------------------------------------------------------------
-# ABI struct definitions (annotated classes)
-# ---------------------------------------------------------------------------
-
-
-class OFTSendParam(ABIStruct):
-    """SendParam struct for LayerZero OFT ``quoteSend`` and ``send``."""
-
-    dstEid: Annotated[int, "uint32"]
-    to: Annotated[bytes, "bytes32"]
-    amountLD: Annotated[int, "uint256"]
-    minAmountLD: Annotated[int, "uint256"]
-    extraOptions: Annotated[bytes, "bytes"]
-    composeMsg: Annotated[bytes, "bytes"]
-    oftCmd: Annotated[bytes, "bytes"]
-
-
-class MessagingFee(ABIStruct):
-    """MessagingFee struct for LayerZero OFT ``send``."""
-
-    nativeFee: Annotated[int, "uint256"]
-    lzTokenFee: Annotated[int, "uint256"]
-
-
-# ---------------------------------------------------------------------------
-# ABI fragments
-# ---------------------------------------------------------------------------
-
-_OFT_ABI = (
-    OFTSendParam.human_readable_abi()
-    + MessagingFee.human_readable_abi()
-    + [
-        # quoteSend(SendParam, payInLzToken) -> MessagingFee
-        "function quoteSend(OFTSendParam _sendParam, bool _payInLzToken) external view returns (uint256 nativeFee, uint256 lzTokenFee)",
-        # send(SendParam, MessagingFee, refundAddress) -> (MessagingReceipt, OFTReceipt)
-        "function send(OFTSendParam _sendParam, MessagingFee _fee, address _refundAddress) external payable",
-    ]
-)
 
 # LayerZero v2 endpoint IDs (EIDs) mapped from EVM chain IDs.
 # See: https://docs.layerzero.network/v2/developers/evm/technical-reference/deployed-contracts
@@ -119,7 +80,7 @@ class LayerZeroOFT(BaseBridge):
         self.w3 = w3
         self.oft_address = oft_address
         self.dst_oft_address = dst_oft_address or oft_address
-        self._oft = Contract.from_abi(_OFT_ABI, to=oft_address)
+        self._oft = LAYERZERO_OFT(to=oft_address)
 
     @property
     def protocol_name(self) -> str:

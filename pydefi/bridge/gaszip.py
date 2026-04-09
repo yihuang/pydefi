@@ -13,8 +13,8 @@ from __future__ import annotations
 from typing import Any
 
 import aiohttp
-from eth_contract import Contract
 
+from pydefi.abi.bridge import GASZIP
 from pydefi.bridge.base import BaseBridge
 from pydefi.exceptions import BridgeError
 from pydefi.types import BridgeQuote, Token, TokenAmount
@@ -38,11 +38,6 @@ _SUPPORTED_CHAINS: set[int] = {
     130,  # Unichain
     480,  # World Chain
 }
-
-# ABI fragment for the GasZip deposit function
-_GASZIP_ABI = [
-    "function deposit(uint256 to, uint256[] calldata chains) external payable",
-]
 
 
 class GasZip(BaseBridge):
@@ -69,7 +64,7 @@ class GasZip(BaseBridge):
         super().__init__(src_chain_id, dst_chain_id)
         self.contract_address = contract_address
         self._api_base = api_base_url.rstrip("/")
-        self._contract = Contract.from_abi(_GASZIP_ABI, to=contract_address)
+        self._contract = GASZIP(to=contract_address)
 
     @property
     def protocol_name(self) -> str:

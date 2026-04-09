@@ -16,32 +16,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from eth_contract import Contract
 from web3 import AsyncWeb3
 
+from pydefi.abi.bridge import STARGATE_ROUTER
 from pydefi.bridge.base import BaseBridge
 from pydefi.exceptions import BridgeError
 from pydefi.types import BridgeQuote, Token, TokenAmount
-
-# ---------------------------------------------------------------------------
-# ABI fragments
-# ---------------------------------------------------------------------------
-
-_ROUTER_ABI = [
-    "function swap(uint16 _dstChainId, uint256 _srcPoolId, uint256 _dstPoolId, address payable _refundAddress, uint256 _amountLD, uint256 _minAmountLD, (uint256 dstGasForCall, uint256 dstNativeAmount, bytes dstNativeAddr) _lzTxParams, bytes calldata _to, bytes calldata _payload) external payable",
-    "function quoteLayerZeroFee(uint16 _dstChainId, uint8 _functionType, bytes calldata _toAddress, bytes calldata _transferAndCallPayload, (uint256 dstGasForCall, uint256 dstNativeAmount, bytes dstNativeAddr) _lzTxParams) external view returns (uint256, uint256)",
-]
-
-_POOL_ABI = [
-    "function amountLPtoLD(uint256 _amountLP) external view returns (uint256)",
-    "function totalLiquidity() external view returns (uint256)",
-    "function totalSupply() external view returns (uint256)",
-    "function deltaCredit() external view returns (uint256)",
-]
-
-_FACTORY_ABI = [
-    "function getPool(uint256 _poolId) external view returns (address)",
-]
 
 # LayerZero chain IDs differ from EVM chain IDs.
 # Solana uses the LayerZero V2 endpoint ID (30168).
@@ -94,7 +74,7 @@ class Stargate(BaseBridge):
         super().__init__(src_chain_id, dst_chain_id)
         self.w3 = w3
         self.router_address = router_address
-        self._router = Contract.from_abi(_ROUTER_ABI, to=router_address)
+        self._router = STARGATE_ROUTER(to=router_address)
 
     @property
     def protocol_name(self) -> str:
