@@ -52,6 +52,7 @@ jobs:
           python -m pip install ".[dev]"
 
       - name: Format and lint (auto-fix)
+        if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
         run: |
           ruff format .
           ruff check --fix .
