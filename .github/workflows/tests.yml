@@ -29,10 +29,12 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
@@ -44,10 +46,21 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install ".[dev]"
 
-      - name: Lint with ruff
+      - name: Format and lint (auto-fix)
+        run: |
+          ruff format .
+          ruff check --fix .
+
+      - name: Commit and push fixes
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "style: auto-fix ruff format and lint"
+          branch: ${{ github.head_ref }}
+
+      - name: Lint (check)
         run: ruff check .
 
-      - name: Check formatting with ruff
+      - name: Format (check)
         run: ruff format --check .
 
   test:
