@@ -61,6 +61,7 @@ __all__ = [
     "simulate_with_debug_trace_call",
     "simulate_with_eth_call",
     "simulate_with_eth_simulate_v1",
+    "trace_transaction",
 ]
 
 logger = logging.getLogger(__name__)
@@ -814,4 +815,85 @@ async def simulate_tx(
         tx,
         state_overrides=state_overrides,
         block=block,
+    )
+
+
+async def trace_transaction(
+    w3: AsyncWeb3,
+    tx_hash: str | bytes,
+) -> SimulationResult:
+    """Analyse an already-mined transaction using ``debug_traceTransaction``.
+
+    Replays the transaction against the chain state *at the block it was
+    included in* and returns a :class:`SimulationResult` that mirrors the one
+    produced by :func:`simulate_with_debug_trace_call` — including logs, ERC-20
+    transfer events, balance changes, and gas usage.
+
+    This is useful for post-hoc analysis: understanding what a historical
+    transaction actually did without having to re-simulate it as a call.
+
+    Args:
+        w3: Async web3 instance connected to a node that supports
+            ``debug_traceTransaction`` (e.g. Geth, Erigon, Anvil).
+        tx_hash: Transaction hash as a hex string (``"0x…"``) or raw bytes.
+
+    Returns:
+        A :class:`SimulationResult` populated with the replayed call's outcome,
+        logs, transfers, and balance changes.
+
+    Raises:
+        Exception: Propagates if the RPC returns an unexpected error.
+    """
+    if isinstance(tx_hash, (bytes, HexBytes)):
+        hash_param = "0x" + bytes(tx_hash).hex()
+    else:
+        hash_param = str(tx_hash)
+
+    response = await w3.provider.make_request(
+        "debug_traceTransaction",
+        [
+            hash_param,
+            {"tracer": "callTracer", "tracerConfig": {"withLog": True}},
+        ],
+    )
+
+    if "error" in response:
+        err = response["error"]
+        msg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
+        return SimulationResult(
+            success=False,
+            revert_reason=msg,
+            return_data=b"",
+        )
+
+    result = response.get("result", {})
+    success = not result.get("error") and not result.get("failed", False)
+
+    raw_output = result.get("output") or result.get("returnValue") or ""
+    if isinstance(raw_output, (bytes, HexBytes)):
+        return_data = bytes(raw_output)
+    else:
+        return_data = bytes.fromhex(str(raw_output).removeprefix("0x")) if raw_output else b""
+
+    revert_reason: str | None = None
+    if not success:
+        revert_reason = result.get("revertReason") or result.get("error")
+        if not revert_reason and return_data:
+            revert_reason = _decode_revert_reason(return_data)
+
+    raw_logs = _collect_call_tree_logs(result)
+    transfers = _parse_transfer_logs(raw_logs)
+    balance_changes = _aggregate_balance_changes(transfers)
+
+    gas_used_raw = result.get("gasUsed", "0x0")
+    gas_used = int(str(gas_used_raw), 16) if isinstance(gas_used_raw, str) else int(gas_used_raw or 0)
+
+    return SimulationResult(
+        success=success,
+        revert_reason=revert_reason,
+        return_data=return_data if success else b"",
+        transfers=transfers,
+        balance_changes=balance_changes,
+        gas_used=gas_used,
+        logs=raw_logs,
     )

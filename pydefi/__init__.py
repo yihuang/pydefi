@@ -71,6 +71,7 @@ from pydefi.simulate import (
     simulate_with_debug_trace_call,
     simulate_with_eth_call,
     simulate_with_eth_simulate_v1,
+    trace_transaction,
 )
 from pydefi.types import (
     BridgeQuote,
@@ -113,6 +114,7 @@ __all__ = [
     "simulate_with_debug_trace_call",
     "simulate_with_eth_call",
     "simulate_with_eth_simulate_v1",
+    "trace_transaction",
     # Exceptions
     "PydefiError",
     "InsufficientLiquidityError",
