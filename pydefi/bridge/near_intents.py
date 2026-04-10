@@ -262,9 +262,9 @@ class NearIntents(BaseBridge):
 
         * **Native ETH** — a plain ETH value transfer to the deposit address.
         * **ERC-20** — a ``transfer(depositAddress, amount)`` call on the token
-          contract.  The caller must have approved or hold enough tokens; no
-          ``approve`` step is needed here because NEAR Intents uses a direct
-          transfer (not ``transferFrom``).
+          contract. The caller must hold enough tokens; no ERC-20 ``approve``
+          step or allowance is required because NEAR Intents uses a direct
+          ``transfer`` call (not ``transferFrom``).
 
         Args:
             token_in: Source token.
