@@ -225,14 +225,15 @@ class NearIntents(BaseBridge):
 
         quote = data.get("quote", {})
         amount_out_raw = int(quote.get("amountOut", 0))
-        min_amount_out_raw = int(quote.get("minAmountOut", amount_out_raw))
-        # The bridge_fee is expressed in token_in raw units.  When token_in
-        # and token_out share the same decimals we can compare raw amounts
-        # directly.  When the decimals differ (e.g. USDC→ARB) the raw amounts
-        # are on different scales and the comparison would be meaningless, so
-        # we conservatively report 0; callers may derive a USD-denominated fee
-        # from the quote's amountIn/amountOut USD fields instead.
-        fee_raw = max(0, amount_in.amount - min_amount_out_raw) if token_in.decimals == token_out.decimals else 0
+        # Use appFees from the API response (echoed back in quoteRequest) to
+        # compute the bridge fee.  Each entry has a ``fee`` field in basis
+        # points.  The total fee is the sum of all entries applied to the
+        # input amount.  This avoids the unit-mismatch problem of comparing
+        # raw token amounts across assets with different decimals.
+        quote_request = data.get("quoteRequest", {})
+        app_fees = quote_request.get("appFees", [])
+        fee_bps = sum(int(entry.get("fee", 0)) for entry in app_fees)
+        fee_raw = amount_in.amount * fee_bps // 10_000
         estimated_time = int(quote.get("timeEstimate", 60))
 
         return BridgeQuote(
@@ -278,6 +279,10 @@ class NearIntents(BaseBridge):
 
         Returns:
             Transaction dict with ``to``, ``data``, ``value``, ``gas``.
+            The optional ``depositMemo`` key is included when the API returns
+            a memo value (e.g. for Stellar/XRP chains that require a
+            destination tag).  Callers should pass it to the status endpoint
+            alongside ``depositAddress`` when polling for settlement.
 
         Raises:
             :class:`~pydefi.exceptions.BridgeError`: On API error, missing
@@ -301,9 +306,11 @@ class NearIntents(BaseBridge):
         if not deposit_address:
             raise BridgeError("NEAR Intents: missing depositAddress in API response")
 
+        deposit_memo: str | None = quote.get("depositMemo")
+
         if token_in.is_native():
             # Plain ETH transfer to the deposit address.
-            return {
+            tx: dict[str, Any] = {
                 "to": deposit_address,
                 "data": "0x",
                 "value": str(amount_in.amount),
@@ -315,9 +322,14 @@ class NearIntents(BaseBridge):
                 deposit_address,
                 amount_in.amount,
             ).data
-            return {
+            tx = {
                 "to": token_in.address,
                 "data": "0x" + transfer_calldata.hex(),
                 "value": "0",
                 "gas": str(_ERC20_TRANSFER_GAS),
             }
+
+        if deposit_memo is not None:
+            tx["depositMemo"] = deposit_memo
+
+        return tx

@@ -1056,7 +1056,10 @@ class TestNearIntents:
                 "amountOut": "997500000",
                 "minAmountOut": "990000000",
                 "timeEstimate": 44,
-            }
+            },
+            "quoteRequest": {
+                "appFees": [{"recipient": "0xabcd", "fee": 20}],
+            },
         }
 
         with patch.object(ni, "_request_quote", new=AsyncMock(return_value=mock_api_response)):
@@ -1065,6 +1068,54 @@ class TestNearIntents:
         assert quote.protocol == "NEAR Intents"
         assert quote.amount_out.amount == 997_500_000
         assert quote.estimated_time_seconds == 44
+        # 20 bps on 1_000_000_000 (1000 USDC in raw units) = 2_000_000
+        assert quote.bridge_fee.amount == 2_000_000
+
+    @pytest.mark.asyncio
+    async def test_get_quote_fee_from_app_fees(self):
+        """bridge_fee is derived from appFees basis points, even when decimals differ."""
+        ni = NearIntents(src_chain_id=1, dst_chain_id=42161)
+        amount_in = TokenAmount.from_human(USDC_ETH, "1000")
+
+        mock_api_response = {
+            "quote": {
+                "amountIn": "1000000",
+                "amountOut": "9000000000000000000",
+                "timeEstimate": 30,
+            },
+            "quoteRequest": {
+                # Two fee entries: 10 bps + 5 bps = 15 bps total
+                "appFees": [
+                    {"recipient": "0xaaaa", "fee": 10},
+                    {"recipient": "0xbbbb", "fee": 5},
+                ],
+            },
+        }
+
+        with patch.object(ni, "_request_quote", new=AsyncMock(return_value=mock_api_response)):
+            quote = await ni.get_quote(USDC_ETH, ETH_ARB, amount_in)
+
+        # 15 bps on 1_000_000_000 (1000 USDC in raw units) = 1_500_000
+        assert quote.bridge_fee.amount == 1_500_000
+
+    @pytest.mark.asyncio
+    async def test_get_quote_no_app_fees(self):
+        """bridge_fee is 0 when appFees is absent."""
+        ni = NearIntents(src_chain_id=1, dst_chain_id=42161)
+        amount_in = TokenAmount.from_human(USDC_ETH, "1000")
+
+        mock_api_response = {
+            "quote": {
+                "amountIn": "1000000",
+                "amountOut": "997500000",
+                "timeEstimate": 44,
+            },
+        }
+
+        with patch.object(ni, "_request_quote", new=AsyncMock(return_value=mock_api_response)):
+            quote = await ni.get_quote(USDC_ETH, USDC_ARB, amount_in)
+
+        assert quote.bridge_fee.amount == 0
 
     @pytest.mark.asyncio
     async def test_get_quote_api_error(self):
@@ -1156,3 +1207,50 @@ class TestNearIntents:
         with patch.object(ni, "_request_quote", new=AsyncMock(return_value=mock_api_response)):
             with pytest.raises(BridgeError, match="depositAddress"):
                 await ni.build_bridge_tx(USDC_ETH, USDC_ARB, amount_in, recipient)
+
+    @pytest.mark.asyncio
+    async def test_build_bridge_tx_with_deposit_memo(self):
+        """depositMemo from the API response is forwarded in the result dict."""
+        ni = NearIntents(src_chain_id=1, dst_chain_id=42161)
+        amount_in = TokenAmount.from_human(USDC_ETH, "1000")
+        recipient = "0x" + "CC" * 20
+        deposit_addr = "0x" + "DD" * 20
+        memo = "12345678"
+
+        mock_api_response = {
+            "quote": {
+                "amountIn": "1000000",
+                "amountOut": "997500000",
+                "timeEstimate": 44,
+                "depositAddress": deposit_addr,
+                "depositMemo": memo,
+            }
+        }
+
+        with patch.object(ni, "_request_quote", new=AsyncMock(return_value=mock_api_response)):
+            tx = await ni.build_bridge_tx(USDC_ETH, USDC_ARB, amount_in, recipient)
+
+        assert tx["depositMemo"] == memo
+
+    @pytest.mark.asyncio
+    async def test_build_bridge_tx_without_deposit_memo(self):
+        """depositMemo key is absent when the API response has no depositMemo."""
+        ni = NearIntents(src_chain_id=1, dst_chain_id=42161)
+        amount_in = TokenAmount.from_human(USDC_ETH, "1000")
+        recipient = "0x" + "CC" * 20
+        deposit_addr = "0x" + "DD" * 20
+
+        mock_api_response = {
+            "quote": {
+                "amountIn": "1000000",
+                "amountOut": "997500000",
+                "timeEstimate": 44,
+                "depositAddress": deposit_addr,
+                # No depositMemo
+            }
+        }
+
+        with patch.object(ni, "_request_quote", new=AsyncMock(return_value=mock_api_response)):
+            tx = await ni.build_bridge_tx(USDC_ETH, USDC_ARB, amount_in, recipient)
+
+        assert "depositMemo" not in tx
