@@ -13,6 +13,7 @@ from pydefi.bridge.cctp import (
 from pydefi.bridge.gaszip import GasZip
 from pydefi.bridge.layerzero_oft import LayerZeroOFT
 from pydefi.bridge.mayan import Mayan
+from pydefi.bridge.near_intents import NearIntents
 from pydefi.bridge.relay import Relay
 from pydefi.bridge.stargate import Stargate
 
@@ -22,6 +23,7 @@ __all__ = [
     "Across",
     "Mayan",
     "GasZip",
+    "NearIntents",
     "Relay",
     "LayerZeroOFT",
     "CCTP",

@@ -14,6 +14,8 @@ from pydefi.bridge.cctp import (
 from pydefi.bridge.gaszip import _SUPPORTED_CHAINS, GasZip
 from pydefi.bridge.layerzero_oft import _LZ_EID, LayerZeroOFT
 from pydefi.bridge.mayan import _CHAIN_NAMES, _MAYAN_FORWARDER, Mayan
+from pydefi.bridge.near_intents import _CHAIN_NAMES as _NI_CHAIN_NAMES
+from pydefi.bridge.near_intents import NearIntents, _asset_id
 from pydefi.bridge.relay import Relay
 from pydefi.bridge.stargate import _LZ_CHAIN_ID, _POOL_IDS, Stargate
 from pydefi.exceptions import BridgeError
@@ -985,3 +987,170 @@ class TestEncodeCctpForwardHookData:
         data = encode_cctp_forward_hook_data(recipient=addr_no_prefix)
         expected_addr = bytes.fromhex(addr_no_prefix)
         assert data[32:52] == expected_addr
+
+
+# ---------------------------------------------------------------------------
+# NearIntents tests
+# ---------------------------------------------------------------------------
+
+
+class TestNearIntents:
+    def test_protocol_name(self):
+        ni = NearIntents(src_chain_id=1, dst_chain_id=42161)
+        assert ni.protocol_name == "NEAR Intents"
+
+    def test_chain_ids_stored(self):
+        ni = NearIntents(src_chain_id=1, dst_chain_id=42161)
+        assert ni.src_chain_id == 1
+        assert ni.dst_chain_id == 42161
+
+    def test_custom_api_base_url(self):
+        ni = NearIntents(
+            src_chain_id=1,
+            dst_chain_id=42161,
+            api_base_url="https://my-near.example.com",
+        )
+        assert ni._api_base == "https://my-near.example.com"
+
+    def test_chain_name_known(self):
+        ni = NearIntents(src_chain_id=1, dst_chain_id=42161)
+        assert ni._chain_name(1) == "eth"
+        assert ni._chain_name(42161) == "arb"
+
+    def test_chain_name_unknown_raises(self):
+        ni = NearIntents(src_chain_id=1, dst_chain_id=999999)
+        with pytest.raises(BridgeError):
+            ni._chain_name(999999)
+
+    def test_asset_id_native(self):
+        assert _asset_id(ETH_NATIVE, "eth") == "nep141:eth.omft.near"
+        assert _asset_id(ETH_ARB, "arb") == "nep141:arb.omft.near"
+
+    def test_asset_id_erc20(self):
+        result = _asset_id(USDC_ETH, "eth")
+        assert result == f"nep141:eth-{USDC_ETH.address.lower()}.omft.near"
+
+    def test_chain_name_constants(self):
+        assert _NI_CHAIN_NAMES[1] == "eth"
+        assert _NI_CHAIN_NAMES[10] == "op"
+        assert _NI_CHAIN_NAMES[56] == "bsc"
+        assert _NI_CHAIN_NAMES[137] == "pol"
+        assert _NI_CHAIN_NAMES[8453] == "base"
+        assert _NI_CHAIN_NAMES[42161] == "arb"
+        assert _NI_CHAIN_NAMES[43114] == "avax"
+        assert _NI_CHAIN_NAMES[59144] == "linea"
+        assert _NI_CHAIN_NAMES[534352] == "scroll"
+        assert _NI_CHAIN_NAMES[81457] == "blast"
+        assert _NI_CHAIN_NAMES[324] == "zksync"
+
+    @pytest.mark.asyncio
+    async def test_get_quote_erc20(self):
+        ni = NearIntents(src_chain_id=1, dst_chain_id=42161)
+        amount_in = TokenAmount.from_human(USDC_ETH, "1000")
+
+        mock_api_response = {
+            "quote": {
+                "amountIn": "1000000",
+                "amountOut": "997500000",
+                "minAmountOut": "990000000",
+                "timeEstimate": 44,
+            }
+        }
+
+        with patch.object(ni, "_request_quote", new=AsyncMock(return_value=mock_api_response)):
+            quote = await ni.get_quote(USDC_ETH, USDC_ARB, amount_in)
+
+        assert quote.protocol == "NEAR Intents"
+        assert quote.amount_out.amount == 997_500_000
+        assert quote.estimated_time_seconds == 44
+
+    @pytest.mark.asyncio
+    async def test_get_quote_api_error(self):
+        ni = NearIntents(src_chain_id=1, dst_chain_id=42161)
+        amount_in = TokenAmount.from_human(USDC_ETH, "1000")
+
+        with patch("aiohttp.ClientSession", return_value=_make_aiohttp_mock(400, {"error": "bad request"})):
+            with pytest.raises(BridgeError):
+                await ni.get_quote(USDC_ETH, USDC_ARB, amount_in)
+
+    @pytest.mark.asyncio
+    async def test_get_quote_unsupported_chain_raises(self):
+        ni = NearIntents(src_chain_id=999999, dst_chain_id=42161)
+        amount_in = TokenAmount.from_human(USDC_ETH, "1000")
+
+        with pytest.raises(BridgeError):
+            await ni.get_quote(USDC_ETH, USDC_ARB, amount_in)
+
+    @pytest.mark.asyncio
+    async def test_build_bridge_tx_native_eth(self):
+        """build_bridge_tx for native ETH produces a plain ETH transfer."""
+        ni = NearIntents(src_chain_id=1, dst_chain_id=42161)
+        amount_in = TokenAmount(token=ETH_NATIVE, amount=10**18)
+        recipient = "0x" + "CC" * 20
+        deposit_addr = "0x" + "DD" * 20
+
+        mock_api_response = {
+            "quote": {
+                "amountIn": str(10**18),
+                "amountOut": str(9 * 10**17),
+                "minAmountOut": str(89 * 10**16),
+                "timeEstimate": 44,
+                "depositAddress": deposit_addr,
+            }
+        }
+
+        with patch.object(ni, "_request_quote", new=AsyncMock(return_value=mock_api_response)):
+            tx = await ni.build_bridge_tx(ETH_NATIVE, ETH_ARB, amount_in, recipient)
+
+        assert tx["to"] == deposit_addr
+        assert tx["data"] == "0x"
+        assert tx["value"] == str(10**18)
+        assert int(tx["gas"]) > 0
+
+    @pytest.mark.asyncio
+    async def test_build_bridge_tx_erc20(self):
+        """build_bridge_tx for ERC-20 encodes a transfer() call on the token."""
+        ni = NearIntents(src_chain_id=1, dst_chain_id=42161)
+        amount_in = TokenAmount.from_human(USDC_ETH, "1000")
+        recipient = "0x" + "CC" * 20
+        deposit_addr = "0x" + "DD" * 20
+
+        mock_api_response = {
+            "quote": {
+                "amountIn": "1000000",
+                "amountOut": "997500000",
+                "minAmountOut": "990000000",
+                "timeEstimate": 44,
+                "depositAddress": deposit_addr,
+            }
+        }
+
+        with patch.object(ni, "_request_quote", new=AsyncMock(return_value=mock_api_response)):
+            tx = await ni.build_bridge_tx(USDC_ETH, USDC_ARB, amount_in, recipient)
+
+        # ERC-20 transfer: call the token contract, not the deposit address
+        assert tx["to"] == USDC_ETH.address
+        assert tx["value"] == "0"
+        # Calldata must start with the transfer(address,uint256) selector
+        assert tx["data"].startswith("0xa9059cbb")
+        # Deposit address must be embedded in the calldata
+        assert deposit_addr[2:].lower() in tx["data"].lower()
+
+    @pytest.mark.asyncio
+    async def test_build_bridge_tx_missing_deposit_address_raises(self):
+        """build_bridge_tx raises BridgeError when depositAddress is absent."""
+        ni = NearIntents(src_chain_id=1, dst_chain_id=42161)
+        amount_in = TokenAmount.from_human(USDC_ETH, "1000")
+        recipient = "0x" + "CC" * 20
+
+        mock_api_response = {
+            "quote": {
+                "amountIn": "1000000",
+                "amountOut": "997500000",
+                # No depositAddress
+            }
+        }
+
+        with patch.object(ni, "_request_quote", new=AsyncMock(return_value=mock_api_response)):
+            with pytest.raises(BridgeError, match="depositAddress"):
+                await ni.build_bridge_tx(USDC_ETH, USDC_ARB, amount_in, recipient)
