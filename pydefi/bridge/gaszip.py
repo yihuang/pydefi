@@ -214,7 +214,7 @@ class GasZip(BaseBridge):
                     )
                 if resp.status != 200:
                     text = await resp.text()
-                    raise BridgeError(f"GasZip API error ({resp.status}): {text[:200]}")
+                    raise BridgeError(f"GasZip API error ({resp.status}): {text}")
                 data = await resp.json(content_type=None)
 
         raw_status = str(data.get("status", "")).lower()
