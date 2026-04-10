@@ -277,18 +277,21 @@ class LayerZeroOFT(BaseBridge):
             :class:`~pydefi.exceptions.BridgeError`: On API error.
         """
         url = f"https://api.layerzero-scan.com/tx/{src_tx_hash}"
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url) as resp:
-                if resp.status == 404:
-                    return BridgeStatus(
-                        status=BridgeTransactionStatus.UNKNOWN,
-                        src_tx_hash=src_tx_hash,
-                        protocol=self.protocol_name,
-                    )
-                if resp.status != 200:
-                    text = await resp.text()
-                    raise BridgeError(f"LayerZero Scan API error ({resp.status}): {text}")
-                data = await resp.json(content_type=None)
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url) as resp:
+                    if resp.status == 404:
+                        return BridgeStatus(
+                            status=BridgeTransactionStatus.UNKNOWN,
+                            src_tx_hash=src_tx_hash,
+                            protocol=self.protocol_name,
+                        )
+                    if resp.status != 200:
+                        text = await resp.text()
+                        raise BridgeError(f"LayerZero Scan API error ({resp.status}): {text}")
+                    data = await resp.json(content_type=None)
+        except aiohttp.ClientConnectorError as exc:
+            raise BridgeError(f"LayerZero Scan API connection error: {exc}") from exc
 
         messages = data.get("messages") or []
         if not messages:

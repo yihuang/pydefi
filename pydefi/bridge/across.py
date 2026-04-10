@@ -17,6 +17,7 @@ Docs: https://docs.across.to/
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import aiohttp
@@ -210,7 +211,18 @@ class Across(BaseBridge):
         url = f"{self._api_base}/deposits/status"
         async with aiohttp.ClientSession() as session:
             async with session.get(url, params=params) as resp:
-                data = await resp.json(content_type=None)
+                if resp.status == 404:
+                    return BridgeStatus(
+                        status=BridgeTransactionStatus.UNKNOWN,
+                        src_tx_hash=src_tx_hash,
+                        protocol=self.protocol_name,
+                    )
+                try:
+                    data = await resp.json(content_type=None)
+                except json.JSONDecodeError:
+                    # The Across API returns an empty body for unrecognised
+                    # transaction hashes; treat that as UNKNOWN.
+                    data = {}
                 if resp.status != 200:
                     raise BridgeError(f"Across API error ({resp.status}): {data}")
 

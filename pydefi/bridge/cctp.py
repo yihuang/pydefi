@@ -624,6 +624,14 @@ class CCTP(BaseBridge):
         params = {"transactionHash": src_tx_hash}
         async with aiohttp.ClientSession() as session:
             async with session.get(url, params=params) as resp:
+                if resp.status == 404:
+                    # The Iris API returns 404 when no message is found for the
+                    # given transaction hash.
+                    return BridgeStatus(
+                        status=BridgeTransactionStatus.UNKNOWN,
+                        src_tx_hash=src_tx_hash,
+                        protocol=self.protocol_name,
+                    )
                 if resp.status != 200:
                     text = await resp.text()
                     raise BridgeError(f"CCTP Iris API error ({resp.status}): {text}")
