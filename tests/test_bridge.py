@@ -1042,6 +1042,8 @@ class TestNearIntents:
         assert _NI_CHAIN_NAMES[534352] == "scroll"
         assert _NI_CHAIN_NAMES[81457] == "blast"
         assert _NI_CHAIN_NAMES[324] == "zksync"
+        assert _NI_CHAIN_NAMES[130] == "unichain"
+        assert _NI_CHAIN_NAMES[480] == "worldchain"
 
     @pytest.mark.asyncio
     async def test_get_quote_erc20(self):

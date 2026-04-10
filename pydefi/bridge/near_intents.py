@@ -151,7 +151,7 @@ class NearIntents(BaseBridge):
 
         if deadline is None:
             deadline = (
-                datetime.now(tz=timezone.utc) + timedelta(minutes=_DEFAULT_DEADLINE_MINUTES)
+                datetime.now(timezone.utc) + timedelta(minutes=_DEFAULT_DEADLINE_MINUTES)
             ).strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
         payload: dict[str, Any] = {
@@ -226,6 +226,12 @@ class NearIntents(BaseBridge):
         quote = data.get("quote", {})
         amount_out_raw = int(quote.get("amountOut", 0))
         min_amount_out_raw = int(quote.get("minAmountOut", amount_out_raw))
+        # The bridge_fee is expressed in token_in raw units.  When token_in
+        # and token_out share the same decimals we can compare raw amounts
+        # directly.  When the decimals differ (e.g. USDC→ARB) the raw amounts
+        # are on different scales and the comparison would be meaningless, so
+        # we conservatively report 0; callers may derive a USD-denominated fee
+        # from the quote's amountIn/amountOut USD fields instead.
         fee_raw = max(0, amount_in.amount - min_amount_out_raw) if token_in.decimals == token_out.decimals else 0
         estimated_time = int(quote.get("timeEstimate", 60))
 
