@@ -80,6 +80,9 @@ _PANIC_SELECTOR: bytes = bytes.fromhex("4e487b71")
 # ``address`` in synthetic Transfer events for native ETH value transfers.
 _NATIVE_ETH_SENTINEL: str = Web3.to_checksum_address("0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE")
 
+# Fallback zero address used when callTracer results omit ``from``/``to``.
+_ZERO_ADDRESS: str = Web3.to_checksum_address("0x" + "00" * 20)
+
 #: Maximum ``uint256`` value — use as the *amount* in
 #: :func:`build_allowance_state_override` for an unlimited approval.
 MAX_UINT256: int = 2**256 - 1
@@ -311,8 +314,8 @@ def _collect_call_tree_value_transfers(call: dict) -> list[TokenTransfer]:
         value = int(raw_value or 0)
 
     if value > 0:
-        from_addr = Web3.to_checksum_address(call.get("from", "0x" + "00" * 20))
-        to_addr = Web3.to_checksum_address(call.get("to", "0x" + "00" * 20))
+        from_addr = Web3.to_checksum_address(call.get("from", _ZERO_ADDRESS))
+        to_addr = Web3.to_checksum_address(call.get("to", _ZERO_ADDRESS))
         transfers.append(TokenTransfer(token=None, from_address=from_addr, to_address=to_addr, amount=value))
 
     for sub_call in call.get("calls", []):
