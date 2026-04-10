@@ -26,7 +26,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 import aiohttp
-from eth_contract import ERC20
+from eth_contract.erc20 import ERC20
 
 from pydefi.bridge.base import BaseBridge
 from pydefi.exceptions import BridgeError
