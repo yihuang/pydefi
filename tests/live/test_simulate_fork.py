@@ -329,7 +329,7 @@ class TestSimulateDebugTraceCall:
         assert allowance == 10**10
 
     async def test_debug_trace_call_native_eth_transfer(self, sim_ctx):
-        """debug_traceCall captures native ETH transfers via callTracer logs."""
+        """debug_traceCall captures native ETH transfers via callTracer value fields."""
         w3 = sim_ctx["w3"]
         sender = sim_ctx["deployer"]
         recipient = sim_ctx["recipient"]
@@ -343,6 +343,15 @@ class TestSimulateDebugTraceCall:
         )
         assert result.success is True
         assert result.gas_used is not None and result.gas_used > 0
+        assert result.transfers, "Expected native ETH transfers"
+        eth_transfers = [t for t in result.transfers if t.token is None]
+        assert eth_transfers, "Expected at least one native ETH transfer"
+        assert any(
+            t.from_address == Web3.to_checksum_address(sender)
+            and t.to_address == Web3.to_checksum_address(recipient)
+            and t.amount == eth_amount
+            for t in eth_transfers
+        )
 
 
 @pytest.mark.fork
@@ -386,6 +395,15 @@ class TestTraceTransaction:
         result = await trace_transaction(w3, tx_hash)
         assert result.success is True
         assert result.gas_used is not None and result.gas_used > 0
+        assert result.transfers, "Expected native ETH transfers"
+        eth_transfers = [t for t in result.transfers if t.token is None]
+        assert eth_transfers, "Expected at least one native ETH transfer"
+        assert any(
+            t.from_address == Web3.to_checksum_address(sender)
+            and t.to_address == Web3.to_checksum_address(recipient)
+            and t.amount == eth_amount
+            for t in eth_transfers
+        )
 
 
 @pytest.mark.fork

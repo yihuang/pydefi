@@ -106,15 +106,18 @@ def _to_block_param(block: BlockIdentifier) -> str:
 
 @dataclass
 class TokenTransfer:
-    """An ERC-20 Transfer event parsed from transaction logs.
+    """An ERC-20 Transfer event or native ETH value transfer.
 
-    When :func:`simulate_with_eth_simulate_v1` is called with
-    ``trace_transfers=True``, native ETH value transfers also appear as
-    synthetic Transfer events where :attr:`token` is ``None``.
+    Native ETH value transfers appear with :attr:`token` set to ``None``:
+
+    * ``eth_simulateV1`` with ``trace_transfers=True`` emits synthetic
+      Transfer log events for native ETH.
+    * ``debug_traceCall`` and ``debug_traceTransaction`` report native ETH
+      via the ``value`` field on each call frame in the ``callTracer`` tree.
 
     Attributes:
         token: Checksum address of the ERC-20 contract, or ``None`` for
-            native ETH synthetic events.
+            native ETH transfers.
         from_address: Sender checksum address (``address(0)`` for mints).
         to_address: Recipient checksum address (``address(0)`` for burns).
         amount: Raw token amount (in the token's smallest unit).
@@ -289,6 +292,34 @@ def _collect_call_tree_logs(call: dict) -> list[dict]:
         if not sub_call.get("error"):
             logs.extend(_collect_call_tree_logs(sub_call))
     return logs
+
+
+def _collect_call_tree_value_transfers(call: dict) -> list[TokenTransfer]:
+    """Recursively collect native ETH value transfers from a ``callTracer`` call tree.
+
+    The ``callTracer`` reports native value transfers via the ``value`` field on
+    each call frame rather than as log events.  This function walks the call tree
+    and produces :class:`TokenTransfer` entries (with ``token=None``) for every
+    non-zero ``value`` on a non-reverted call frame.
+    """
+    transfers: list[TokenTransfer] = []
+
+    raw_value = call.get("value", "0x0")
+    if isinstance(raw_value, str):
+        value = int(raw_value, 16) if raw_value not in ("0x0", "0x", "") else 0
+    else:
+        value = int(raw_value or 0)
+
+    if value > 0:
+        from_addr = Web3.to_checksum_address(call.get("from", "0x" + "00" * 20))
+        to_addr = Web3.to_checksum_address(call.get("to", "0x" + "00" * 20))
+        transfers.append(TokenTransfer(token=None, from_address=from_addr, to_address=to_addr, amount=value))
+
+    for sub_call in call.get("calls", []):
+        if not sub_call.get("error"):
+            transfers.extend(_collect_call_tree_value_transfers(sub_call))
+
+    return transfers
 
 
 # ── Storage slot detection ────────────────────────────────────────────────────
@@ -744,6 +775,7 @@ async def simulate_with_debug_trace_call(
     if success:
         raw_logs = _collect_call_tree_logs(result)
         transfers = _parse_transfer_logs(raw_logs)
+        transfers.extend(_collect_call_tree_value_transfers(result))
         balance_changes = _aggregate_balance_changes(transfers)
     else:
         raw_logs = []
@@ -967,6 +999,7 @@ async def trace_transaction(
     if success:
         raw_logs = _collect_call_tree_logs(result)
         transfers = _parse_transfer_logs(raw_logs)
+        transfers.extend(_collect_call_tree_value_transfers(result))
         balance_changes = _aggregate_balance_changes(transfers)
     else:
         raw_logs = []
