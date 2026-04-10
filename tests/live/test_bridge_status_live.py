@@ -57,6 +57,7 @@ STARGATE_ROUTER_ETH = "0x8731d54E9D02c286767d56ac03e8037C07e01e98"
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _assert_valid_status(result, expected_src_tx_hash: str, expected_protocol: str) -> None:
     """Assert the BridgeStatus has all required fields with plausible values."""
     assert isinstance(result.status, BridgeTransactionStatus), (
@@ -323,4 +324,3 @@ class TestGasZipGetStatusLive:
             assert result.status == BridgeTransactionStatus.UNKNOWN
         except BridgeError as exc:
             pytest.skip(f"GasZip status API temporarily unavailable: {exc}")
-
