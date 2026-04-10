@@ -4,9 +4,9 @@ Common types used throughout pydefi.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import ROUND_DOWN, Decimal
-from enum import IntEnum
+from enum import Enum, IntEnum
 from typing import ClassVar
 
 
@@ -188,3 +188,43 @@ class BridgeQuote:
     bridge_fee: TokenAmount
     estimated_time_seconds: int
     protocol: str
+
+
+class BridgeTransactionStatus(str, Enum):
+    """Lifecycle status of a cross-chain bridge transaction.
+
+    Attributes:
+        PENDING: The transaction has been submitted on the source chain but
+            has not yet been confirmed or relayed on the destination chain.
+        COMPLETED: The bridge transfer completed successfully and funds were
+            received on the destination chain.
+        FAILED: The transfer failed (e.g. reverted, rejected, or expired
+            without being filled).
+        REFUNDED: The transfer was refunded / reversed back to the sender.
+        UNKNOWN: The status cannot be determined (e.g. the API returned an
+            unrecognised status code, or the transaction was not found).
+    """
+
+    PENDING = "pending"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    REFUNDED = "refunded"
+    UNKNOWN = "unknown"
+
+
+@dataclass
+class BridgeStatus:
+    """Status of a cross-chain bridge transaction.
+
+    Attributes:
+        status: Normalised lifecycle status.
+        src_tx_hash: Transaction hash on the source chain.
+        dst_tx_hash: Transaction hash on the destination chain once the
+            transfer has been relayed (``None`` while still in flight).
+        protocol: Bridge protocol name (e.g. ``"Across"``).
+    """
+
+    status: BridgeTransactionStatus
+    src_tx_hash: str
+    dst_tx_hash: str | None = field(default=None)
+    protocol: str = field(default="")

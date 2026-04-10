@@ -25,7 +25,7 @@ from web3 import AsyncWeb3
 from pydefi.abi.bridge import ACROSS_SPOKE_POOL
 from pydefi.bridge.base import BaseBridge
 from pydefi.exceptions import BridgeError
-from pydefi.types import BridgeQuote, Token, TokenAmount
+from pydefi.types import BridgeQuote, BridgeStatus, BridgeTransactionStatus, Token, TokenAmount
 
 _ACROSS_API_BASE = "https://app.across.to/api"
 
@@ -185,3 +185,50 @@ class Across(BaseBridge):
             "value": value,
             "gas": str(300_000),
         }
+
+    async def get_status(self, src_tx_hash: str) -> BridgeStatus:
+        """Fetch the status of an Across deposit transaction.
+
+        Calls the Across ``/deposits/status`` API endpoint using the source
+        transaction hash to discover whether the deposit has been filled on
+        the destination chain.
+
+        Args:
+            src_tx_hash: Transaction hash of the ``depositV3`` call on the
+                source chain.
+
+        Returns:
+            A :class:`~pydefi.types.BridgeStatus`.
+
+        Raises:
+            :class:`~pydefi.exceptions.BridgeError`: On API error.
+        """
+        params = {
+            "depositTxHash": src_tx_hash,
+            "originChainId": self.src_chain_id,
+        }
+        url = f"{self._api_base}/deposits/status"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, params=params) as resp:
+                data = await resp.json(content_type=None)
+                if resp.status != 200:
+                    raise BridgeError(f"Across API error ({resp.status}): {data}")
+
+        raw_status = str(data.get("status", "")).lower()
+        fill_txs = data.get("fillTxs") or []
+        dst_tx_hash: str | None = fill_txs[0].get("hash") if fill_txs else None
+
+        _STATUS_MAP = {
+            "filled": BridgeTransactionStatus.COMPLETED,
+            "pending": BridgeTransactionStatus.PENDING,
+            "expired": BridgeTransactionStatus.FAILED,
+            "refunded": BridgeTransactionStatus.REFUNDED,
+        }
+        status = _STATUS_MAP.get(raw_status, BridgeTransactionStatus.UNKNOWN)
+
+        return BridgeStatus(
+            status=status,
+            src_tx_hash=src_tx_hash,
+            dst_tx_hash=dst_tx_hash,
+            protocol=self.protocol_name,
+        )

@@ -7,6 +7,7 @@ import pytest
 from pydefi.bridge.across import Across
 from pydefi.bridge.base import BaseBridge
 from pydefi.bridge.cctp import (
+    CCTP,
     HYPERCORE_DEX_PERP,
     HYPERCORE_DEX_SPOT,
     encode_cctp_forward_hook_data,
@@ -17,7 +18,7 @@ from pydefi.bridge.mayan import _CHAIN_NAMES, _MAYAN_FORWARDER, Mayan
 from pydefi.bridge.relay import Relay
 from pydefi.bridge.stargate import _LZ_CHAIN_ID, _POOL_IDS, Stargate
 from pydefi.exceptions import BridgeError
-from pydefi.types import ChainId, Token, TokenAmount
+from pydefi.types import BridgeTransactionStatus, ChainId, Token, TokenAmount
 
 
 def _make_aiohttp_mock(status: int, response_data) -> MagicMock:
@@ -985,3 +986,498 @@ class TestEncodeCctpForwardHookData:
         data = encode_cctp_forward_hook_data(recipient=addr_no_prefix)
         expected_addr = bytes.fromhex(addr_no_prefix)
         assert data[32:52] == expected_addr
+
+
+# ---------------------------------------------------------------------------
+# get_status tests
+# ---------------------------------------------------------------------------
+
+_SRC_TX_HASH = "0x" + "ab" * 32
+
+
+def _make_text_aiohttp_mock(status: int, text: str) -> MagicMock:
+    """Build a mock that returns plain text (for error scenarios)."""
+    mock_resp = AsyncMock()
+    mock_resp.status = status
+    mock_resp.text = AsyncMock(return_value=text)
+
+    resp_ctx = MagicMock()
+    resp_ctx.__aenter__ = AsyncMock(return_value=mock_resp)
+    resp_ctx.__aexit__ = AsyncMock(return_value=False)
+
+    mock_session = MagicMock()
+    mock_session.get = MagicMock(return_value=resp_ctx)
+
+    session_ctx = MagicMock()
+    session_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+    session_ctx.__aexit__ = AsyncMock(return_value=False)
+
+    return session_ctx
+
+
+class TestAcrossGetStatus:
+    """Tests for Across.get_status."""
+
+    def _make_across(self) -> Across:
+        return Across(w3=None, src_chain_id=1, dst_chain_id=42161, spoke_pool_address=SPOKE_POOL_ETH)
+
+    @pytest.mark.asyncio
+    async def test_status_filled(self):
+        ac = self._make_across()
+        mock_data = {
+            "status": "filled",
+            "fillTxs": [{"hash": "0xDEAD"}],
+        }
+        with patch("aiohttp.ClientSession", return_value=_make_aiohttp_mock(200, mock_data)):
+            result = await ac.get_status(_SRC_TX_HASH)
+
+        assert result.status == BridgeTransactionStatus.COMPLETED
+        assert result.dst_tx_hash == "0xDEAD"
+        assert result.src_tx_hash == _SRC_TX_HASH
+        assert result.protocol == "Across"
+
+    @pytest.mark.asyncio
+    async def test_status_pending(self):
+        ac = self._make_across()
+        mock_data = {"status": "pending", "fillTxs": []}
+        with patch("aiohttp.ClientSession", return_value=_make_aiohttp_mock(200, mock_data)):
+            result = await ac.get_status(_SRC_TX_HASH)
+
+        assert result.status == BridgeTransactionStatus.PENDING
+        assert result.dst_tx_hash is None
+
+    @pytest.mark.asyncio
+    async def test_status_expired(self):
+        ac = self._make_across()
+        mock_data = {"status": "expired", "fillTxs": []}
+        with patch("aiohttp.ClientSession", return_value=_make_aiohttp_mock(200, mock_data)):
+            result = await ac.get_status(_SRC_TX_HASH)
+
+        assert result.status == BridgeTransactionStatus.FAILED
+
+    @pytest.mark.asyncio
+    async def test_status_refunded(self):
+        ac = self._make_across()
+        mock_data = {"status": "refunded", "fillTxs": []}
+        with patch("aiohttp.ClientSession", return_value=_make_aiohttp_mock(200, mock_data)):
+            result = await ac.get_status(_SRC_TX_HASH)
+
+        assert result.status == BridgeTransactionStatus.REFUNDED
+
+    @pytest.mark.asyncio
+    async def test_status_unknown(self):
+        ac = self._make_across()
+        mock_data = {"status": "something_new", "fillTxs": []}
+        with patch("aiohttp.ClientSession", return_value=_make_aiohttp_mock(200, mock_data)):
+            result = await ac.get_status(_SRC_TX_HASH)
+
+        assert result.status == BridgeTransactionStatus.UNKNOWN
+
+    @pytest.mark.asyncio
+    async def test_api_error_raises(self):
+        ac = self._make_across()
+        with patch("aiohttp.ClientSession", return_value=_make_aiohttp_mock(500, {"error": "server error"})):
+            with pytest.raises(BridgeError):
+                await ac.get_status(_SRC_TX_HASH)
+
+
+class TestCCTPGetStatus:
+    """Tests for CCTP.get_status."""
+
+    def _make_cctp(self) -> CCTP:
+        return CCTP(w3=None, src_chain_id=1, dst_chain_id=42161)
+
+    @pytest.mark.asyncio
+    async def test_status_complete(self):
+        cctp = self._make_cctp()
+        mock_data = {
+            "messages": [
+                {
+                    "status": "COMPLETE",
+                    "attestation": "0xsignedattestation",
+                }
+            ]
+        }
+        with patch("aiohttp.ClientSession", return_value=_make_aiohttp_mock(200, mock_data)):
+            result = await cctp.get_status(_SRC_TX_HASH)
+
+        assert result.status == BridgeTransactionStatus.COMPLETED
+        assert result.src_tx_hash == _SRC_TX_HASH
+        assert result.dst_tx_hash is None  # CCTP attestation does not include dst tx
+        assert result.protocol == "CCTP"
+
+    @pytest.mark.asyncio
+    async def test_status_pending(self):
+        cctp = self._make_cctp()
+        mock_data = {"messages": [{"status": "PENDING"}]}
+        with patch("aiohttp.ClientSession", return_value=_make_aiohttp_mock(200, mock_data)):
+            result = await cctp.get_status(_SRC_TX_HASH)
+
+        assert result.status == BridgeTransactionStatus.PENDING
+
+    @pytest.mark.asyncio
+    async def test_status_pending_confirmations(self):
+        cctp = self._make_cctp()
+        mock_data = {"messages": [{"status": "PENDING_CONFIRMATIONS"}]}
+        with patch("aiohttp.ClientSession", return_value=_make_aiohttp_mock(200, mock_data)):
+            result = await cctp.get_status(_SRC_TX_HASH)
+
+        assert result.status == BridgeTransactionStatus.PENDING
+
+    @pytest.mark.asyncio
+    async def test_no_messages_returns_unknown(self):
+        cctp = self._make_cctp()
+        mock_data = {"messages": []}
+        with patch("aiohttp.ClientSession", return_value=_make_aiohttp_mock(200, mock_data)):
+            result = await cctp.get_status(_SRC_TX_HASH)
+
+        assert result.status == BridgeTransactionStatus.UNKNOWN
+
+    @pytest.mark.asyncio
+    async def test_api_error_raises(self):
+        cctp = self._make_cctp()
+        with patch("aiohttp.ClientSession", return_value=_make_text_aiohttp_mock(500, "Internal Server Error")):
+            with pytest.raises(BridgeError):
+                await cctp.get_status(_SRC_TX_HASH)
+
+
+class TestRelayGetStatus:
+    """Tests for Relay.get_status."""
+
+    @pytest.mark.asyncio
+    async def test_status_success(self):
+        r = Relay(src_chain_id=1, dst_chain_id=42161)
+        mock_data = {
+            "requests": [
+                {
+                    "status": "success",
+                    "data": {},
+                }
+            ]
+        }
+        with patch("aiohttp.ClientSession", return_value=_make_aiohttp_mock(200, mock_data)):
+            result = await r.get_status(_SRC_TX_HASH)
+
+        assert result.status == BridgeTransactionStatus.COMPLETED
+        assert result.src_tx_hash == _SRC_TX_HASH
+        assert result.protocol == "Relay"
+
+    @pytest.mark.asyncio
+    async def test_status_pending(self):
+        r = Relay(src_chain_id=1, dst_chain_id=42161)
+        mock_data = {"requests": [{"status": "pending", "data": {}}]}
+        with patch("aiohttp.ClientSession", return_value=_make_aiohttp_mock(200, mock_data)):
+            result = await r.get_status(_SRC_TX_HASH)
+
+        assert result.status == BridgeTransactionStatus.PENDING
+
+    @pytest.mark.asyncio
+    async def test_status_failed(self):
+        r = Relay(src_chain_id=1, dst_chain_id=42161)
+        mock_data = {"requests": [{"status": "failure", "data": {}}]}
+        with patch("aiohttp.ClientSession", return_value=_make_aiohttp_mock(200, mock_data)):
+            result = await r.get_status(_SRC_TX_HASH)
+
+        assert result.status == BridgeTransactionStatus.FAILED
+
+    @pytest.mark.asyncio
+    async def test_empty_requests_returns_unknown(self):
+        r = Relay(src_chain_id=1, dst_chain_id=42161)
+        mock_data = {"requests": []}
+        with patch("aiohttp.ClientSession", return_value=_make_aiohttp_mock(200, mock_data)):
+            result = await r.get_status(_SRC_TX_HASH)
+
+        assert result.status == BridgeTransactionStatus.UNKNOWN
+
+    @pytest.mark.asyncio
+    async def test_api_error_raises(self):
+        r = Relay(src_chain_id=1, dst_chain_id=42161)
+        with patch("aiohttp.ClientSession", return_value=_make_aiohttp_mock(500, {"error": "server error"})):
+            with pytest.raises(BridgeError):
+                await r.get_status(_SRC_TX_HASH)
+
+
+class TestMayanGetStatus:
+    """Tests for Mayan.get_status."""
+
+    @pytest.mark.asyncio
+    async def test_status_completed(self):
+        m = Mayan(src_chain_id=1, dst_chain_id=42161)
+        mock_data = {"clientStatus": "COMPLETED", "destTxHash": "0xDEAD"}
+        with patch("aiohttp.ClientSession", return_value=_make_aiohttp_mock(200, mock_data)):
+            result = await m.get_status(_SRC_TX_HASH)
+
+        assert result.status == BridgeTransactionStatus.COMPLETED
+        assert result.dst_tx_hash == "0xDEAD"
+        assert result.src_tx_hash == _SRC_TX_HASH
+        assert result.protocol == "Mayan"
+
+    @pytest.mark.asyncio
+    async def test_status_inprogress(self):
+        m = Mayan(src_chain_id=1, dst_chain_id=42161)
+        mock_data = {"clientStatus": "INPROGRESS"}
+        with patch("aiohttp.ClientSession", return_value=_make_aiohttp_mock(200, mock_data)):
+            result = await m.get_status(_SRC_TX_HASH)
+
+        assert result.status == BridgeTransactionStatus.PENDING
+
+    @pytest.mark.asyncio
+    async def test_status_created_is_pending(self):
+        m = Mayan(src_chain_id=1, dst_chain_id=42161)
+        mock_data = {"clientStatus": "CREATED"}
+        with patch("aiohttp.ClientSession", return_value=_make_aiohttp_mock(200, mock_data)):
+            result = await m.get_status(_SRC_TX_HASH)
+
+        assert result.status == BridgeTransactionStatus.PENDING
+
+    @pytest.mark.asyncio
+    async def test_status_failed(self):
+        m = Mayan(src_chain_id=1, dst_chain_id=42161)
+        mock_data = {"clientStatus": "FAILED"}
+        with patch("aiohttp.ClientSession", return_value=_make_aiohttp_mock(200, mock_data)):
+            result = await m.get_status(_SRC_TX_HASH)
+
+        assert result.status == BridgeTransactionStatus.FAILED
+
+    @pytest.mark.asyncio
+    async def test_status_refunded(self):
+        m = Mayan(src_chain_id=1, dst_chain_id=42161)
+        mock_data = {"clientStatus": "REFUNDED"}
+        with patch("aiohttp.ClientSession", return_value=_make_aiohttp_mock(200, mock_data)):
+            result = await m.get_status(_SRC_TX_HASH)
+
+        assert result.status == BridgeTransactionStatus.REFUNDED
+
+    @pytest.mark.asyncio
+    async def test_404_returns_unknown(self):
+        m = Mayan(src_chain_id=1, dst_chain_id=42161)
+        with patch("aiohttp.ClientSession", return_value=_make_aiohttp_mock(404, {})):
+            result = await m.get_status(_SRC_TX_HASH)
+
+        assert result.status == BridgeTransactionStatus.UNKNOWN
+
+    @pytest.mark.asyncio
+    async def test_api_error_raises(self):
+        m = Mayan(src_chain_id=1, dst_chain_id=42161)
+        with patch("aiohttp.ClientSession", return_value=_make_aiohttp_mock(500, {"error": "server error"})):
+            with pytest.raises(BridgeError):
+                await m.get_status(_SRC_TX_HASH)
+
+
+class TestStargateGetStatus:
+    """Tests for Stargate.get_status."""
+
+    def _make_stargate(self) -> Stargate:
+        return Stargate(w3=None, src_chain_id=1, dst_chain_id=42161, router_address=STARGATE_ROUTER_ETH)
+
+    @pytest.mark.asyncio
+    async def test_status_delivered(self):
+        sg = self._make_stargate()
+        mock_data = {"messages": [{"status": "DELIVERED", "dstTxHash": "0xBEEF"}]}
+        with patch("aiohttp.ClientSession", return_value=_make_aiohttp_mock(200, mock_data)):
+            result = await sg.get_status(_SRC_TX_HASH)
+
+        assert result.status == BridgeTransactionStatus.COMPLETED
+        assert result.dst_tx_hash == "0xBEEF"
+        assert result.src_tx_hash == _SRC_TX_HASH
+        assert result.protocol == "Stargate"
+
+    @pytest.mark.asyncio
+    async def test_status_inflight(self):
+        sg = self._make_stargate()
+        mock_data = {"messages": [{"status": "INFLIGHT"}]}
+        with patch("aiohttp.ClientSession", return_value=_make_aiohttp_mock(200, mock_data)):
+            result = await sg.get_status(_SRC_TX_HASH)
+
+        assert result.status == BridgeTransactionStatus.PENDING
+
+    @pytest.mark.asyncio
+    async def test_status_confirming(self):
+        sg = self._make_stargate()
+        mock_data = {"messages": [{"status": "CONFIRMING"}]}
+        with patch("aiohttp.ClientSession", return_value=_make_aiohttp_mock(200, mock_data)):
+            result = await sg.get_status(_SRC_TX_HASH)
+
+        assert result.status == BridgeTransactionStatus.PENDING
+
+    @pytest.mark.asyncio
+    async def test_status_blocked(self):
+        sg = self._make_stargate()
+        mock_data = {"messages": [{"status": "BLOCKED"}]}
+        with patch("aiohttp.ClientSession", return_value=_make_aiohttp_mock(200, mock_data)):
+            result = await sg.get_status(_SRC_TX_HASH)
+
+        assert result.status == BridgeTransactionStatus.FAILED
+
+    @pytest.mark.asyncio
+    async def test_empty_messages_returns_unknown(self):
+        sg = self._make_stargate()
+        mock_data = {"messages": []}
+        with patch("aiohttp.ClientSession", return_value=_make_aiohttp_mock(200, mock_data)):
+            result = await sg.get_status(_SRC_TX_HASH)
+
+        assert result.status == BridgeTransactionStatus.UNKNOWN
+
+    @pytest.mark.asyncio
+    async def test_404_returns_unknown(self):
+        sg = self._make_stargate()
+        with patch("aiohttp.ClientSession", return_value=_make_aiohttp_mock(404, {})):
+            result = await sg.get_status(_SRC_TX_HASH)
+
+        assert result.status == BridgeTransactionStatus.UNKNOWN
+
+    @pytest.mark.asyncio
+    async def test_api_error_raises(self):
+        sg = self._make_stargate()
+        with patch("aiohttp.ClientSession", return_value=_make_text_aiohttp_mock(500, "server error")):
+            with pytest.raises(BridgeError):
+                await sg.get_status(_SRC_TX_HASH)
+
+
+class TestLayerZeroOFTGetStatus:
+    """Tests for LayerZeroOFT.get_status."""
+
+    def _make_oft(self) -> LayerZeroOFT:
+        return LayerZeroOFT(w3=None, src_chain_id=1, dst_chain_id=42161, oft_address=OFT_ADDRESS)
+
+    @pytest.mark.asyncio
+    async def test_status_delivered(self):
+        oft = self._make_oft()
+        mock_data = {"messages": [{"status": "DELIVERED", "dstTxHash": "0xCAFE"}]}
+        with patch("aiohttp.ClientSession", return_value=_make_aiohttp_mock(200, mock_data)):
+            result = await oft.get_status(_SRC_TX_HASH)
+
+        assert result.status == BridgeTransactionStatus.COMPLETED
+        assert result.dst_tx_hash == "0xCAFE"
+        assert result.src_tx_hash == _SRC_TX_HASH
+        assert result.protocol == "LayerZeroOFT"
+
+    @pytest.mark.asyncio
+    async def test_status_inflight(self):
+        oft = self._make_oft()
+        mock_data = {"messages": [{"status": "INFLIGHT"}]}
+        with patch("aiohttp.ClientSession", return_value=_make_aiohttp_mock(200, mock_data)):
+            result = await oft.get_status(_SRC_TX_HASH)
+
+        assert result.status == BridgeTransactionStatus.PENDING
+
+    @pytest.mark.asyncio
+    async def test_payload_stored_is_pending(self):
+        oft = self._make_oft()
+        mock_data = {"messages": [{"status": "PAYLOAD_STORED"}]}
+        with patch("aiohttp.ClientSession", return_value=_make_aiohttp_mock(200, mock_data)):
+            result = await oft.get_status(_SRC_TX_HASH)
+
+        assert result.status == BridgeTransactionStatus.PENDING
+
+    @pytest.mark.asyncio
+    async def test_status_failed(self):
+        oft = self._make_oft()
+        mock_data = {"messages": [{"status": "FAILED"}]}
+        with patch("aiohttp.ClientSession", return_value=_make_aiohttp_mock(200, mock_data)):
+            result = await oft.get_status(_SRC_TX_HASH)
+
+        assert result.status == BridgeTransactionStatus.FAILED
+
+    @pytest.mark.asyncio
+    async def test_empty_messages_returns_unknown(self):
+        oft = self._make_oft()
+        mock_data = {"messages": []}
+        with patch("aiohttp.ClientSession", return_value=_make_aiohttp_mock(200, mock_data)):
+            result = await oft.get_status(_SRC_TX_HASH)
+
+        assert result.status == BridgeTransactionStatus.UNKNOWN
+
+    @pytest.mark.asyncio
+    async def test_404_returns_unknown(self):
+        oft = self._make_oft()
+        with patch("aiohttp.ClientSession", return_value=_make_aiohttp_mock(404, {})):
+            result = await oft.get_status(_SRC_TX_HASH)
+
+        assert result.status == BridgeTransactionStatus.UNKNOWN
+
+    @pytest.mark.asyncio
+    async def test_api_error_raises(self):
+        oft = self._make_oft()
+        with patch("aiohttp.ClientSession", return_value=_make_text_aiohttp_mock(500, "server error")):
+            with pytest.raises(BridgeError):
+                await oft.get_status(_SRC_TX_HASH)
+
+
+class TestGasZipGetStatus:
+    """Tests for GasZip.get_status."""
+
+    def _make_gaszip(self) -> GasZip:
+        return GasZip(src_chain_id=1, dst_chain_id=42161, contract_address=GASZIP_CONTRACT)
+
+    @pytest.mark.asyncio
+    async def test_status_completed(self):
+        gz = self._make_gaszip()
+        mock_data = {"status": "completed", "dstTxHash": "0xFACE"}
+        with patch("aiohttp.ClientSession", return_value=_make_aiohttp_mock(200, mock_data)):
+            result = await gz.get_status(_SRC_TX_HASH)
+
+        assert result.status == BridgeTransactionStatus.COMPLETED
+        assert result.dst_tx_hash == "0xFACE"
+        assert result.src_tx_hash == _SRC_TX_HASH
+        assert result.protocol == "GasZip"
+
+    @pytest.mark.asyncio
+    async def test_status_pending(self):
+        gz = self._make_gaszip()
+        mock_data = {"status": "pending"}
+        with patch("aiohttp.ClientSession", return_value=_make_aiohttp_mock(200, mock_data)):
+            result = await gz.get_status(_SRC_TX_HASH)
+
+        assert result.status == BridgeTransactionStatus.PENDING
+
+    @pytest.mark.asyncio
+    async def test_status_processing(self):
+        gz = self._make_gaszip()
+        mock_data = {"status": "processing"}
+        with patch("aiohttp.ClientSession", return_value=_make_aiohttp_mock(200, mock_data)):
+            result = await gz.get_status(_SRC_TX_HASH)
+
+        assert result.status == BridgeTransactionStatus.PENDING
+
+    @pytest.mark.asyncio
+    async def test_status_failed(self):
+        gz = self._make_gaszip()
+        mock_data = {"status": "failed"}
+        with patch("aiohttp.ClientSession", return_value=_make_aiohttp_mock(200, mock_data)):
+            result = await gz.get_status(_SRC_TX_HASH)
+
+        assert result.status == BridgeTransactionStatus.FAILED
+
+    @pytest.mark.asyncio
+    async def test_status_refunded(self):
+        gz = self._make_gaszip()
+        mock_data = {"status": "refunded"}
+        with patch("aiohttp.ClientSession", return_value=_make_aiohttp_mock(200, mock_data)):
+            result = await gz.get_status(_SRC_TX_HASH)
+
+        assert result.status == BridgeTransactionStatus.REFUNDED
+
+    @pytest.mark.asyncio
+    async def test_unknown_status(self):
+        gz = self._make_gaszip()
+        mock_data = {"status": "some_unknown_value"}
+        with patch("aiohttp.ClientSession", return_value=_make_aiohttp_mock(200, mock_data)):
+            result = await gz.get_status(_SRC_TX_HASH)
+
+        assert result.status == BridgeTransactionStatus.UNKNOWN
+
+    @pytest.mark.asyncio
+    async def test_404_returns_unknown(self):
+        gz = self._make_gaszip()
+        with patch("aiohttp.ClientSession", return_value=_make_aiohttp_mock(404, {})):
+            result = await gz.get_status(_SRC_TX_HASH)
+
+        assert result.status == BridgeTransactionStatus.UNKNOWN
+
+    @pytest.mark.asyncio
+    async def test_api_error_raises(self):
+        gz = self._make_gaszip()
+        with patch("aiohttp.ClientSession", return_value=_make_text_aiohttp_mock(500, "server error")):
+            with pytest.raises(BridgeError):
+                await gz.get_status(_SRC_TX_HASH)

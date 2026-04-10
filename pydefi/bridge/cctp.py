@@ -69,7 +69,7 @@ from web3 import AsyncWeb3, Web3
 from pydefi.abi.bridge import CCTP_TOKEN_MESSENGER_V2
 from pydefi.bridge.base import BaseBridge
 from pydefi.exceptions import BridgeError
-from pydefi.types import BridgeQuote, ChainId, Token, TokenAmount
+from pydefi.types import BridgeQuote, BridgeStatus, BridgeTransactionStatus, ChainId, Token, TokenAmount
 
 # ---------------------------------------------------------------------------
 # Fast-finality threshold constant (CCTP v2)
@@ -597,6 +597,64 @@ class CCTP(BaseBridge):
             "value": "0",
             "gas": str(220_000),
         }
+
+    # -----------------------------------------------------------------------
+    # Status tracking
+    # -----------------------------------------------------------------------
+
+    async def get_status(self, src_tx_hash: str) -> BridgeStatus:
+        """Fetch the attestation status of a CCTP v2 burn transaction.
+
+        Queries the Circle Iris v2 ``/v2/messages/{srcDomain}`` endpoint to
+        determine whether the burn message has been attested and the USDC
+        has been minted on the destination chain.
+
+        Args:
+            src_tx_hash: Transaction hash of the ``depositForBurn`` (or
+                ``depositForBurnWithHook``) call on the source chain.
+
+        Returns:
+            A :class:`~pydefi.types.BridgeStatus`.
+
+        Raises:
+            :class:`~pydefi.exceptions.BridgeError`: On HTTP or API error.
+        """
+        src_domain = self._cctp_domain(self.src_chain_id)
+        url = f"{self._api_base}/v2/messages/{src_domain}"
+        params = {"transactionHash": src_tx_hash}
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, params=params) as resp:
+                if resp.status != 200:
+                    text = await resp.text()
+                    raise BridgeError(f"CCTP Iris API error ({resp.status}): {text}")
+                data = await resp.json(content_type=None)
+
+        messages = data.get("messages") or []
+        if not messages:
+            return BridgeStatus(
+                status=BridgeTransactionStatus.UNKNOWN,
+                src_tx_hash=src_tx_hash,
+                protocol=self.protocol_name,
+            )
+
+        msg = messages[0]
+        raw_status = str(msg.get("status", "")).upper()
+
+        _STATUS_MAP = {
+            "COMPLETE": BridgeTransactionStatus.COMPLETED,
+            "PENDING": BridgeTransactionStatus.PENDING,
+            "PENDING_CONFIRMATIONS": BridgeTransactionStatus.PENDING,
+        }
+        status = _STATUS_MAP.get(raw_status, BridgeTransactionStatus.UNKNOWN)
+
+        # The Iris API does not return a destination tx hash directly; the
+        # caller must submit the attestation via receiveMessage themselves.
+        return BridgeStatus(
+            status=status,
+            src_tx_hash=src_tx_hash,
+            dst_tx_hash=None,
+            protocol=self.protocol_name,
+        )
 
     # -----------------------------------------------------------------------
     # Class-level helpers for deployment lookups

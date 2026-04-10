@@ -17,7 +17,7 @@ import aiohttp
 from pydefi.abi.bridge import GASZIP
 from pydefi.bridge.base import BaseBridge
 from pydefi.exceptions import BridgeError
-from pydefi.types import BridgeQuote, Token, TokenAmount
+from pydefi.types import BridgeQuote, BridgeStatus, BridgeTransactionStatus, Token, TokenAmount
 
 _GASZIP_API_BASE = "https://backend.gas.zip/v2"
 
@@ -185,3 +185,55 @@ class GasZip(BaseBridge):
             "value": str(amount_in.amount),
             "gas": str(100_000),
         }
+
+    async def get_status(self, src_tx_hash: str) -> BridgeStatus:
+        """Fetch the status of a GasZip deposit transaction.
+
+        Queries the GasZip backend API ``/v2/tx/{txHash}`` endpoint to
+        determine whether the gas deposit has been delivered on the
+        destination chain.
+
+        Args:
+            src_tx_hash: Transaction hash of the ``deposit`` call on the
+                source chain.
+
+        Returns:
+            A :class:`~pydefi.types.BridgeStatus`.
+
+        Raises:
+            :class:`~pydefi.exceptions.BridgeError`: On API error.
+        """
+        url = f"{self._api_base}/tx/{src_tx_hash}"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as resp:
+                if resp.status == 404:
+                    return BridgeStatus(
+                        status=BridgeTransactionStatus.UNKNOWN,
+                        src_tx_hash=src_tx_hash,
+                        protocol=self.protocol_name,
+                    )
+                if resp.status != 200:
+                    text = await resp.text()
+                    raise BridgeError(f"GasZip API error ({resp.status}): {text[:200]}")
+                data = await resp.json(content_type=None)
+
+        raw_status = str(data.get("status", "")).lower()
+
+        _STATUS_MAP = {
+            "completed": BridgeTransactionStatus.COMPLETED,
+            "success": BridgeTransactionStatus.COMPLETED,
+            "pending": BridgeTransactionStatus.PENDING,
+            "processing": BridgeTransactionStatus.PENDING,
+            "failed": BridgeTransactionStatus.FAILED,
+            "refunded": BridgeTransactionStatus.REFUNDED,
+        }
+        status = _STATUS_MAP.get(raw_status, BridgeTransactionStatus.UNKNOWN)
+
+        dst_tx_hash: str | None = data.get("dstTxHash") or data.get("destTxHash") or None
+
+        return BridgeStatus(
+            status=status,
+            src_tx_hash=src_tx_hash,
+            dst_tx_hash=dst_tx_hash,
+            protocol=self.protocol_name,
+        )

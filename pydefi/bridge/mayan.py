@@ -20,9 +20,10 @@ import aiohttp
 from pydefi.abi.bridge import MAYAN_FORWARDER, MAYAN_SWIFT_V2, MayanSwiftOrderParams
 from pydefi.bridge.base import BaseBridge
 from pydefi.exceptions import BridgeError
-from pydefi.types import BridgeQuote, Token, TokenAmount
+from pydefi.types import BridgeQuote, BridgeStatus, BridgeTransactionStatus, Token, TokenAmount
 
 _MAYAN_API_BASE = "https://price-api.mayan.finance/v3"
+_MAYAN_EXPLORER_API = "https://explorer-api.mayan.finance/v3"
 
 # Mayan chain name slugs (used in the Price API)
 _CHAIN_NAMES: dict[int, str] = {
@@ -451,3 +452,60 @@ class Mayan(BaseBridge):
             "value": str(amount_in.amount),
             "gas": str(500_000),
         }
+
+    async def get_status(self, src_tx_hash: str) -> BridgeStatus:
+        """Fetch the status of a Mayan bridge transaction.
+
+        Queries the Mayan explorer API
+        ``/v3/swap/trx/{txHash}?chain={chainName}`` to discover whether the
+        swap has been completed on the destination chain.
+
+        Args:
+            src_tx_hash: Transaction hash of the bridge call on the source
+                chain.
+
+        Returns:
+            A :class:`~pydefi.types.BridgeStatus`.
+
+        Raises:
+            :class:`~pydefi.exceptions.BridgeError`: On API error or if the
+                source chain is not supported by the explorer.
+        """
+        chain_name = self._chain_name(self.src_chain_id)
+        url = f"{_MAYAN_EXPLORER_API}/swap/trx/{src_tx_hash}"
+        params = {"chain": chain_name}
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, params=params) as resp:
+                if resp.status == 404:
+                    return BridgeStatus(
+                        status=BridgeTransactionStatus.UNKNOWN,
+                        src_tx_hash=src_tx_hash,
+                        protocol=self.protocol_name,
+                    )
+                if resp.status != 200:
+                    try:
+                        err = await resp.json(content_type=None)
+                    except Exception:
+                        err = await resp.text()
+                    raise BridgeError(f"Mayan explorer API error ({resp.status}): {err}")
+                data = await resp.json(content_type=None)
+
+        raw_status = str(data.get("clientStatus") or data.get("status") or "").upper()
+
+        _STATUS_MAP = {
+            "COMPLETED": BridgeTransactionStatus.COMPLETED,
+            "INPROGRESS": BridgeTransactionStatus.PENDING,
+            "CREATED": BridgeTransactionStatus.PENDING,
+            "FAILED": BridgeTransactionStatus.FAILED,
+            "REFUNDED": BridgeTransactionStatus.REFUNDED,
+        }
+        status = _STATUS_MAP.get(raw_status, BridgeTransactionStatus.UNKNOWN)
+
+        dst_tx_hash: str | None = data.get("destTxHash") or None
+
+        return BridgeStatus(
+            status=status,
+            src_tx_hash=src_tx_hash,
+            dst_tx_hash=dst_tx_hash,
+            protocol=self.protocol_name,
+        )

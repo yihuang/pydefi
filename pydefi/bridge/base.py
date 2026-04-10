@@ -7,7 +7,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any
 
-from pydefi.types import BridgeQuote, Token, TokenAmount
+from pydefi.types import BridgeQuote, BridgeStatus, Token, TokenAmount
 
 
 class BaseBridge(ABC):
@@ -73,6 +73,22 @@ class BaseBridge(ABC):
         Returns:
             A dictionary containing the transaction fields
             (``to``, ``data``, ``value``, ``gas``).
+        """
+
+    @abstractmethod
+    async def get_status(self, src_tx_hash: str) -> BridgeStatus:
+        """Fetch the current status of a cross-chain bridge transaction.
+
+        Args:
+            src_tx_hash: Transaction hash of the bridge deposit / initiation
+                on the source chain.
+
+        Returns:
+            A :class:`~pydefi.types.BridgeStatus` with the current lifecycle
+            status and, when available, the destination-chain transaction hash.
+
+        Raises:
+            :class:`~pydefi.exceptions.BridgeError`: On API / network errors.
         """
 
     def _apply_slippage(self, amount: int, slippage_bps: int) -> int:
