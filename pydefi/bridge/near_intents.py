@@ -150,9 +150,9 @@ class NearIntents(BaseBridge):
         dest_asset = _asset_id(token_out, dst_chain)
 
         if deadline is None:
-            deadline = (
-                datetime.now(timezone.utc) + timedelta(minutes=_DEFAULT_DEADLINE_MINUTES)
-            ).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+            deadline = (datetime.now(timezone.utc) + timedelta(minutes=_DEFAULT_DEADLINE_MINUTES)).strftime(
+                "%Y-%m-%dT%H:%M:%S.000Z"
+            )
 
         payload: dict[str, Any] = {
             "swapType": "EXACT_INPUT",
