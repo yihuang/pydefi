@@ -4,14 +4,21 @@ This module provides helpers to compose multi-hop DEX swaps as atomic DeFiVM
 programs that call pool contracts **directly**, without relying on router
 contracts (e.g. Uniswap's Universal Router).
 
-Each "hop" is implemented as:
+Each "hop" is implemented as one of three strategies:
 
-* **Uniswap V3-style pools** — call ``pool.swap()`` directly.  The pool fires
-  ``uniswapV3SwapCallback`` (or an equivalent variant); ``DeFiVM.fallback()``
-  handles the repayment automatically.
+* **Uniswap V3-style pools** (``UNISWAP_V3``, ``ALGEBRA``, ``PANCAKE_V3``,
+  ``SOLIDLY_V3``) — call ``pool.swap()`` directly.  The pool fires a
+  flash-swap callback (``uniswapV3SwapCallback`` or an equivalent variant);
+  ``DeFiVM.fallback()`` handles the repayment automatically.
 
-* **Uniswap V2-style pairs** — pre-transfer the input tokens from the VM to the
-  pair, compute ``amountOut`` from on-chain reserves at runtime, then call
+* **Uniswap V2-style pairs** (``UNISWAP_V2``) — pre-transfer the input tokens
+  from the VM to the pair, compute ``amountOut`` from on-chain reserves using
+  the constant-product formula, then call ``pair.swap()`` directly.
+
+* **Solidly V2-style pairs** (``SOLIDLY_V2``, ``AERODROME``, ``RAMSES_V2``) —
+  pre-transfer the input tokens from the VM to the pair, query ``amountOut``
+  via the pool's on-chain ``getAmountOut(amountIn, tokenIn)`` function (which
+  handles both stable and volatile pool curves transparently), then call
   ``pair.swap()`` directly.
 
 Callback data encoding
@@ -224,7 +231,22 @@ def encode_v3_path(tokens: list[str], fees: list[int]) -> bytes:
 class SwapProtocol(str, Enum):
     """Supported DEX protocols for :class:`SwapHop`.
 
-    Both values use **direct pool/pair calls** — no router contract is involved.
+    All values use **direct pool/pair calls** — no router contract is involved.
+
+    **V3-style protocols** (``UNISWAP_V3``, ``ALGEBRA``, ``PANCAKE_V3``,
+    ``SOLIDLY_V3``) all share the same ``pool.swap(address recipient, bool
+    zeroForOne, int256 amountSpecified, uint160 sqrtPriceLimitX96, bytes
+    data)`` interface.  The only difference is the callback selector fired by
+    the pool, which ``DeFiVM.fallback()`` already handles for all variants.
+
+    **V2-style protocols** (``UNISWAP_V2``) use the constant-product formula
+    to compute ``amountOut`` from ``pair.getReserves()``.
+
+    **Solidly V2-style protocols** (``SOLIDLY_V2``, ``AERODROME``,
+    ``RAMSES_V2``) delegate the ``amountOut`` computation to the pool's own
+    ``getAmountOut(uint256 amountIn, address tokenIn)`` view function, which
+    transparently handles both stable (``x³y + xy³``) and volatile (``xy=k``)
+    curves.
     """
 
     UNISWAP_V2 = "uniswap_v2"
@@ -237,8 +259,53 @@ class SwapProtocol(str, Enum):
     UNISWAP_V3 = "uniswap_v3"
     """Uniswap V3-compatible pool: call ``pool.swap()`` directly.
 
-    The pool fires a flash-swap callback (``uniswapV3SwapCallback`` or a
-    compatible variant) which ``DeFiVM.fallback()`` handles automatically.
+    The pool fires a flash-swap callback (``uniswapV3SwapCallback``) which
+    ``DeFiVM.fallback()`` handles automatically.
+    """
+
+    ALGEBRA = "algebra"
+    """Algebra CLMM pool (QuickSwap V3 and forks): same ``pool.swap()`` interface
+    as Uniswap V3.  The pool fires ``algebraSwapCallback`` which
+    ``DeFiVM.fallback()`` handles automatically.
+    """
+
+    PANCAKE_V3 = "pancake_v3"
+    """PancakeSwap V3 pool: same ``pool.swap()`` interface as Uniswap V3.  The
+    pool fires ``pancakeV3SwapCallback`` which ``DeFiVM.fallback()`` handles
+    automatically.
+    """
+
+    SOLIDLY_V3 = "solidly_v3"
+    """Solidly V3 pool: same ``pool.swap()`` interface as Uniswap V3.  The pool
+    fires ``solidlyV3SwapCallback`` which ``DeFiVM.fallback()`` handles
+    automatically.
+    """
+
+    SOLIDLY_V2 = "solidly_v2"
+    """Solidly V2-style pair (stable *or* volatile): pre-transfer tokenIn, then
+    call ``pair.swap()``.
+
+    Unlike :attr:`UNISWAP_V2`, the on-chain ``amountOut`` is obtained by
+    calling ``pair.getAmountOut(amountIn, tokenIn)`` directly on the pool.
+    This works for both the volatile constant-product curve and the stable
+    ``x³y + xy³`` curve without needing to know which variant is in use.
+
+    Compatible with all Solidly V2 forks including Velodrome, Aerodrome
+    volatile and stable pools, and Ramses V2.
+    """
+
+    AERODROME = "aerodrome"
+    """Aerodrome / Velodrome pair (stable *or* volatile).
+
+    Identical to :attr:`SOLIDLY_V2` — uses ``pair.getAmountOut(amountIn,
+    tokenIn)`` for on-chain pricing and ``pair.swap()`` for execution.
+    """
+
+    RAMSES_V2 = "ramses_v2"
+    """Ramses V2 pair (stable *or* volatile).
+
+    Identical to :attr:`SOLIDLY_V2` — uses ``pair.getAmountOut(amountIn,
+    tokenIn)`` for on-chain pricing and ``pair.swap()`` for execution.
     """
 
 
@@ -246,8 +313,7 @@ class SwapProtocol(str, Enum):
 class SwapHop:
     """Descriptor for one swap hop in a multi-hop DeFiVM program.
 
-    Both V2 and V3 hops call the pool/pair contract **directly** — no router
-    is needed.
+    All protocols call the pool/pair contract **directly** — no router is needed.
 
     Attributes:
         protocol: DEX protocol to use for this hop.
@@ -257,7 +323,10 @@ class SwapHop:
         fee: Pool fee in **basis points** (e.g. ``30`` for 0.30 %).  For V3
             pools the fee is encoded in the pool itself and is not passed to
             ``pool.swap()``; it is kept here for documentation only.  For V2
-            pairs it is used to compute ``amountOut`` from reserves on-chain.
+            pairs (``UNISWAP_V2``) it is used to compute ``amountOut`` from
+            reserves on-chain.  For Solidly V2 pairs (``SOLIDLY_V2``,
+            ``AERODROME``, ``RAMSES_V2``) it is informational only — the pool's
+            own ``getAmountOut()`` function accounts for the fee automatically.
         amount_in: Static input amount for the **first** hop.  Set to ``0``
             for subsequent hops — the amount is read at runtime from the
             register that holds the previous hop's output.
@@ -270,10 +339,11 @@ class SwapHop:
             available for subsequent hops.
         zero_for_one: ``True`` if ``token_in`` is ``token0`` in the pool/pair.
             Required to determine the swap direction for V3 pools and the
-            reserve ordering for V2 on-chain amountOut computation.
-        sqrt_price_limit_x96: V3 only — price limit passed to ``pool.swap()``.
-            Pass ``0`` to use the safe default (``MIN_SQRT_RATIO + 1`` or
-            ``MAX_SQRT_RATIO - 1`` depending on direction).
+            reserve ordering for V2/Solidly V2 on-chain ``pair.swap()`` calls.
+        sqrt_price_limit_x96: V3-style protocols only — price limit passed to
+            ``pool.swap()``.  Pass ``0`` to use the safe default
+            (``MIN_SQRT_RATIO + 1`` or ``MAX_SQRT_RATIO - 1`` depending on
+            direction).  Ignored for V2 and Solidly V2 protocols.
     """
 
     protocol: SwapProtocol
@@ -453,9 +523,120 @@ def _build_v2_direct_swap_segment(hop: SwapHop, *, amount_reg: int, amount_out_r
     return prog
 
 
+def _build_solidly_v2_swap_segment(hop: SwapHop, *, amount_reg: int, amount_out_reg: int) -> Program:
+    """Solidly V2-style pair direct swap using the pool's own ``getAmountOut()``.
+
+    This segment works for both stable (``x³y + xy³``) and volatile (``xy=k``)
+    Solidly V2 pools because the pool's ``getAmountOut(uint256, address)``
+    function encapsulates the AMM curve logic on-chain.  It is compatible with
+    Velodrome, Aerodrome (stable and volatile), Ramses V2, and all other
+    Solidly V2 forks that expose the ``getAmountOut`` interface.
+
+    Sequence:
+    1. ``pair.getAmountOut(amountIn, tokenIn)`` — query output amount on-chain.
+    2. Store ``amountOut`` in *amount_out_reg*.
+    3. ``tokenIn.transfer(pair, amountIn)`` — transfer input from VM to pair.
+    4. ``pair.swap(amount0Out, amount1Out, recipient, "")`` — amountOut patched
+       from *amount_out_reg* via :class:`~pydefi.vm.builder.Patch`.
+    5. Copy ``amountOut`` from *amount_out_reg* back to *amount_reg*.
+
+    Args:
+        hop: The Solidly V2 swap hop descriptor.
+        amount_reg: Register holding ``amountIn`` on entry; updated with
+            ``amountOut`` on exit.
+        amount_out_reg: Scratch register for the intermediate ``amountOut``
+            value (must differ from *amount_reg*).
+    """
+    prog = Program()
+
+    # --- Step 1: Query amountOut from the pool --------------------------------
+    prog.call_contract_abi(
+        hop.pool,
+        "function getAmountOut(uint256 amountIn, address tokenIn) external view returns (uint256)",
+        Patch(load_reg(amount_reg)),
+        hop.token_in,
+    ).pop()
+
+    # getAmountOut returns a single uint256 at offset 0
+    prog._emit(ret_u256(0))
+    prog._emit(store_reg(amount_out_reg))
+
+    # --- Step 2: Transfer amountIn to pair ------------------------------------
+    prog.call_contract_abi(
+        hop.token_in,
+        "function transfer(address to, uint256 amount)",
+        hop.pool,
+        Patch(load_reg(amount_reg)),
+    ).pop()
+
+    # --- Step 3: Call pair.swap with amountOut --------------------------------
+    # pair.swap(uint amount0Out, uint amount1Out, address to, bytes data)
+    #   zero_for_one → tokenOut is token1 → amount1Out = amountOut, amount0Out = 0
+    #   !zero_for_one → tokenOut is token0 → amount0Out = amountOut, amount1Out = 0
+    if hop.zero_for_one:
+        prog.call_contract_abi(
+            hop.pool,
+            "function swap(uint256 amount0Out, uint256 amount1Out, address to, bytes data)",
+            0,
+            Patch(load_reg(amount_out_reg)),
+            hop.recipient,
+            b"",
+        ).pop()
+    else:
+        prog.call_contract_abi(
+            hop.pool,
+            "function swap(uint256 amount0Out, uint256 amount1Out, address to, bytes data)",
+            Patch(load_reg(amount_out_reg)),
+            0,
+            hop.recipient,
+            b"",
+        ).pop()
+
+    # --- Step 4: Update amount_reg for the next hop ---------------------------
+    prog._emit(load_reg(amount_out_reg))
+    prog._emit(store_reg(amount_reg))
+
+    return prog
+
+
 # ---------------------------------------------------------------------------
-# High-level multi-hop composer
+# Protocol routing helpers
 # ---------------------------------------------------------------------------
+
+#: V3-style protocols — all share the same ``pool.swap()`` interface.
+_V3_PROTOCOLS: frozenset[SwapProtocol] = frozenset(
+    {SwapProtocol.UNISWAP_V3, SwapProtocol.ALGEBRA, SwapProtocol.PANCAKE_V3, SwapProtocol.SOLIDLY_V3}
+)
+
+#: Solidly V2-style protocols — use ``pair.getAmountOut()`` for on-chain pricing.
+_SOLIDLY_V2_PROTOCOLS: frozenset[SwapProtocol] = frozenset(
+    {SwapProtocol.SOLIDLY_V2, SwapProtocol.AERODROME, SwapProtocol.RAMSES_V2}
+)
+
+
+def _build_hop_segment(hop: SwapHop, *, amount_reg: int, amount_out_reg: int) -> Program:
+    """Dispatch a single :class:`SwapHop` to the appropriate segment builder.
+
+    Args:
+        hop: The hop descriptor.
+        amount_reg: Register carrying ``amountIn`` on entry / ``amountOut`` on
+            exit.
+        amount_out_reg: Scratch register for V2/Solidly V2 hops.
+
+    Returns:
+        A :class:`~pydefi.vm.builder.Program` segment.
+
+    Raises:
+        ValueError: If ``hop.protocol`` is not a known :class:`SwapProtocol`.
+    """
+    if hop.protocol in _V3_PROTOCOLS:
+        return _build_v3_pool_swap_segment(hop, amount_reg=amount_reg)
+    elif hop.protocol == SwapProtocol.UNISWAP_V2:
+        return _build_v2_direct_swap_segment(hop, amount_reg=amount_reg, amount_out_reg=amount_out_reg)
+    elif hop.protocol in _SOLIDLY_V2_PROTOCOLS:
+        return _build_solidly_v2_swap_segment(hop, amount_reg=amount_reg, amount_out_reg=amount_out_reg)
+    else:
+        raise ValueError(f"unsupported protocol {hop.protocol!r}")
 
 
 def build_multi_hop_program(
@@ -470,13 +651,20 @@ def build_multi_hop_program(
 
     For each hop the generated program:
 
-    * **V3 (``UNISWAP_V3``)** — calls ``pool.swap()`` with the input amount
-      from *amount_reg*; the pool fires a flash-swap callback that
-      ``DeFiVM.fallback()`` handles automatically; then extracts and stores the
-      output amount via two's-complement negation of the return value.
+    * **V3-style (``UNISWAP_V3``, ``ALGEBRA``, ``PANCAKE_V3``, ``SOLIDLY_V3``)**
+      — calls ``pool.swap()`` with the input amount from *amount_reg*; the pool
+      fires a flash-swap callback that ``DeFiVM.fallback()`` handles
+      automatically; then extracts and stores the output amount via
+      two's-complement negation of the return value.
 
     * **V2 (``UNISWAP_V2``)** — reads reserves via ``pair.getReserves()``,
       computes ``amountOut`` on-chain with the constant-product formula, calls
+      ``tokenIn.transfer(pair, amountIn)``, and finally calls
+      ``pair.swap(amount0Out, amount1Out, recipient, "")``.
+
+    * **Solidly V2-style (``SOLIDLY_V2``, ``AERODROME``, ``RAMSES_V2``)**
+      — queries ``amountOut`` via ``pair.getAmountOut(amountIn, tokenIn)``
+      (handles both stable and volatile curves on-chain), calls
       ``tokenIn.transfer(pair, amountIn)``, and finally calls
       ``pair.swap(amount0Out, amount1Out, recipient, "")``.
 
@@ -492,10 +680,10 @@ def build_multi_hop_program(
         amount_reg: DeFiVM register index (0–15) used to pass amounts between
             hops.  Holds ``amountIn`` on entry to each hop and ``amountOut``
             on exit.
-        amount_out_reg: DeFiVM register index (0–15) used by V2 hops as a
-            scratch register for the intermediate ``amountOut`` value before
-            it is patched into the ``pair.swap()`` calldata.  Must differ from
-            *amount_reg*.
+        amount_out_reg: DeFiVM register index (0–15) used by V2 and Solidly V2
+            hops as a scratch register for the intermediate ``amountOut`` value
+            before it is patched into the ``pair.swap()`` calldata.  Must
+            differ from *amount_reg*.
 
     Returns:
         A :class:`~pydefi.vm.builder.Program` ready for ``.build()``.
@@ -519,12 +707,7 @@ def build_multi_hop_program(
         if i == 0:
             segments.append(Program()._emit(push_u256(hop.amount_in))._emit(store_reg(amount_reg)))
 
-        if hop.protocol == SwapProtocol.UNISWAP_V3:
-            swap_seg = _build_v3_pool_swap_segment(hop, amount_reg=amount_reg)
-        elif hop.protocol == SwapProtocol.UNISWAP_V2:
-            swap_seg = _build_v2_direct_swap_segment(hop, amount_reg=amount_reg, amount_out_reg=amount_out_reg)
-        else:
-            raise ValueError(f"build_multi_hop_program: unsupported protocol {hop.protocol!r}")
+        swap_seg = _build_hop_segment(hop, amount_reg=amount_reg, amount_out_reg=amount_out_reg)
 
         segments.append(swap_seg)
 
@@ -638,8 +821,8 @@ def build_split_program(
         amount_reg: Register index (0–15) used to carry per-leg amounts into
             each hop segment and receive per-leg outputs.  On exit this
             register holds the total accumulated output.
-        amount_out_reg: Scratch register for V2 hops (must differ from the
-            other three registers).
+        amount_out_reg: Scratch register for V2 and Solidly V2 hops (must
+            differ from the other three registers).
         accum_reg: Register index for accumulating outputs across all legs.
             Must differ from the other three registers.
         total_in_reg: Register index for storing the total input amount so
@@ -717,12 +900,7 @@ def build_split_program(
 
         # Execute every hop in this leg (each hop reads/writes amount_reg)
         for hop in leg.hops:
-            if hop.protocol == SwapProtocol.UNISWAP_V3:
-                hop_seg = _build_v3_pool_swap_segment(hop, amount_reg=amount_reg)
-            elif hop.protocol == SwapProtocol.UNISWAP_V2:
-                hop_seg = _build_v2_direct_swap_segment(hop, amount_reg=amount_reg, amount_out_reg=amount_out_reg)
-            else:
-                raise ValueError(f"build_split_program: unsupported protocol {hop.protocol!r}")
+            hop_seg = _build_hop_segment(hop, amount_reg=amount_reg, amount_out_reg=amount_out_reg)
             segments.append(hop_seg)
 
         # Accumulate this leg's output: accum_reg += amount_reg
