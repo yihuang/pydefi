@@ -358,7 +358,11 @@ class PoolIndexer:
         """
         addr = pool_address.lower()
         with Session(self._engine) as session:
-            stmt = select(V2SyncEvent).where(V2SyncEvent.pool_address == addr).order_by(V2SyncEvent.block_number.desc(), V2SyncEvent.log_index.desc())  # type: ignore[arg-type]
+            stmt = (
+                select(V2SyncEvent)
+                .where(V2SyncEvent.pool_address == addr)
+                .order_by(V2SyncEvent.block_number.desc(), V2SyncEvent.log_index.desc())
+            )  # type: ignore[arg-type]
             event = session.exec(stmt).first()
             if event is None:
                 return None
@@ -381,7 +385,11 @@ class PoolIndexer:
         """
         addr = pool_address.lower()
         with Session(self._engine) as session:
-            stmt = select(V3SwapEvent).where(V3SwapEvent.pool_address == addr).order_by(V3SwapEvent.block_number.desc(), V3SwapEvent.log_index.desc())  # type: ignore[arg-type]
+            stmt = (
+                select(V3SwapEvent)
+                .where(V3SwapEvent.pool_address == addr)
+                .order_by(V3SwapEvent.block_number.desc(), V3SwapEvent.log_index.desc())
+            )  # type: ignore[arg-type]
             event = session.exec(stmt).first()
             if event is None:
                 return None
@@ -446,7 +454,11 @@ class PoolIndexer:
         with Session(self._engine) as session:
             for log in logs:
                 bn = int(log["blockNumber"])
-                tx_hash = log["transactionHash"].hex() if not isinstance(log["transactionHash"], str) else log["transactionHash"]
+                tx_hash = (
+                    log["transactionHash"].hex()
+                    if not isinstance(log["transactionHash"], str)
+                    else log["transactionHash"]
+                )
                 block_hash = log["blockHash"].hex() if not isinstance(log["blockHash"], str) else log["blockHash"]
                 log_index = int(log["logIndex"])
                 ts = timestamps[bn]
