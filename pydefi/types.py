@@ -106,14 +106,14 @@ class SwapStep:
         token_out: Output token for this hop.
         pool_address: Address of the liquidity pool used.
         protocol: Human-readable protocol name (e.g. ``"UniswapV2"``).
-        fee: Fee tier in hundredths of a basis-point (e.g. ``3000`` = 0.3%).
+        fee: Swap fee in basis points (base 10000, e.g. ``30`` = 0.3%).
     """
 
     token_in: Token
     token_out: Token
     pool_address: str
     protocol: str
-    fee: int = 3000
+    fee: int = 30
 
 
 @dataclass

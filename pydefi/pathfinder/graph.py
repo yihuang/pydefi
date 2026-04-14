@@ -46,16 +46,6 @@ class PoolEdge:
     extra: dict = field(default_factory=dict)
 
     @property
-    def fee(self) -> int:
-        """Fee in the unit expected by :class:`~pydefi.types.SwapStep`.
-
-        * V2 protocols keep the raw basis-point value (e.g. ``30``), matching the `0.3% fee
-          in UniswapV2Pair <https://github.com/Uniswap/v2-core/blob/master/contracts/UniswapV2Pair.sol#L180>`_.
-        * V3 protocols convert to the fee-tier integer (e.g. ``3000``).
-        """
-        return self.fee_bps if "v2" in self.protocol.lower() else self.fee_bps * 100
-
-    @property
     def spot_price(self) -> Decimal:
         """Spot price of token_out denominated in token_in.
 
