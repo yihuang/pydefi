@@ -1,4 +1,4 @@
-"""Initial schema: Pool, V2SyncEvent, V3SwapEvent, IndexerState tables.
+"""Initial schema: Factory, Pool, V2SyncEvent, V3SwapEvent, IndexerState tables.
 
 Revision ID: 0001
 Revises:
@@ -20,6 +20,13 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    op.create_table(
+        "factory",
+        sa.Column("factory_address", sa.String(), nullable=False),
+        sa.Column("protocol", sa.String(), nullable=False),
+        sa.Column("chain_id", sa.Integer(), nullable=False),
+        sa.PrimaryKeyConstraint("factory_address"),
+    )
     op.create_table(
         "pool",
         sa.Column("pool_address", sa.String(), nullable=False),
@@ -69,9 +76,9 @@ def upgrade() -> None:
     op.create_index(op.f("ix_v3swapevent_pool_address"), "v3swapevent", ["pool_address"], unique=False)
     op.create_table(
         "indexerstate",
-        sa.Column("pool_address", sa.String(), nullable=False),
+        sa.Column("address", sa.String(), nullable=False),
         sa.Column("last_indexed_block", sa.Integer(), nullable=False),
-        sa.PrimaryKeyConstraint("pool_address"),
+        sa.PrimaryKeyConstraint("address"),
     )
 
 
@@ -84,3 +91,4 @@ def downgrade() -> None:
     op.drop_index(op.f("ix_v2syncevent_block_number"), table_name="v2syncevent")
     op.drop_table("v2syncevent")
     op.drop_table("pool")
+    op.drop_table("factory")

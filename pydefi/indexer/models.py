@@ -3,10 +3,11 @@ SQLModel data models for the AMM pool indexer.
 
 Tables
 ------
+- :class:`Factory`       – Factory contract metadata (auto-discovers new pools).
 - :class:`Pool`          – Pool metadata (address, protocol, tokens, fee).
 - :class:`V2SyncEvent`   – Uniswap V2 ``Sync`` events (reserve0, reserve1 per block).
 - :class:`V3SwapEvent`   – Uniswap V3 ``Swap`` events (sqrtPriceX96, liquidity, tick per block).
-- :class:`IndexerState`  – Last indexed block per pool (checkpointing for back-fill / live catch-up).
+- :class:`IndexerState`  – Last indexed block per pool/factory (checkpointing for back-fill / live catch-up).
 """
 
 from __future__ import annotations
@@ -33,6 +34,24 @@ class _BigInt(sa.TypeDecorator):
 
     def process_result_value(self, value: Optional[str], dialect: sa.Dialect) -> Optional[int]:
         return int(value) if value is not None else None
+
+
+class Factory(SQLModel, table=True):
+    """Metadata for a monitored AMM factory contract.
+
+    When the indexer encounters a ``PairCreated`` (V2) or ``PoolCreated`` (V3)
+    event emitted by this factory, it automatically registers the new pool for
+    indexing.
+
+    Attributes:
+        factory_address: On-chain factory contract address (primary key, lowercase).
+        protocol: Human-readable protocol name (e.g. ``"UniswapV2"`` or ``"UniswapV3"``).
+        chain_id: EVM chain identifier.
+    """
+
+    factory_address: str = Field(primary_key=True)
+    protocol: str
+    chain_id: int
 
 
 class Pool(SQLModel, table=True):
@@ -124,15 +143,16 @@ class V3SwapEvent(SQLModel, table=True):
 
 
 class IndexerState(SQLModel, table=True):
-    """Per-pool indexer checkpoint.
+    """Per-pool or per-factory indexer checkpoint.
 
-    Records the most-recently indexed block number for each pool so that the
-    indexer can resume after a restart without re-processing already-seen events.
+    Records the most-recently indexed block number for each tracked address so
+    that the indexer can resume after a restart without re-processing
+    already-seen events.
 
     Attributes:
-        pool_address: Pool address (primary key).
+        address: Pool or factory address (primary key, lowercase).
         last_indexed_block: The highest block number whose logs have been stored.
     """
 
-    pool_address: str = Field(primary_key=True)
+    address: str = Field(primary_key=True)
     last_indexed_block: int

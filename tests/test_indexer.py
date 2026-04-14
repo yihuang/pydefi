@@ -24,6 +24,14 @@ _POOL_LIVE = "0x" + "ee" * 20
 _POOL_UNREG = "0x" + "ff" * 20
 _POOL_NO_W3 = "0x" + "11" * 20
 _POOL_CHECKPOINT = "0x" + "22" * 20
+_FACTORY_V2 = "0x" + "fa" * 20
+_FACTORY_V3 = "0x" + "fb" * 20
+_NEW_PAIR = "0x" + "ca" * 20
+_NEW_POOL_V3 = "0x" + "cb" * 20
+_TOKEN_A = "0x" + "a0" * 20
+_TOKEN_B = "0x" + "b0" * 20
+_TOKEN_C = "0x" + "c0" * 20
+_TOKEN_D = "0x" + "d0" * 20
 
 _TX_A = "0x" + "aa" * 32
 _TX_B = "0x" + "bb" * 32
@@ -101,11 +109,83 @@ def _make_v3_log(
     }
 
 
+def _make_pair_created_log(
+    factory_address: str,
+    token0: str,
+    token1: str,
+    pair: str,
+    block_number: int = 10,
+    tx_hash: str = _TX_A,
+    log_index: int = 0,
+    block_hash: str = _BLOCK_HASH,
+) -> dict:
+    """Simulate a V2 PairCreated(address,address,address,uint) log."""
+    # topics[1] = token0 (indexed), topics[2] = token1 (indexed)
+    # data = pair (address, padded 32 bytes) + allPairsLength (uint256)
+    def _addr_topic(addr: str) -> str:
+        return "0x" + bytes(12) .hex() + addr.lower()[2:]
+
+    pair_bytes = bytes(12) + bytes.fromhex(pair.lower()[2:])
+    data_bytes = pair_bytes + (1).to_bytes(32, "big")
+    return {
+        "address": factory_address,
+        "blockNumber": block_number,
+        "blockHash": block_hash,
+        "transactionHash": tx_hash,
+        "logIndex": log_index,
+        "topics": [
+            "0x0d3648bd0f6ba80134a33ba9275ac585d9d315f0ad8355cddefde31afa28d0e9",
+            _addr_topic(token0),
+            _addr_topic(token1),
+        ],
+        "data": "0x" + data_bytes.hex(),
+    }
+
+
+def _make_pool_created_log(
+    factory_address: str,
+    token0: str,
+    token1: str,
+    fee: int,
+    pool: str,
+    tick_spacing: int = 60,
+    block_number: int = 10,
+    tx_hash: str = _TX_A,
+    log_index: int = 0,
+    block_hash: str = _BLOCK_HASH,
+) -> dict:
+    """Simulate a V3 PoolCreated(address,address,uint24,int24,address) log."""
+    def _addr_topic(addr: str) -> str:
+        return "0x" + bytes(12).hex() + addr.lower()[2:]
+
+    def _uint24_topic(v: int) -> str:
+        return "0x" + v.to_bytes(32, "big").hex()
+
+    tick_bytes = tick_spacing.to_bytes(32, "big")
+    pool_bytes = bytes(12) + bytes.fromhex(pool.lower()[2:])
+    data_bytes = tick_bytes + pool_bytes
+    return {
+        "address": factory_address,
+        "blockNumber": block_number,
+        "blockHash": block_hash,
+        "transactionHash": tx_hash,
+        "logIndex": log_index,
+        "topics": [
+            "0x783cca1c0412dd0d695e784568c96da2e9c22ff989357a2e8b1d9b2b4e6b7118",
+            _addr_topic(token0),
+            _addr_topic(token1),
+            _uint24_topic(fee),
+        ],
+        "data": "0x" + data_bytes.hex(),
+    }
+
+
 def _make_mock_w3(block_number: int = 100, timestamp: int = 1_700_000_000) -> MagicMock:
     """Return a MagicMock that mimics the async web3 interface used by PoolIndexer.
 
     ``eth.block_number`` in web3.py async is an awaitable property, so we use
     a ``property()`` that returns a fresh coroutine on each access.
+    ``eth.call`` is stubbed to raise so ERC-20 lookups fall back to defaults.
     """
     mock_eth = MagicMock()
     _ts = timestamp
@@ -116,10 +196,14 @@ def _make_mock_w3(block_number: int = 100, timestamp: int = 1_700_000_000) -> Ma
     async def _get_block_coro(bn: int) -> dict:
         return {"timestamp": _ts, "number": bn}
 
+    async def _call_raises(*args, **kwargs):
+        raise Exception("eth_call not mocked")
+
     # Make block_number an awaitable property
     type(mock_eth).block_number = property(lambda self: _block_number_coro())
     mock_eth.get_block = AsyncMock(side_effect=_get_block_coro)
     mock_eth.get_logs = AsyncMock(return_value=[])
+    mock_eth.call = AsyncMock(side_effect=_call_raises)
 
     mock_w3 = MagicMock()
     mock_w3.eth = mock_eth
@@ -257,7 +341,7 @@ class TestV2Indexing:
             chain_id=1,
         )
 
-        stored = await indexer.backfill(pool_addr, from_block=100, to_block=200)
+        stored = await indexer.backfill(from_block=100, to_block=200, pool_address=pool_addr)
         assert stored == 2
 
         state = indexer.get_latest_v2_state(pool_addr)
@@ -289,8 +373,8 @@ class TestV2Indexing:
             token1_decimals=18,
             chain_id=1,
         )
-        await indexer.backfill(pool_addr, from_block=100, to_block=100)
-        await indexer.backfill(pool_addr, from_block=100, to_block=100)
+        await indexer.backfill(from_block=100, to_block=100, pool_address=pool_addr)
+        await indexer.backfill(from_block=100, to_block=100, pool_address=pool_addr)
 
         # Only 1 event should exist
         state = indexer.get_latest_v2_state(pool_addr)
@@ -351,7 +435,7 @@ class TestV3Indexing:
             chain_id=1,
         )
 
-        stored = await indexer.backfill(pool_addr, from_block=100, to_block=300)
+        stored = await indexer.backfill(from_block=100, to_block=300, pool_address=pool_addr)
         assert stored == 1
 
         state = indexer.get_latest_v3_state(pool_addr)
@@ -411,7 +495,7 @@ class TestV3Indexing:
             token1_decimals=18,
             chain_id=1,
         )
-        await indexer.backfill(pool_addr, from_block=100, to_block=200)
+        await indexer.backfill(from_block=100, to_block=200, pool_address=pool_addr)
         state = indexer.get_latest_v3_state(pool_addr)
         assert state is not None
         assert state["tick"] == -887272
@@ -462,7 +546,7 @@ class TestLivePolling:
         mock_w3 = _make_mock_w3()
         indexer = PoolIndexer(db_url="sqlite://", w3=mock_w3)
         with pytest.raises(ValueError, match="has not been registered"):
-            await indexer.backfill(_POOL_UNREG, from_block=0)
+            await indexer.backfill(from_block=0, pool_address=_POOL_UNREG)
 
     @pytest.mark.asyncio
     async def test_backfill_no_w3_raises(self):
@@ -482,7 +566,44 @@ class TestLivePolling:
             chain_id=1,
         )
         with pytest.raises(RuntimeError, match="w3 must be set"):
-            await indexer.backfill(pool_addr, from_block=0)
+            await indexer.backfill(from_block=0, pool_address=pool_addr)
+
+    @pytest.mark.asyncio
+    async def test_poll_once_no_address_filter(self):
+        """_poll_once issues one getLogs call without a per-pool address filter."""
+        mock_w3 = _make_mock_w3(block_number=100)
+        pool_addr_a = "0x" + "a1" * 20
+        pool_addr_b = "0x" + "a2" * 20
+        log_a = _make_v2_log(pool_addr_a, 100, 1_000, 2_000, tx_hash=_TX_A, log_index=0)
+        log_b = _make_v2_log(pool_addr_b, 100, 3_000, 4_000, tx_hash=_TX_B, log_index=1)
+        mock_w3.eth.get_logs = AsyncMock(return_value=[log_a, log_b])
+
+        indexer = PoolIndexer(db_url="sqlite://", w3=mock_w3)
+        for addr in (pool_addr_a, pool_addr_b):
+            indexer.add_v2_pool(
+                pool_address=addr,
+                protocol="UniswapV2",
+                token0_address=_TOKEN_A,
+                token0_symbol="A",
+                token0_decimals=18,
+                token1_address=_TOKEN_B,
+                token1_symbol="B",
+                token1_decimals=18,
+                chain_id=1,
+            )
+
+        await indexer._poll_once()
+
+        # Only ONE getLogs call should have been made (not one per pool).
+        assert mock_w3.eth.get_logs.call_count == 1
+        # Verify no "address" key in the call params.
+        call_kwargs = mock_w3.eth.get_logs.call_args[0][0]
+        assert "address" not in call_kwargs
+
+        state_a = indexer.get_latest_v2_state(pool_addr_a)
+        state_b = indexer.get_latest_v2_state(pool_addr_b)
+        assert state_a is not None and state_a["reserve0"] == 1_000
+        assert state_b is not None and state_b["reserve0"] == 3_000
 
 
 class TestIndexerStateCheckpoint:
@@ -505,5 +626,125 @@ class TestIndexerStateCheckpoint:
             chain_id=1,
         )
         assert indexer._get_last_indexed_block(pool_addr.lower()) is None
-        await indexer.backfill(pool_addr, from_block=100, to_block=150)
+        await indexer.backfill(from_block=100, to_block=150, pool_address=pool_addr)
         assert indexer._get_last_indexed_block(pool_addr.lower()) == 150
+
+
+class TestFactoryDiscovery:
+    @pytest.mark.asyncio
+    async def test_add_factory_registered(self):
+        """add_factory() persists the factory and it shows in list_factories()."""
+        indexer = PoolIndexer(db_url="sqlite://")
+        indexer.add_factory(factory_address=_FACTORY_V2, protocol="UniswapV2", chain_id=1)
+        factories = indexer.list_factories()
+        assert len(factories) == 1
+        assert factories[0].factory_address == _FACTORY_V2.lower()
+        assert factories[0].protocol == "UniswapV2"
+
+    @pytest.mark.asyncio
+    async def test_pair_created_auto_registers_pool(self):
+        """PairCreated event from a registered factory auto-registers the new pool."""
+        mock_w3 = _make_mock_w3(block_number=50)
+        log = _make_pair_created_log(
+            factory_address=_FACTORY_V2,
+            token0=_TOKEN_A,
+            token1=_TOKEN_B,
+            pair=_NEW_PAIR,
+        )
+        mock_w3.eth.get_logs = AsyncMock(return_value=[log])
+
+        indexer = PoolIndexer(db_url="sqlite://", w3=mock_w3)
+        indexer.add_factory(factory_address=_FACTORY_V2, protocol="UniswapV2", chain_id=1)
+
+        await indexer.backfill(from_block=10, to_block=50)
+
+        pool = indexer.get_pool(_NEW_PAIR)
+        assert pool is not None
+        assert pool.protocol == "UniswapV2"
+        assert pool.token0_address == _TOKEN_A.lower()
+        assert pool.token1_address == _TOKEN_B.lower()
+        assert pool.fee_bps == 30
+
+    @pytest.mark.asyncio
+    async def test_pool_created_auto_registers_v3_pool(self):
+        """PoolCreated event from a registered V3 factory auto-registers the new pool."""
+        mock_w3 = _make_mock_w3(block_number=50)
+        fee = 3000  # 0.3% in V3 hundredths-of-bips
+        log = _make_pool_created_log(
+            factory_address=_FACTORY_V3,
+            token0=_TOKEN_C,
+            token1=_TOKEN_D,
+            fee=fee,
+            pool=_NEW_POOL_V3,
+        )
+        mock_w3.eth.get_logs = AsyncMock(return_value=[log])
+
+        indexer = PoolIndexer(db_url="sqlite://", w3=mock_w3)
+        indexer.add_factory(factory_address=_FACTORY_V3, protocol="UniswapV3", chain_id=1)
+
+        await indexer.backfill(from_block=10, to_block=50)
+
+        pool = indexer.get_pool(_NEW_POOL_V3)
+        assert pool is not None
+        assert pool.protocol == "UniswapV3"
+        assert pool.token0_address == _TOKEN_C.lower()
+        assert pool.token1_address == _TOKEN_D.lower()
+        assert pool.fee_bps == fee // 100  # 30
+
+    @pytest.mark.asyncio
+    async def test_pair_created_not_registered_twice(self):
+        """Seeing the same PairCreated event twice does not duplicate the pool."""
+        mock_w3 = _make_mock_w3(block_number=50)
+        log = _make_pair_created_log(
+            factory_address=_FACTORY_V2,
+            token0=_TOKEN_A,
+            token1=_TOKEN_B,
+            pair=_NEW_PAIR,
+        )
+        mock_w3.eth.get_logs = AsyncMock(return_value=[log])
+
+        indexer = PoolIndexer(db_url="sqlite://", w3=mock_w3)
+        indexer.add_factory(factory_address=_FACTORY_V2, protocol="UniswapV2", chain_id=1)
+
+        await indexer.backfill(from_block=10, to_block=50)
+        await indexer.backfill(from_block=10, to_block=50)
+
+        assert len(indexer.list_pools()) == 1
+
+    @pytest.mark.asyncio
+    async def test_factory_and_pool_events_in_one_getlogs(self):
+        """backfill() processes factory + pool events from a single getLogs call."""
+        mock_w3 = _make_mock_w3(block_number=50)
+        factory_log = _make_pair_created_log(
+            factory_address=_FACTORY_V2,
+            token0=_TOKEN_A,
+            token1=_TOKEN_B,
+            pair=_NEW_PAIR,
+            block_number=10,
+            tx_hash=_TX_A,
+            log_index=0,
+        )
+        pool_log = _make_v2_log(
+            _NEW_PAIR,
+            block_number=10,
+            reserve0=500,
+            reserve1=1_000,
+            tx_hash=_TX_B,
+            log_index=1,
+        )
+        # Simulate factory + pool event returned in the same getLogs batch.
+        mock_w3.eth.get_logs = AsyncMock(return_value=[factory_log, pool_log])
+
+        indexer = PoolIndexer(db_url="sqlite://", w3=mock_w3)
+        indexer.add_factory(factory_address=_FACTORY_V2, protocol="UniswapV2", chain_id=1)
+
+        await indexer.backfill(from_block=10, to_block=50)
+
+        # Pool was auto-registered from the factory event.
+        pool = indexer.get_pool(_NEW_PAIR)
+        assert pool is not None
+
+        # Pool state was indexed from the Sync event in the same batch.
+        state = indexer.get_latest_v2_state(_NEW_PAIR)
+        assert state is not None
+        assert state["reserve0"] == 500

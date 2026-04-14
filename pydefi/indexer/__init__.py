@@ -28,10 +28,11 @@ Example::
 """
 
 from pydefi.indexer.indexer import PoolIndexer
-from pydefi.indexer.models import IndexerState, Pool, V2SyncEvent, V3SwapEvent
+from pydefi.indexer.models import Factory, IndexerState, Pool, V2SyncEvent, V3SwapEvent
 
 __all__ = [
     "PoolIndexer",
+    "Factory",
     "Pool",
     "V2SyncEvent",
     "V3SwapEvent",
