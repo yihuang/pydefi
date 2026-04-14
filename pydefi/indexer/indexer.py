@@ -20,7 +20,7 @@ Quick-start example::
     w3 = AsyncWeb3(AsyncWeb3.AsyncHTTPProvider("https://eth.drpc.org"))
     indexer = PoolIndexer(db_url="sqlite:///pools.db", w3=w3)
 
-    await indexer.add_v2_pool(
+    indexer.add_v2_pool(
         pool_address="0xB4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc",  # USDC/ETH
         protocol="UniswapV2",
         token0_address="0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
