@@ -120,10 +120,11 @@ def _make_pair_created_log(
     block_hash: str = _BLOCK_HASH,
 ) -> dict:
     """Simulate a V2 PairCreated(address,address,address,uint) log."""
+
     # topics[1] = token0 (indexed), topics[2] = token1 (indexed)
     # data = pair (address, padded 32 bytes) + allPairsLength (uint256)
     def _addr_topic(addr: str) -> str:
-        return "0x" + bytes(12) .hex() + addr.lower()[2:]
+        return "0x" + bytes(12).hex() + addr.lower()[2:]
 
     pair_bytes = bytes(12) + bytes.fromhex(pair.lower()[2:])
     data_bytes = pair_bytes + (1).to_bytes(32, "big")
@@ -155,6 +156,7 @@ def _make_pool_created_log(
     block_hash: str = _BLOCK_HASH,
 ) -> dict:
     """Simulate a V3 PoolCreated(address,address,uint24,int24,address) log."""
+
     def _addr_topic(addr: str) -> str:
         return "0x" + bytes(12).hex() + addr.lower()[2:]
 

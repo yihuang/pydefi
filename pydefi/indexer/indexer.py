@@ -350,10 +350,7 @@ class PoolIndexer:
         if pool_address is not None:
             target_addr = pool_address.lower()
             if target_addr not in self._pool_protocol:
-                raise ValueError(
-                    f"Pool {pool_address!r} has not been registered. "
-                    "Call add_v2_pool/add_v3_pool first."
-                )
+                raise ValueError(f"Pool {pool_address!r} has not been registered. Call add_v2_pool/add_v3_pool first.")
 
         if to_block is None:
             to_block = await self.w3.eth.block_number
@@ -373,8 +370,11 @@ class PoolIndexer:
 
             # Filter to the target pool when in single-pool mode.
             if target_addr is not None:
-                logs = [lg for lg in logs if _addr_from_topic(lg["address"]).lower() == target_addr
-                        or lg["address"].lower() == target_addr]
+                logs = [
+                    lg
+                    for lg in logs
+                    if _addr_from_topic(lg["address"]).lower() == target_addr or lg["address"].lower() == target_addr
+                ]
 
             stored = await self._process_logs(logs)
             total_stored += stored
@@ -598,20 +598,14 @@ class PoolIndexer:
                     if not isinstance(log["transactionHash"], str)
                     else log["transactionHash"]
                 )
-                block_hash = (
-                    log["blockHash"].hex() if not isinstance(log["blockHash"], str) else log["blockHash"]
-                )
+                block_hash = log["blockHash"].hex() if not isinstance(log["blockHash"], str) else log["blockHash"]
                 log_index = int(log["logIndex"])
 
                 if topic0 == _V2_SYNC_TOPIC and emitter in self._pool_protocol:
-                    stored += self._handle_v2_sync(
-                        session, emitter, bn, block_hash, tx_hash, log_index, ts, log
-                    )
+                    stored += self._handle_v2_sync(session, emitter, bn, block_hash, tx_hash, log_index, ts, log)
 
                 elif topic0 == _V3_SWAP_TOPIC and emitter in self._pool_protocol:
-                    stored += self._handle_v3_swap(
-                        session, emitter, bn, block_hash, tx_hash, log_index, ts, log
-                    )
+                    stored += self._handle_v3_swap(session, emitter, bn, block_hash, tx_hash, log_index, ts, log)
 
                 elif topic0 == _V2_PAIR_CREATED_TOPIC and emitter in self._factory_protocol:
                     await self._handle_pair_created(session, emitter, log)
@@ -640,9 +634,7 @@ class PoolIndexer:
         reserve1 = int.from_bytes(data_bytes[32:64], "big")
 
         existing = session.exec(
-            select(V2SyncEvent)
-            .where(V2SyncEvent.tx_hash == tx_hash)
-            .where(V2SyncEvent.log_index == log_index)
+            select(V2SyncEvent).where(V2SyncEvent.tx_hash == tx_hash).where(V2SyncEvent.log_index == log_index)
         ).first()
         if existing:
             return 0
@@ -683,9 +675,7 @@ class PoolIndexer:
         tick = _to_signed(int.from_bytes(data_bytes[128:160], "big"), 256)
 
         existing = session.exec(
-            select(V3SwapEvent)
-            .where(V3SwapEvent.tx_hash == tx_hash)
-            .where(V3SwapEvent.log_index == log_index)
+            select(V3SwapEvent).where(V3SwapEvent.tx_hash == tx_hash).where(V3SwapEvent.log_index == log_index)
         ).first()
         if existing:
             return 0
@@ -707,9 +697,7 @@ class PoolIndexer:
         )
         return 1
 
-    async def _handle_pair_created(
-        self, session: Session, factory_address: str, log: Any
-    ) -> None:
+    async def _handle_pair_created(self, session: Session, factory_address: str, log: Any) -> None:
         """Auto-register a V2 pool discovered from a ``PairCreated`` event.
 
         Event ABI::
@@ -759,9 +747,7 @@ class PoolIndexer:
             t1_symbol,
         )
 
-    async def _handle_pool_created(
-        self, session: Session, factory_address: str, log: Any
-    ) -> None:
+    async def _handle_pool_created(self, session: Session, factory_address: str, log: Any) -> None:
         """Auto-register a V3 pool discovered from a ``PoolCreated`` event.
 
         Event ABI::
