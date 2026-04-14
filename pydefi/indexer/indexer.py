@@ -370,11 +370,7 @@ class PoolIndexer:
 
             # Filter to the target pool when in single-pool mode.
             if target_addr is not None:
-                logs = [
-                    lg
-                    for lg in logs
-                    if _addr_from_topic(lg["address"]).lower() == target_addr or lg["address"].lower() == target_addr
-                ]
+                logs = [lg for lg in logs if lg["address"].lower() == target_addr]
 
             stored = await self._process_logs(logs)
             total_stored += stored
