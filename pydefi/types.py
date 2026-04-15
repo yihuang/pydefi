@@ -161,9 +161,6 @@ class RouteSwap:
     pool: Any
 
 
-RouteAction: TypeAlias = "RouteSwap | RouteSplit"
-
-
 @dataclass(frozen=True)
 class RouteSplitLeg:
     """One branch in a split section of a route DAG."""
@@ -178,6 +175,9 @@ class RouteSplit:
 
     legs: list[RouteSplitLeg]
     token_out: Token
+
+
+RouteAction: TypeAlias = RouteSwap | RouteSplit
 
 
 @dataclass
