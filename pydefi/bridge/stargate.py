@@ -16,12 +16,13 @@ from __future__ import annotations
 
 from typing import Any
 
+import aiohttp
 from web3 import AsyncWeb3
 
 from pydefi.abi.bridge import STARGATE_ROUTER
 from pydefi.bridge.base import BaseBridge
 from pydefi.exceptions import BridgeError
-from pydefi.types import BridgeQuote, Token, TokenAmount
+from pydefi.types import BridgeQuote, BridgeStatus, BridgeTransactionStatus, Token, TokenAmount
 
 # LayerZero chain IDs differ from EVM chain IDs.
 # Solana uses the LayerZero V2 endpoint ID (30168).
@@ -212,3 +213,66 @@ class Stargate(BaseBridge):
             "value": str(lz_fee),
             "gas": str(500_000),
         }
+
+    async def get_status(self, src_tx_hash: str) -> BridgeStatus:
+        """Fetch the status of a Stargate bridge transaction.
+
+        Queries the LayerZero Scan API to determine whether the cross-chain
+        message has been delivered on the destination chain.
+
+        Args:
+            src_tx_hash: Transaction hash of the ``swap`` call on the source
+                chain.
+
+        Returns:
+            A :class:`~pydefi.types.BridgeStatus`.
+
+        Raises:
+            :class:`~pydefi.exceptions.BridgeError`: On API error.
+        """
+        url = f"https://api.layerzero-scan.com/tx/{src_tx_hash}"
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url) as resp:
+                    if resp.status == 404:
+                        return BridgeStatus(
+                            status=BridgeTransactionStatus.UNKNOWN,
+                            src_tx_hash=src_tx_hash,
+                            protocol=self.protocol_name,
+                        )
+                    if resp.status != 200:
+                        text = await resp.text()
+                        raise BridgeError(f"LayerZero Scan API error ({resp.status}): {text}")
+                    data = await resp.json(content_type=None)
+        except aiohttp.ClientConnectorError as exc:
+            raise BridgeError(f"LayerZero Scan API connection error: {exc}") from exc
+
+        messages = data.get("messages") or []
+        if not messages:
+            return BridgeStatus(
+                status=BridgeTransactionStatus.UNKNOWN,
+                src_tx_hash=src_tx_hash,
+                protocol=self.protocol_name,
+            )
+
+        msg = messages[0]
+        raw_status = str(msg.get("status", "")).upper()
+
+        _STATUS_MAP = {
+            "DELIVERED": BridgeTransactionStatus.COMPLETED,
+            "CONFIRMING": BridgeTransactionStatus.PENDING,
+            "INFLIGHT": BridgeTransactionStatus.PENDING,
+            "PAYLOAD_STORED": BridgeTransactionStatus.PENDING,
+            "BLOCKED": BridgeTransactionStatus.FAILED,
+            "FAILED": BridgeTransactionStatus.FAILED,
+        }
+        status = _STATUS_MAP.get(raw_status, BridgeTransactionStatus.UNKNOWN)
+
+        dst_tx_hash: str | None = msg.get("dstTxHash") or None
+
+        return BridgeStatus(
+            status=status,
+            src_tx_hash=src_tx_hash,
+            dst_tx_hash=dst_tx_hash,
+            protocol=self.protocol_name,
+        )

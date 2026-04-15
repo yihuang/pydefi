@@ -15,7 +15,7 @@ import aiohttp
 
 from pydefi.bridge.base import BaseBridge
 from pydefi.exceptions import BridgeError
-from pydefi.types import BridgeQuote, Token, TokenAmount
+from pydefi.types import BridgeQuote, BridgeStatus, BridgeTransactionStatus, Token, TokenAmount
 
 _RELAY_API_BASE = "https://api.relay.link"
 
@@ -214,3 +214,74 @@ class Relay(BaseBridge):
             "value": str(tx_data.get("value", "0")),
             "gas": str(tx_data.get("gas", 300_000)),
         }
+
+    async def get_status(self, src_tx_hash: str) -> BridgeStatus:
+        """Fetch the status of a Relay bridge transaction.
+
+        Queries the Relay ``/requests/v2`` endpoint, filtering by the source
+        transaction hash, to determine whether the bridge transfer has been
+        fulfilled on the destination chain.
+
+        Args:
+            src_tx_hash: Transaction hash of the bridge deposit on the source
+                chain.
+
+        Returns:
+            A :class:`~pydefi.types.BridgeStatus`.
+
+        Raises:
+            :class:`~pydefi.exceptions.BridgeError`: On API error.
+        """
+        url = f"{self._api_base}/requests/v2"
+        params = {
+            "originTxHash": src_tx_hash,
+            "originChainId": self.src_chain_id,
+        }
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, params=params) as resp:
+                data = await resp.json(content_type=None)
+                if resp.status != 200:
+                    raise BridgeError(f"Relay API error ({resp.status}): {data}")
+
+        requests = data.get("requests") or []
+        if not requests:
+            return BridgeStatus(
+                status=BridgeTransactionStatus.UNKNOWN,
+                src_tx_hash=src_tx_hash,
+                protocol=self.protocol_name,
+            )
+
+        req = requests[0]
+        raw_status = str(req.get("status", "")).lower()
+
+        _STATUS_MAP = {
+            "success": BridgeTransactionStatus.COMPLETED,
+            "fulfilled": BridgeTransactionStatus.COMPLETED,
+            "pending": BridgeTransactionStatus.PENDING,
+            "waiting": BridgeTransactionStatus.PENDING,
+            "failure": BridgeTransactionStatus.FAILED,
+            "failed": BridgeTransactionStatus.FAILED,
+            "refunded": BridgeTransactionStatus.REFUNDED,
+        }
+        status = _STATUS_MAP.get(raw_status, BridgeTransactionStatus.UNKNOWN)
+
+        # Extract destination tx hash from the data field if available
+        dst_tx_hash: str | None = None
+        data_field = req.get("data") or {}
+        steps = data_field.get("steps") or []
+        for step in steps:
+            items = step.get("items") or []
+            for item in items:
+                item_data = item.get("data") or {}
+                if item_data.get("hash"):
+                    dst_tx_hash = item_data["hash"]
+                    break
+            if dst_tx_hash:
+                break
+
+        return BridgeStatus(
+            status=status,
+            src_tx_hash=src_tx_hash,
+            dst_tx_hash=dst_tx_hash,
+            protocol=self.protocol_name,
+        )

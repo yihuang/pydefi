@@ -60,6 +60,8 @@ from pydefi.pool_data.base import BasePoolDataProvider, PoolData
 from pydefi.rpc import MultiRpcProvider, fetch_chain_rpcs, get_w3
 from pydefi.types import (
     BridgeQuote,
+    BridgeStatus,
+    BridgeTransactionStatus,
     ChainId,
     SwapRoute,
     SwapStep,
@@ -79,6 +81,8 @@ __all__ = [
     "SwapRoute",
     "SwapTransaction",
     "BridgeQuote",
+    "BridgeStatus",
+    "BridgeTransactionStatus",
     # Pool data
     "PoolData",
     "BasePoolDataProvider",
