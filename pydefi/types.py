@@ -157,7 +157,7 @@ class SwapRoute:
 class RouteSwap:
     """A single swap edge in a route DAG."""
 
-    token_out: Any
+    token_out: Token
     pool: Any
 
 
@@ -177,19 +177,19 @@ class RouteSplit:
     """A split/merge section of a route DAG."""
 
     legs: list[RouteSplitLeg]
-    token_out: Any
+    token_out: Token
 
 
 @dataclass
 class _RouteSplitLegBuilder:
     fraction_bps: int
     actions: list[RouteAction] = field(default_factory=list)
-    current_token: Any = None
+    current_token: Token | None = None
 
 
 @dataclass
 class _RouteSplitBuilder:
-    origin_token: Any
+    origin_token: Token
     legs: list[_RouteSplitLegBuilder] = field(default_factory=list)
     active_leg: _RouteSplitLegBuilder | None = None
 
@@ -203,19 +203,19 @@ class _RouteSplitBuilder:
 class RouteDAG:
     """Fluent builder for split/merge swap routes represented as a DAG."""
 
-    token_in: Any | None = None
+    token_in: Token | None = None
     actions: list[RouteAction] = field(default_factory=list)
-    _current_token: Any | None = None
+    _current_token: Token | None = None
     _split_stack: list[_RouteSplitBuilder] = field(default_factory=list)
 
-    def from_token(self, token: Any) -> "RouteDAG":
+    def from_token(self, token: Token) -> "RouteDAG":
         if self.token_in is not None:
             raise ValueError("RouteDAG.from_token() can only be called once")
         self.token_in = token
         self._current_token = token
         return self
 
-    def swap(self, token_out: Any, pool: Any) -> "RouteDAG":
+    def swap(self, token_out: Token, pool: Any) -> "RouteDAG":
         if self.token_in is None:
             raise ValueError("RouteDAG.from_token() must be called before swap()")
         self._current_actions().append(RouteSwap(token_out=token_out, pool=pool))
@@ -281,7 +281,7 @@ class RouteDAG:
             raise ValueError("split() must be called before swap() inside a split block")
         return split_ctx.active_leg.actions
 
-    def _set_current_token(self, token: Any) -> None:
+    def _set_current_token(self, token: Token) -> None:
         if not self._split_stack:
             self._current_token = token
             return
