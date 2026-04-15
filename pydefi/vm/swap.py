@@ -975,7 +975,10 @@ def _swap_hop_from_route_swap(swap_action: RouteSwap, *, recipient: str) -> Swap
     if isinstance(pool, V3PoolEdge):
         zero_for_one = pool.is_token0_in
     else:
-        zero_for_one = bool(getattr(pool, "extra", {}).get("is_token0_in", True))
+        is_token0_in = getattr(pool, "extra", {}).get("is_token0_in")
+        if is_token0_in is None:
+            raise ValueError("build_program_for_dag: non-V3 pool is missing extra['is_token0_in'] metadata")
+        zero_for_one = bool(is_token0_in)
     return SwapHop(
         protocol=protocol,
         pool=pool.pool_address,
