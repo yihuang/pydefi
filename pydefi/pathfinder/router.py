@@ -369,7 +369,10 @@ class Router:
         top_k: int = 5,
     ) -> list[RouteDAG]:
         """Find top-*k* routes and return them as :class:`~pydefi.types.RouteDAG` objects."""
-        return [route.dag for route in self.find_all_routes(amount_in, token_out, top_k=top_k) if route.dag is not None]
+        routes = self.find_all_routes(amount_in, token_out, top_k=top_k)
+        if any(route.dag is None for route in routes):
+            raise ValueError("internal Router error: missing DAG representation in find_all_routes()")
+        return [route.dag for route in routes if route.dag is not None]
 
     @staticmethod
     def _edges_to_dag(token_in: Token, edges: list[PoolEdge]) -> RouteDAG:

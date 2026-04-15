@@ -8,6 +8,6 @@ from abc import ABC
 class BasePool(ABC):
     """Base class for pool descriptors used by RouteDAG actions."""
 
-    pool_address: str = ""
-    protocol: str = ""
-    fee_bps: int = 0
+    pool_address: str
+    protocol: str
+    fee_bps: int

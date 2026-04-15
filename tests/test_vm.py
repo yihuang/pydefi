@@ -1701,7 +1701,7 @@ class TestBuildProgramForDAG:
             extra={"is_token0_in": is_token0_in},
         )
 
-    def test_build_execution_program_for_linear_dag(self):
+    def test_build_execution_program_for_simple_dag(self):
         dag = (
             RouteDAG()
             .from_token(self.TOKEN_A)
