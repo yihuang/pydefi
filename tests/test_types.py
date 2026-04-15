@@ -227,10 +227,11 @@ class TestRouteDAG:
             RouteDAG()
             .from_token(self.token0)
             .swap(self.token1, "pool1")
-            .split(5000)
+            .split()
+            .leg(5000)
             .swap(self.token2, "pool2")
             .swap(self.token3, "pool3")
-            .split(5000)
+            .leg(5000)
             .swap(self.token3, "pool4")
             .merge()
             .swap(self.token4, "pool5")
@@ -249,9 +250,10 @@ class TestRouteDAG:
         dag = (
             RouteDAG()
             .from_token(self.token0)
-            .split(3000)
+            .split()
+            .leg(3000)
             .swap(self.token1, "pool1")
-            .split(3000)
+            .leg(3000)
             .swap(self.token1, "pool2")
         )
         with pytest.raises(ValueError, match="fraction_bps"):
@@ -261,18 +263,49 @@ class TestRouteDAG:
         dag = (
             RouteDAG()
             .from_token(self.token0)
-            .split(5000)
+            .split()
+            .leg(5000)
             .swap(self.token1, "pool1")
-            .split(5000)
+            .leg(5000)
             .swap(self.token2, "pool2")
         )
         with pytest.raises(ValueError, match="same token"):
             dag.merge()
 
     def test_to_dict_rejects_unmerged_split(self):
-        dag = RouteDAG().from_token(self.token0).split(10000).swap(self.token1, "pool1")
+        dag = RouteDAG().from_token(self.token0).split().leg(10000).swap(self.token1, "pool1")
         with pytest.raises(ValueError, match="unmerged"):
             dag.to_dict()
+
+    def test_nested_split_is_explicit_and_supported(self):
+        dag = (
+            RouteDAG()
+            .from_token(self.token0)
+            .split()
+            .leg(5000)
+            .swap(self.token1, "pool1")
+            .leg(5000)
+            .split()
+            .leg(5000)
+            .swap(self.token1, "pool2")
+            .leg(5000)
+            .swap(self.token1, "pool3")
+            .merge()
+            .merge()
+        )
+
+        payload = dag.to_dict()
+        outer = payload["actions"][0]
+        assert isinstance(outer, RouteSplit)
+        assert len(outer.legs) == 2
+        nested = outer.legs[1].actions[0]
+        assert isinstance(nested, RouteSplit)
+        assert [leg.fraction_bps for leg in nested.legs] == [5000, 5000]
+
+    def test_swap_inside_split_requires_leg(self):
+        dag = RouteDAG().from_token(self.token0).split()
+        with pytest.raises(ValueError, match="leg\\(\\) must be called before swap\\(\\)"):
+            dag.swap(self.token1, "pool1")
 
 
 # ---------------------------------------------------------------------------

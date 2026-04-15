@@ -177,7 +177,7 @@ class RouteSplit:
     token_out: Token
 
 
-RouteAction: TypeAlias = RouteSwap | RouteSplit
+RouteAction: TypeAlias = "RouteSwap | RouteSplit"
 
 
 @dataclass
@@ -222,14 +222,27 @@ class RouteDAG:
         self._set_current_token(token_out)
         return self
 
-    def split(self, fraction_bps: int) -> "RouteDAG":
+    def split(self) -> "RouteDAG":
         if self.token_in is None:
             raise ValueError("RouteDAG.from_token() must be called before split()")
-        if not (0 < fraction_bps <= MAX_BPS):
-            raise ValueError(f"split fraction_bps must be in (0, {MAX_BPS}], got {fraction_bps}")
-
         if not self._split_stack:
-            self._split_stack.append(_RouteSplitBuilder(origin_token=self._current_token))
+            if self._current_token is None:
+                raise ValueError("RouteDAG.from_token() must be called before split()")
+            origin_token = self._current_token
+        else:
+            parent = self._split_stack[-1]
+            if parent.active_leg is None or parent.active_leg.current_token is None:
+                raise ValueError("leg() must be called before nested split()")
+            origin_token = parent.active_leg.current_token
+
+        self._split_stack.append(_RouteSplitBuilder(origin_token=origin_token))
+        return self
+
+    def leg(self, fraction_bps: int) -> "RouteDAG":
+        if not self._split_stack:
+            raise ValueError("RouteDAG.leg() must be called inside split()")
+        if not (0 < fraction_bps <= MAX_BPS):
+            raise ValueError(f"leg fraction_bps must be in (0, {MAX_BPS}], got {fraction_bps}")
         self._split_stack[-1].start_leg(fraction_bps)
         return self
 
@@ -278,7 +291,7 @@ class RouteDAG:
             return self.actions
         split_ctx = self._split_stack[-1]
         if split_ctx.active_leg is None:
-            raise ValueError("split() must be called before swap() inside a split block")
+            raise ValueError("leg() must be called before swap() inside split()")
         return split_ctx.active_leg.actions
 
     def _set_current_token(self, token: Token) -> None:
@@ -287,7 +300,7 @@ class RouteDAG:
             return
         split_ctx = self._split_stack[-1]
         if split_ctx.active_leg is None:
-            raise ValueError("split() must be called before swap() inside a split block")
+            raise ValueError("leg() must be called before swap() inside split()")
         split_ctx.active_leg.current_token = token
 
 
