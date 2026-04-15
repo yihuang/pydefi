@@ -245,12 +245,26 @@ class TestRouteDAG:
         assert [leg.fraction_bps for leg in payload["actions"][1].legs] == [5000, 5000]
 
     def test_merge_requires_sum_10000(self):
-        dag = RouteDAG().from_token(self.token0).split(3000).swap(self.token1, "pool1").split(3000).swap(self.token1, "pool2")
+        dag = (
+            RouteDAG()
+            .from_token(self.token0)
+            .split(3000)
+            .swap(self.token1, "pool1")
+            .split(3000)
+            .swap(self.token1, "pool2")
+        )
         with pytest.raises(ValueError, match="fraction_bps"):
             dag.merge()
 
     def test_merge_requires_same_end_token(self):
-        dag = RouteDAG().from_token(self.token0).split(5000).swap(self.token1, "pool1").split(5000).swap(self.token2, "pool2")
+        dag = (
+            RouteDAG()
+            .from_token(self.token0)
+            .split(5000)
+            .swap(self.token1, "pool1")
+            .split(5000)
+            .swap(self.token2, "pool2")
+        )
         with pytest.raises(ValueError, match="same token"):
             dag.merge()
 
