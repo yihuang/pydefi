@@ -226,8 +226,6 @@ class RouteDAG:
         if self.token_in is None:
             raise ValueError("RouteDAG.from_token() must be called before split()")
         if not self._split_stack:
-            if self._current_token is None:
-                raise ValueError("RouteDAG.from_token() must be called before split()")
             origin_token = self._current_token
         else:
             parent = self._split_stack[-1]
@@ -235,6 +233,8 @@ class RouteDAG:
                 raise ValueError("leg() must be called before nested split()")
             origin_token = parent.active_leg.current_token
 
+        if origin_token is None:
+            raise ValueError("RouteDAG.from_token() must be called before split()")
         self._split_stack.append(_RouteSplitBuilder(origin_token=origin_token))
         return self
 
