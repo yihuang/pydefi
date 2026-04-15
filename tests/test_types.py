@@ -2,9 +2,14 @@
 
 from decimal import Decimal
 
+import pytest
+
 from pydefi.types import (
     BridgeQuote,
     ChainId,
+    RouteDAG,
+    RouteSplit,
+    RouteSwap,
     SwapRoute,
     SwapStep,
     Token,
@@ -202,6 +207,57 @@ class TestSwapRoute:
         r = repr(route)
         assert "WETH" in r
         assert "USDC" in r
+
+
+# ---------------------------------------------------------------------------
+# RouteDAG tests
+# ---------------------------------------------------------------------------
+
+
+class TestRouteDAG:
+    def setup_method(self):
+        self.token0 = Token(chain_id=1, address="0x" + "10" * 20, symbol="T0")
+        self.token1 = Token(chain_id=1, address="0x" + "11" * 20, symbol="T1")
+        self.token2 = Token(chain_id=1, address="0x" + "12" * 20, symbol="T2")
+        self.token3 = Token(chain_id=1, address="0x" + "13" * 20, symbol="T3")
+        self.token4 = Token(chain_id=1, address="0x" + "14" * 20, symbol="T4")
+
+    def test_issue_example_split_merge_dag(self):
+        dag = (
+            RouteDAG()
+            .from_token(self.token0)
+            .swap(self.token1, "pool1")
+            .split(5000)
+            .swap(self.token2, "pool2")
+            .swap(self.token3, "pool3")
+            .split(5000)
+            .swap(self.token3, "pool4")
+            .merge()
+            .swap(self.token4, "pool5")
+        )
+
+        payload = dag.to_dict()
+        assert payload["token_in"] == self.token0
+        assert len(payload["actions"]) == 3
+        assert isinstance(payload["actions"][0], RouteSwap)
+        assert isinstance(payload["actions"][1], RouteSplit)
+        assert isinstance(payload["actions"][2], RouteSwap)
+        assert [leg.fraction_bps for leg in payload["actions"][1].legs] == [5000, 5000]
+
+    def test_merge_requires_sum_10000(self):
+        dag = RouteDAG().from_token(self.token0).split(3000).swap(self.token1, "pool1").split(3000).swap(self.token1, "pool2")
+        with pytest.raises(ValueError, match="fraction_bps"):
+            dag.merge()
+
+    def test_merge_requires_same_end_token(self):
+        dag = RouteDAG().from_token(self.token0).split(5000).swap(self.token1, "pool1").split(5000).swap(self.token2, "pool2")
+        with pytest.raises(ValueError, match="same token"):
+            dag.merge()
+
+    def test_to_dict_rejects_unmerged_split(self):
+        dag = RouteDAG().from_token(self.token0).split(10000).swap(self.token1, "pool1")
+        with pytest.raises(ValueError, match="unmerged"):
+            dag.to_dict()
 
 
 # ---------------------------------------------------------------------------
