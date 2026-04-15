@@ -131,24 +131,16 @@ class TestIndexerLive:
         from_block = head - _BACKFILL_WINDOW
 
         indexer = _make_v2_indexer(eth_w3)
-        stored = await indexer.backfill(
-            from_block=from_block, to_block=head, pool_address=_V2_USDC_WETH
-        )
+        stored = await indexer.backfill(from_block=from_block, to_block=head, pool_address=_V2_USDC_WETH)
 
-        assert stored >= 1, (
-            f"Expected at least 1 Sync event in blocks {from_block}-{head}, got {stored}"
-        )
+        assert stored >= 1, f"Expected at least 1 Sync event in blocks {from_block}-{head}, got {stored}"
 
         state = indexer.get_latest_v2_state(_V2_USDC_WETH)
         assert state is not None
         assert state["block_number"] >= from_block
         assert state["timestamp"] > 0
-        assert state["reserve0"] >= _MIN_V2_USDC_RESERVE, (
-            f"USDC reserve too small: {state['reserve0']}"
-        )
-        assert state["reserve1"] >= _MIN_V2_WETH_RESERVE, (
-            f"WETH reserve too small: {state['reserve1']}"
-        )
+        assert state["reserve0"] >= _MIN_V2_USDC_RESERVE, f"USDC reserve too small: {state['reserve0']}"
+        assert state["reserve1"] >= _MIN_V2_WETH_RESERVE, f"WETH reserve too small: {state['reserve1']}"
 
     async def test_v3_backfill_indexes_events(self, eth_w3):
         """Backfilling 50 recent blocks for USDC/WETH V3 yields >= 1 Swap event."""
@@ -156,13 +148,9 @@ class TestIndexerLive:
         from_block = head - _BACKFILL_WINDOW
 
         indexer = _make_v3_indexer(eth_w3)
-        stored = await indexer.backfill(
-            from_block=from_block, to_block=head, pool_address=_V3_USDC_WETH
-        )
+        stored = await indexer.backfill(from_block=from_block, to_block=head, pool_address=_V3_USDC_WETH)
 
-        assert stored >= 1, (
-            f"Expected at least 1 Swap event in blocks {from_block}-{head}, got {stored}"
-        )
+        assert stored >= 1, f"Expected at least 1 Swap event in blocks {from_block}-{head}, got {stored}"
 
         state = indexer.get_latest_v3_state(_V3_USDC_WETH)
         assert state is not None
@@ -174,9 +162,7 @@ class TestIndexerLive:
         )
         assert state["liquidity"] > 0
         # tick for USDC/WETH at any realistic price is between -1000000 and 1000000
-        assert -1_000_000 < state["tick"] < 1_000_000, (
-            f"tick {state['tick']} outside expected range"
-        )
+        assert -1_000_000 < state["tick"] < 1_000_000, f"tick {state['tick']} outside expected range"
 
     async def test_v2_backfill_idempotent(self, eth_w3):
         """Running backfill twice over the same range must not create duplicate rows."""
@@ -184,16 +170,10 @@ class TestIndexerLive:
         from_block = head - _BACKFILL_WINDOW
 
         indexer = _make_v2_indexer(eth_w3)
-        stored_first = await indexer.backfill(
-            from_block=from_block, to_block=head, pool_address=_V2_USDC_WETH
-        )
-        stored_second = await indexer.backfill(
-            from_block=from_block, to_block=head, pool_address=_V2_USDC_WETH
-        )
+        stored_first = await indexer.backfill(from_block=from_block, to_block=head, pool_address=_V2_USDC_WETH)
+        stored_second = await indexer.backfill(from_block=from_block, to_block=head, pool_address=_V2_USDC_WETH)
 
-        assert stored_second == 0, (
-            f"Second backfill inserted {stored_second} duplicate rows"
-        )
+        assert stored_second == 0, f"Second backfill inserted {stored_second} duplicate rows"
         # Total events accessible should equal the first run count.
         state = indexer.get_latest_v2_state(_V2_USDC_WETH)
         assert state is not None
@@ -205,9 +185,7 @@ class TestIndexerLive:
         from_block = head - _BACKFILL_WINDOW
 
         indexer = _make_v2_indexer(eth_w3)
-        await indexer.backfill(
-            from_block=from_block, to_block=head, pool_address=_V2_USDC_WETH
-        )
+        await indexer.backfill(from_block=from_block, to_block=head, pool_address=_V2_USDC_WETH)
 
         last = indexer._get_last_indexed_block(_V2_USDC_WETH.lower())
         assert last == head, f"Checkpoint {last} != requested to_block {head}"
@@ -224,8 +202,7 @@ class TestIndexerLive:
 
         pools = indexer.list_pools()
         assert len(pools) >= 1, (
-            f"Expected at least 1 pool discovered from V2 factory in blocks "
-            f"{from_block}-{head}, found {len(pools)}"
+            f"Expected at least 1 pool discovered from V2 factory in blocks {from_block}-{head}, found {len(pools)}"
         )
         for pool in pools:
             assert pool.protocol == "UniswapV2"
@@ -245,8 +222,7 @@ class TestIndexerLive:
 
         pools = indexer.list_pools()
         assert len(pools) >= 1, (
-            f"Expected at least 1 pool discovered from V3 factory in blocks "
-            f"{from_block}-{head}, found {len(pools)}"
+            f"Expected at least 1 pool discovered from V3 factory in blocks {from_block}-{head}, found {len(pools)}"
         )
         for pool in pools:
             assert pool.protocol == "UniswapV3"
