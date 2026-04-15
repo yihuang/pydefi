@@ -304,7 +304,7 @@ class TestRouteDAG:
 
     def test_swap_inside_split_requires_leg(self):
         dag = RouteDAG().from_token(self.token0).split()
-        with pytest.raises(ValueError, match="leg\\(\\) must be called before swap\\(\\) inside split\\(\\)"):
+        with pytest.raises(ValueError, match=r"leg\(\) must be called before swap\(\) inside split\(\)"):
             dag.swap(self.token1, "pool1")
 
 
