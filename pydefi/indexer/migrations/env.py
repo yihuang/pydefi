@@ -22,8 +22,9 @@ import pydefi.indexer.models  # noqa: F401
 # Alembic Config object (gives access to values in alembic.ini).
 config = context.config
 
-# Override DB URL from environment variable if set.
-db_url = os.environ.get("PYDEFI_DB_URL") or config.config_args.get("db_url")
+# Override DB URL from Alembic CLI (-x db_url=...) or environment variable if set.
+x_args = context.get_x_argument(as_dictionary=True)
+db_url = x_args.get("db_url") or os.environ.get("PYDEFI_DB_URL")
 if db_url:
     config.set_main_option("sqlalchemy.url", db_url)
 

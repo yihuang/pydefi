@@ -12,7 +12,7 @@ Tables
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
 import sqlalchemy as sa
 from sqlmodel import Column, Field, SQLModel
@@ -29,10 +29,10 @@ class _BigInt(sa.TypeDecorator):
     impl = sa.Text
     cache_ok = True
 
-    def process_bind_param(self, value: Optional[int], dialect: sa.Dialect) -> Optional[str]:
+    def process_bind_param(self, value: Optional[int], dialect: Any) -> Optional[str]:
         return str(value) if value is not None else None
 
-    def process_result_value(self, value: Optional[str], dialect: sa.Dialect) -> Optional[int]:
+    def process_result_value(self, value: Optional[str], dialect: Any) -> Optional[int]:
         return int(value) if value is not None else None
 
 
@@ -87,7 +87,7 @@ class V2SyncEvent(SQLModel, table=True):
 
     Attributes:
         id: Auto-increment primary key.
-        pool_address: Pool that emitted the event (FK → :class:`Pool`).
+        pool_address: Address of the pool that emitted the event (indexed, lowercase).
         block_number: Block height at which the event was emitted.
         block_hash: Hex-encoded block hash.
         tx_hash: Hex-encoded transaction hash.
@@ -104,7 +104,7 @@ class V2SyncEvent(SQLModel, table=True):
     tx_hash: str
     log_index: int
     timestamp: int
-    # uint112 fits in 64-bit; use _BigInt for headroom with exotic forks
+    # uint112 can exceed 64-bit integer range; store reserves via _BigInt()
     reserve0: int = Field(sa_column=Column(_BigInt(), nullable=False))
     reserve1: int = Field(sa_column=Column(_BigInt(), nullable=False))
 
@@ -114,7 +114,7 @@ class V3SwapEvent(SQLModel, table=True):
 
     Attributes:
         id: Auto-increment primary key.
-        pool_address: Pool that emitted the event (FK → :class:`Pool`).
+        pool_address: Address of the pool that emitted the event (indexed, lowercase).
         block_number: Block height at which the event was emitted.
         block_hash: Hex-encoded block hash.
         tx_hash: Hex-encoded transaction hash.

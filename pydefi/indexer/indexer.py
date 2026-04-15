@@ -64,25 +64,19 @@ from sqlmodel import Session, SQLModel, create_engine, select
 from web3 import AsyncWeb3
 from web3.types import BlockNumber
 
+from pydefi.abi.amm import UNISWAP_V2_FACTORY, UNISWAP_V2_PAIR, UNISWAP_V3_FACTORY, UNISWAP_V3_POOL
 from pydefi.indexer.models import Factory, IndexerState, Pool, V2SyncEvent, V3SwapEvent
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Event topic hashes (keccak256 of the canonical event signature)
+# Event topic hashes — derived from the canonical ABI definitions.
 # ---------------------------------------------------------------------------
 
-# keccak256("Sync(uint112,uint112)")
-_V2_SYNC_TOPIC = "0x1c411e9a96e071241c2f21f7726b17ae89e3cab4c78be50e062b03a9fffbbad1"
-
-# keccak256("Swap(address,address,int256,int256,uint160,uint128,int24)")
-_V3_SWAP_TOPIC = "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67"
-
-# keccak256("PairCreated(address,address,address,uint256)")
-_V2_PAIR_CREATED_TOPIC = "0x0d3648bd0f6ba80134a33ba9275ac585d9d315f0ad8355cddefde31afa28d0e9"
-
-# keccak256("PoolCreated(address,address,uint24,int24,address)")
-_V3_POOL_CREATED_TOPIC = "0x783cca1c0412dd0d695e784568c96da2e9c22ff989357a2e8b1d9b2b4e6b7118"
+_V2_SYNC_TOPIC = "0x" + UNISWAP_V2_PAIR.events.Sync.topic.hex()
+_V3_SWAP_TOPIC = "0x" + UNISWAP_V3_POOL.events.Swap.topic.hex()
+_V2_PAIR_CREATED_TOPIC = "0x" + UNISWAP_V2_FACTORY.events.PairCreated.topic.hex()
+_V3_POOL_CREATED_TOPIC = "0x" + UNISWAP_V3_FACTORY.events.PoolCreated.topic.hex()
 
 # How many blocks to request per getLogs call during back-fill
 _DEFAULT_BATCH_SIZE = 2_000
@@ -375,16 +369,19 @@ class PoolIndexer:
             stored = await self._process_logs(logs)
             total_stored += stored
 
-            # Update checkpoints for all pools/factories that had events.
+            # Update checkpoints for all pools/factories that had events in this batch.
             seen_addrs: set[str] = {lg["address"].lower() for lg in logs}
             for addr in seen_addrs:
                 self._set_last_indexed_block(addr, end)
             current = end + 1
 
-        # Ensure checkpoint reflects *to_block* for the target pool even when
-        # no events were found.
+        # Advance checkpoints to *to_block* for all addresses included in this
+        # backfill run, even those that emitted no events in the final batches.
         if target_addr is not None:
             self._set_last_indexed_block(target_addr, to_block)
+        else:
+            for addr in set(self._pool_protocol) | set(self._factory_protocol):
+                self._set_last_indexed_block(addr, to_block)
 
         return total_stored
 

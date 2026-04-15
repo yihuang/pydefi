@@ -23,7 +23,7 @@ Example::
         token1_decimals=18,
         chain_id=1,
     )
-    await indexer.backfill("0xB4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc", from_block=17_000_000)
+    await indexer.backfill(from_block=17_000_000, to_block=17_100_000, pool_address="0xB4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc")
     await indexer.run()
 """
 

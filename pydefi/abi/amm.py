@@ -40,6 +40,7 @@ UNISWAP_V2_FACTORY = Contract.from_abi(
         "function getPair(address tokenA, address tokenB) external view returns (address pair)",
         "function allPairs(uint) external view returns (address pair)",
         "function allPairsLength() external view returns (uint)",
+        "event PairCreated(address indexed token0, address indexed token1, address pair, uint256)",
     ]
 )
 
@@ -141,6 +142,7 @@ UNISWAP_V3_ROUTER = Contract.from_abi(
 UNISWAP_V3_FACTORY = Contract.from_abi(
     [
         "function getPool(address tokenA, address tokenB, uint24 fee) external view returns (address pool)",
+        "event PoolCreated(address indexed token0, address indexed token1, uint24 indexed fee, int24 tickSpacing, address pool)",
     ]
 )
 
