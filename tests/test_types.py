@@ -222,7 +222,7 @@ class TestRouteDAG:
         self.token3 = Token(chain_id=1, address="0x" + "13" * 20, symbol="T3")
         self.token4 = Token(chain_id=1, address="0x" + "14" * 20, symbol="T4")
 
-    def test_issue_example_split_merge_dag(self):
+    def test_split_merge_dag_construction(self):
         dag = (
             RouteDAG()
             .from_token(self.token0)
@@ -244,7 +244,8 @@ class TestRouteDAG:
         assert isinstance(payload["actions"][2], RouteSwap)
         assert [leg.fraction_bps for leg in payload["actions"][1].legs] == [5000, 5000]
 
-    def test_merge_requires_sum_10000(self):
+    def test_merge_requires_sum_exactly_10000(self):
+        # Two split() calls create two legs: 3000 + 3000 = 6000, which is invalid.
         dag = (
             RouteDAG()
             .from_token(self.token0)

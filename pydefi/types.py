@@ -9,6 +9,8 @@ from decimal import ROUND_DOWN, Decimal
 from enum import IntEnum
 from typing import Any, ClassVar, TypeAlias
 
+MAX_BPS = 10_000
+
 
 class ChainId(IntEnum):
     """Well-known chain IDs (EVM and non-EVM)."""
@@ -223,8 +225,8 @@ class RouteDAG:
     def split(self, fraction_bps: int) -> "RouteDAG":
         if self.token_in is None:
             raise ValueError("RouteDAG.from_token() must be called before split()")
-        if not (0 < fraction_bps <= 10000):
-            raise ValueError(f"split fraction_bps must be in (0, 10000], got {fraction_bps}")
+        if not (0 < fraction_bps <= MAX_BPS):
+            raise ValueError(f"split fraction_bps must be in (0, {MAX_BPS}], got {fraction_bps}")
 
         if not self._split_stack:
             self._split_stack.append(_RouteSplitBuilder(origin_token=self._current_token))
@@ -237,8 +239,8 @@ class RouteDAG:
 
         split_ctx = self._split_stack.pop()
         total_bps = sum(leg.fraction_bps for leg in split_ctx.legs)
-        if total_bps != 10000:
-            raise ValueError(f"sum of split leg fraction_bps must be 10000, got {total_bps}")
+        if total_bps != MAX_BPS:
+            raise ValueError(f"sum of split leg fraction_bps must be {MAX_BPS}, got {total_bps}")
 
         if any(not leg.actions for leg in split_ctx.legs):
             raise ValueError("each split leg must contain at least one swap() before merge()")
