@@ -9,6 +9,8 @@ from decimal import ROUND_DOWN, Decimal
 from enum import IntEnum
 from typing import Any, ClassVar, TypeAlias
 
+from pydefi.pools import BasePool
+
 MAX_BPS = 10_000
 
 
@@ -135,6 +137,7 @@ class SwapRoute:
     amount_in: TokenAmount
     amount_out: TokenAmount
     price_impact: Decimal = Decimal(0)
+    dag: "RouteDAG | None" = None
 
     def __post_init__(self) -> None:
         if not self.steps:
@@ -158,7 +161,7 @@ class RouteSwap:
     """A single swap edge in a route DAG."""
 
     token_out: Token
-    pool: Any
+    pool: BasePool
 
 
 @dataclass(frozen=True)
@@ -215,7 +218,7 @@ class RouteDAG:
         self._current_token = token
         return self
 
-    def swap(self, token_out: Token, pool: Any) -> "RouteDAG":
+    def swap(self, token_out: Token, pool: BasePool) -> "RouteDAG":
         if self.token_in is None:
             raise ValueError("RouteDAG.from_token() must be called before swap()")
         self._current_actions().append(RouteSwap(token_out=token_out, pool=pool))

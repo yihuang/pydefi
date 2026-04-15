@@ -73,6 +73,8 @@ from enum import Enum
 from eth_abi import encode
 from eth_contract.contract import ContractFunction
 
+from pydefi.pathfinder.graph import V3PoolEdge
+from pydefi.types import RouteAction, RouteDAG, RouteSplit, RouteSwap
 from pydefi.vm.builder import Patch, Program
 from pydefi.vm.program import (
     _SWAP2,
@@ -780,3 +782,202 @@ def check_min_balance(token: str, account: str, min_amount: int) -> Program:
         ._emit(swap())
         ._emit(assert_ge("balance below minimum"))
     )
+
+
+def build_execution_program_for_dag(
+    dag: RouteDAG,
+    *,
+    amount_in: int,
+    vm_address: str,
+    recipient: str,
+    min_final_out: int = 0,
+    amount_reg: int = _AMOUNT_REG,
+    amount_out_reg: int = _AMOUNT_OUT_REG,
+    accum_reg: int = _ACCUM_REG,
+    total_in_reg: int = _TOTAL_IN_REG,
+) -> Program:
+    """Build an execution program from a :class:`RouteDAG`."""
+    return _build_program_for_dag(
+        dag,
+        amount_in=amount_in,
+        vm_address=vm_address,
+        terminal_recipient=recipient,
+        min_final_out=min_final_out,
+        amount_reg=amount_reg,
+        amount_out_reg=amount_out_reg,
+        accum_reg=accum_reg,
+        total_in_reg=total_in_reg,
+    )
+
+
+def build_quote_program_for_dag(
+    dag: RouteDAG,
+    *,
+    amount_in: int,
+    vm_address: str,
+    min_final_out: int = 0,
+    amount_reg: int = _AMOUNT_REG,
+    amount_out_reg: int = _AMOUNT_OUT_REG,
+    accum_reg: int = _ACCUM_REG,
+    total_in_reg: int = _TOTAL_IN_REG,
+) -> Program:
+    """Build a quote/simulation program from a :class:`RouteDAG`."""
+    return _build_program_for_dag(
+        dag,
+        amount_in=amount_in,
+        vm_address=vm_address,
+        terminal_recipient=vm_address,
+        min_final_out=min_final_out,
+        amount_reg=amount_reg,
+        amount_out_reg=amount_out_reg,
+        accum_reg=accum_reg,
+        total_in_reg=total_in_reg,
+    )
+
+
+def _build_program_for_dag(
+    dag: RouteDAG,
+    *,
+    amount_in: int,
+    vm_address: str,
+    terminal_recipient: str,
+    min_final_out: int,
+    amount_reg: int,
+    amount_out_reg: int,
+    accum_reg: int,
+    total_in_reg: int,
+) -> Program:
+    payload = dag.to_dict()
+    actions = payload["actions"]
+    if not actions:
+        raise ValueError("build_program_for_dag: route DAG must contain at least one action")
+
+    segments: list[Program] = [Program()._emit(push_u256(amount_in))._emit(store_reg(amount_reg))]
+    segments.extend(
+        _build_dag_actions(
+            actions,
+            vm_address=vm_address,
+            terminal_recipient=terminal_recipient,
+            amount_reg=amount_reg,
+            amount_out_reg=amount_out_reg,
+            accum_reg=accum_reg,
+            total_in_reg=total_in_reg,
+        )
+    )
+
+    if min_final_out > 0:
+        segments.append(Program()._emit(push_u256(min_final_out))._emit(load_reg(amount_reg))._emit(assert_ge("slippage: out too low")))
+
+    return Program.compose(segments)
+
+
+def _build_dag_actions(
+    actions: list[RouteAction],
+    *,
+    vm_address: str,
+    terminal_recipient: str,
+    amount_reg: int,
+    amount_out_reg: int,
+    accum_reg: int,
+    total_in_reg: int,
+) -> list[Program]:
+    segments: list[Program] = []
+    for i, action in enumerate(actions):
+        action_recipient = terminal_recipient if i == len(actions) - 1 else vm_address
+        if isinstance(action, RouteSwap):
+            hop = _swap_hop_from_route_swap(action, recipient=action_recipient)
+            if hop.protocol == SwapProtocol.UNISWAP_V3:
+                segments.append(_build_v3_pool_swap_segment(hop, amount_reg=amount_reg))
+            else:
+                segments.append(_build_v2_direct_swap_segment(hop, amount_reg=amount_reg, amount_out_reg=amount_out_reg))
+            continue
+
+        if isinstance(action, RouteSplit):
+            segments.extend(
+                _build_route_split_segment(
+                    action,
+                    vm_address=vm_address,
+                    terminal_recipient=action_recipient,
+                    amount_reg=amount_reg,
+                    amount_out_reg=amount_out_reg,
+                    accum_reg=accum_reg,
+                    total_in_reg=total_in_reg,
+                )
+            )
+            continue
+
+        raise ValueError(f"build_program_for_dag: unsupported route action {type(action)!r}")
+
+    return segments
+
+
+def _build_route_split_segment(
+    split: RouteSplit,
+    *,
+    vm_address: str,
+    terminal_recipient: str,
+    amount_reg: int,
+    amount_out_reg: int,
+    accum_reg: int,
+    total_in_reg: int,
+) -> list[Program]:
+    segments: list[Program] = []
+    init = Program()._emit(load_reg(amount_reg))._emit(store_reg(total_in_reg))._emit(push_u256(0))._emit(store_reg(accum_reg))
+    segments.append(init)
+
+    for leg in split.legs:
+        leg_init = (
+            Program()
+            ._emit(load_reg(total_in_reg))
+            ._emit(push_u256(leg.fraction_bps))
+            ._emit(mul())
+            ._emit(push_u256(10000))
+            ._emit(swap())
+            ._emit(div())
+            ._emit(store_reg(amount_reg))
+        )
+        segments.append(leg_init)
+        segments.extend(
+            _build_dag_actions(
+                leg.actions,
+                vm_address=vm_address,
+                terminal_recipient=terminal_recipient,
+                amount_reg=amount_reg,
+                amount_out_reg=amount_out_reg,
+                accum_reg=accum_reg,
+                total_in_reg=total_in_reg,
+            )
+        )
+        segments.append(Program()._emit(load_reg(amount_reg))._emit(load_reg(accum_reg))._emit(add())._emit(store_reg(accum_reg)))
+
+    segments.append(Program()._emit(load_reg(accum_reg))._emit(store_reg(amount_reg)))
+    return segments
+
+
+def _swap_hop_from_route_swap(swap_action: RouteSwap, *, recipient: str) -> SwapHop:
+    pool = swap_action.pool
+    protocol = _pool_to_swap_protocol(pool.protocol)
+    if isinstance(pool, V3PoolEdge):
+        zero_for_one = pool.is_token0_in
+    else:
+        zero_for_one = bool(getattr(pool, "extra", {}).get("is_token0_in", True))
+    return SwapHop(
+        protocol=protocol,
+        pool=pool.pool_address,
+        token_in=pool.token_in.address,
+        token_out=pool.token_out.address,
+        fee=pool.fee_bps,
+        amount_in=0,
+        amount_out_min=0,
+        recipient=recipient,
+        zero_for_one=zero_for_one,
+    )
+
+
+def _pool_to_swap_protocol(protocol_name: str) -> SwapProtocol:
+    name = protocol_name.lower()
+    if "v3" in name:
+        return SwapProtocol.UNISWAP_V3
+    if "v2" in name:
+        return SwapProtocol.UNISWAP_V2
+    raise ValueError(f"build_program_for_dag: unsupported pool protocol {protocol_name!r}")

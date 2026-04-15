@@ -14,11 +14,12 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Callable, ClassVar, Iterator
 
+from pydefi.pools import BasePool
 from pydefi.types import Token
 
 
 @dataclass
-class PoolEdge:
+class PoolEdge(BasePool):
     """A directed edge in the liquidity pool graph.
 
     Represents one *direction* of a swap through a single pool.  For a
@@ -445,6 +446,8 @@ class PoolGraph:
             fee_bps: Swap fee in basis points.
             **extra: Extra metadata stored in ``PoolEdge.extra``.
         """
+        extra_forward = dict(extra)
+        extra_forward.setdefault("is_token0_in", True)
         self.add_pool(
             PoolEdge(
                 token_in=token_a,
@@ -454,9 +457,11 @@ class PoolGraph:
                 reserve_in=reserve_a,
                 reserve_out=reserve_b,
                 fee_bps=fee_bps,
-                extra=dict(extra),
+                extra=extra_forward,
             )
         )
+        extra_reverse = dict(extra)
+        extra_reverse.setdefault("is_token0_in", False)
         self.add_pool(
             PoolEdge(
                 token_in=token_b,
@@ -466,7 +471,7 @@ class PoolGraph:
                 reserve_in=reserve_b,
                 reserve_out=reserve_a,
                 fee_bps=fee_bps,
-                extra=dict(extra),
+                extra=extra_reverse,
             )
         )
 
