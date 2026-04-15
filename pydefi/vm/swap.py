@@ -866,7 +866,12 @@ def _build_program_for_dag(
     )
 
     if min_final_out > 0:
-        segments.append(Program()._emit(push_u256(min_final_out))._emit(load_reg(amount_reg))._emit(assert_ge("slippage: out too low")))
+        segments.append(
+            Program()
+            ._emit(push_u256(min_final_out))
+            ._emit(load_reg(amount_reg))
+            ._emit(assert_ge("slippage: out too low"))
+        )
 
     return Program.compose(segments)
 
@@ -889,7 +894,9 @@ def _build_dag_actions(
             if hop.protocol == SwapProtocol.UNISWAP_V3:
                 segments.append(_build_v3_pool_swap_segment(hop, amount_reg=amount_reg))
             else:
-                segments.append(_build_v2_direct_swap_segment(hop, amount_reg=amount_reg, amount_out_reg=amount_out_reg))
+                segments.append(
+                    _build_v2_direct_swap_segment(hop, amount_reg=amount_reg, amount_out_reg=amount_out_reg)
+                )
             continue
 
         if isinstance(action, RouteSplit):
@@ -922,7 +929,13 @@ def _build_route_split_segment(
     total_in_reg: int,
 ) -> list[Program]:
     segments: list[Program] = []
-    init = Program()._emit(load_reg(amount_reg))._emit(store_reg(total_in_reg))._emit(push_u256(0))._emit(store_reg(accum_reg))
+    init = (
+        Program()
+        ._emit(load_reg(amount_reg))
+        ._emit(store_reg(total_in_reg))
+        ._emit(push_u256(0))
+        ._emit(store_reg(accum_reg))
+    )
     segments.append(init)
 
     for leg in split.legs:
@@ -948,7 +961,9 @@ def _build_route_split_segment(
                 total_in_reg=total_in_reg,
             )
         )
-        segments.append(Program()._emit(load_reg(amount_reg))._emit(load_reg(accum_reg))._emit(add())._emit(store_reg(accum_reg)))
+        segments.append(
+            Program()._emit(load_reg(amount_reg))._emit(load_reg(accum_reg))._emit(add())._emit(store_reg(accum_reg))
+        )
 
     segments.append(Program()._emit(load_reg(accum_reg))._emit(store_reg(amount_reg)))
     return segments
