@@ -20,8 +20,7 @@ from pydefi.bridge.mayan import Mayan
 from pydefi.bridge.relay import Relay
 from pydefi.exceptions import BridgeError
 from pydefi.types import ChainId, Token, TokenAmount
-
-from .conftest import USDC
+from tests.addrs import ETH_WHALE, USDC
 
 # ---------------------------------------------------------------------------
 # Cross-chain token definitions
@@ -60,10 +59,6 @@ ETH_NATIVE_ARB = Token(
 
 # GasZip deposit contract on Ethereum mainnet
 GASZIP_CONTRACT_ETH = "0x391E7C679d29bD940d63be94AD22A25d25b5A604"
-
-# A well-known ETH whale (vitalik.eth) used as the ``from`` address in
-# eth_call simulations — no real transaction is broadcast.
-ETH_WHALE = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"
 
 # Sanity bounds for USDC bridge quotes (1 000 USDC in, expect 900–1 100 USDC out)
 BRIDGE_AMOUNT_USDC = 1_000 * 10**6

@@ -20,8 +20,7 @@ import pytest
 from pydefi.aggregator.okx import OKX
 from pydefi.aggregator.openocean import OpenOcean
 from pydefi.types import TokenAmount
-
-from .conftest import USDC, WETH
+from tests.addrs import ETH_WHALE, USDC, WETH
 
 # ---------------------------------------------------------------------------
 # Plausible WETH → USDC price bounds
@@ -29,9 +28,6 @@ from .conftest import USDC, WETH
 
 MIN_USDC = 500 * 10**6  # 500 USDC per ETH minimum
 MAX_USDC = 10_000 * 10**6  # 10 000 USDC per ETH maximum
-
-# Vitalik's address – used as a read-only wallet for swap-quote requests.
-_WALLET = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"
 
 _OKX_API_KEY: str | None = os.environ.get("OKX_API_KEY")
 
@@ -135,7 +131,7 @@ class TestOpenOceanLive:
         """GET /swap should populate tx_data with calldata for the swap."""
         client = OpenOcean(chain_id=1)
         amount_in = TokenAmount.from_human(WETH, "0.01")
-        quote = await client.get_swap(amount_in, USDC, from_address=_WALLET, slippage_bps=50)
+        quote = await client.get_swap(amount_in, USDC, from_address=ETH_WHALE, slippage_bps=50)
 
         assert quote.amount_out.amount > 0
         assert quote.tx_data, "tx_data should be populated by get_swap()"

@@ -322,7 +322,7 @@ def _build_v3_pool_swap_segment_on_stack(hop: SwapHop) -> Program:
         " int256 amountSpecified, uint160 sqrtPriceLimitX96, bytes data)",
         hop.recipient,
         hop.zero_for_one,
-        Patch(dup()),  # amountSpecified from stack-top amount_in
+        Patch(),
         sqrt_price_limit_x96,
         callback_data,
     ).pop()
@@ -397,7 +397,7 @@ def _build_v2_direct_swap_segment_on_stack(hop: SwapHop, *, intermediate_reg: in
         hop.token_in,
         "function transfer(address to, uint256 amount)",
         hop.pool,
-        Patch(dup()),
+        Patch(),
     ).pop()
 
     if hop.zero_for_one:
@@ -405,7 +405,7 @@ def _build_v2_direct_swap_segment_on_stack(hop: SwapHop, *, intermediate_reg: in
             hop.pool,
             "function swap(uint256 amount0Out, uint256 amount1Out, address to, bytes data)",
             0,
-            Patch(load_reg(intermediate_reg)),
+            Patch(),
             hop.recipient,
             b"",
         ).pop()
@@ -413,7 +413,7 @@ def _build_v2_direct_swap_segment_on_stack(hop: SwapHop, *, intermediate_reg: in
         prog.call_contract_abi(
             hop.pool,
             "function swap(uint256 amount0Out, uint256 amount1Out, address to, bytes data)",
-            Patch(load_reg(intermediate_reg)),
+            Patch(),
             0,
             hop.recipient,
             b"",
