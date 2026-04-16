@@ -13,8 +13,7 @@ from pydefi.exceptions import NoRouteFoundError
 from pydefi.pathfinder.graph import PoolGraph, V3PoolEdge
 from pydefi.pathfinder.router import Router
 from pydefi.types import TokenAmount
-
-from .conftest import (
+from tests.addrs import (
     DAI,
     PAIR_USDC_DAI,
     PAIR_USDC_USDT,

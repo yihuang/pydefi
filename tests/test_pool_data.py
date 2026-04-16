@@ -10,14 +10,12 @@ from pydefi.pool_data.base import BasePoolDataProvider, PoolData
 from pydefi.pool_data.geckoterminal import GeckoTerminal
 from pydefi.pool_data.subgraph import UniswapV2Subgraph, UniswapV3Subgraph
 from pydefi.types import ChainId
-from tests.well_known import ZERO_ADDR, mainnet
+from tests.addrs import DAI, USDC, WETH, ZERO_ADDR
 
 # ---------------------------------------------------------------------------
 # Shared test tokens
 # ---------------------------------------------------------------------------
 
-WETH = mainnet.WETH
-USDC = mainnet.USDC
 
 POOL_ADDR = "0x" + "ab" * 20
 
@@ -172,7 +170,6 @@ class TestBuildGraph:
     def test_build_graph_multiple_pools(self):
         provider = ConcreteProvider()
         POOL_ADDR2 = "0x" + "cd" * 20
-        DAI = mainnet.DAI
         pools = [
             PoolData(
                 pool_address=POOL_ADDR,

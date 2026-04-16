@@ -13,7 +13,7 @@ from pydefi.hyperliquid.signing import (
     sign_send_to_evm_with_data_action,
     sign_usd_transfer_action,
 )
-from tests.well_known import ZERO_ADDR, mainnet
+from tests.addrs import ETH_WHALE, ZERO_ADDR
 
 # ---------------------------------------------------------------------------
 # Test fixtures — deterministic private key, no real funds
@@ -53,7 +53,7 @@ class TestSignInner:
             "primaryType": "HyperliquidTransaction:UsdSend",
             "message": {
                 "hyperliquidChain": "Mainnet",
-                "destination": mainnet.ETH_WHALE,
+                "destination": ETH_WHALE,
                 "amount": "10.0",
                 "time": 1_700_000_000_000,
             },
@@ -158,7 +158,7 @@ class TestSignUsdTransferAction:
         """sign_usd_transfer_action() produces a valid r/s/v signature dict."""
         action = {
             "type": "usdSend",
-            "destination": mainnet.ETH_WHALE,
+            "destination": ETH_WHALE,
             "amount": "10.0",
             "time": 1_700_000_000_000,
         }
@@ -173,7 +173,7 @@ class TestSignUsdTransferAction:
         """sign_usd_transfer_action() sets signatureChainId to the standard Arb Sepolia ID."""
         action = {
             "type": "usdSend",
-            "destination": mainnet.ETH_WHALE,
+            "destination": ETH_WHALE,
             "amount": "10.0",
             "time": 1_700_000_000_000,
         }
@@ -201,7 +201,7 @@ class TestSignSendToEvmWithDataAction:
             "token": "USDC",
             "amount": "10",
             "sourceDex": "",
-            "destinationRecipient": mainnet.ETH_WHALE,
+            "destinationRecipient": ETH_WHALE,
             "addressEncoding": "hex",
             "destinationChainId": 3,
             "gasLimit": 200_000,
@@ -261,7 +261,7 @@ class TestSignSendToEvmWithDataAction:
         """
         usd_action = {
             "type": "usdSend",
-            "destination": mainnet.ETH_WHALE,
+            "destination": ETH_WHALE,
             "amount": "10.0",
             "time": 1_700_000_000_000,
         }
@@ -275,7 +275,7 @@ class TestSignSendToEvmWithDataAction:
         alt_action = {
             "signatureChainId": "0xa4b1",  # Arbitrum mainnet (42161), not 421614
             "hyperliquidChain": "Mainnet",
-            "destination": mainnet.ETH_WHALE,
+            "destination": ETH_WHALE,
             "amount": "10.0",
             "time": 1_700_000_000_000,
         }

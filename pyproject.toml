@@ -17,6 +17,7 @@ dependencies = [
     "requests>=2.31.0",
     "pydantic>=2.0.0",
     "msgpack>=1.0.0",
+    "jsonnet>=0.22.0",
 ]
 
 [project.optional-dependencies]

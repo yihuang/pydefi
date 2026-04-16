@@ -9,15 +9,12 @@ from pydefi.exceptions import NoRouteFoundError
 from pydefi.pathfinder.graph import PoolEdge, PoolGraph, V3PoolEdge
 from pydefi.pathfinder.router import Router
 from pydefi.types import ChainId, Token, TokenAmount
-from tests.well_known import mainnet as mainnet
+from tests.addrs import DAI, USDC, WETH
 
 # ---------------------------------------------------------------------------
 # Test tokens
 # ---------------------------------------------------------------------------
 
-WETH = mainnet.WETH
-USDC = mainnet.USDC
-DAI = mainnet.DAI
 WBTC = Token(
     chain_id=ChainId.ETHEREUM,
     address="0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599",

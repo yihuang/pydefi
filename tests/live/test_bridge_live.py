@@ -20,8 +20,7 @@ from pydefi.bridge.mayan import Mayan
 from pydefi.bridge.relay import Relay
 from pydefi.exceptions import BridgeError
 from pydefi.types import ChainId, Token, TokenAmount
-
-from .conftest import ETH_WHALE, USDC
+from tests.addrs import ETH_WHALE, USDC
 
 # ---------------------------------------------------------------------------
 # Cross-chain token definitions

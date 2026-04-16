@@ -48,7 +48,7 @@ from pydefi.vm.program import (
     sub,
     swap,
 )
-from tests.live.conftest import WETH
+from tests.addrs import WETH
 from tests.live.sol_utils import MOCK_TOKEN_SOL, compile_sol_file, compile_sol_source, deploy, ensure_solc
 
 # ---------------------------------------------------------------------------

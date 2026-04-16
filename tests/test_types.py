@@ -10,7 +10,7 @@ from pydefi.types import (
     Token,
     TokenAmount,
 )
-from tests.well_known import mainnet
+from tests.addrs import USDC, WETH
 
 # ---------------------------------------------------------------------------
 # Token tests
@@ -21,14 +21,14 @@ class TestToken:
     def setup_method(self):
         self.eth = Token(
             chain_id=ChainId.ETHEREUM,
-            address=mainnet.WETH.address,
+            address=WETH.address,
             symbol="WETH",
             decimals=18,
             name="Wrapped Ether",
         )
         self.usdc = Token(
             chain_id=ChainId.ETHEREUM,
-            address=mainnet.USDC.address,
+            address=USDC.address,
             symbol="USDC",
             decimals=6,
         )
@@ -61,7 +61,7 @@ class TestToken:
     def test_token_equality(self):
         eth2 = Token(
             chain_id=ChainId.ETHEREUM,
-            address=mainnet.WETH.address,
+            address=WETH.address,
             symbol="WETH",
             decimals=18,
             name="Wrapped Ether",
@@ -71,7 +71,7 @@ class TestToken:
     def test_token_inequality_different_chain(self):
         eth_arb = Token(
             chain_id=ChainId.ARBITRUM,
-            address=mainnet.WETH.address,
+            address=WETH.address,
             symbol="WETH",
             decimals=18,
         )
@@ -92,13 +92,13 @@ class TestTokenAmount:
     def setup_method(self):
         self.usdc = Token(
             chain_id=1,
-            address=mainnet.USDC.address,
+            address=USDC.address,
             symbol="USDC",
             decimals=6,
         )
         self.weth = Token(
             chain_id=1,
-            address=mainnet.WETH.address,
+            address=WETH.address,
             symbol="WETH",
             decimals=18,
         )

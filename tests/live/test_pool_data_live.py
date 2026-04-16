@@ -15,8 +15,7 @@ from pydefi.exceptions import PoolDataError
 from pydefi.pathfinder.router import Router
 from pydefi.pool_data.geckoterminal import GeckoTerminal
 from pydefi.types import ChainId, TokenAmount
-
-from .conftest import PAIR_WETH_USDC, POOL_WETH_USDC_500, USDC, WETH
+from tests.addrs import PAIR_WETH_USDC, POOL_WETH_USDC_500, USDC, WETH
 
 # ---------------------------------------------------------------------------
 # Well-known Ethereum mainnet pool addresses for spot checks

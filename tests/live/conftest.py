@@ -38,9 +38,8 @@ from web3 import AsyncWeb3
 
 from pydefi.rpc import get_w3
 from pydefi.types import ChainId
+from tests.addrs import INTERPRETER_ADDR
 from tests.live.sol_utils import compile_interpreter_sync
-from tests.well_known import ZERO_ADDR as ZERO_ADDR
-from tests.well_known import mainnet as mainnet
 
 # ---------------------------------------------------------------------------
 # Public RPC
@@ -53,47 +52,6 @@ ETH_RPC_URL = os.environ.get("ETH_RPC_URL", "https://eth.drpc.org")
 # ---------------------------------------------------------------------------
 
 SOLANA_RPC_URL = os.environ.get("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com")
-
-# ---------------------------------------------------------------------------
-# Well-known Ethereum mainnet tokens and contract addresses
-# ---------------------------------------------------------------------------
-# Imported from tests.well_known so the canonical values live in one place.
-# All names are re-exported at module level for backward-compatible imports:
-#   from tests.live.conftest import WETH, USDC, DAI, USDT
-# ---------------------------------------------------------------------------
-
-
-WETH = mainnet.WETH
-USDC = mainnet.USDC
-DAI = mainnet.DAI
-USDT = mainnet.USDT
-
-# Uniswap mainnet contract addresses
-UNISWAP_V2_ROUTER = mainnet.UNISWAP_V2_ROUTER
-UNISWAP_V3_ROUTER = mainnet.UNISWAP_V3_ROUTER
-UNISWAP_V3_QUOTER = mainnet.UNISWAP_V3_QUOTER
-UNISWAP_V3_FACTORY = mainnet.UNISWAP_V3_FACTORY
-UNISWAP_V4_POOL_MANAGER = mainnet.UNISWAP_V4_POOL_MANAGER
-UNIVERSAL_ROUTER = mainnet.UNIVERSAL_ROUTER
-
-# Well-known V3 pools and V2 pairs
-POOL_WETH_USDC_500 = mainnet.POOL_WETH_USDC_500
-POOL_WETH_USDC_3000 = mainnet.POOL_WETH_USDC_3000
-POOL_DAI_USDC_100 = mainnet.POOL_DAI_USDC_100
-PAIR_WETH_USDC = mainnet.PAIR_WETH_USDC
-PAIR_WETH_DAI = mainnet.PAIR_WETH_DAI
-PAIR_USDC_DAI = mainnet.PAIR_USDC_DAI
-PAIR_USDC_USDT = mainnet.PAIR_USDC_USDT
-
-# Utility
-ETH_WHALE = mainnet.ETH_WHALE
-
-# ---------------------------------------------------------------------------
-# Analog-Labs EVM interpreter (shared by all DeFiVM fork tests)
-# ---------------------------------------------------------------------------
-
-# Well-known mainnet address where the interpreter is pre-deployed via CREATE2.
-INTERPRETER_ADDR = mainnet.INTERPRETER_ADDR
 
 
 async def _ensure_interpreter(w3: AsyncWeb3, deployer: str) -> str:

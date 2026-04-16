@@ -14,14 +14,11 @@ from pydefi.aggregator.uniswap import UniswapAPI
 from pydefi.aggregator.zerox import ZeroX
 from pydefi.exceptions import AggregatorError
 from pydefi.types import TokenAmount
-from tests.well_known import mainnet as mainnet
+from tests.addrs import USDC, WETH
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
-
-WETH = mainnet.WETH
-USDC = mainnet.USDC
 
 
 # ---------------------------------------------------------------------------

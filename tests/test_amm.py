@@ -21,20 +21,25 @@ from pydefi.amm.universal_router import (
 )
 from pydefi.exceptions import InsufficientLiquidityError
 from pydefi.types import SwapTransaction, TokenAmount
-from tests.well_known import ZERO_ADDR
-from tests.well_known import mainnet as mainnet
+from tests.addrs import (
+    DAI,
+    ETH_WHALE,
+    UNISWAP_V2_ROUTER,
+    UNISWAP_V3_QUOTER,
+    UNISWAP_V3_ROUTER,
+    UNIVERSAL_ROUTER,
+    USDC,
+    WETH,
+    ZERO_ADDR,
+)
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
-WETH = mainnet.WETH
-USDC = mainnet.USDC
-DAI = mainnet.DAI
-
-ROUTER_V2 = mainnet.UNISWAP_V2_ROUTER
-ROUTER_V3 = mainnet.UNISWAP_V3_ROUTER
-QUOTER_V3 = mainnet.UNISWAP_V3_QUOTER
+ROUTER_V2 = UNISWAP_V2_ROUTER
+ROUTER_V3 = UNISWAP_V3_ROUTER
+QUOTER_V3 = UNISWAP_V3_QUOTER
 
 
 # ---------------------------------------------------------------------------
@@ -212,8 +217,8 @@ class TestUniswapV3Instance:
 # Universal Router tests (no network calls)
 # ---------------------------------------------------------------------------
 
-UNIVERSAL_ROUTER_ADDR = mainnet.UNIVERSAL_ROUTER
-RECIPIENT = mainnet.ETH_WHALE
+UNIVERSAL_ROUTER_ADDR = UNIVERSAL_ROUTER
+RECIPIENT = ETH_WHALE
 
 
 class TestRouterCommand:
@@ -259,7 +264,7 @@ class TestUniversalRouterConstants:
     def test_known_addresses_contains_ethereum(self):
         assert 1 in UNIVERSAL_ROUTER_ADDRESSES
         # UniversalRouterV2 (supports Uniswap V4)
-        assert UNIVERSAL_ROUTER_ADDRESSES[1] == mainnet.UNIVERSAL_ROUTER
+        assert UNIVERSAL_ROUTER_ADDRESSES[1] == UNIVERSAL_ROUTER
 
     def test_known_addresses_contains_arbitrum(self):
         assert 42161 in UNIVERSAL_ROUTER_ADDRESSES

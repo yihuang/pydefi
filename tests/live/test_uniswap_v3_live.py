@@ -8,8 +8,7 @@ import pytest
 
 from pydefi.amm.uniswap_v3 import UniswapV3
 from pydefi.types import TokenAmount
-
-from .conftest import DAI, UNISWAP_V3_QUOTER, UNISWAP_V3_ROUTER, USDC, WETH
+from tests.addrs import DAI, UNISWAP_V3_QUOTER, UNISWAP_V3_ROUTER, USDC, WETH
 
 MIN_USDC = 500 * 10**6
 MAX_USDC = 10_000 * 10**6

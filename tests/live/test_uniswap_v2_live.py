@@ -8,8 +8,7 @@ import pytest
 
 from pydefi.amm.uniswap_v2 import UniswapV2
 from pydefi.types import TokenAmount
-
-from .conftest import DAI, UNISWAP_V2_ROUTER, USDC, WETH
+from tests.addrs import DAI, UNISWAP_V2_ROUTER, USDC, WETH
 
 # Sanity bounds: 1 WETH should fetch between $500 and $10 000 in USDC/DAI
 MIN_USDC = 500 * 10**6  # 500 USDC

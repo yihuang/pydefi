@@ -37,8 +37,14 @@ from pydefi.vm.swap import (
     encode_v3_path,
     v3_pool_swap_calldata,
 )
+from tests.addrs import (
+    DAI,
+    UNISWAP_V2_ROUTER,
+    UNISWAP_V3_ROUTER,
+    USDC,
+    WETH,
+)
 from tests.live.sol_utils import MOCK_TOKEN_SOL, compile_sol_file, compile_sol_source, deploy, ensure_solc
-from tests.well_known import mainnet as mainnet
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -50,11 +56,11 @@ DEFI_VM_SOL_FILE = REPO_ROOT / "pydefi" / "vm" / "DeFiVM.sol"
 # Well-known mainnet addresses (for ABI/selector tests only; no live calls)
 # ---------------------------------------------------------------------------
 
-WETH_ADDR = mainnet.WETH.address
-USDC_ADDR = mainnet.USDC.address
-DAI_ADDR = mainnet.DAI.address
-UNISWAP_V3_ROUTER = mainnet.UNISWAP_V3_ROUTER
-UNISWAP_V2_ROUTER = mainnet.UNISWAP_V2_ROUTER
+WETH_ADDR = WETH.address
+USDC_ADDR = USDC.address
+DAI_ADDR = DAI.address
+UNISWAP_V3_ROUTER = UNISWAP_V3_ROUTER
+UNISWAP_V2_ROUTER = UNISWAP_V2_ROUTER
 
 # ---------------------------------------------------------------------------
 # Mock pool contracts (inline Solidity)
