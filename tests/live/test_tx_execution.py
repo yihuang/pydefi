@@ -1,28 +1,16 @@
 """Fork-based transaction execution tests for the Uniswap Universal Router.
 
-These tests spin up a local Anvil fork of Ethereum mainnet and execute *real*
-transactions (``eth_sendTransaction``) against the live contract state — as
-opposed to the read-only ``eth_call`` simulations in the other live tests.
-
 How the tests work
 ------------------
-1. Anvil is started with ``--fork-url <ETH_RPC_URL>`` via the ``fork_w3``
-   fixture defined in ``conftest.py``.
-2. An Ethereum whale account (``ETH_WHALE``) that already holds plenty of ETH
+1. An Ethereum whale account (``ETH_WHALE``) that already holds plenty of ETH
    on mainnet is *impersonated* via ``anvil_impersonateAccount``, so we can
    send transactions on its behalf without needing a private key.
-3. A ``WRAP_ETH + V3_SWAP_EXACT_IN`` or ``WRAP_ETH + V4_SWAP`` transaction is
+2. A ``WRAP_ETH + V3_SWAP_EXACT_IN`` or ``WRAP_ETH + V4_SWAP`` transaction is
    submitted with ``eth_sendTransaction`` (not ``eth_call``).
-4. The test waits for the transaction receipt and verifies:
+3. The test waits for the transaction receipt and verifies:
    - The transaction was *not* reverted (``status == 1``).
    - The recipient's output token balance increased by at least
      ``amount_out_minimum``.
-
-Requirements
-------------
-- ``anvil`` must be on ``$PATH`` (install via `Foundry
-  <https://book.getfoundry.sh/getting-started/installation>`_).
-- ``ETH_RPC_URL`` must point to a working Ethereum mainnet RPC endpoint.
 
 Run with::
 

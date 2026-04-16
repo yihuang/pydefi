@@ -45,7 +45,7 @@ from tests.live.sol_utils import compile_interpreter_sync
 # Public RPC
 # ---------------------------------------------------------------------------
 
-ETH_RPC_URL = os.environ.get("ETH_RPC_URL", "https://eth.drpc.org")
+ETH_RPC_URL = os.environ.get("ETH_RPC_URL") or "https://eth.drpc.org"
 
 # ---------------------------------------------------------------------------
 # Solana public RPC (used for simulation and as the surfpool upstream)
