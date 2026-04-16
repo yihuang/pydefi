@@ -396,8 +396,8 @@ def _build_v2_direct_swap_segment_on_stack(hop: SwapHop, *, intermediate_reg: in
         Patch(),
     ).pop()
 
+    prog._emit(load_reg(intermediate_reg))
     if hop.zero_for_one:
-        prog._emit(load_reg(intermediate_reg))
         prog.call_contract_abi(
             hop.pool,
             "function swap(uint256 amount0Out, uint256 amount1Out, address to, bytes data)",
@@ -407,7 +407,6 @@ def _build_v2_direct_swap_segment_on_stack(hop: SwapHop, *, intermediate_reg: in
             b"",
         ).pop()
     else:
-        prog._emit(load_reg(intermediate_reg))
         prog.call_contract_abi(
             hop.pool,
             "function swap(uint256 amount0Out, uint256 amount1Out, address to, bytes data)",
