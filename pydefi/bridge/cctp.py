@@ -220,9 +220,7 @@ def encode_cctp_forward_hook_data(
 
     # With recipient: 20 bytes address + 4 bytes dex = 24 bytes of data
     if len(recipient) != 20:
-        raise ValueError(
-            f"recipient must be a 20-byte EVM address, got {len(recipient)} bytes"
-        )
+        raise ValueError(f"recipient must be a 20-byte EVM address, got {len(recipient)} bytes")
     data_length = (24).to_bytes(4, "big")
     dex_bytes = (destination_dex & 0xFFFFFFFF).to_bytes(4, "big")
     return magic + version + data_length + recipient + dex_bytes
