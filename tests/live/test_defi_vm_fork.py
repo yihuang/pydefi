@@ -48,6 +48,7 @@ from pydefi.vm.program import (
     sub,
     swap,
 )
+from tests.addrs import WETH
 from tests.live.sol_utils import MOCK_TOKEN_SOL, compile_sol_file, compile_sol_source, deploy, ensure_solc
 
 # ---------------------------------------------------------------------------
@@ -57,8 +58,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SOL_FILE = REPO_ROOT / "pydefi" / "vm" / "DeFiVM.sol"
 APPROVE_PROXY_SOL_FILE = REPO_ROOT / "pydefi" / "vm" / "ApproveProxy.sol"
 
-# Well-known mainnet addresses used in fork tests
-WETH_MAINNET = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+WETH_MAINNET = WETH.address
 # Coinbase 8 — a well-funded address on mainnet (used for introspection only)
 WHALE = "0x77134cbC06cB00b66F4c7e623D5fdBF6777635EC"
 

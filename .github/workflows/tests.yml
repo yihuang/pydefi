@@ -162,5 +162,4 @@ jobs:
           ETH_RPC_URL: ${{ secrets.ETH_RPC_URL }}
           JUPITER_API_KEY: ${{ secrets.JUPITER_API_KEY }}
           UNISWAP_API_KEY: ${{ secrets.UNISWAP_API_KEY }}
-        run: pytest -m fork -v --reruns 2 --reruns-delay 5
-
+        run: pytest -m fork -v --reruns 3 --reruns-delay 10

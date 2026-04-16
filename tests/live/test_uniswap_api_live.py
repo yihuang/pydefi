@@ -20,8 +20,7 @@ import pytest
 
 from pydefi.aggregator.uniswap import UniswapAPI
 from pydefi.types import TokenAmount
-
-from .conftest import DAI, USDC, WETH
+from tests.addrs import DAI, ETH_WHALE, USDC, WETH
 
 # ---------------------------------------------------------------------------
 # Plausible WETH → USDC price bounds
@@ -35,8 +34,6 @@ MAX_USDC = 10_000 * 10**6  # 10 000 USDC per ETH maximum
 # ---------------------------------------------------------------------------
 
 _API_KEY: str | None = os.environ.get("UNISWAP_API_KEY")
-# Wallet used as swapper for live calls that require a wallet address.
-_WALLET = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"  # vitalik.eth
 
 
 def _make_client(chain_id: int = 1) -> UniswapAPI:
@@ -58,7 +55,7 @@ class TestUniswapAPILive:
         """POST /v1/quote should return a non-zero output amount for 1 WETH → USDC."""
         client = _make_client()
         amount_in = TokenAmount.from_human(WETH, "1")
-        quote = await client.get_quote(amount_in, USDC, slippage_bps=50, swapper=_WALLET)
+        quote = await client.get_quote(amount_in, USDC, slippage_bps=50, swapper=ETH_WHALE)
 
         assert quote.token_in == WETH
         assert quote.token_out == USDC
@@ -73,7 +70,7 @@ class TestUniswapAPILive:
         """POST /v1/quote should return a non-zero output for 0.01 WETH → USDC."""
         client = _make_client()
         amount_in = TokenAmount.from_human(WETH, "0.01")
-        quote = await client.get_quote(amount_in, USDC, slippage_bps=50, swapper=_WALLET)
+        quote = await client.get_quote(amount_in, USDC, slippage_bps=50, swapper=ETH_WHALE)
 
         assert quote.amount_out.amount > 0, "Expected non-zero amount out for 0.01 WETH"
         assert quote.min_amount_out.amount <= quote.amount_out.amount
@@ -82,7 +79,7 @@ class TestUniswapAPILive:
         """POST /v1/quote should also work for WETH → DAI (18-decimal stablecoin)."""
         client = _make_client()
         amount_in = TokenAmount.from_human(WETH, "1")
-        quote = await client.get_quote(amount_in, DAI, slippage_bps=50, swapper=_WALLET)
+        quote = await client.get_quote(amount_in, DAI, slippage_bps=50, swapper=ETH_WHALE)
 
         assert quote.token_in == WETH
         assert quote.token_out == DAI
@@ -97,7 +94,7 @@ class TestUniswapAPILive:
         """build_swap_route should return a well-formed SwapRoute."""
         client = _make_client()
         amount_in = TokenAmount.from_human(WETH, "1")
-        route = await client.build_swap_route(amount_in, USDC, slippage_bps=50, swapper=_WALLET)
+        route = await client.build_swap_route(amount_in, USDC, slippage_bps=50, swapper=ETH_WHALE)
 
         assert route.token_in == WETH
         assert route.token_out == USDC
@@ -117,7 +114,7 @@ class TestUniswapAPILive:
         quote = await client.get_swap(
             amount_in,
             USDC,
-            wallet_address=_WALLET,
+            wallet_address=ETH_WHALE,
             slippage_bps=50,
             # Force classic AMM routing so the quote is compatible with /v1/swap.
             # Without this the API may return a UniswapX (DUTCH_V2/V3) quote.

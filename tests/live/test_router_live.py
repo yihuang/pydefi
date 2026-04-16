@@ -13,25 +13,24 @@ from pydefi.exceptions import NoRouteFoundError
 from pydefi.pathfinder.graph import PoolGraph, V3PoolEdge
 from pydefi.pathfinder.router import Router
 from pydefi.types import TokenAmount
+from tests.addrs import (
+    DAI,
+    PAIR_USDC_DAI,
+    PAIR_USDC_USDT,
+    PAIR_WETH_DAI,
+    PAIR_WETH_USDC,
+    POOL_DAI_USDC_100,
+    POOL_WETH_USDC_500,
+    POOL_WETH_USDC_3000,
+    USDC,
+    USDT,
+    WETH,
+)
 
-from .conftest import DAI, USDC, USDT, WETH
-
-# ---------------------------------------------------------------------------
-# Well-known Uniswap V2 pair addresses (Ethereum mainnet)
-# ---------------------------------------------------------------------------
-
-PAIR_WETH_USDC = "0xB4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc"  # WETH/USDC
-PAIR_WETH_DAI = "0xA478c2975Ab1Ea89e8196811F51A7B7Ade33eB11"  # WETH/DAI
-PAIR_USDC_DAI = "0xAE461cA67B15dc8dc81CE7615e0320dA1A9aB8D5"  # USDC/DAI
-PAIR_USDC_USDT = "0x3041CbD36888bECc7bbCBc0045E3B1f144466f5f"  # USDC/USDT
-
-# ---------------------------------------------------------------------------
-# Well-known Uniswap V3 pool addresses (Ethereum mainnet)
-# ---------------------------------------------------------------------------
-
-POOL_V3_WETH_USDC_500 = "0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640"  # WETH/USDC 0.05%
-POOL_V3_WETH_USDC_3000 = "0x8ad599c3A0ff1De082011EFDDc58f1908eb6e6D8"  # WETH/USDC 0.3%
-POOL_V3_USDC_DAI_100 = "0x5777d92f208679DB4b9778590Fa3CAB3aC9e2168"  # USDC/DAI 0.01%
+# Local aliases matching names used in the test bodies below
+POOL_V3_WETH_USDC_500 = POOL_WETH_USDC_500
+POOL_V3_WETH_USDC_3000 = POOL_WETH_USDC_3000
+POOL_V3_USDC_DAI_100 = POOL_DAI_USDC_100
 
 _PAIR_ABI = [
     "function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast)",

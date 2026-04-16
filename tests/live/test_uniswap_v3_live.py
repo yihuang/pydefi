@@ -8,12 +8,7 @@ import pytest
 
 from pydefi.amm.uniswap_v3 import UniswapV3
 from pydefi.types import TokenAmount
-
-from .conftest import DAI, USDC, WETH
-
-# Uniswap V3 contracts on Ethereum mainnet
-UNISWAP_V3_ROUTER = "0xE592427A0AEce92De3Edee1F18E0157C05861564"
-UNISWAP_V3_QUOTER = "0x61fFE014bA17989E743c5F6cB21bF9697530B21e"
+from tests.addrs import DAI, UNISWAP_V3_QUOTER, UNISWAP_V3_ROUTER, USDC, WETH
 
 MIN_USDC = 500 * 10**6
 MAX_USDC = 10_000 * 10**6
