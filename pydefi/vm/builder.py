@@ -196,6 +196,7 @@ from pydefi.vm.program import (
     call,
     div,
     dup,
+    dup_n,
     eq,
     gas_opcode,
     gt,
@@ -248,6 +249,13 @@ PatchSource = bytes
 #: - *opcodes*: :data:`PatchSource` — raw bytecode that pushes the patch value.
 PatchSpec = tuple[int, int, PatchSource]
 
+#: A stack patch descriptor for :meth:`~Program.call_with_patches_from_stack`:
+#: ``(calldata_offset, size)`` where the patch value is popped from the
+#: runtime stack rather than supplied as opcode bytes.
+#:
+#: - *calldata_offset*: byte offset inside the calldata template to overwrite.
+#: - *size*: number of bytes to overwrite (0, 32].
+StackPatchSpec = tuple[int, int]
 
 class Patch:
     """Marks a runtime-patched argument for :meth:`Program.call_contract_abi`.
@@ -888,6 +896,105 @@ class Program:
         self._emit(push_addr(to))
         self._emit(gas_opcode() if gas == 0 else push_u256(gas))
         self._emit(call(require_success))
+        return self
+
+    def call_with_patches_from_stack(
+        self,
+        to: str,
+        calldata: bytes,
+        patches: list[StackPatchSpec],
+        *,
+        value: int = 0,
+        gas: int = 0,
+        require_success: bool = True,
+    ) -> "Program":
+        """Emit a patched external call where patch values come from the stack.
+
+        This is a variant of :meth:`call_with_patches` designed for the case
+        where patch values were already pushed onto the stack before the call.
+        Instead of supplying opcode bytes for each patch, the caller pushes
+        values onto the stack in order (first-patch value deepest, last-patch
+        value at TOS), then calls this method with ``(offset, size)`` pairs.
+
+        The *patches* list is consumed in order: the first entry consumes the
+        value at the **top of the stack** (TOS), the second entry the value
+        below that, and so on.  After the external call completes, all consumed
+        stack values are removed so the net stack effect is identical to
+        :meth:`call_with_patches`.
+
+        Example::
+
+            # Push args in reverse order (last arg pushed first/deepest)
+            program = (
+                Program()
+                .push_u256(arg3)
+                .push_u256(arg2)
+                .push_u256(arg1)       # TOS — consumed by first patch
+                .call_with_patches_from_stack(
+                    ROUTER,
+                    swap_template,
+                    [
+                        (36, 32),      # patch offset 36 with arg1 (TOS)
+                        (68, 32),      # patch offset 68 with arg2
+                        (100, 32),     # patch offset 100 with arg3
+                    ],
+                )
+                .pop()
+                .build()
+            )
+
+        Args:
+            to: Target contract address.
+            calldata: Mutable calldata template bytes.
+            patches: List of ``(offset, size)`` patch descriptors.  The
+                first entry is matched to the current TOS, the second to the
+                item below, etc.
+            value: ETH value to forward (wei), default 0.
+            gas: Sub-call gas limit (0 = forward all remaining gas).
+            require_success: Revert if the sub-call fails (default ``True``).
+
+        Returns:
+            ``self`` for chaining.
+
+        Raises:
+            ValueError: If *patches* has more than 12 entries (EVM DUP only
+                reaches 16 deep; 4 stack slots are consumed by call setup).
+            ValueError: If any patch *size* is not in the range ``(0, 32]``.
+        """
+        n = len(patches)
+        if n > 12:
+            raise ValueError(
+                f"call_with_patches_from_stack: at most 12 stack patches supported (got {n}); "
+                "EVM DUP reaches only 16 deep and 4 slots are occupied by call setup"
+            )
+
+        # Push call frame (adds 4 items: argsOffset, argsLen, retOffset, retSize)
+        self._emit(push_u256(0))  # retSize
+        self._emit(push_u256(0))  # retOffset
+        self._emit(push_bytes(calldata))  # argsOffset (TOS), argsLen
+
+        # Stack: [argsOffset(1), argsLen(2), retOffset(3), retSize(4), arg1(5), ..., argN(4+N)]
+        # For the i-th patch (1-indexed), arg_i is at position 4+i from TOS.
+        for i, (offset, size) in enumerate(patches, start=1):
+            if not (0 < size <= 32):
+                raise ValueError(
+                    f"call_with_patches_from_stack: patch size {size!r} not supported; expected 0 < size <= 32"
+                )
+            self._emit(dup_n(4 + i))  # duplicate arg_i to TOS
+            self._emit(patch_value(offset, size))  # apply patch, restores argsOffset to TOS
+
+        # Stack: [argsOffset(TOS), argsLen, retOffset, retSize, arg1, ..., argN, ...]
+        self._emit(push_u256(value))
+        self._emit(push_addr(to))
+        self._emit(gas_opcode() if gas == 0 else push_u256(gas))
+        self._emit(call(require_success))
+
+        # After CALL: [success(TOS), arg1, ..., argN, ...]
+        # Remove the original arg values while keeping success on TOS.
+        for _ in range(n):
+            self._emit(swap())
+            self._emit(pop())
+
         return self
 
     # ------------------------------------------------------------------

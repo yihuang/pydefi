@@ -802,8 +802,150 @@ class TestCallWithPatches:
 
 
 # ---------------------------------------------------------------------------
-# Arithmetic opcodes
+# call_with_patches_from_stack
 # ---------------------------------------------------------------------------
+
+
+class TestCallWithPatchesFromStack:
+    def _template(self) -> bytes:
+        """4-byte selector + two 32-byte zero placeholders."""
+        return bytes.fromhex("deadbeef") + b"\x00" * 64
+
+    def test_no_patches_equals_call_with_patches(self):
+        """With an empty patches list, call_with_patches_from_stack == call_with_patches (no cleanup needed)."""
+        cd = self._template()
+        expected = Program().call_with_patches(ADDR_A, cd, []).build()
+        actual = Program().call_with_patches_from_stack(ADDR_A, cd, []).build()
+        assert actual == expected
+
+    def test_single_u256_patch(self):
+        """Single stack-source patch: DUP5 + patch_value + SWAP1 + POP cleanup."""
+        cd = self._template()
+        from pydefi.vm.program import dup_n
+
+        expected = (
+            push_u256(0)
+            + push_u256(0)  # retSize, retOffset
+            + push_bytes(cd)
+            + dup_n(5)  # arg1 is at position 5 after setup (4 setup items + 1)
+            + patch_value(4, 32)
+            + push_u256(0)  # value
+            + push_addr(ADDR_A)
+            + gas_opcode()
+            + call(True)
+            + swap()  # bring arg1 past success flag
+            + pop()  # discard arg1
+        )
+        actual = Program().call_with_patches_from_stack(ADDR_A, cd, [(4, 32)]).build()
+        assert actual == expected
+
+    def test_two_patches(self):
+        """Two stack-source patches: DUP5 + DUP6 sequence with two SWAP1/POP cleanups."""
+        cd = self._template()
+        from pydefi.vm.program import dup_n
+
+        expected = (
+            push_u256(0)
+            + push_u256(0)  # retSize, retOffset
+            + push_bytes(cd)
+            + dup_n(5)  # arg1 at position 5
+            + patch_value(4, 32)
+            + dup_n(6)  # arg2 at position 6
+            + patch_value(4 + 32 + 12, 20)
+            + push_u256(0)  # value
+            + push_addr(ADDR_A)
+            + gas_opcode()
+            + call(True)
+            + swap()
+            + pop()  # remove arg1
+            + swap()
+            + pop()  # remove arg2
+        )
+        actual = (
+            Program()
+            .call_with_patches_from_stack(
+                ADDR_A,
+                cd,
+                [
+                    (4, 32),
+                    (4 + 32 + 12, 20),
+                ],
+            )
+            .build()
+        )
+        assert actual == expected
+
+    def test_value_and_gas_forwarded(self):
+        """value and gas parameters are reflected in CALL prologue."""
+        cd = self._template()
+        from pydefi.vm.program import dup_n
+
+        expected = (
+            push_u256(0)
+            + push_u256(0)  # retSize, retOffset
+            + push_bytes(cd)
+            + dup_n(5)
+            + patch_value(4, 32)
+            + push_u256(10**18)  # value
+            + push_addr(ADDR_A)
+            + push_u256(50_000)  # gas
+            + call(True)
+            + swap()
+            + pop()
+        )
+        actual = Program().call_with_patches_from_stack(ADDR_A, cd, [(4, 32)], value=10**18, gas=50_000).build()
+        assert actual == expected
+
+    def test_require_success_false(self):
+        """require_success=False emits CALL without the success-check block."""
+        cd = self._template()
+        from pydefi.vm.program import dup_n
+
+        expected = (
+            push_u256(0)
+            + push_u256(0)
+            + push_bytes(cd)
+            + dup_n(5)
+            + patch_value(4, 32)
+            + push_u256(0)
+            + push_addr(ADDR_A)
+            + gas_opcode()
+            + call(False)
+            + swap()
+            + pop()
+        )
+        actual = Program().call_with_patches_from_stack(ADDR_A, cd, [(4, 32)], require_success=False).build()
+        assert actual == expected
+
+    def test_too_many_patches_raises(self):
+        """More than 12 patches raises ValueError."""
+        cd = self._template() + b"\x00" * (13 * 32)
+        with pytest.raises(ValueError, match="at most 12"):
+            Program().call_with_patches_from_stack(ADDR_A, cd, [(4 + i * 32, 32) for i in range(13)]).build()
+
+    def test_invalid_patch_size_raises(self):
+        with pytest.raises(ValueError, match="patch size"):
+            Program().call_with_patches_from_stack(ADDR_A, self._template(), [(4, 0)]).build()
+
+    def test_dup_n_range(self):
+        """dup_n emits the correct DUP opcode for each valid depth."""
+        from pydefi.vm.program import dup_n
+
+        assert dup_n(1) == bytes([0x80])  # DUP1
+        assert dup_n(5) == bytes([0x84])  # DUP5
+        assert dup_n(16) == bytes([0x8F])  # DUP16
+
+    def test_dup_n_out_of_range_raises(self):
+        """dup_n raises ValueError for invalid depths."""
+        from pydefi.vm.program import dup_n
+
+        with pytest.raises(ValueError, match="depth must be 1..16"):
+            dup_n(0)
+        with pytest.raises(ValueError, match="depth must be 1..16"):
+            dup_n(17)
+
+
+
 
 
 class TestArithmeticOpcodes:
