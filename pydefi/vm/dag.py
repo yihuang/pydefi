@@ -160,6 +160,8 @@ def _build_route_split_segment(
             terminal_recipient=terminal_recipient,
         )
 
+    # Runtime guard: for each leg we compute total_in * fraction_bps / 10_000.
+    # Enforce `total_in <= floor((2**256-1)/10_000)` before any multiplication.
     segments: list[Program] = [
         Program()
         ._emit(dup())
