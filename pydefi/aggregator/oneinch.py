@@ -84,7 +84,9 @@ class OneInch(BaseAggregator):
             An :class:`~pydefi.aggregator.base.AggregatorQuote`.
         """
         params: dict[str, Any] = {
-            "src": ("0x" + amount_in.token.address.hex()) if isinstance(amount_in.token.address, bytes) else amount_in.token.address,
+            "src": ("0x" + amount_in.token.address.hex())
+            if isinstance(amount_in.token.address, bytes)
+            else amount_in.token.address,
             "dst": ("0x" + token_out.address.hex()) if isinstance(token_out.address, bytes) else token_out.address,
             "amount": str(amount_in.amount),
             **kwargs,
@@ -129,7 +131,9 @@ class OneInch(BaseAggregator):
             ``tx_data`` populated.
         """
         params: dict[str, Any] = {
-            "src": ("0x" + amount_in.token.address.hex()) if isinstance(amount_in.token.address, bytes) else amount_in.token.address,
+            "src": ("0x" + amount_in.token.address.hex())
+            if isinstance(amount_in.token.address, bytes)
+            else amount_in.token.address,
             "dst": ("0x" + token_out.address.hex()) if isinstance(token_out.address, bytes) else token_out.address,
             "amount": str(amount_in.amount),
             "from": from_address,

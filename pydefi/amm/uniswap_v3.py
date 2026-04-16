@@ -11,7 +11,6 @@ from __future__ import annotations
 from decimal import Decimal
 
 from eth_contract import Contract
-from hexbytes import HexBytes
 from web3 import AsyncWeb3
 
 from pydefi.abi.amm import (
