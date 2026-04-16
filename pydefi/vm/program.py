@@ -204,9 +204,18 @@ def dup() -> bytes:
     return bytes([OP_DUP])
 
 
-def dup2() -> bytes:
-    """Emit DUP2 — duplicate the second stack item."""
-    return bytes([OP_DUP + 1])
+def dup_n(n: int) -> bytes:
+    """Emit DUPn — duplicate the stack item *n* positions from the top.
+
+    Args:
+        n: Stack depth (1 = TOS, 2 = second from top, …, 16 = sixteenth).
+
+    Raises:
+        ValueError: If *n* is not in the range 1..16.
+    """
+    if not 1 <= n <= 16:
+        raise ValueError(f"dup_n: depth must be 1..16, got {n}")
+    return bytes([0x7F + n])
 
 
 def swap() -> bytes:

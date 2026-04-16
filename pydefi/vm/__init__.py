@@ -38,7 +38,7 @@ Two complementary interfaces are provided:
 """
 
 from pydefi.vm.abi import emit_abi_encode, emit_abi_encode_packed
-from pydefi.vm.builder import Patch, PatchSource, PatchSpec, Program
+from pydefi.vm.builder import Patch, PatchSpec, Program
 from pydefi.vm.dag import build_execution_program_for_dag, build_quote_program_for_dag
 from pydefi.vm.program import (
     OP_ADD,
@@ -84,7 +84,7 @@ from pydefi.vm.program import (
     call,
     div,
     dup,
-    dup2,
+    dup_n,
     eq,
     gas_opcode,
     gt,
@@ -132,7 +132,6 @@ __all__ = [
     "Program",
     # Patch type aliases and Patch class
     "Patch",
-    "PatchSource",
     "PatchSpec",
     # Opcode constants
     "OP_PUSH_U256",
@@ -172,7 +171,7 @@ __all__ = [
     "push_addr",
     "push_bytes",
     "dup",
-    "dup2",
+    "dup_n",
     "swap",
     "pop",
     "load_reg",

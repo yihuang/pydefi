@@ -68,7 +68,7 @@ Composition example::
     # or: approve.extend(swap)       # in-place
     # or: Program.compose([approve, swap])
 
-Calldata surgery example — embed amount from last returndata::
+Calldata surgery — push the patch value onto the stack first, then call::
 
     from pydefi.vm.program import ret_u256, load_reg
 
@@ -77,12 +77,11 @@ Calldata surgery example — embed amount from last returndata::
         Program()
         .call_contract(ADAPTER, double_calldata)
         .pop()
+        .ret_u256(0)                         # push last retdata[0:32] (the amount) → TOS
         .call_with_patches(
             ADAPTER,
             template_calldata,               # double(0) placeholder template
-            patches=[
-                ("u256", 4, ret_u256(0)),    # offset 4, value from last returndata[0:32]
-            ],
+            patches=[(4, 32)],               # offset 4, size 32 — value from TOS
         )
         .pop()
         .build()
@@ -95,13 +94,11 @@ Calldata surgery with a register source::
     # Amount was saved to reg 0 earlier in the program
     bytecode = (
         Program()
-        .store_reg(0)                        # save amount from stack top
+        .load_reg(0)                         # push register 0 value → TOS
         .call_with_patches(
             ROUTER,
             swap_template,
-            patches=[
-                ("u256", 36, load_reg(0)),   # offset 36, value from register 0
-            ],
+            patches=[(36, 32)],              # offset 36, size 32 — value from TOS
         )
         .pop()
         .build()
@@ -152,9 +149,10 @@ two separate destinations using arithmetic and composition::
     # ── Step 4: swap token1 → token2 (share0 from reg 1) ────────────────────
     step4 = (
         Program()
+        .load_reg(1)          # push share0 → TOS (consumed by patch)
         .call_with_patches(
             SWAP12, swap12_template,
-            patches=[(AMOUNT_OFFSET, 32, load_reg(1))],
+            patches=[(AMOUNT_OFFSET, 32)],
         )
         .pop()
     )
@@ -162,9 +160,10 @@ two separate destinations using arithmetic and composition::
     # ── Step 5: swap token1 → token3 (share1 from reg 2) ────────────────────
     step5 = (
         Program()
+        .load_reg(2)          # push share1 → TOS (consumed by patch)
         .call_with_patches(
             SWAP13, swap13_template,
-            patches=[(AMOUNT_OFFSET, 32, load_reg(2))],
+            patches=[(AMOUNT_OFFSET, 32)],
         )
         .pop()
     )
@@ -196,6 +195,7 @@ from pydefi.vm.program import (
     call,
     div,
     dup,
+    dup_n,
     eq,
     gas_opcode,
     gt,
@@ -226,34 +226,20 @@ from pydefi.vm.program import (
 # Patch source types
 # ---------------------------------------------------------------------------
 
-#: A *patch source* is raw DeFiVM opcode bytes that, when executed, push exactly
-#: one value onto the stack.  That value is then used to overwrite the calldata
-#: field at the specified offset.
-#:
-#: Any instruction sequence that leaves exactly one item on the stack is valid.
-#: Common examples::
-#:
-#:     from pydefi.vm.program import ret_u256, load_reg, push_u256, push_addr
-#:
-#:     ret_u256(0)        # uint256 from last call's returndata at offset 0
-#:     load_reg(2)        # value from VM register 2
-#:     push_u256(1000)    # static uint256 literal (pre-encode if value is known)
-#:     push_addr("0x…")   # static address literal
-PatchSource = bytes
-
-#: A single patch descriptor: ``(calldata_offset, size, opcodes)`` where:
+#: A single patch descriptor: ``(calldata_offset, size)`` where the patch
+#: value is consumed from the runtime stack (must be pushed by the caller
+#: before :meth:`~Program.call_with_patches` is called):
 #:
 #: - *calldata_offset*: byte offset inside the calldata template to overwrite.
 #: - *size*: number of bytes to overwrite (0, 32].
-#: - *opcodes*: :data:`PatchSource` — raw bytecode that pushes the patch value.
-PatchSpec = tuple[int, int, PatchSource]
+PatchSpec = tuple[int, int]
 
 
 class Patch:
     """Marks a runtime-patched argument for :meth:`Program.call_contract_abi`.
 
-    Wrap a :data:`PatchSource` (DeFiVM opcode bytes that push exactly one
-    value onto the stack) in a :class:`Patch` to signal that the corresponding
+    Wrap opcode bytes (any instruction sequence that pushes exactly one value
+    onto the stack) in a :class:`Patch` to signal that the corresponding
     positional argument in ``call_contract_abi`` should be filled at runtime
     rather than baked into the calldata template.
 
@@ -262,10 +248,9 @@ class Patch:
     calls the hook with an :class:`~eth_abi.hooks.EncodingContext` that carries
     the exact byte offset and size of the value in the encoded output; the hook
     stores those in :attr:`offset` and :attr:`size` and returns ``0`` as a
-    placeholder.  After encoding, :attr:`offset` holds the absolute calldata
-    offset (including the 4-byte function selector) and :attr:`size` holds the
-    number of bytes occupied by that value, ready for use in
-    :meth:`~Program.call_with_patches`.
+    placeholder.  After encoding, ``call_contract_abi`` emits all patch
+    *opcodes* (in reverse patch order, so the first patch value lands at TOS)
+    and then delegates to :meth:`~Program.call_with_patches`.
 
     Args:
         opcodes: Raw DeFiVM bytecode that, when executed, pushes the runtime
@@ -292,7 +277,7 @@ class Patch:
         )
     """
 
-    def __init__(self, opcodes: PatchSource, placeholder: object = 0) -> None:
+    def __init__(self, opcodes: bytes | bytearray, placeholder: object = 0) -> None:
         self.opcodes: bytes = bytes(opcodes)
         self.placeholder = placeholder
         self.offset: int | None = None  # set by __call__ during encode_with_hooks
@@ -396,8 +381,16 @@ class Program:
         return self._emit(push_bytes(data))
 
     def dup(self) -> "Program":
-        """Emit DUP."""
+        """Emit DUP1 — duplicate the top stack item."""
         return self._emit(dup())
+
+    def dup_n(self, n: int) -> "Program":
+        """Emit DUPn — duplicate the stack item *n* positions from the top.
+
+        Args:
+            n: Stack depth (1 = TOS, …, 16 = sixteenth item).
+        """
+        return self._emit(dup_n(n))
 
     def swap(self) -> "Program":
         """Emit SWAP."""
@@ -557,6 +550,53 @@ class Program:
     def patch_addr(self, offset: int) -> "Program":
         """Emit PATCH_ADDR at *offset*."""
         return self._emit(patch_value(offset, 20))
+
+    def patch_bytes_from_stack(self, patches: list[PatchSpec]) -> "Program":
+        """Apply calldata patches consuming values from the stack.
+
+        This is the **stand-alone patching** helper used internally by
+        :meth:`call_with_patches`.  Use it when you want to patch a calldata
+        buffer already on the stack and then issue the external call separately
+        (or conditionally).
+
+        The caller must have pushed the calldata buffer with
+        :meth:`push_bytes` (or equivalent) so that the stack is::
+
+            [argsOffset(TOS), argsLen(2nd), patch1_val(3rd), …, patchN_val(2+N)]
+
+        Each ``(offset, size)`` entry in *patches* consumes the next value
+        from below ``argsLen`` and writes it into the calldata buffer.
+
+        Stack before: ``[argsOffset(TOS), argsLen(2nd), val1(3rd), …, valN]``
+        Stack after:  ``[argsOffset(TOS), argsLen(2nd)]``
+
+        Per-patch bytecode emitted::
+
+            SWAP1   ; [argsLen, argsOffset, val_i, …]
+            SWAP2   ; [val_i, argsOffset, argsLen, …]
+            <patch_value(offset, size)>  ; [argsOffset, argsLen, …]
+
+        Args:
+            patches: List of ``(offset, size)`` descriptors.  The first entry
+                consumes the value currently at stack position 3 (just below
+                ``argsLen``), the second consumes position 3 again (after the
+                previous arg was consumed), and so on.
+
+        Returns:
+            ``self`` for chaining.
+
+        Raises:
+            ValueError: If any patch *size* is not in the range ``(0, 32]``.
+        """
+        for offset, size in patches:
+            if not (0 < size <= 32):
+                raise ValueError(f"patch_bytes_from_stack: patch size {size!r} not supported; expected 0 < size <= 32")
+            # SWAP1+SWAP2 rotates the next arg to TOS with argsOffset at 2nd —
+            # exactly the layout patch_value expects — consuming the arg directly.
+            self._emit(bytes([0x90]))  # SWAP1: [argsLen, argsOffset, val_i, …]
+            self._emit(bytes([0x91]))  # SWAP2: [val_i, argsOffset, argsLen, …]
+            self._emit(patch_value(offset, size))  # [argsOffset, argsLen, …]
+        return self
 
     def ret_u256(self, offset: int) -> "Program":
         """Emit RET_U256 — push uint256 from last returndata at *offset*."""
@@ -800,8 +840,14 @@ class Program:
         calldata = bytes(fn.selector) + encoded_args
 
         patches: list[PatchSpec] = [
-            (p.offset, p.size, p.opcodes) for p in patch_list if p.offset is not None and p.size is not None
+            (p.offset, p.size) for p in patch_list if p.offset is not None and p.size is not None
         ]
+        # Push patch values in reverse order so the first patch value lands at TOS
+        # when call_with_patches is invoked (it calls push_bytes first, which puts
+        # argsOffset/argsLen on top, leaving the first patch value just below argsLen).
+        for p in reversed(patch_list):
+            if p.offset is not None and p.size is not None:
+                self._emit(p.opcodes)
         return self.call_with_patches(to, calldata, patches, value=value, gas=gas, require_success=require_success)
 
     def call_with_patches(
@@ -814,44 +860,36 @@ class Program:
         gas: int = 0,
         require_success: bool = True,
     ) -> "Program":
-        """Emit a patched external call — embed runtime values into a calldata template.
+        """Emit a patched external call where patch values come from the stack.
 
-        This is the **calldata surgery** helper.  It pushes a mutable copy of
-        *calldata* as a buffer, applies each patch from *patches* (each one
-        overwrites a field at a specific byte offset using a value produced at
-        runtime by arbitrary opcodes), then issues the ``CALL`` opcode.
+        This is the **calldata surgery** helper.  Push each patch value onto the
+        stack *before* calling this method (last-patch value deepest, first-patch
+        value at TOS), then pass ``(offset, size)`` pairs as *patches*.
 
-        Each entry in *patches* is a 3-tuple ``(offset, size, opcodes)``:
+        Each entry in *patches* is a 2-tuple ``(offset, size)``:
 
         - *offset* — byte offset in the calldata template to overwrite.
         - *size* — number of bytes to overwrite: 32 for a ``uint256``/``int256``
           word, or 20 for an ``address``.
-        - *opcodes* — raw DeFiVM bytecode (``bytes``) that, when executed, pushes
-          exactly one value onto the stack.  Any instruction sequence that leaves a
-          single item on the stack is valid.  For example::
 
-              from pydefi.vm.program import ret_u256, load_reg, push_u256, push_addr
-
-              ret_u256(0)        # uint256 from last call's returndata
-              load_reg(2)        # value from VM register 2
-              push_u256(1000)    # static uint256 literal
-              push_addr("0x…")   # static address literal
+        Patch values are consumed from the stack top-to-bottom in *patches* list
+        order.  All values are consumed before the external call is issued, so no
+        post-call stack cleanup is needed.
 
         Example::
 
             from pydefi.vm.program import ret_u256, load_reg
 
-            # Embed the output of a previous call (from returndata) as amountIn
+            # Push the amount value (from last returndata) first, then call.
             program = (
                 Program()
                 .call_contract(QUOTER, quote_calldata)
                 .pop()
+                .ret_u256(0)                    # push amount → TOS
                 .call_with_patches(
                     ROUTER,
-                    swap_template,          # swap(0, ...) — amount placeholder at offset 36
-                    patches=[
-                        (36, 32, ret_u256(0)),   # fill 32-byte amount from last retdata
-                    ],
+                    swap_template,               # swap(0, …) — placeholder at offset 36
+                    patches=[(36, 32)],          # fill 32-byte slot from TOS
                 )
                 .pop()
                 .build()
@@ -860,30 +898,38 @@ class Program:
         Args:
             to: Target contract address.
             calldata: Mutable calldata template bytes.
-            patches: List of ``(offset, size, opcodes)`` patch descriptors.
+            patches: List of ``(offset, size)`` patch descriptors.  The first
+                entry is matched to the current TOS, the second to the item
+                below that, etc.
             value: ETH value to forward (wei), default 0.
             gas: Sub-call gas limit (0 = forward all remaining gas).
             require_success: Revert if the sub-call fails (default ``True``).
 
         Returns:
             ``self`` for chaining.
+
+        Raises:
+            ValueError: If any patch *size* is not in the range ``(0, 32]``.
         """
-        self._emit(push_u256(0))  # retSize
-        self._emit(push_u256(0))  # retOffset
-        self._emit(push_bytes(calldata))  # argsOffset (TOS), argsLen
+        # Push calldata buffer; patch values remain below it on the stack.
+        # Stack: [argsOffset(TOS), argsLen(2nd), val1(3rd), …, valN(2+N)]
+        self._emit(push_bytes(calldata))
 
-        for offset, size, opcodes in patches:
-            if not (0 < size <= 32):
-                raise ValueError(f"call_with_patches: patch size {size!r} not supported; expected 0 < size <= 32")
-            if not isinstance(opcodes, (bytes, bytearray)):
-                raise TypeError(
-                    f"call_with_patches: opcodes must be bytes or bytearray, got {type(opcodes).__name__!r}"
-                )
+        # Apply all patches, consuming each stack value directly (no DUP needed).
+        self.patch_bytes_from_stack(patches)
 
-            self._emit(opcodes)  # push the patch value onto the stack
-            self._emit(patch_value(offset, size))
+        # Stack is now: [argsOffset(TOS), argsLen(2nd), …]
+        # Insert retOffset=0 and retLen=0 *below* argsLen using a compact 7-byte
+        # SWAP/PUSH1 sequence instead of two 33-byte PUSH32 instructions:
+        #
+        #   SWAP1          → [argsLen, argsOffset, …]
+        #   PUSH1 0x00     → [0(retOffset), argsLen, argsOffset, …]
+        #   SWAP1          → [argsLen, 0(retOffset), argsOffset, …]
+        #   PUSH1 0x00     → [0(retLen), argsLen, 0(retOffset), argsOffset, …]
+        #   SWAP3          → [argsOffset, argsLen, 0(retOffset), 0(retLen), …]
+        self._emit(bytes([0x90, 0x60, 0x00, 0x90, 0x60, 0x00, 0x92]))
 
-        # Stack now: [argsOffset(TOS), argsLen, retOffset, retSize] — ready for CALL prologue
+        # Stack: [argsOffset(TOS), argsLen, retOffset=0, retLen=0, …]
         self._emit(push_u256(value))
         self._emit(push_addr(to))
         self._emit(gas_opcode() if gas == 0 else push_u256(gas))
