@@ -615,207 +615,23 @@ class TestProgramComposition:
 
 
 # ---------------------------------------------------------------------------
-# Program: call_with_patches (calldata surgery)
+# Program: call_with_patches (stack-based calldata surgery)
 # ---------------------------------------------------------------------------
 
 
 class TestCallWithPatches:
+    """Tests for call_with_patches — stack-based calldata patching.
+
+    The caller pushes patch values onto the stack *before* the call (last value
+    deepest, first value at TOS).  call_with_patches emits push_bytes, then
+    SWAP1+SWAP2+patch_value for each ``(offset, size)`` pair, then issues CALL.
+    """
+
     def _template(self) -> bytes:
         """4-byte selector + two 32-byte zero placeholders."""
         return bytes.fromhex("deadbeef") + b"\x00" * 64
 
-    def test_no_patches_equals_call_contract(self):
-        """With an empty patches list, call_with_patches == call_contract."""
-        cd = self._template()
-        expected = Program().call_contract(ADDR_A, cd).build()
-        actual = Program().call_with_patches(ADDR_A, cd, []).build()
-        assert actual == expected
-
-    def test_bytes_u256_patch(self):
-        """Bytes opcodes for u256 patch: emits opcodes + patch_value(4, 32)."""
-        cd = self._template()
-        # Manually build equivalent low-level sequence
-        expected = (
-            push_u256(0)
-            + push_u256(0)  # retSize, retOffset
-            + push_bytes(cd)
-            + push_u256(42)
-            + patch_value(4, 32)
-            + push_u256(0)  # value
-            + push_addr(ADDR_A)
-            + gas_opcode()  # gas (forward all)
-            + call(True)
-        )
-        actual = Program().call_with_patches(ADDR_A, cd, [(4, 32, push_u256(42))]).build()
-        assert actual == expected
-
-    def test_bytes_addr_patch(self):
-        """Bytes opcodes for addr patch: emits opcodes + patch_value(16, 20)."""
-        cd = self._template()
-        expected = (
-            push_u256(0)
-            + push_u256(0)  # retSize, retOffset
-            + push_bytes(cd)
-            + push_addr(ADDR_B)
-            + patch_value(16, 20)
-            + push_u256(0)
-            + push_addr(ADDR_A)
-            + gas_opcode()  # gas (forward all)
-            + call(True)
-        )
-        actual = Program().call_with_patches(ADDR_A, cd, [(16, 20, push_addr(ADDR_B))]).build()
-        assert actual == expected
-
-    def test_ret_u256_patch(self):
-        """ret_u256(offset) bytes emits ret_u256 + patch_value(4, 32)."""
-        cd = self._template()
-        expected = (
-            push_u256(0)
-            + push_u256(0)  # retSize, retOffset
-            + push_bytes(cd)
-            + ret_u256(0)
-            + patch_value(4, 32)
-            + push_u256(0)
-            + push_addr(ADDR_A)
-            + gas_opcode()
-            + call(True)
-        )
-        actual = Program().call_with_patches(ADDR_A, cd, [(4, 32, ret_u256(0))]).build()
-        assert actual == expected
-
-    def test_reg_patch(self):
-        """load_reg(idx) bytes emits load_reg + patch_value(4, 32)."""
-        cd = self._template()
-        expected = (
-            push_u256(0)
-            + push_u256(0)  # retSize, retOffset
-            + push_bytes(cd)
-            + load_reg(3)
-            + patch_value(4, 32)
-            + push_u256(0)
-            + push_addr(ADDR_A)
-            + gas_opcode()
-            + call(True)
-        )
-        actual = Program().call_with_patches(ADDR_A, cd, [(4, 32, load_reg(3))]).build()
-        assert actual == expected
-
-    def test_reg_patch_addr(self):
-        """load_reg(idx) with size=20 emits load_reg + patch_value(16, 20)."""
-        cd = self._template()
-        expected = (
-            push_u256(0)
-            + push_u256(0)  # retSize, retOffset
-            + push_bytes(cd)
-            + load_reg(5)
-            + patch_value(16, 20)
-            + push_u256(0)
-            + push_addr(ADDR_A)
-            + gas_opcode()
-            + call(True)
-        )
-        actual = Program().call_with_patches(ADDR_A, cd, [(16, 20, load_reg(5))]).build()
-        assert actual == expected
-
-    def test_multiple_patches(self):
-        """Multiple patches are applied in order."""
-        cd = self._template()
-        expected = (
-            push_u256(0)
-            + push_u256(0)  # retSize, retOffset
-            + push_bytes(cd)
-            + push_u256(100)
-            + patch_value(4, 32)
-            + push_addr(ADDR_B)
-            + patch_value(4 + 32 + 12, 20)
-            + push_u256(0)
-            + push_addr(ADDR_A)
-            + gas_opcode()  # gas (forward all)
-            + call(True)
-        )
-        actual = (
-            Program()
-            .call_with_patches(
-                ADDR_A,
-                cd,
-                [
-                    (4, 32, push_u256(100)),
-                    (4 + 32 + 12, 20, push_addr(ADDR_B)),
-                ],
-            )
-            .build()
-        )
-        assert actual == expected
-
-    def test_value_and_gas_forwarded(self):
-        """value and gas parameters are reflected in CALL prologue."""
-        cd = self._template()
-        expected = (
-            push_u256(0)
-            + push_u256(0)  # retSize, retOffset
-            + push_bytes(cd)
-            + push_u256(10**18)  # value
-            + push_addr(ADDR_A)
-            + push_u256(50_000)  # gas
-            + call(True)
-        )
-        actual = Program().call_with_patches(ADDR_A, cd, [], value=10**18, gas=50_000).build()
-        assert actual == expected
-
-    def test_require_success_false(self):
-        """require_success=False emits CALL without the success-check block."""
-        cd = self._template()
-        expected = (
-            push_u256(0) + push_u256(0) + push_bytes(cd) + push_u256(0) + push_addr(ADDR_A) + gas_opcode() + call(False)
-        )
-        actual = Program().call_with_patches(ADDR_A, cd, [], require_success=False).build()
-        assert actual == expected
-
-    def test_invalid_patch_size_raises(self):
-        with pytest.raises(ValueError, match="patch size"):
-            Program().call_with_patches(ADDR_A, self._template(), [(4, 0, push_u256(0))]).build()
-
-    def test_non_bytes_opcodes_raises(self):
-        """Passing a non-bytes source raises TypeError."""
-        with pytest.raises(TypeError, match="opcodes must be bytes or bytearray"):
-            Program().call_with_patches(ADDR_A, self._template(), [(4, 32, 42)]).build()
-
-    def test_non_bytes_str_opcodes_raises(self):
-        """Passing a string raises TypeError."""
-        with pytest.raises(TypeError, match="opcodes must be bytes or bytearray"):
-            Program().call_with_patches(ADDR_A, self._template(), [(4, 32, "0xdeadbeef")]).build()
-
-    def test_non_bytes_none_opcodes_raises(self):
-        """Passing None raises TypeError."""
-        with pytest.raises(TypeError, match="opcodes must be bytes or bytearray"):
-            Program().call_with_patches(ADDR_A, self._template(), [(4, 32, None)]).build()
-
-    def test_chained_with_composition(self):
-        """call_with_patches works correctly when composed with other programs."""
-        cd = self._template()
-        step1 = Program().call_contract(ADDR_A, cd).pop()
-        step2 = Program().call_with_patches(ADDR_A, cd, [(4, 32, ret_u256(0))]).pop()
-        combined = step1 + step2
-        bytecode = combined.build()
-        assert len(bytecode) > 0
-        assert bytes(cd[:4]) in bytecode  # selector embedded via PUSH32 in push_bytes
-
-
-# ---------------------------------------------------------------------------
-# call_with_patches_from_stack
-# ---------------------------------------------------------------------------
-
-
-class TestCallWithPatchesFromStack:
-    def _template(self) -> bytes:
-        """4-byte selector + two 32-byte zero placeholders."""
-        return bytes.fromhex("deadbeef") + b"\x00" * 64
-
-    # ------------------------------------------------------------------
-    # Helpers — opcode bytes for the optimised implementation
-    # ------------------------------------------------------------------
-
-    # 7-byte compact ret-frame insertion used by call_with_patches_from_stack.
+    # 7-byte compact ret-frame insertion.
     # From [argsOff, argsLen, …]:
     #   SWAP1  → [argsLen, argsOff, …]
     #   PUSH1 0  → [0, argsLen, argsOff, …]   (retOffset placeholder)
@@ -824,11 +640,11 @@ class TestCallWithPatchesFromStack:
     #   SWAP3  → [argsOff, argsLen, 0, 0, …]
     _RET_FRAME = bytes([0x90, 0x60, 0x00, 0x90, 0x60, 0x00, 0x92])
 
-    # Per-patch preamble: SWAP1 + SWAP2 rotates the next arg to TOS.
+    # Per-patch preamble: SWAP1 + SWAP2 rotates the next value to TOS.
     _ROTATE_ARG = bytes([0x90, 0x91])
 
     def test_no_patches(self):
-        """With an empty patches list, the bytecode is push_bytes + ret_frame + call."""
+        """With an empty patches list the bytecode is push_bytes + ret_frame + call."""
         cd = self._template()
         expected = (
             push_bytes(cd)
@@ -838,11 +654,11 @@ class TestCallWithPatchesFromStack:
             + gas_opcode()
             + call(True)
         )
-        actual = Program().call_with_patches_from_stack(ADDR_A, cd, []).build()
+        actual = Program().call_with_patches(ADDR_A, cd, []).build()
         assert actual == expected
 
     def test_single_u256_patch(self):
-        """Single stack-source patch: SWAP1+SWAP2+patch_value, no post-call cleanup."""
+        """Single patch: SWAP1+SWAP2+patch_value(4, 32), value consumed from stack."""
         cd = self._template()
         expected = (
             push_bytes(cd)
@@ -854,11 +670,27 @@ class TestCallWithPatchesFromStack:
             + gas_opcode()
             + call(True)
         )
-        actual = Program().call_with_patches_from_stack(ADDR_A, cd, [(4, 32)]).build()
+        actual = Program().call_with_patches(ADDR_A, cd, [(4, 32)]).build()
         assert actual == expected
 
-    def test_two_patches(self):
-        """Two stack-source patches: each uses SWAP1+SWAP2+patch_value."""
+    def test_single_addr_patch(self):
+        """addr-size patch: SWAP1+SWAP2+patch_value(16, 20)."""
+        cd = self._template()
+        expected = (
+            push_bytes(cd)
+            + self._ROTATE_ARG
+            + patch_value(16, 20)
+            + self._RET_FRAME
+            + push_u256(0)
+            + push_addr(ADDR_A)
+            + gas_opcode()
+            + call(True)
+        )
+        actual = Program().call_with_patches(ADDR_A, cd, [(16, 20)]).build()
+        assert actual == expected
+
+    def test_multiple_patches(self):
+        """Multiple patches consume stack values in order."""
         cd = self._template()
         expected = (
             push_bytes(cd)
@@ -874,7 +706,7 @@ class TestCallWithPatchesFromStack:
         )
         actual = (
             Program()
-            .call_with_patches_from_stack(
+            .call_with_patches(
                 ADDR_A,
                 cd,
                 [
@@ -899,7 +731,7 @@ class TestCallWithPatchesFromStack:
             + push_u256(50_000)  # gas
             + call(True)
         )
-        actual = Program().call_with_patches_from_stack(ADDR_A, cd, [(4, 32)], value=10**18, gas=50_000).build()
+        actual = Program().call_with_patches(ADDR_A, cd, [(4, 32)], value=10**18, gas=50_000).build()
         assert actual == expected
 
     def test_require_success_false(self):
@@ -915,20 +747,30 @@ class TestCallWithPatchesFromStack:
             + gas_opcode()
             + call(False)
         )
-        actual = Program().call_with_patches_from_stack(ADDR_A, cd, [(4, 32)], require_success=False).build()
+        actual = Program().call_with_patches(ADDR_A, cd, [(4, 32)], require_success=False).build()
         assert actual == expected
 
-    def test_no_patch_limit(self):
-        """More than 12 patches are now supported (no DUP depth constraint)."""
+    def test_many_patches_supported(self):
+        """Supports more than 12 patches in a single stack-patched call."""
         cd = self._template() + b"\x00" * (16 * 32)
-        # 13 patches — previously would have raised ValueError
+        # Exercise a case with 13 patches to confirm large patch counts are supported.
         patches = [(4 + i * 32, 32) for i in range(13)]
-        bytecode = Program().call_with_patches_from_stack(ADDR_A, cd, patches).build()
+        bytecode = Program().call_with_patches(ADDR_A, cd, patches).build()
         assert len(bytecode) > 0
 
     def test_invalid_patch_size_raises(self):
         with pytest.raises(ValueError, match="patch size"):
-            Program().call_with_patches_from_stack(ADDR_A, self._template(), [(4, 0)]).build()
+            Program().call_with_patches(ADDR_A, self._template(), [(4, 0)]).build()
+
+    def test_chained_with_composition(self):
+        """call_with_patches works correctly when composed with other programs."""
+        cd = self._template()
+        step1 = Program().call_contract(ADDR_A, cd).pop()
+        step2 = Program().call_with_patches(ADDR_A, cd, [(4, 32)]).pop()
+        combined = step1 + step2
+        bytecode = combined.build()
+        assert len(bytecode) > 0
+        assert bytes(cd[:4]) in bytecode  # selector embedded via PUSH32 in push_bytes
 
     def test_dup_n_range(self):
         """dup_n emits the correct DUP opcode for each valid depth."""
@@ -1059,20 +901,22 @@ class TestSplitSwapComposition:
 
         step4 = (
             Program()
+            .load_reg(1)  # push share0 → TOS (consumed by patch)
             .call_with_patches(
                 ADDR_B,
                 self._SWAP12,
-                [(self.AMOUNT_OFFSET, 32, load_reg(1))],
+                [(self.AMOUNT_OFFSET, 32)],
             )
             .pop()
         )
 
         step5 = (
             Program()
+            .load_reg(2)  # push share1 → TOS (consumed by patch)
             .call_with_patches(
                 ADDR_B,
                 self._SWAP13,
-                [(self.AMOUNT_OFFSET, 32, load_reg(2))],
+                [(self.AMOUNT_OFFSET, 32)],
             )
             .pop()
         )
