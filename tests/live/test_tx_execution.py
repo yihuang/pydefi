@@ -39,7 +39,7 @@ from pydefi.amm.uniswap_v3 import UniswapV3
 from pydefi.amm.universal_router import UNIVERSAL_ROUTER_ADDRESSES, UniversalRouter, V4Hop
 from pydefi.types import TokenAmount
 
-from .conftest import ETH_WHALE, UNISWAP_V3_QUOTER, UNISWAP_V3_ROUTER, UNISWAP_V4_POOL_MANAGER, USDC, WETH
+from .conftest import ETH_WHALE, UNISWAP_V3_QUOTER, UNISWAP_V3_ROUTER, UNISWAP_V4_POOL_MANAGER, USDC, WETH, ZERO_ADDR
 
 # ---------------------------------------------------------------------------
 # Contract addresses
@@ -89,7 +89,7 @@ def _compute_v4_pool_id(
     currency1: str,
     fee: int,
     tick_spacing: int,
-    hooks: str = "0x0000000000000000000000000000000000000000",
+    hooks: str = ZERO_ADDR,
 ) -> bytes:
     return Web3.keccak(
         abi_encode(

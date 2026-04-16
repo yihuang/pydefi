@@ -54,7 +54,7 @@ def _make_aiohttp_mock(status: int, response_data) -> MagicMock:
 
 USDC_ETH = Token(
     chain_id=ChainId.ETHEREUM,
-    address="0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+    address=mainnet.USDC.address,
     symbol="USDC",
     decimals=6,
 )
@@ -362,7 +362,7 @@ class TestMayan:
         m = Mayan(src_chain_id=1, dst_chain_id=42161)
         amount_in = TokenAmount(token=ETH_NATIVE, amount=10**18)  # 1 ETH
         recipient = "0x" + "CC" * 20
-        weth = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+        weth = mainnet.WETH.address
         swift_contract = "0x" + "AA" * 20
         swap_router = "0x" + "BB" * 20
 

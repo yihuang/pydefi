@@ -211,7 +211,7 @@ class TestUniswapV3Instance:
 # Universal Router tests (no network calls)
 # ---------------------------------------------------------------------------
 
-UNIVERSAL_ROUTER_ADDR = "0x66a9893cC07D91D95644AEDD05D03f95e1dBA8Af"  # UniversalRouterV2 on Ethereum mainnet
+UNIVERSAL_ROUTER_ADDR = mainnet.UNIVERSAL_ROUTER
 RECIPIENT = mainnet.ETH_WHALE
 
 
@@ -258,7 +258,7 @@ class TestUniversalRouterConstants:
     def test_known_addresses_contains_ethereum(self):
         assert 1 in UNIVERSAL_ROUTER_ADDRESSES
         # UniversalRouterV2 (supports Uniswap V4)
-        assert UNIVERSAL_ROUTER_ADDRESSES[1] == "0x66a9893cC07D91D95644AEDD05D03f95e1dBA8Af"
+        assert UNIVERSAL_ROUTER_ADDRESSES[1] == mainnet.UNIVERSAL_ROUTER
 
     def test_known_addresses_contains_arbitrum(self):
         assert 42161 in UNIVERSAL_ROUTER_ADDRESSES
@@ -508,7 +508,7 @@ class TestV4Encoding:
             currency1=c1,
             fee=500,
             tick_spacing=10,
-            hooks="0x0000000000000000000000000000000000000000",
+            hooks=mainnet.ZERO_ADDR,
             zero_for_one=False,
             amount_in=10**18,
             amount_out_minimum=1_800 * 10**6,
@@ -540,7 +540,7 @@ class TestV4Encoding:
             c1,
             500,
             10,
-            "0x0000000000000000000000000000000000000000",
+            mainnet.ZERO_ADDR,
             False,
             10**18,
             0,
@@ -764,7 +764,7 @@ class TestHopDataclasses:
 
     def test_v4_hop_defaults(self):
         hop = V4Hop(token_in=WETH, token_out=USDC, fee=500, tick_spacing=10)
-        assert hop.hooks == "0x0000000000000000000000000000000000000000"
+        assert hop.hooks == mainnet.ZERO_ADDR
         assert hop.hook_data == b""
 
     def test_v4_hop_custom_hooks(self):
@@ -775,7 +775,7 @@ class TestHopDataclasses:
 
 class TestEncodeV4ExactInParams:
     def test_returns_bytes(self):
-        path = [(USDC.address, 500, 10, "0x0000000000000000000000000000000000000000", b"")]
+        path = [(USDC.address, 500, 10, mainnet.ZERO_ADDR, b"")]
         encoded = UniversalRouter.encode_v4_exact_in_params(
             currency_in=WETH.address,
             path=path,
@@ -785,7 +785,7 @@ class TestEncodeV4ExactInParams:
         assert isinstance(encoded, bytes)
 
     def test_nonempty(self):
-        path = [(USDC.address, 500, 10, "0x0000000000000000000000000000000000000000", b"")]
+        path = [(USDC.address, 500, 10, mainnet.ZERO_ADDR, b"")]
         encoded = UniversalRouter.encode_v4_exact_in_params(
             currency_in=WETH.address,
             path=path,
@@ -797,8 +797,8 @@ class TestEncodeV4ExactInParams:
     def test_two_hop_path(self):
         # Two hops: WETH → USDC → DAI
         path = [
-            (USDC.address, 500, 10, "0x0000000000000000000000000000000000000000", b""),
-            (DAI.address, 100, 1, "0x0000000000000000000000000000000000000000", b""),
+            (USDC.address, 500, 10, mainnet.ZERO_ADDR, b""),
+            (DAI.address, 100, 1, mainnet.ZERO_ADDR, b""),
         ]
         encoded = UniversalRouter.encode_v4_exact_in_params(
             currency_in=WETH.address,
@@ -811,7 +811,7 @@ class TestEncodeV4ExactInParams:
 
     def test_encoded_length_is_multiple_of_32(self):
         # ABI-encoded output is always a multiple of 32 bytes.
-        path = [(USDC.address, 500, 10, "0x0000000000000000000000000000000000000000", b"")]
+        path = [(USDC.address, 500, 10, mainnet.ZERO_ADDR, b"")]
         encoded = UniversalRouter.encode_v4_exact_in_params(
             currency_in=WETH.address,
             path=path,

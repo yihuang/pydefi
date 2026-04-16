@@ -24,12 +24,7 @@ from tests.well_known import mainnet
 # Token definitions
 # ---------------------------------------------------------------------------
 
-USDC_ETH = Token(
-    chain_id=ChainId.ETHEREUM,
-    address="0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
-    symbol="USDC",
-    decimals=6,
-)
+USDC_ETH = mainnet.USDC
 
 # USDC on HyperCore (Hyperliquid L1); CCTP mints on HyperEVM and Hyperliquid
 # routes to HyperCore automatically — same ERC-20 address as HyperEVM.

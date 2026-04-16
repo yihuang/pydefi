@@ -39,7 +39,7 @@ class TestSignInner:
                 "name": "HyperliquidSignTransaction",
                 "version": "1",
                 "chainId": chain_id,
-                "verifyingContract": "0x0000000000000000000000000000000000000000",
+                "verifyingContract": mainnet.ZERO_ADDR,
             },
             "types": {
                 "HyperliquidTransaction:UsdSend": USD_SEND_SIGN_TYPES,
