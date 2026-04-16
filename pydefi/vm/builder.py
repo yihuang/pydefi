@@ -836,7 +836,13 @@ class Program:
         patches: list[PatchSpec] = [
             (p.offset, p.size) for p in patch_list if p.offset is not None and p.size is not None
         ]
-        # caller should have pushed source values on the top of stack.
+        # `patches` preserves `patch_list` order. `patch_bytes_from_stack`
+        # consumes source values from TOS in that same order, so the source
+        # value for `patches[0]` / the first collected Patch must already be
+        # at TOS when `call_with_patches()` runs. Therefore, when multiple
+        # Patch() arguments are used, callers must push their source values
+        # onto the stack in reverse `patch_list` order so the first patch's
+        # source ends up on top.
         return self.call_with_patches(to, calldata, patches, value=value, gas=gas, require_success=require_success)
 
     def call_with_patches(
