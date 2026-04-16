@@ -299,6 +299,7 @@ class TestRouteDAG:
         outer = payload["actions"][0]
         assert isinstance(outer, RouteSplit)
         assert len(outer.legs) == 2
+        assert isinstance(outer.legs[1].actions[0], RouteSwap)
         nested = outer.legs[1].actions[1]
         assert isinstance(nested, RouteSplit)
         assert [leg.fraction_bps for leg in nested.legs] == [5000, 5000]
