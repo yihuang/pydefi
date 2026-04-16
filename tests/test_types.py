@@ -10,6 +10,7 @@ from pydefi.types import (
     Token,
     TokenAmount,
 )
+from tests.addrs import USDC, WETH
 
 # ---------------------------------------------------------------------------
 # Token tests
@@ -20,14 +21,14 @@ class TestToken:
     def setup_method(self):
         self.eth = Token(
             chain_id=ChainId.ETHEREUM,
-            address="0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+            address=WETH.address,
             symbol="WETH",
             decimals=18,
             name="Wrapped Ether",
         )
         self.usdc = Token(
             chain_id=ChainId.ETHEREUM,
-            address="0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+            address=USDC.address,
             symbol="USDC",
             decimals=6,
         )
@@ -60,7 +61,7 @@ class TestToken:
     def test_token_equality(self):
         eth2 = Token(
             chain_id=ChainId.ETHEREUM,
-            address="0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+            address=WETH.address,
             symbol="WETH",
             decimals=18,
             name="Wrapped Ether",
@@ -70,7 +71,7 @@ class TestToken:
     def test_token_inequality_different_chain(self):
         eth_arb = Token(
             chain_id=ChainId.ARBITRUM,
-            address="0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+            address=WETH.address,
             symbol="WETH",
             decimals=18,
         )
@@ -91,13 +92,13 @@ class TestTokenAmount:
     def setup_method(self):
         self.usdc = Token(
             chain_id=1,
-            address="0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+            address=USDC.address,
             symbol="USDC",
             decimals=6,
         )
         self.weth = Token(
             chain_id=1,
-            address="0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+            address=WETH.address,
             symbol="WETH",
             decimals=18,
         )
