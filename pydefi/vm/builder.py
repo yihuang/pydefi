@@ -283,7 +283,7 @@ class Patch:
         the size of the encoded value, then returns the placeholder value for the
         ABI encoder.
         """
-        self.offset = 4 + ctx.offset # add 4 bytes for the function selector prefix
+        self.offset = 4 + ctx.offset  # add 4 bytes for the function selector prefix
         self.size = ctx.size
         return self.placeholder
 
