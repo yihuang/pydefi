@@ -35,7 +35,7 @@ from __future__ import annotations
 from pydefi.pathfinder.graph import V3PoolEdge
 from pydefi.types import RouteAction, RouteDAG, RouteSplit, RouteSwap
 from pydefi.vm.builder import Program
-from pydefi.vm.program import add, assert_ge, div, dup, load_reg, mul, pop, push_u256, store_reg, swap
+from pydefi.vm.program import add, assert_ge, div, dup, dup2, load_reg, mul, pop, push_u256, store_reg, swap
 from pydefi.vm.swap import (
     _ACCUM_REG,
     _AMOUNT_OUT_REG,
@@ -48,7 +48,6 @@ from pydefi.vm.swap import (
 )
 
 _BPS_DENOMINATOR = 10_000
-_DUP2 = bytes([0x81])
 
 
 def build_execution_program_for_dag(
@@ -218,7 +217,7 @@ def _build_route_split_segment(
     for leg in split.legs:
         segments.append(
             Program()
-            ._emit(_DUP2)
+            ._emit(dup2())  # duplicate split frame's total_in (2nd item: [.., total_in, accum])
             ._emit(push_u256(leg.fraction_bps))
             ._emit(mul())
             ._emit(push_u256(_BPS_DENOMINATOR))

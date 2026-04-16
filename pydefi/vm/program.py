@@ -204,6 +204,11 @@ def dup() -> bytes:
     return bytes([OP_DUP])
 
 
+def dup2() -> bytes:
+    """Emit DUP2 — duplicate the second stack item."""
+    return bytes([OP_DUP + 1])
+
+
 def swap() -> bytes:
     """Emit SWAP1 — exchange the top two stack items."""
     return bytes([OP_SWAP])
