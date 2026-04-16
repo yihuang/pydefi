@@ -61,7 +61,7 @@ import logging
 from typing import Any, Optional
 
 from sqlmodel import Session, SQLModel, create_engine, select
-from web3 import AsyncWeb3
+from web3 import AsyncWeb3, Web3
 from web3.types import BlockNumber
 
 from pydefi.abi.amm import UNISWAP_V2_FACTORY, UNISWAP_V2_PAIR, UNISWAP_V3_FACTORY, UNISWAP_V3_POOL
@@ -353,18 +353,15 @@ class PoolIndexer:
         current = from_block
         while current <= to_block:
             end = min(current + batch_size - 1, to_block)
-            logs = await self.w3.eth.get_logs(
-                {
-                    "topics": [_ALL_TOPICS],
-                    "fromBlock": current,
-                    "toBlock": end,
-                }
-            )
-            logger.debug("backfill blocks %d-%d: fetched %d logs", current, end, len(logs))
-
-            # Filter to the target pool when in single-pool mode.
+            filter_params: dict = {
+                "topics": [_ALL_TOPICS],
+                "fromBlock": current,
+                "toBlock": end,
+            }
             if target_addr is not None:
-                logs = [lg for lg in logs if lg["address"].lower() == target_addr]
+                filter_params["address"] = Web3.to_checksum_address(target_addr)
+            logs = await self.w3.eth.get_logs(filter_params)
+            logger.debug("backfill blocks %d-%d: fetched %d logs", current, end, len(logs))
 
             stored = await self._process_logs(logs)
             total_stored += stored
