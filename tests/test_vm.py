@@ -945,11 +945,6 @@ class TestCallWithPatchesFromStack:
             dup_n(17)
 
 
-# ---------------------------------------------------------------------------
-# Arithmetic opcodes
-# ---------------------------------------------------------------------------
-
-
 class TestArithmeticOpcodes:
     """Verify bytecode emitted by arithmetic helpers and the Program builder."""
 
