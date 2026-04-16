@@ -203,6 +203,8 @@ def _build_route_split_segment(
     total_in_reg: int,
 ) -> list[Program]:
     if len(split.legs) == 1 and split.legs[0].fraction_bps == _BPS_DENOMINATOR:
+        # Fast path: full-allocation single leg does not need split-frame
+        # bookkeeping; emit leg actions directly.
         return _build_dag_actions(
             split.legs[0].actions,
             vm_address=vm_address,
