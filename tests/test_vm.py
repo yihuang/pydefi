@@ -24,6 +24,7 @@ from __future__ import annotations
 import struct
 
 import pytest
+from hexbytes import HexBytes
 
 from pydefi.vm import Program
 from pydefi.vm.abi import emit_abi_encode, emit_abi_encode_packed
@@ -119,7 +120,7 @@ class TestProgramInstructionEmission:
         assert Program().push_u256(42).build() == push_u256(42)
 
     def test_push_addr(self):
-        assert Program().push_addr(ADDR_A).build() == push_addr(ADDR_A)
+        assert Program().push_addr(HexBytes(ADDR_A)).build() == push_addr(HexBytes(ADDR_A))
 
     def test_push_bytes(self):
         data = b"\xde\xad\xbe\xef"
@@ -205,8 +206,8 @@ class TestProgramChaining:
         assert actual == expected
 
     def test_len_matches_bytecode_length(self):
-        p = Program().push_u256(0).push_addr(ADDR_A)
-        assert len(p) == len(push_u256(0) + push_addr(ADDR_A))
+        p = Program().push_u256(0).push_addr(HexBytes(ADDR_A))
+        assert len(p) == len(push_u256(0) + push_addr(HexBytes(ADDR_A)))
 
     def test_bytes_builtin(self):
         p = Program().push_u256(99)
@@ -294,7 +295,7 @@ class TestCallContractHelper:
             + push_u256(0)
             + push_bytes(calldata)
             + push_u256(0)
-            + push_addr(ADDR_A)
+            + push_addr(HexBytes(ADDR_A))
             + gas_opcode()
             + call(require_success=True)
         )
@@ -308,7 +309,7 @@ class TestCallContractHelper:
             + push_u256(0)
             + push_bytes(calldata)
             + push_u256(10**18)
-            + push_addr(ADDR_B)
+            + push_addr(HexBytes(ADDR_B))
             + push_u256(50000)
             + call(require_success=True)
         )
@@ -322,7 +323,7 @@ class TestCallContractHelper:
             + push_u256(0)
             + push_bytes(calldata)
             + push_u256(0)
-            + push_addr(ADDR_A)
+            + push_addr(HexBytes(ADDR_A))
             + gas_opcode()
             + call(require_success=False)
         )
@@ -443,8 +444,8 @@ class TestIntegration:
             Program()
             .call_contract(ADDR_A, approve_cd)
             .pop()
-            .push_addr(ADDR_A)
-            .push_addr(ADDR_B)
+            .push_addr(HexBytes(ADDR_A))
+            .push_addr(HexBytes(ADDR_B))
             .balance_of()
             .push_u256(0)
             .assert_ge("balance too low")
@@ -642,7 +643,7 @@ class TestCallWithPatches:
             + push_u256(42)
             + patch_value(4, 32)
             + push_u256(0)  # value
-            + push_addr(ADDR_A)
+            + push_addr(HexBytes(ADDR_A))
             + gas_opcode()  # gas (forward all)
             + call(True)
         )
@@ -656,14 +657,14 @@ class TestCallWithPatches:
             push_u256(0)
             + push_u256(0)  # retSize, retOffset
             + push_bytes(cd)
-            + push_addr(ADDR_B)
+            + push_addr(HexBytes(ADDR_B))
             + patch_value(16, 20)
             + push_u256(0)
-            + push_addr(ADDR_A)
+            + push_addr(HexBytes(ADDR_A))
             + gas_opcode()  # gas (forward all)
             + call(True)
         )
-        actual = Program().call_with_patches(ADDR_A, cd, [(16, 20, push_addr(ADDR_B))]).build()
+        actual = Program().call_with_patches(ADDR_A, cd, [(16, 20, push_addr(HexBytes(ADDR_B)))]).build()
         assert actual == expected
 
     def test_ret_u256_patch(self):
@@ -676,7 +677,7 @@ class TestCallWithPatches:
             + ret_u256(0)
             + patch_value(4, 32)
             + push_u256(0)
-            + push_addr(ADDR_A)
+            + push_addr(HexBytes(ADDR_A))
             + gas_opcode()
             + call(True)
         )
@@ -693,7 +694,7 @@ class TestCallWithPatches:
             + load_reg(3)
             + patch_value(4, 32)
             + push_u256(0)
-            + push_addr(ADDR_A)
+            + push_addr(HexBytes(ADDR_A))
             + gas_opcode()
             + call(True)
         )
@@ -710,7 +711,7 @@ class TestCallWithPatches:
             + load_reg(5)
             + patch_value(16, 20)
             + push_u256(0)
-            + push_addr(ADDR_A)
+            + push_addr(HexBytes(ADDR_A))
             + gas_opcode()
             + call(True)
         )
@@ -726,10 +727,10 @@ class TestCallWithPatches:
             + push_bytes(cd)
             + push_u256(100)
             + patch_value(4, 32)
-            + push_addr(ADDR_B)
+            + push_addr(HexBytes(ADDR_B))
             + patch_value(4 + 32 + 12, 20)
             + push_u256(0)
-            + push_addr(ADDR_A)
+            + push_addr(HexBytes(ADDR_A))
             + gas_opcode()  # gas (forward all)
             + call(True)
         )
@@ -740,7 +741,7 @@ class TestCallWithPatches:
                 cd,
                 [
                     (4, 32, push_u256(100)),
-                    (4 + 32 + 12, 20, push_addr(ADDR_B)),
+                    (4 + 32 + 12, 20, push_addr(HexBytes(ADDR_B))),
                 ],
             )
             .build()
@@ -755,7 +756,7 @@ class TestCallWithPatches:
             + push_u256(0)  # retSize, retOffset
             + push_bytes(cd)
             + push_u256(10**18)  # value
-            + push_addr(ADDR_A)
+            + push_addr(HexBytes(ADDR_A))
             + push_u256(50_000)  # gas
             + call(True)
         )
@@ -766,7 +767,7 @@ class TestCallWithPatches:
         """require_success=False emits CALL without the success-check block."""
         cd = self._template()
         expected = (
-            push_u256(0) + push_u256(0) + push_bytes(cd) + push_u256(0) + push_addr(ADDR_A) + gas_opcode() + call(False)
+            push_u256(0) + push_u256(0) + push_bytes(cd) + push_u256(0) + push_addr(HexBytes(ADDR_A)) + gas_opcode() + call(False)
         )
         actual = Program().call_with_patches(ADDR_A, cd, [], require_success=False).build()
         assert actual == expected
@@ -2448,7 +2449,7 @@ class TestMiniEVMContext:
         executor = evm_ctx.program_executor
         evm_ctx.mint_token(token, executor, 777 * 10**18)
 
-        program = self_addr() + push_addr(token.hex()) + balance_of() + RETURN_TOP
+        program = self_addr() + push_addr(token) + balance_of() + RETURN_TOP
         result = evm_ctx.run_program(program)
 
         assert not result.is_error
@@ -2459,7 +2460,7 @@ class TestMiniEVMContext:
         holder = b"\x55" * 20
         evm_ctx.mint_token(token, holder, 123 * 10**18)
 
-        program = push_addr(holder.hex()) + push_addr(token.hex()) + balance_of() + RETURN_TOP
+        program = push_addr(holder) + push_addr(token) + balance_of() + RETURN_TOP
         result = evm_ctx.run_program(program)
 
         assert not result.is_error
@@ -2469,7 +2470,7 @@ class TestMiniEVMContext:
         token = evm_ctx.deploy_mock_token()
         empty_addr = b"\xee" * 20
 
-        program = push_addr(empty_addr.hex()) + push_addr(token.hex()) + balance_of() + RETURN_TOP
+        program = push_addr(empty_addr) + push_addr(token) + balance_of() + RETURN_TOP
         result = evm_ctx.run_program(program)
 
         assert not result.is_error
@@ -2498,7 +2499,7 @@ class TestMiniEVMContext:
             + push_u256(0)  # retLen=0, retOffset=0
             + push_bytes(transfer_cd)  # argsOffset, argsLen
             + push_u256(0)  # value=0
-            + push_addr(token.hex())  # target
+            + push_addr(token)  # target
             + gas_opcode()
             + call()
             + pop()  # pop success flag
@@ -2592,7 +2593,7 @@ class TestMiniEVMContext:
             + push_u256(0)
             + push_bytes(cd)
             + push_u256(0)
-            + push_addr(token.hex())
+            + push_addr(token)
             + gas_opcode()
             + call()
             + pop()
@@ -2601,7 +2602,7 @@ class TestMiniEVMContext:
         assert not r1.is_error
 
         # Second run_program: check balance persisted
-        bal_prog = self_addr() + push_addr(token.hex()) + balance_of() + RETURN_TOP
+        bal_prog = self_addr() + push_addr(token) + balance_of() + RETURN_TOP
         r2 = evm_ctx.run_program(bal_prog)
         assert not r2.is_error
         assert int.from_bytes(r2.output, "big") == 600 * 10**18

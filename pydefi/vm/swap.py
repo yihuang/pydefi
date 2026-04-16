@@ -210,10 +210,10 @@ def encode_v3_path(tokens: list[str], fees: list[int]) -> bytes:
     """
     if len(fees) != len(tokens) - 1:
         raise ValueError(f"encode_v3_path: len(fees) ({len(fees)}) must equal len(tokens)-1 ({len(tokens) - 1})")
-    result = bytes(HexBytes(tokens[0]))
+    result = HexBytes(tokens[0])
     for fee, token in zip(fees, tokens[1:]):
         result += fee.to_bytes(3, "big")
-        result += bytes(HexBytes(token))
+        result += HexBytes(token)
     return result
 
 
@@ -774,8 +774,8 @@ def check_min_balance(token: str, account: str, min_amount: int) -> Program:
     """
     return (
         Program()
-        ._emit(push_addr(account))
-        ._emit(push_addr(token))
+        ._emit(push_addr(HexBytes(account)))
+        ._emit(push_addr(HexBytes(token)))
         ._emit(balance_of())
         ._emit(push_u256(min_amount))
         ._emit(swap())

@@ -259,8 +259,8 @@ class UniswapV3(BaseAMM):
         """
         if len(fees) != len(tokens) - 1:
             raise ValueError("len(fees) must equal len(tokens) - 1")
-        result = bytes(HexBytes(tokens[0].address))
+        result = HexBytes(tokens[0].address)
         for fee, token in zip(fees, tokens[1:]):
             result += fee.to_bytes(3, "big")
-            result += bytes(HexBytes(token.address))
+            result += HexBytes(token.address)
         return result

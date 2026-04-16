@@ -158,7 +158,7 @@ def action_hash(
         data += b"\x00"
     else:
         data += b"\x01"
-        data += bytes(HexBytes(vault_address))
+        data += HexBytes(vault_address)
     if expires_after is not None:
         data += b"\x00"
         data += expires_after.to_bytes(8, "big")

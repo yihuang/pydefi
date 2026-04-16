@@ -9,15 +9,19 @@ from decimal import ROUND_DOWN, Decimal
 from enum import IntEnum
 from typing import ClassVar
 
+from hexbytes import HexBytes
+
 # ---------------------------------------------------------------------------
 # Type aliases
 # ---------------------------------------------------------------------------
 
-#: EVM address as a 0x-prefixed hex string (checksummed or lowercase, 42 chars).
-Address = str
+#: EVM address as 20 raw bytes (canonical intermediate representation).
+#: Use ``HexBytes(addr_str)`` to convert a 0x-prefixed hex string to Address.
+Address = HexBytes
 
-#: 32-byte hash or log topic as a 0x-prefixed hex string (66 chars).
-Hash = str
+#: 32-byte hash or log topic as raw bytes (canonical intermediate representation).
+#: Use ``HexBytes(hash_str)`` to convert a 0x-prefixed hex string to Hash.
+Hash = HexBytes
 
 
 class ChainId(IntEnum):

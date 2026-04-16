@@ -220,7 +220,7 @@ def encode_cctp_forward_hook_data(
 
     # With recipient: 20 bytes address + 4 bytes dex = 24 bytes of data
     data_length = (24).to_bytes(4, "big")
-    addr_bytes = bytes(HexBytes(recipient))
+    addr_bytes = HexBytes(recipient)
     if len(addr_bytes) != 20:
         raise ValueError(f"recipient must be a 20-byte EVM address, got {len(addr_bytes)} bytes")
     dex_bytes = (destination_dex & 0xFFFFFFFF).to_bytes(4, "big")
@@ -312,7 +312,7 @@ class CCTP(BaseBridge):
     @staticmethod
     def _address_to_bytes32(address: str) -> bytes:
         """Left-pad an EVM address to 32 bytes."""
-        return address_to_bytes32(address)
+        return address_to_bytes32(HexBytes(address))
 
     # -----------------------------------------------------------------------
     # Circle Iris v2 API

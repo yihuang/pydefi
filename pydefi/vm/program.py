@@ -27,7 +27,7 @@ Usage example::
 
 from __future__ import annotations
 
-from hexbytes import HexBytes
+from pydefi.types import Address
 
 # ---------------------------------------------------------------------------
 # Opcode constants — single EVM opcode identifiers
@@ -97,12 +97,11 @@ def push_u256(n: int) -> bytes:
     return bytes([OP_PUSH_U256]) + n.to_bytes(32, "big")
 
 
-def push_addr(a: str) -> bytes:
+def push_addr(a: Address) -> bytes:
     """Emit PUSH20 — push a 20-byte Ethereum address onto the native EVM stack."""
-    raw = bytes(HexBytes(a))
-    if len(raw) != 20:
+    if len(a) != 20:
         raise ValueError(f"push_addr: bad address length: {a!r}")
-    return bytes([OP_PUSH_ADDR]) + raw
+    return bytes([OP_PUSH_ADDR]) + a
 
 
 def gas_opcode() -> bytes:

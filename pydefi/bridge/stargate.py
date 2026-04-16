@@ -112,7 +112,7 @@ class Stargate(BaseBridge):
         """
         lz_dst_chain = self._lz_chain_id(dst_chain_id)
         lz_tx_params = (dst_gas, 0, b"")
-        to_bytes = bytes(HexBytes(recipient))
+        to_bytes = HexBytes(recipient)
         try:
             result = await STARGATE_ROUTER.fns.quoteLayerZeroFee(
                 lz_dst_chain,
@@ -192,7 +192,7 @@ class Stargate(BaseBridge):
         min_amount = self._apply_slippage(amount_out_raw, slippage_bps)
 
         lz_tx_params = (dst_gas, 0, b"")
-        to_bytes = bytes(HexBytes(recipient))
+        to_bytes = HexBytes(recipient)
 
         # Build call data via the Contract ABI
         call_data = STARGATE_ROUTER.fns.swap(

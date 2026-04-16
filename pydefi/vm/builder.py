@@ -178,10 +178,12 @@ import struct
 from typing import TYPE_CHECKING
 
 from eth_abi import encode_with_hooks
+from hexbytes import HexBytes
 
 if TYPE_CHECKING:
     from eth_abi.hooks import EncodingContext
 
+from pydefi.types import Address
 from pydefi.vm.abi import emit_abi_encode, emit_abi_encode_packed
 from pydefi.vm.program import (
     OP_JUMPDEST,
@@ -387,7 +389,7 @@ class Program:
         """Emit PUSH_U256."""
         return self._emit(push_u256(n))
 
-    def push_addr(self, a: str) -> "Program":
+    def push_addr(self, a: Address) -> "Program":
         """Emit PUSH_ADDR."""
         return self._emit(push_addr(a))
 
@@ -679,7 +681,7 @@ class Program:
             ._emit(push_u256(0))  # retOffset
             ._emit(push_bytes(calldata))  # argsOffset (TOS), argsLen
             ._emit(push_u256(value))
-            ._emit(push_addr(to))
+            ._emit(push_addr(HexBytes(to)))
             ._emit(gas_opcode() if gas == 0 else push_u256(gas))
             ._emit(call(require_success))
         )
@@ -885,7 +887,7 @@ class Program:
 
         # Stack now: [argsOffset(TOS), argsLen, retOffset, retSize] — ready for CALL prologue
         self._emit(push_u256(value))
-        self._emit(push_addr(to))
+        self._emit(push_addr(HexBytes(to)))
         self._emit(gas_opcode() if gas == 0 else push_u256(gas))
         self._emit(call(require_success))
         return self

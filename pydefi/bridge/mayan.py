@@ -98,7 +98,7 @@ def _token_to_bytes32(token_address: str) -> bytes:
     """
     if token_address.lower() in _NATIVE_SENTINELS:
         return bytes(32)
-    return address_to_bytes32(token_address)
+    return address_to_bytes32(HexBytes(token_address))
 
 
 _ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
@@ -371,10 +371,10 @@ class Mayan(BaseBridge):
         # Use os.urandom for the order's random field to ensure uniqueness
         random_b32 = os.urandom(32)
 
-        trader_b32 = address_to_bytes32(recipient)
+        trader_b32 = address_to_bytes32(HexBytes(recipient))
         token_out_b32 = _token_to_bytes32(token_out.address)
-        dest_addr_b32 = address_to_bytes32(recipient)
-        referrer_b32 = address_to_bytes32(referrer) if referrer else bytes(32)
+        dest_addr_b32 = address_to_bytes32(HexBytes(recipient))
+        referrer_b32 = address_to_bytes32(HexBytes(referrer)) if referrer else bytes(32)
 
         # SWIFT V2 OrderParams (field order differs from V1)
         order_params = MayanSwiftOrderParams(
@@ -433,7 +433,7 @@ class Mayan(BaseBridge):
         forward_calldata: bytes = MAYAN_FORWARDER.fns.swapAndForwardEth(
             amount_in.amount,  # uint256 amountIn (ETH to swap)
             swap_router_address,  # address swapProtocol (DEX router)
-            bytes(HexBytes(swap_router_calldata)),  # bytes swapData
+            HexBytes(swap_router_calldata),  # bytes swapData
             swift_input_contract,  # address middleToken (WETH)
             min_middle_amount,  # uint256 minMiddleAmount
             swift_contract,  # address mayanProtocol (SWIFT V2 contract)
