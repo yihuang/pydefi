@@ -21,7 +21,7 @@ from pydefi.aggregator.okx import OKX
 from pydefi.aggregator.openocean import OpenOcean
 from pydefi.types import TokenAmount
 
-from .conftest import USDC, WETH
+from .conftest import ETH_WHALE, USDC, WETH
 
 # ---------------------------------------------------------------------------
 # Plausible WETH → USDC price bounds
@@ -31,7 +31,7 @@ MIN_USDC = 500 * 10**6  # 500 USDC per ETH minimum
 MAX_USDC = 10_000 * 10**6  # 10 000 USDC per ETH maximum
 
 # Vitalik's address – used as a read-only wallet for swap-quote requests.
-_WALLET = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"
+_WALLET = ETH_WHALE
 
 _OKX_API_KEY: str | None = os.environ.get("OKX_API_KEY")
 

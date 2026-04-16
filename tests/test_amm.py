@@ -20,34 +20,20 @@ from pydefi.amm.universal_router import (
     V4Hop,
 )
 from pydefi.exceptions import InsufficientLiquidityError
-from pydefi.types import ChainId, SwapTransaction, Token, TokenAmount
+from pydefi.types import SwapTransaction, TokenAmount
+from tests.well_known import mainnet as mainnet
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
-WETH = Token(
-    chain_id=ChainId.ETHEREUM,
-    address="0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
-    symbol="WETH",
-    decimals=18,
-)
-USDC = Token(
-    chain_id=ChainId.ETHEREUM,
-    address="0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
-    symbol="USDC",
-    decimals=6,
-)
-DAI = Token(
-    chain_id=ChainId.ETHEREUM,
-    address="0x6B175474E89094C44Da98b954EedeAC495271d0F",
-    symbol="DAI",
-    decimals=18,
-)
+WETH = mainnet.WETH
+USDC = mainnet.USDC
+DAI = mainnet.DAI
 
-ROUTER_V2 = "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D"
-ROUTER_V3 = "0xE592427A0AEce92De3Edee1F18E0157C05861564"
-QUOTER_V3 = "0x61fFE014bA17989E743c5F6cB21bF9697530B21e"
+ROUTER_V2 = mainnet.UNISWAP_V2_ROUTER
+ROUTER_V3 = mainnet.UNISWAP_V3_ROUTER
+QUOTER_V3 = mainnet.UNISWAP_V3_QUOTER
 
 
 # ---------------------------------------------------------------------------
@@ -226,7 +212,7 @@ class TestUniswapV3Instance:
 # ---------------------------------------------------------------------------
 
 UNIVERSAL_ROUTER_ADDR = "0x66a9893cC07D91D95644AEDD05D03f95e1dBA8Af"  # UniversalRouterV2 on Ethereum mainnet
-RECIPIENT = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"
+RECIPIENT = mainnet.ETH_WHALE
 
 
 class TestRouterCommand:

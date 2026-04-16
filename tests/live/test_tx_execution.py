@@ -39,22 +39,14 @@ from pydefi.amm.uniswap_v3 import UniswapV3
 from pydefi.amm.universal_router import UNIVERSAL_ROUTER_ADDRESSES, UniversalRouter, V4Hop
 from pydefi.types import TokenAmount
 
-from .conftest import USDC, WETH
+from .conftest import ETH_WHALE, UNISWAP_V3_QUOTER, UNISWAP_V3_ROUTER, UNISWAP_V4_POOL_MANAGER, USDC, WETH
 
 # ---------------------------------------------------------------------------
 # Contract addresses
 # ---------------------------------------------------------------------------
 
 UNIVERSAL_ROUTER_V2 = UNIVERSAL_ROUTER_ADDRESSES[1]
-UNISWAP_V3_ROUTER = "0xE592427A0AEce92De3Edee1F18E0157C05861564"
-UNISWAP_V3_QUOTER = "0x61fFE014bA17989E743c5F6cB21bF9697530B21e"
-
-# Uniswap V4 PoolManager on Ethereum mainnet
-V4_POOL_MANAGER = "0x000000000004444c5dc75cB358380D2e3dE08A90"
-
-# A well-known ETH whale used as the transaction sender.
-# Impersonated via anvil_impersonateAccount — no private key needed.
-ETH_WHALE = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"  # vitalik.eth
+V4_POOL_MANAGER = UNISWAP_V4_POOL_MANAGER
 
 # 0.01 ETH in wei
 ETH_SWAP_AMOUNT = 10**16

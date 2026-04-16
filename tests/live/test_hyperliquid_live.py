@@ -18,6 +18,7 @@ from pydefi.bridge.cctp import CCTP, HYPERCORE_DEX_SPOT
 from pydefi.hyperliquid import HyperliquidClient
 from pydefi.rpc import get_w3
 from pydefi.types import ChainId, Token, TokenAmount
+from tests.well_known import mainnet
 
 # ---------------------------------------------------------------------------
 # Token definitions
@@ -50,7 +51,7 @@ USDC_HYPEREVM = Token(
 BRIDGE_AMOUNT_USDC = 1_000 * 10**6
 
 # A well-known address used as a mock recipient (no funds needed).
-MOCK_RECIPIENT = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"
+MOCK_RECIPIENT = mainnet.ETH_WHALE
 
 
 # ---------------------------------------------------------------------------

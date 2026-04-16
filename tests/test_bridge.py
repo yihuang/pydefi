@@ -18,6 +18,7 @@ from pydefi.bridge.relay import Relay
 from pydefi.bridge.stargate import _LZ_CHAIN_ID, _POOL_IDS, Stargate
 from pydefi.exceptions import BridgeError
 from pydefi.types import ChainId, Token, TokenAmount
+from tests.well_known import mainnet
 
 
 def _make_aiohttp_mock(status: int, response_data) -> MagicMock:
@@ -718,7 +719,7 @@ class TestLayerZeroOFT:
             oft._lz_eid(999999)
 
     def test_address_to_bytes32(self):
-        addr = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"
+        addr = mainnet.ETH_WHALE
         result = LayerZeroOFT._address_to_bytes32(addr)
         assert len(result) == 32
         # Address bytes should appear in the last 20 bytes
@@ -906,7 +907,7 @@ class TestLayerZeroOFT:
 # CCTP encode_cctp_forward_hook_data tests
 # ---------------------------------------------------------------------------
 
-_MOCK_RECIPIENT = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"
+_MOCK_RECIPIENT = mainnet.ETH_WHALE
 
 
 class TestEncodeCctpForwardHookData:

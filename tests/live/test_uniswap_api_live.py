@@ -21,7 +21,7 @@ import pytest
 from pydefi.aggregator.uniswap import UniswapAPI
 from pydefi.types import TokenAmount
 
-from .conftest import DAI, USDC, WETH
+from .conftest import DAI, ETH_WHALE, USDC, WETH
 
 # ---------------------------------------------------------------------------
 # Plausible WETH → USDC price bounds
@@ -36,7 +36,7 @@ MAX_USDC = 10_000 * 10**6  # 10 000 USDC per ETH maximum
 
 _API_KEY: str | None = os.environ.get("UNISWAP_API_KEY")
 # Wallet used as swapper for live calls that require a wallet address.
-_WALLET = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"  # vitalik.eth
+_WALLET = ETH_WHALE
 
 
 def _make_client(chain_id: int = 1) -> UniswapAPI:
