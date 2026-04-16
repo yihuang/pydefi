@@ -10,8 +10,6 @@ from enum import IntEnum
 
 from hexbytes import HexBytes
 
-from ._utils import encode_address
-
 # ---------------------------------------------------------------------------
 # Type aliases
 # ---------------------------------------------------------------------------
@@ -92,6 +90,8 @@ class Token:
     @property
     def encoded_address(self) -> str:
         """Return the chain-specific string representation of the token's address."""
+        from pydefi._utils import encode_address  # lazy import to avoid circular dependency
+
         return encode_address(self.address, self.chain_id)
 
 @dataclass

@@ -93,7 +93,7 @@ def _mayan_token_address(address: Address, chain_id: int) -> str:
     (ETH, BNB, etc.).  Any ``EeeE...`` sentinel is canonicalized here so
     that API requests always use the representation the server expects.
     """
-    if bytes(address) == _EEEEE_SENTINEL_BYTES:
+    if address == _EEEEE_SENTINEL_BYTES:
         return _ZERO_ADDRESS
     return encode_address(address, chain_id)
 

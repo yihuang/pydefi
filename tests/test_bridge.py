@@ -362,7 +362,7 @@ class TestMayan:
         """
         m = Mayan(src_chain_id=1, dst_chain_id=42161)
         amount_in = TokenAmount(token=ETH_NATIVE, amount=10**18)  # 1 ETH
-        recipient = "0x" + "CC" * 20
+        recipient = HexBytes("0x" + "CC" * 20)
         weth = WETH.address
         swift_contract = "0x" + "AA" * 20
         swap_router = "0x" + "BB" * 20
@@ -720,12 +720,14 @@ class TestLayerZeroOFT:
             oft._lz_eid(999999)
 
     def test_address_to_bytes32(self):
-        addr = ETH_WHALE
-        result = LayerZeroOFT._address_to_bytes32(addr)
+        from pydefi._utils import address_to_bytes32
+
+        addr = HexBytes(ETH_WHALE)
+        result = address_to_bytes32(addr)
         assert len(result) == 32
         # Address bytes should appear in the last 20 bytes
         assert result[:12] == b"\x00" * 12
-        assert result[12:].hex() == addr[2:].lower()
+        assert result[12:] == bytes(addr)
 
     def test_apply_slippage(self):
         oft = LayerZeroOFT(

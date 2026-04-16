@@ -120,7 +120,7 @@ class TestProgramInstructionEmission:
         assert Program().push_u256(42).build() == push_u256(42)
 
     def test_push_addr(self):
-        assert Program().push_addr(HexBytes(ADDR_A)).build() == push_addr(HexBytes(ADDR_A))
+        assert Program().push_addr(ADDR_A).build() == push_addr(ADDR_A)
 
     def test_push_bytes(self):
         data = b"\xde\xad\xbe\xef"
@@ -338,7 +338,7 @@ class TestCallContractHelper:
     def test_call_contract_address_embedded(self):
         # The address should be present in the bytecode
         bytecode = Program().call_contract(HexBytes(ADDR_A), b"\x00").build()
-        assert bytes.fromhex(ADDR_A[2:]) in bytecode
+        assert bytes(ADDR_A) in bytecode
 
 
 # ---------------------------------------------------------------------------
@@ -366,7 +366,7 @@ class TestABIHelpers:
         # Address is right-aligned in a 32-byte word (bytes 4..35)
         addr_word = cd[4:36]
         assert addr_word[:12] == b"\x00" * 12
-        assert addr_word[12:] == bytes.fromhex(ADDR_A[2:])
+        assert addr_word[12:] == bytes(ADDR_A)
 
     def test_erc20_transfer_amount_encoding(self):
         from eth_contract.erc20 import ERC20
@@ -407,8 +407,8 @@ class TestABIHelpers:
         cd = bytes(ERC20.fns.transferFrom(ADDR_A, ADDR_B, 0).data)
         from_word = cd[4:36]
         to_word = cd[36:68]
-        assert from_word[12:] == bytes.fromhex(ADDR_A[2:])
-        assert to_word[12:] == bytes.fromhex(ADDR_B[2:])
+        assert from_word[12:] == bytes(ADDR_A)
+        assert to_word[12:] == bytes(ADDR_B)
 
     def test_erc20_balance_of_selector(self):
         from eth_contract.erc20 import ERC20
@@ -1201,7 +1201,7 @@ class TestPatch:
         # ADDR_B must be baked into the calldata template in the bytecode.
         # push_bytes splits calldata into 32-byte chunks, so the 20-byte address
         # may span two chunks; check that both halves appear.
-        addr_bytes = bytes.fromhex(ADDR_B[2:])
+        addr_bytes = bytes(ADDR_B)
         assert addr_bytes[:16] in bytecode
         assert addr_bytes[16:] in bytecode
         # The patch opcodes must be present

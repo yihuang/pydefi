@@ -33,9 +33,9 @@ def _relay_currency(token: Token) -> str:
     common ``0xEeEe...`` sentinel to the zero address so the API
     does not reject it with ``INVALID_INPUT_CURRENCY``.
     """
-    if bytes(token.address) == _EEEEE_SENTINEL_BYTES:
+    if token.address == _EEEEE_SENTINEL_BYTES:
         return _RELAY_NATIVE
-    return encode_address(token.address, token.chain_id)
+    return token.encoded_address
 
 
 class Relay(BaseBridge):
