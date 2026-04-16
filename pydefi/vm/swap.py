@@ -350,7 +350,12 @@ def _build_v3_pool_swap_segment(hop: SwapHop, *, amount_reg: int) -> Program:
     2. Extract ``amountOut`` from return values (negate the negative delta).
     3. Store ``amountOut`` back in *amount_reg*.
     """
-    return Program()._emit(load_reg(amount_reg)).extend(_build_v3_pool_swap_segment_on_stack(hop))._emit(store_reg(amount_reg))
+    return (
+        Program()
+        ._emit(load_reg(amount_reg))
+        .extend(_build_v3_pool_swap_segment_on_stack(hop))
+        ._emit(store_reg(amount_reg))
+    )
 
 
 def _build_v2_direct_swap_segment_on_stack(hop: SwapHop, *, amount_out_reg: int = _AMOUNT_OUT_REG) -> Program:
@@ -442,9 +447,12 @@ def _build_v2_direct_swap_segment(hop: SwapHop, *, amount_reg: int, amount_out_r
             value (must differ from *amount_reg*).
     """
 
-    return Program()._emit(load_reg(amount_reg)).extend(
-        _build_v2_direct_swap_segment_on_stack(hop, amount_out_reg=amount_out_reg)
-    )._emit(store_reg(amount_reg))
+    return (
+        Program()
+        ._emit(load_reg(amount_reg))
+        .extend(_build_v2_direct_swap_segment_on_stack(hop, amount_out_reg=amount_out_reg))
+        ._emit(store_reg(amount_reg))
+    )
 
 
 # ---------------------------------------------------------------------------
