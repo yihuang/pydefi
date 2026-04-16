@@ -614,9 +614,7 @@ class Program:
         """
         for offset, size in patches:
             if not (0 < size <= 32):
-                raise ValueError(
-                    f"patch_bytes_from_stack: patch size {size!r} not supported; expected 0 < size <= 32"
-                )
+                raise ValueError(f"patch_bytes_from_stack: patch size {size!r} not supported; expected 0 < size <= 32")
             # SWAP1+SWAP2 rotates the next arg to TOS with argsOffset at 2nd —
             # exactly the layout patch_value expects — consuming the arg directly.
             self._emit(bytes([0x90]))  # SWAP1: [argsLen, argsOffset, val_i, …]

@@ -974,13 +974,7 @@ class TestPatchBytesFromStack:
     def test_two_patches_bytecode(self):
         """Two patches each emit SWAP1+SWAP2+patch_value."""
         cd = self._template()
-        expected = (
-            push_bytes(cd)
-            + self._ROTATE_ARG
-            + patch_value(4, 32)
-            + self._ROTATE_ARG
-            + patch_value(36, 20)
-        )
+        expected = push_bytes(cd) + self._ROTATE_ARG + patch_value(4, 32) + self._ROTATE_ARG + patch_value(36, 20)
         actual = Program().push_bytes(cd).patch_bytes_from_stack([(4, 32), (36, 20)]).build()
         assert actual == expected
 
