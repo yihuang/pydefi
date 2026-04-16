@@ -1720,6 +1720,7 @@ class TestBuildProgramForDAG:
             .leg(5000)
             .swap(self.TOKEN_C, self._v3_edge(self.POOL1, self.TOKEN_A, self.TOKEN_C))
             .leg(5000)
+            .swap(self.TOKEN_B, self._v3_edge(self.POOL2, self.TOKEN_A, self.TOKEN_B))
             .split()
             .leg(5000)
             .swap(self.TOKEN_B, self._v3_edge(self.POOL2, self.TOKEN_A, self.TOKEN_B))

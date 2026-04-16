@@ -39,6 +39,7 @@ Two complementary interfaces are provided:
 
 from pydefi.vm.abi import emit_abi_encode, emit_abi_encode_packed
 from pydefi.vm.builder import Patch, PatchSource, PatchSpec, Program
+from pydefi.vm.dag import build_execution_program_for_dag, build_quote_program_for_dag
 from pydefi.vm.program import (
     OP_ADD,
     OP_AND,
@@ -113,9 +114,7 @@ from pydefi.vm.swap import (
     SplitLeg,
     SwapHop,
     SwapProtocol,
-    build_execution_program_for_dag,
     build_multi_hop_program,
-    build_quote_program_for_dag,
     build_split_program,
     check_min_balance,
     encode_v2_callback_data,

@@ -285,6 +285,7 @@ class TestRouteDAG:
             .leg(5000)
             .swap(self.token1, "pool1")
             .leg(5000)
+            .swap(self.token1, "pool_seed")
             .split()
             .leg(5000)
             .swap(self.token1, "pool2")
@@ -298,9 +299,14 @@ class TestRouteDAG:
         outer = payload["actions"][0]
         assert isinstance(outer, RouteSplit)
         assert len(outer.legs) == 2
-        nested = outer.legs[1].actions[0]
+        nested = outer.legs[1].actions[1]
         assert isinstance(nested, RouteSplit)
         assert [leg.fraction_bps for leg in nested.legs] == [5000, 5000]
+
+    def test_nested_split_requires_non_empty_active_leg(self):
+        dag = RouteDAG().from_token(self.token0).split().leg(10000)
+        with pytest.raises(ValueError, match=r"nested split\(\) requires at least one swap\(\)"):
+            dag.split()
 
     def test_swap_inside_split_requires_leg(self):
         dag = RouteDAG().from_token(self.token0).split()
