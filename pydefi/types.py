@@ -234,8 +234,6 @@ class RouteDAG:
             parent = self._split_stack[-1]
             if parent.active_leg is None or parent.active_leg.current_token is None:
                 raise ValueError("leg() must be called before nested split()")
-            if not parent.active_leg.actions:
-                raise ValueError("nested split() requires at least one swap() in the active leg")
             origin_token = parent.active_leg.current_token
 
         if origin_token is None:
