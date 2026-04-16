@@ -791,10 +791,6 @@ def build_execution_program_for_dag(
     vm_address: str,
     recipient: str,
     min_final_out: int = 0,
-    amount_reg: int = _AMOUNT_REG,
-    amount_out_reg: int = _AMOUNT_OUT_REG,
-    accum_reg: int = _ACCUM_REG,
-    total_in_reg: int = _TOTAL_IN_REG,
 ) -> Program:
     """Build execution bytecode from a :class:`RouteDAG`.
 
@@ -802,7 +798,6 @@ def build_execution_program_for_dag(
     """
     from pydefi.vm.dag import build_execution_program_for_dag as _build
 
-    _ = (amount_reg, amount_out_reg, accum_reg, total_in_reg)
     return _build(
         dag,
         amount_in=amount_in,
@@ -818,10 +813,6 @@ def build_quote_program_for_dag(
     amount_in: int,
     vm_address: str,
     min_final_out: int = 0,
-    amount_reg: int = _AMOUNT_REG,
-    amount_out_reg: int = _AMOUNT_OUT_REG,
-    accum_reg: int = _ACCUM_REG,
-    total_in_reg: int = _TOTAL_IN_REG,
 ) -> Program:
     """Build quote/simulation bytecode from a :class:`RouteDAG`.
 
@@ -829,7 +820,6 @@ def build_quote_program_for_dag(
     """
     from pydefi.vm.dag import build_quote_program_for_dag as _build
 
-    _ = (amount_reg, amount_out_reg, accum_reg, total_in_reg)
     return _build(
         dag,
         amount_in=amount_in,
