@@ -299,7 +299,7 @@ class TestCallContractHelper:
             + gas_opcode()
             + call(require_success=True)
         )
-        actual = Program().call_contract(ADDR_A, calldata).build()
+        actual = Program().call_contract(HexBytes(ADDR_A), calldata).build()
         assert actual == expected
 
     def test_call_contract_with_value_and_gas(self):
@@ -313,7 +313,7 @@ class TestCallContractHelper:
             + push_u256(50000)
             + call(require_success=True)
         )
-        actual = Program().call_contract(ADDR_B, calldata, value=10**18, gas=50000).build()
+        actual = Program().call_contract(HexBytes(ADDR_B), calldata, value=10**18, gas=50000).build()
         assert actual == expected
 
     def test_call_contract_no_require_success(self):
@@ -327,17 +327,17 @@ class TestCallContractHelper:
             + gas_opcode()
             + call(require_success=False)
         )
-        actual = Program().call_contract(ADDR_A, calldata, require_success=False).build()
+        actual = Program().call_contract(HexBytes(ADDR_A), calldata, require_success=False).build()
         assert actual == expected
 
     def test_call_contract_push_bytes_opcode(self):
         # push_bytes embeds calldata as PUSH32 immediates; verify data is present
-        bytecode = Program().call_contract(ADDR_A, b"\x00").build()
+        bytecode = Program().call_contract(HexBytes(ADDR_A), b"\x00").build()
         assert b"\x00" * 32 in bytecode  # zero-padded chunk embedded via PUSH32
 
     def test_call_contract_address_embedded(self):
         # The address should be present in the bytecode
-        bytecode = Program().call_contract(ADDR_A, b"\x00").build()
+        bytecode = Program().call_contract(HexBytes(ADDR_A), b"\x00").build()
         assert bytes.fromhex(ADDR_A[2:]) in bytecode
 
 
@@ -442,7 +442,7 @@ class TestIntegration:
         approve_cd = bytes(ERC20.fns.approve(ADDR_B, 10**18).data)
         bytecode = (
             Program()
-            .call_contract(ADDR_A, approve_cd)
+            .call_contract(HexBytes(ADDR_A), approve_cd)
             .pop()
             .push_addr(HexBytes(ADDR_A))
             .push_addr(HexBytes(ADDR_B))
@@ -481,11 +481,11 @@ class TestIntegration:
         cd3 = bytes(ERC20.fns.balanceOf(ADDR_A).data)
         bytecode = (
             Program()
-            .call_contract(ADDR_A, cd1)
+            .call_contract(HexBytes(ADDR_A), cd1)
             .pop()
-            .call_contract(ADDR_A, cd2)
+            .call_contract(HexBytes(ADDR_A), cd2)
             .pop()
-            .call_contract(ADDR_A, cd3)
+            .call_contract(HexBytes(ADDR_A), cd3)
             .pop()
             .build()
         )
@@ -628,8 +628,8 @@ class TestCallWithPatches:
     def test_no_patches_equals_call_contract(self):
         """With an empty patches list, call_with_patches == call_contract."""
         cd = self._template()
-        expected = Program().call_contract(ADDR_A, cd).build()
-        actual = Program().call_with_patches(ADDR_A, cd, []).build()
+        expected = Program().call_contract(HexBytes(ADDR_A), cd).build()
+        actual = Program().call_with_patches(HexBytes(ADDR_A), cd, []).build()
         assert actual == expected
 
     def test_bytes_u256_patch(self):
@@ -647,7 +647,7 @@ class TestCallWithPatches:
             + gas_opcode()  # gas (forward all)
             + call(True)
         )
-        actual = Program().call_with_patches(ADDR_A, cd, [(4, 32, push_u256(42))]).build()
+        actual = Program().call_with_patches(HexBytes(ADDR_A), cd, [(4, 32, push_u256(42))]).build()
         assert actual == expected
 
     def test_bytes_addr_patch(self):
@@ -664,7 +664,7 @@ class TestCallWithPatches:
             + gas_opcode()  # gas (forward all)
             + call(True)
         )
-        actual = Program().call_with_patches(ADDR_A, cd, [(16, 20, push_addr(HexBytes(ADDR_B)))]).build()
+        actual = Program().call_with_patches(HexBytes(ADDR_A), cd, [(16, 20, push_addr(HexBytes(ADDR_B)))]).build()
         assert actual == expected
 
     def test_ret_u256_patch(self):
@@ -681,7 +681,7 @@ class TestCallWithPatches:
             + gas_opcode()
             + call(True)
         )
-        actual = Program().call_with_patches(ADDR_A, cd, [(4, 32, ret_u256(0))]).build()
+        actual = Program().call_with_patches(HexBytes(ADDR_A), cd, [(4, 32, ret_u256(0))]).build()
         assert actual == expected
 
     def test_reg_patch(self):
@@ -698,7 +698,7 @@ class TestCallWithPatches:
             + gas_opcode()
             + call(True)
         )
-        actual = Program().call_with_patches(ADDR_A, cd, [(4, 32, load_reg(3))]).build()
+        actual = Program().call_with_patches(HexBytes(ADDR_A), cd, [(4, 32, load_reg(3))]).build()
         assert actual == expected
 
     def test_reg_patch_addr(self):
@@ -715,7 +715,7 @@ class TestCallWithPatches:
             + gas_opcode()
             + call(True)
         )
-        actual = Program().call_with_patches(ADDR_A, cd, [(16, 20, load_reg(5))]).build()
+        actual = Program().call_with_patches(HexBytes(ADDR_A), cd, [(16, 20, load_reg(5))]).build()
         assert actual == expected
 
     def test_multiple_patches(self):
@@ -737,7 +737,7 @@ class TestCallWithPatches:
         actual = (
             Program()
             .call_with_patches(
-                ADDR_A,
+                HexBytes(ADDR_A),
                 cd,
                 [
                     (4, 32, push_u256(100)),
@@ -760,7 +760,7 @@ class TestCallWithPatches:
             + push_u256(50_000)  # gas
             + call(True)
         )
-        actual = Program().call_with_patches(ADDR_A, cd, [], value=10**18, gas=50_000).build()
+        actual = Program().call_with_patches(HexBytes(ADDR_A), cd, [], value=10**18, gas=50_000).build()
         assert actual == expected
 
     def test_require_success_false(self):
@@ -775,33 +775,33 @@ class TestCallWithPatches:
             + gas_opcode()
             + call(False)
         )
-        actual = Program().call_with_patches(ADDR_A, cd, [], require_success=False).build()
+        actual = Program().call_with_patches(HexBytes(ADDR_A), cd, [], require_success=False).build()
         assert actual == expected
 
     def test_invalid_patch_size_raises(self):
         with pytest.raises(ValueError, match="patch size"):
-            Program().call_with_patches(ADDR_A, self._template(), [(4, 0, push_u256(0))]).build()
+            Program().call_with_patches(HexBytes(ADDR_A), self._template(), [(4, 0, push_u256(0))]).build()
 
     def test_non_bytes_opcodes_raises(self):
         """Passing a non-bytes source raises TypeError."""
         with pytest.raises(TypeError, match="opcodes must be bytes or bytearray"):
-            Program().call_with_patches(ADDR_A, self._template(), [(4, 32, 42)]).build()
+            Program().call_with_patches(HexBytes(ADDR_A), self._template(), [(4, 32, 42)]).build()
 
     def test_non_bytes_str_opcodes_raises(self):
         """Passing a string raises TypeError."""
         with pytest.raises(TypeError, match="opcodes must be bytes or bytearray"):
-            Program().call_with_patches(ADDR_A, self._template(), [(4, 32, "0xdeadbeef")]).build()
+            Program().call_with_patches(HexBytes(ADDR_A), self._template(), [(4, 32, "0xdeadbeef")]).build()
 
     def test_non_bytes_none_opcodes_raises(self):
         """Passing None raises TypeError."""
         with pytest.raises(TypeError, match="opcodes must be bytes or bytearray"):
-            Program().call_with_patches(ADDR_A, self._template(), [(4, 32, None)]).build()
+            Program().call_with_patches(HexBytes(ADDR_A), self._template(), [(4, 32, None)]).build()
 
     def test_chained_with_composition(self):
         """call_with_patches works correctly when composed with other programs."""
         cd = self._template()
-        step1 = Program().call_contract(ADDR_A, cd).pop()
-        step2 = Program().call_with_patches(ADDR_A, cd, [(4, 32, ret_u256(0))]).pop()
+        step1 = Program().call_contract(HexBytes(ADDR_A), cd).pop()
+        step2 = Program().call_with_patches(HexBytes(ADDR_A), cd, [(4, 32, ret_u256(0))]).pop()
         combined = step1 + step2
         bytecode = combined.build()
         assert len(bytecode) > 0
@@ -871,7 +871,7 @@ class TestSplitSwapComposition:
           4. Call SWAP12 with share0 from reg[1]
           5. Call SWAP13 with share1 from reg[2]
         """
-        step1 = Program().call_with_patches(ADDR_A, self._SWAP01, []).pop().ret_u256(0).store_reg(0)
+        step1 = Program().call_with_patches(HexBytes(ADDR_A), self._SWAP01, []).pop().ret_u256(0).store_reg(0)
 
         split = (
             Program()
@@ -890,7 +890,7 @@ class TestSplitSwapComposition:
         step4 = (
             Program()
             .call_with_patches(
-                ADDR_B,
+                HexBytes(ADDR_B),
                 self._SWAP12,
                 [(self.AMOUNT_OFFSET, 32, load_reg(1))],
             )
@@ -900,7 +900,7 @@ class TestSplitSwapComposition:
         step5 = (
             Program()
             .call_with_patches(
-                ADDR_B,
+                HexBytes(ADDR_B),
                 self._SWAP13,
                 [(self.AMOUNT_OFFSET, 32, load_reg(2))],
             )
@@ -937,7 +937,7 @@ class TestSplitSwapComposition:
         """Program.compose([A, B]) == A + B for the split-swap sub-programs."""
         numerator, denominator = 60, 100
 
-        step1 = Program().call_with_patches(ADDR_A, self._SWAP01, []).pop().ret_u256(0).store_reg(0)
+        step1 = Program().call_with_patches(HexBytes(ADDR_A), self._SWAP01, []).pop().ret_u256(0).store_reg(0)
         split = (
             Program()
             .load_reg(0)
@@ -1060,25 +1060,25 @@ class TestCallContractAbi:
         sig = "function transfer(address,uint256)"
         args = [ADDR_B, 500]
 
-        via_abi = Program().call_contract_abi(ADDR_A, sig, *args).build()
-        via_manual = Program().call_contract(ADDR_A, ContractFunction.from_abi(sig)(*args).data).build()
+        via_abi = Program().call_contract_abi(HexBytes(ADDR_A), sig, *args).build()
+        via_manual = Program().call_contract(HexBytes(ADDR_A), ContractFunction.from_abi(sig)(*args).data).build()
         assert via_abi == via_manual
 
     def test_selector_in_bytecode(self):
         """The ERC-20 transfer selector 0xa9059cbb appears inside the built bytecode."""
-        bytecode = Program().call_contract_abi(ADDR_A, "transfer(address,uint256)", ADDR_B, 1000).pop().build()
+        bytecode = Program().call_contract_abi(HexBytes(ADDR_A), "transfer(address,uint256)", ADDR_B, 1000).pop().build()
         # The selector bytes should be somewhere inside the push_bytes payload
         assert bytes.fromhex("a9059cbb") in bytecode
 
     def test_chaining(self):
         """call_contract_abi returns self so it can be chained."""
         p = Program()
-        result = p.call_contract_abi(ADDR_A, "transfer(address,uint256)", ADDR_B, 1)
+        result = p.call_contract_abi(HexBytes(ADDR_A), "transfer(address,uint256)", ADDR_B, 1)
         assert result is p
 
     def test_no_args_function(self):
         """call_contract_abi works for a zero-argument function."""
-        bytecode = Program().call_contract_abi(ADDR_A, "function totalSupply() view returns (uint256)").pop().build()
+        bytecode = Program().call_contract_abi(HexBytes(ADDR_A), "function totalSupply() view returns (uint256)").pop().build()
         assert len(bytecode) > 0
 
     def test_value_and_gas_forwarded(self):
@@ -1088,9 +1088,9 @@ class TestCallContractAbi:
         sig = "function transfer(address,uint256)"
         args = [ADDR_B, 42]
 
-        via_abi = Program().call_contract_abi(ADDR_A, sig, *args, value=100, gas=50000).build()
+        via_abi = Program().call_contract_abi(HexBytes(ADDR_A), sig, *args, value=100, gas=50000).build()
         via_manual = (
-            Program().call_contract(ADDR_A, ContractFunction.from_abi(sig)(*args).data, value=100, gas=50000).build()
+            Program().call_contract(HexBytes(ADDR_A), ContractFunction.from_abi(sig)(*args).data, value=100, gas=50000).build()
         )
         assert via_abi == via_manual
 
@@ -1101,17 +1101,17 @@ class TestCallContractAbi:
         sig = "function transfer(address,uint256)"
         args = [ADDR_B, 1]
 
-        via_abi = Program().call_contract_abi(ADDR_A, sig, *args, require_success=False).build()
+        via_abi = Program().call_contract_abi(HexBytes(ADDR_A), sig, *args, require_success=False).build()
         via_manual = (
-            Program().call_contract(ADDR_A, ContractFunction.from_abi(sig)(*args).data, require_success=False).build()
+            Program().call_contract(HexBytes(ADDR_A), ContractFunction.from_abi(sig)(*args).data, require_success=False).build()
         )
         assert via_abi == via_manual
 
     def test_compose_with_other_programs(self):
         """call_contract_abi works correctly when composed with other sub-programs."""
         sig = "transfer(address,uint256)"
-        step1 = Program().call_contract_abi(ADDR_A, sig, ADDR_B, 100).pop()
-        step2 = Program().call_contract_abi(ADDR_B, sig, ADDR_A, 50).pop()
+        step1 = Program().call_contract_abi(HexBytes(ADDR_A), sig, ADDR_B, 100).pop()
+        step2 = Program().call_contract_abi(HexBytes(ADDR_B), sig, ADDR_A, 50).pop()
         combined = Program.compose([step1, step2])
         bytecode = combined.build()
         assert len(bytecode) > 0
@@ -1146,9 +1146,9 @@ class TestPatch:
         from eth_contract.contract import ContractFunction
 
         sig = "function transfer(address,uint256)"
-        via_patch_path = Program().call_contract_abi(ADDR_A, sig, ADDR_B, 42).build()
+        via_patch_path = Program().call_contract_abi(HexBytes(ADDR_A), sig, ADDR_B, 42).build()
         calldata = bytes(ContractFunction.from_abi(sig)(ADDR_B, 42).data)
-        via_manual = Program().call_contract(ADDR_A, calldata).build()
+        via_manual = Program().call_contract(HexBytes(ADDR_A), calldata).build()
         assert via_patch_path == via_manual
 
     def test_all_patch_args_uint256(self):
@@ -1159,7 +1159,7 @@ class TestPatch:
         p1 = Patch(load_reg(1))
         p2 = Patch(load_reg(2))
 
-        bytecode = Program().call_contract_abi(ADDR_A, sig, p1, p2).build()
+        bytecode = Program().call_contract_abi(HexBytes(ADDR_A), sig, p1, p2).build()
         assert len(bytecode) > 0
 
         # The built bytecode must contain opcodes for both patches
@@ -1173,7 +1173,7 @@ class TestPatch:
         sig = "function transfer(address to, uint256 amount)"
         # Only the amount is patched; the recipient is static
         p_amount = Patch(ret_u256(0))
-        bytecode = Program().call_contract_abi(ADDR_A, sig, ADDR_B, p_amount).build()
+        bytecode = Program().call_contract_abi(HexBytes(ADDR_A), sig, ADDR_B, p_amount).build()
 
         # ADDR_B must be baked into the calldata template in the bytecode.
         # push_bytes splits calldata into 32-byte chunks, so the 20-byte address
@@ -1190,7 +1190,7 @@ class TestPatch:
 
         sig = "function foo(uint256 x)"
         p = Patch(load_reg(0))
-        bytecode = Program().call_contract_abi(ADDR_A, sig, p).build()
+        bytecode = Program().call_contract_abi(HexBytes(ADDR_A), sig, p).build()
         assert len(bytecode) > 0
 
     def test_patch_value_and_gas_forwarded(self):
@@ -1199,8 +1199,8 @@ class TestPatch:
 
         sig = "function foo(uint256 x)"
         p = Patch(load_reg(0))
-        bytecode_with = Program().call_contract_abi(ADDR_A, sig, p, value=1000, gas=50000).build()
-        bytecode_without = Program().call_contract_abi(ADDR_A, sig, p).build()
+        bytecode_with = Program().call_contract_abi(HexBytes(ADDR_A), sig, p, value=1000, gas=50000).build()
+        bytecode_without = Program().call_contract_abi(HexBytes(ADDR_A), sig, p).build()
         # With value/gas the bytecode must differ
         assert bytecode_with != bytecode_without
 
@@ -1210,8 +1210,8 @@ class TestPatch:
 
         sig = "function foo(uint256 x)"
         p = Patch(load_reg(0))
-        bc_true = Program().call_contract_abi(ADDR_A, sig, p, require_success=True).build()
-        bc_false = Program().call_contract_abi(ADDR_A, sig, p, require_success=False).build()
+        bc_true = Program().call_contract_abi(HexBytes(ADDR_A), sig, p, require_success=True).build()
+        bc_false = Program().call_contract_abi(HexBytes(ADDR_A), sig, p, require_success=False).build()
         assert bc_true != bc_false
 
     def test_patch_chaining_returns_self(self):
@@ -1219,7 +1219,7 @@ class TestPatch:
         from pydefi.vm import Patch
 
         p = Program()
-        result = p.call_contract_abi(ADDR_A, "function foo(uint256 x)", Patch(load_reg(0)))
+        result = p.call_contract_abi(HexBytes(ADDR_A), "function foo(uint256 x)", Patch(load_reg(0)))
         assert result is p
 
     def test_wrong_arg_count_raises(self):
@@ -1228,7 +1228,7 @@ class TestPatch:
 
         sig = "function foo(uint256 x, uint256 y)"
         with pytest.raises(ValueError, match="expected 2 argument"):
-            Program().call_contract_abi(ADDR_A, sig, Patch(load_reg(0))).build()
+            Program().call_contract_abi(HexBytes(ADDR_A), sig, Patch(load_reg(0))).build()
 
     def test_bool_type_raises(self):
         """Patching a bool parameter fails: BooleanEncoder rejects integer 0."""
@@ -1238,14 +1238,14 @@ class TestPatch:
 
         sig = "function foo(bool flag)"
         with pytest.raises(EncodingTypeError):
-            Program().call_contract_abi(ADDR_A, sig, Patch(load_reg(0))).build()
+            Program().call_contract_abi(HexBytes(ADDR_A), sig, Patch(load_reg(0))).build()
 
     def test_small_uint_works(self):
         """Patching a uint8 parameter now works (ABI encodes it as a 32-byte word)."""
         from pydefi.vm import Patch
 
         sig = "function foo(uint8 x)"
-        bytecode = Program().call_contract_abi(ADDR_A, sig, Patch(load_reg(0))).build()
+        bytecode = Program().call_contract_abi(HexBytes(ADDR_A), sig, Patch(load_reg(0))).build()
         assert len(bytecode) > 0
         assert load_reg(0) in bytecode
 
@@ -1254,7 +1254,7 @@ class TestPatch:
         from pydefi.vm import Patch
 
         sig = "function foo(uint256 a, uint256 b)"
-        bytecode = Program().call_contract_abi(ADDR_A, sig, Patch(load_reg(0)), Patch(load_reg(1))).build()
+        bytecode = Program().call_contract_abi(HexBytes(ADDR_A), sig, Patch(load_reg(0)), Patch(load_reg(1))).build()
         assert len(bytecode) > 0
 
     def test_patch_address_arg_raises(self):
@@ -1266,14 +1266,14 @@ class TestPatch:
         sig = "function setRecipient(address recipient)"
         p = Patch(load_reg(3))
         with pytest.raises(EncodingTypeError):
-            Program().call_contract_abi(ADDR_A, sig, p).build()
+            Program().call_contract_abi(HexBytes(ADDR_A), sig, p).build()
 
     def test_patch_int_type_works(self):
         """Patching a signed int256 parameter works (sign bit is masked to zero)."""
         from pydefi.vm import Patch
 
         sig = "function foo(int256 x)"
-        bytecode = Program().call_contract_abi(ADDR_A, sig, Patch(load_reg(0))).build()
+        bytecode = Program().call_contract_abi(HexBytes(ADDR_A), sig, Patch(load_reg(0))).build()
         assert len(bytecode) > 0
         assert load_reg(0) in bytecode
 
@@ -1283,7 +1283,7 @@ class TestPatch:
 
         sig = "function foo(uint256[] amounts)"
         p = Patch(load_reg(0))
-        bytecode = Program().call_contract_abi(ADDR_A, sig, [p, 999_999_999_999]).build()
+        bytecode = Program().call_contract_abi(HexBytes(ADDR_A), sig, [p, 999_999_999_999]).build()
         assert len(bytecode) > 0
         assert load_reg(0) in bytecode
         # 999_999_999_999 = 0xe8d4a50fff; push_bytes splits into 32-byte chunks so
@@ -1298,7 +1298,7 @@ class TestPatch:
         sig = "function foo((uint256 amount, uint256 minOut) params)"
         p1 = Patch(load_reg(1))
         p2 = Patch(load_reg(2))
-        bytecode = Program().call_contract_abi(ADDR_A, sig, (p1, p2)).build()
+        bytecode = Program().call_contract_abi(HexBytes(ADDR_A), sig, (p1, p2)).build()
         assert len(bytecode) > 0
         assert load_reg(1) in bytecode
         assert load_reg(2) in bytecode
@@ -1309,7 +1309,7 @@ class TestPatch:
 
         sig = "function foo((uint256 amount, uint256 minOut) params)"
         p = Patch(load_reg(1))
-        bytecode = Program().call_contract_abi(ADDR_A, sig, (p, 999_999_999_999)).build()
+        bytecode = Program().call_contract_abi(HexBytes(ADDR_A), sig, (p, 999_999_999_999)).build()
         assert len(bytecode) > 0
         assert load_reg(1) in bytecode
         # The static value must be baked in; push_bytes splits into 32-byte chunks

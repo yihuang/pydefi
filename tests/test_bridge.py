@@ -3,7 +3,9 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from hexbytes import HexBytes
 
+from pydefi._utils import address_to_bytes32
 from pydefi.bridge.across import Across
 from pydefi.bridge.base import BaseBridge
 from pydefi.bridge.cctp import (
@@ -719,7 +721,7 @@ class TestLayerZeroOFT:
 
     def test_address_to_bytes32(self):
         addr = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"
-        result = LayerZeroOFT._address_to_bytes32(addr)
+        result = address_to_bytes32(HexBytes(addr))
         assert len(result) == 32
         # Address bytes should appear in the last 20 bytes
         assert result[:12] == b"\x00" * 12
@@ -939,49 +941,49 @@ class TestEncodeCctpForwardHookData:
 
     def test_with_recipient_total_length(self):
         """With recipient, hookData is 56 bytes (32 header + 20 addr + 4 dex)."""
-        data = encode_cctp_forward_hook_data(recipient=_MOCK_RECIPIENT)
+        data = encode_cctp_forward_hook_data(recipient=HexBytes(_MOCK_RECIPIENT))
         assert len(data) == 56
 
     def test_with_recipient_magic(self):
         """Magic prefix is preserved when recipient is provided."""
-        data = encode_cctp_forward_hook_data(recipient=_MOCK_RECIPIENT)
+        data = encode_cctp_forward_hook_data(recipient=HexBytes(_MOCK_RECIPIENT))
         assert data[:12] == b"cctp-forward"
         assert data[12:24] == b"\x00" * 12
 
     def test_with_recipient_data_length_24(self):
         """dataLength field encodes 24 (20-byte addr + 4-byte dex)."""
-        data = encode_cctp_forward_hook_data(recipient=_MOCK_RECIPIENT)
+        data = encode_cctp_forward_hook_data(recipient=HexBytes(_MOCK_RECIPIENT))
         assert int.from_bytes(data[28:32], "big") == 24
 
     def test_with_recipient_address_embedded(self):
         """Address bytes occupy bytes 32-51 of the hookData."""
-        data = encode_cctp_forward_hook_data(recipient=_MOCK_RECIPIENT)
+        data = encode_cctp_forward_hook_data(recipient=HexBytes(_MOCK_RECIPIENT))
         expected_addr = bytes.fromhex(_MOCK_RECIPIENT[2:])
         assert data[32:52] == expected_addr
 
     def test_perp_dex_default(self):
         """HYPERCORE_DEX_PERP (0) encodes as four zero bytes in the dex field."""
-        data = encode_cctp_forward_hook_data(recipient=_MOCK_RECIPIENT)
+        data = encode_cctp_forward_hook_data(recipient=HexBytes(_MOCK_RECIPIENT))
         assert data[52:56] == b"\x00\x00\x00\x00"
 
     def test_perp_dex_explicit(self):
         """Passing HYPERCORE_DEX_PERP explicitly gives the same result."""
-        data = encode_cctp_forward_hook_data(recipient=_MOCK_RECIPIENT, destination_dex=HYPERCORE_DEX_PERP)
+        data = encode_cctp_forward_hook_data(recipient=HexBytes(_MOCK_RECIPIENT), destination_dex=HYPERCORE_DEX_PERP)
         assert data[52:56] == b"\x00\x00\x00\x00"
 
     def test_spot_dex(self):
         """HYPERCORE_DEX_SPOT (0xFFFFFFFF) encodes as four 0xFF bytes."""
-        data = encode_cctp_forward_hook_data(recipient=_MOCK_RECIPIENT, destination_dex=HYPERCORE_DEX_SPOT)
+        data = encode_cctp_forward_hook_data(recipient=HexBytes(_MOCK_RECIPIENT), destination_dex=HYPERCORE_DEX_SPOT)
         assert data[52:56] == b"\xff\xff\xff\xff"
 
     def test_invalid_recipient_raises(self):
-        """A non-20-byte hex string raises ValueError."""
+        """A non-20-byte address raises ValueError."""
         with pytest.raises(ValueError):
-            encode_cctp_forward_hook_data(recipient="0x1234abcd")
+            encode_cctp_forward_hook_data(recipient=HexBytes("0x1234abcd"))
 
     def test_address_without_0x_prefix(self):
-        """Address without '0x' prefix is accepted and correctly embedded."""
+        """Address passed as bare hex bytes is accepted and correctly embedded."""
         addr_no_prefix = _MOCK_RECIPIENT[2:]  # strip '0x'
-        data = encode_cctp_forward_hook_data(recipient=addr_no_prefix)
+        data = encode_cctp_forward_hook_data(recipient=HexBytes(addr_no_prefix))
         expected_addr = bytes.fromhex(addr_no_prefix)
         assert data[32:52] == expected_addr

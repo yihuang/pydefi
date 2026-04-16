@@ -25,8 +25,16 @@ used anywhere `bytes` is expected without extra wrapping.
 > **Do conversions at peripheries; pass `Address` / `Hash` (HexBytes) internally.**
 
 A *periphery* is any point where an external value (e.g. a string from a JSON
-response or a user argument) first enters the system.  Convert it to `HexBytes`
-once at that boundary and use the bytes value everywhere thereafter.
+response or user input) first enters the system.  Peripheries include:
+
+- Public API request/response handlers (e.g. `build_bridge_tx`, `get_quote`)
+- Test code that constructs addresses from literal strings
+- CLI entry points
+
+Convert a string to `HexBytes` **once at the boundary** and use the bytes
+value everywhere thereafter.  All library methods (bridge, AMM, VM builders,
+utilities) are considered *internal* — they accept and pass `Address`/`Hash`
+values without doing any string-to-bytes conversion.
 
 ### Converting strings to `Address` / `Hash`
 
@@ -34,15 +42,13 @@ once at that boundary and use the bytes value everywhere thereafter.
 from hexbytes import HexBytes
 from pydefi.types import Address, Hash
 
-# 0x-prefixed checksummed or lowercase hex string → Address
-addr: Address = HexBytes("0xAbCd…")
-
-# 0x-prefixed 32-byte hash string → Hash
-topic: Hash = HexBytes("0xdeadbeef…")
+# At a periphery (public API entry point or test code):
+addr: Address = HexBytes("0xAbCd…")     # 0x-prefixed checksummed or lowercase
+topic: Hash   = HexBytes("0xdeadbeef…") # 0x-prefixed 32-byte hash
 ```
 
 `HexBytes` accepts:
-- `str` — must be `0x`-prefixed hex (e.g. `"0xabc123"`)
+- `str` — `0x`-prefixed hex (e.g. `"0xabc123"`) or bare hex (e.g. `"abc123"`)
 - `bytes` / `bytearray` — copied as-is
 - `int` — treated as a single byte
 
@@ -70,44 +76,38 @@ from hexbytes import HexBytes
 from pydefi._utils import address_to_bytes32
 from pydefi.types import Address, Hash
 
-addr: Address = HexBytes(some_address_str)   # convert at periphery
-padded: Hash  = address_to_bytes32(addr)     # 32-byte left-padded result
+# Convert at periphery, then pass Address internally:
+addr: Address = HexBytes(some_address_str)
+padded: Hash  = address_to_bytes32(addr)   # 32-byte left-padded result
 ```
 
 `address_to_bytes32(address: Address) -> Hash` returns a `HexBytes` value of
 exactly 32 bytes, with the 20-byte address in the rightmost 20 bytes.
 
----
+### Wormhole / SWIFT token encoding
 
-## 4. DeFiVM `push_addr`
-
-`push_addr` in `pydefi.vm.program` (and the matching `Program.push_addr` method
-in `pydefi.vm.builder`) expects an `Address` (i.e. 20-byte `bytes`/`HexBytes`).
-Convert strings at the call site:
+For bridge payloads that encode a token address as a ``bytes32`` (with native
+tokens mapping to 32 zero bytes), use:
 
 ```python
-from hexbytes import HexBytes
-from pydefi.vm.program import push_addr
+from pydefi._utils import token_to_bytes32
 
-# ✗ wrong — passing a string directly
-program = push_addr("0xAbCd…")
-
-# ✓ correct — convert to Address at the periphery
-program = push_addr(HexBytes("0xAbCd…"))
+token_b32: Hash = token_to_bytes32(HexBytes(token_address))
 ```
 
-Higher-level builder methods (`call_contract`, `call_with_patches`) still accept
-plain `str` addresses and perform the conversion internally — they are themselves
-peripheries that accept user-provided strings.
+`token_to_bytes32(address: Address) -> Hash` returns 32 zero bytes for native
+token sentinels (zero address or `0xEeEe…` form) and `address_to_bytes32`
+padding for all other ERC-20 token addresses.
 
 ---
 
-## 5. Summary
+## 4. Summary
 
 | Situation | Preferred pattern |
 |-----------|-------------------|
-| String address from an API / user input | `HexBytes(addr_str)` → `Address` |
-| Address in low-level program builder | `push_addr(HexBytes(addr_str))` |
-| Address-to-bytes32 padding | `address_to_bytes32(HexBytes(addr_str))` |
+| String address at a periphery | `HexBytes(addr_str)` → `Address` |
+| All internal library methods | Accept and pass `Address`/`Hash` directly |
+| Address-to-bytes32 padding | `address_to_bytes32(addr)` |
+| Native-token-aware bytes32 | `token_to_bytes32(addr)` |
 | Comparing two addresses | `HexBytes(a) == HexBytes(b)` (case-insensitive, handles checksum) |
 | Converting `Address`/`HexBytes` to 0x-prefixed string | `address.to_0x_hex()` |

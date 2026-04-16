@@ -93,11 +93,6 @@ class LayerZeroOFT(BaseBridge):
             raise BridgeError(f"LayerZeroOFT: unsupported chain ID {evm_chain_id}")
         return eid
 
-    @staticmethod
-    def _address_to_bytes32(address: str) -> bytes:
-        """Convert an EVM address to a zero-padded 32-byte value."""
-        return address_to_bytes32(HexBytes(address))
-
     def _validate_tokens(self, token_in: Token, token_out: Token) -> None:
         """Validate that token addresses match the configured OFT contracts.
 
@@ -142,7 +137,8 @@ class LayerZeroOFT(BaseBridge):
             :class:`~pydefi.exceptions.BridgeError`: On contract call failure.
         """
         dst_eid = self._lz_eid(self.dst_chain_id)
-        to_bytes32 = self._address_to_bytes32(recipient)
+        # Convert string address to Address (HexBytes) at periphery boundary
+        to_bytes32 = address_to_bytes32(HexBytes(recipient))
         min_amount = self._apply_slippage(amount, slippage_bps)
 
         send_param = OFTSendParam(
@@ -235,7 +231,9 @@ class LayerZeroOFT(BaseBridge):
         self._validate_tokens(token_in, token_out)
         _refund = refund_address or recipient
         dst_eid = self._lz_eid(self.dst_chain_id)
-        to_bytes32 = self._address_to_bytes32(recipient)
+        # Convert string address to Address (HexBytes) at periphery boundary
+        recipient_addr = HexBytes(recipient)
+        to_bytes32 = address_to_bytes32(recipient_addr)
         min_amount = self._apply_slippage(amount_in.amount, slippage_bps)
 
         send_param = OFTSendParam(

@@ -70,7 +70,7 @@ from pydefi._utils import address_to_bytes32
 from pydefi.abi.bridge import CCTP_TOKEN_MESSENGER_V2
 from pydefi.bridge.base import BaseBridge
 from pydefi.exceptions import BridgeError
-from pydefi.types import BridgeQuote, ChainId, Token, TokenAmount
+from pydefi.types import Address, BridgeQuote, ChainId, Token, TokenAmount
 
 # ---------------------------------------------------------------------------
 # Fast-finality threshold constant (CCTP v2)
@@ -178,7 +178,7 @@ _CCTP_FORWARDER: dict[bool, str] = {
 
 
 def encode_cctp_forward_hook_data(
-    recipient: str | None = None,
+    recipient: Address | None = None,
     destination_dex: int = HYPERCORE_DEX_PERP,
 ) -> bytes:
     """Encode ``hookData`` for the HyperEVM ``CctpForwarder`` contract.
@@ -198,10 +198,10 @@ def encode_cctp_forward_hook_data(
         destinationDex         4       uint32    DEX: 0=perp, 0xFFFFFFFF=spot
 
     Args:
-        recipient: EVM-format HyperCore recipient address.  When ``None``
-            the hook data contains only the header (no recipient), and the
-            ``CctpForwarder`` will use the CCTP ``mintRecipient`` field as the
-            HyperCore recipient.
+        recipient: HyperCore recipient as a 20-byte :class:`~hexbytes.HexBytes`
+            (``Address``).  When ``None`` the hook data contains only the
+            header (no recipient), and the ``CctpForwarder`` will use the CCTP
+            ``mintRecipient`` field as the HyperCore recipient.
         destination_dex: HyperCore destination DEX.  Use
             :data:`HYPERCORE_DEX_PERP` (0, the default) to credit the perp
             balance, or :data:`HYPERCORE_DEX_SPOT` (``0xFFFFFFFF``) for spot.
@@ -220,11 +220,10 @@ def encode_cctp_forward_hook_data(
 
     # With recipient: 20 bytes address + 4 bytes dex = 24 bytes of data
     data_length = (24).to_bytes(4, "big")
-    addr_bytes = HexBytes(recipient)
-    if len(addr_bytes) != 20:
-        raise ValueError(f"recipient must be a 20-byte EVM address, got {len(addr_bytes)} bytes")
+    if len(recipient) != 20:
+        raise ValueError(f"recipient must be a 20-byte EVM address, got {len(recipient)} bytes")
     dex_bytes = (destination_dex & 0xFFFFFFFF).to_bytes(4, "big")
-    return magic + version + data_length + addr_bytes + dex_bytes
+    return magic + version + data_length + recipient + dex_bytes
 
 
 class CCTP(BaseBridge):
@@ -308,11 +307,6 @@ class CCTP(BaseBridge):
         if domain is None:
             raise BridgeError(f"CCTP: unsupported chain ID {chain_id}. Provide domain ID explicitly.")
         return domain
-
-    @staticmethod
-    def _address_to_bytes32(address: str) -> bytes:
-        """Left-pad an EVM address to 32 bytes."""
-        return address_to_bytes32(HexBytes(address))
 
     # -----------------------------------------------------------------------
     # Circle Iris v2 API
@@ -492,13 +486,17 @@ class CCTP(BaseBridge):
         """
         _dst_domain = dst_domain if dst_domain is not None else self._cctp_domain(self.dst_chain_id)
 
+        # Convert string addresses to Address (HexBytes) at periphery boundary
+        recipient_addr = HexBytes(recipient)
+        destination_caller_addr = HexBytes(destination_caller) if destination_caller else None
+
         if self.dst_chain_id == ChainId.HYPERCORE:
             # For HyperCore: mint USDC on HyperEVM to the CctpForwarder, which
             # reads the hookData and deposits it into the recipient's HyperCore account.
-            forwarder = self.cctp_forwarder_address
-            mint_recipient = self._address_to_bytes32(forwarder)
-            dst_caller_bytes = self._address_to_bytes32(forwarder)
-            hook_data = encode_cctp_forward_hook_data(recipient, hypercore_dex)
+            forwarder_addr = HexBytes(self.cctp_forwarder_address)
+            mint_recipient = address_to_bytes32(forwarder_addr)
+            dst_caller_bytes = address_to_bytes32(forwarder_addr)
+            hook_data = encode_cctp_forward_hook_data(recipient_addr, hypercore_dex)
 
             call_data = CCTP_TOKEN_MESSENGER_V2.fns.depositForBurnWithHook(
                 amount_in.amount,
@@ -511,8 +509,8 @@ class CCTP(BaseBridge):
                 hook_data,
             ).data
         else:
-            mint_recipient = self._address_to_bytes32(recipient)
-            dst_caller_bytes = self._address_to_bytes32(destination_caller) if destination_caller else b"\x00" * 32
+            mint_recipient = address_to_bytes32(recipient_addr)
+            dst_caller_bytes = address_to_bytes32(destination_caller_addr) if destination_caller_addr else b"\x00" * 32
 
             call_data = CCTP_TOKEN_MESSENGER_V2.fns.depositForBurn(
                 amount_in.amount,
@@ -578,8 +576,11 @@ class CCTP(BaseBridge):
             raise BridgeError("CCTP: program (hookData) must not be empty for compose transactions.")
 
         _dst_domain = dst_domain if dst_domain is not None else self._cctp_domain(self.dst_chain_id)
-        mint_recipient = self._address_to_bytes32(composer_address)
-        destination_caller = self._address_to_bytes32(composer_address)
+
+        # Convert string address to Address (HexBytes) at periphery boundary
+        composer_addr = HexBytes(composer_address)
+        mint_recipient = address_to_bytes32(composer_addr)
+        destination_caller = address_to_bytes32(composer_addr)
 
         call_data = CCTP_TOKEN_MESSENGER_V2.fns.depositForBurnWithHook(
             amount_in.amount,

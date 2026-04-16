@@ -18,7 +18,7 @@ from typing import Any, Optional
 import aiohttp
 from hexbytes import HexBytes
 
-from pydefi._utils import address_to_bytes32
+from pydefi._utils import address_to_bytes32, token_to_bytes32
 from pydefi.abi.bridge import MAYAN_FORWARDER, MAYAN_SWIFT_V2, MayanSwiftOrderParams
 from pydefi.bridge.base import BaseBridge
 from pydefi.exceptions import BridgeError
@@ -68,14 +68,6 @@ _MAYAN_SDK_VERSION = "13_2_0"
 # SWIFT normalize factor: SWIFT amounts are capped at 8 decimals.
 _SWIFT_NORMALIZE_DECIMALS = 8
 
-# Native ETH sentinel addresses (both the burn address and EeeE... form)
-_NATIVE_SENTINELS = frozenset(
-    {
-        "0x0000000000000000000000000000000000000000",
-        "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-    }
-)
-
 # WETH ERC-20 addresses per chain (needed for native-ETH input with SWIFT V2)
 _CHAIN_WETH: dict[int, str] = {
     1: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",  # Ethereum
@@ -87,19 +79,6 @@ _CHAIN_WETH: dict[int, str] = {
     43114: "0x49D5c2BdFfac6CE2BFdB6640F4F80f226bc10bAB",  # Avalanche
     59144: "0xe5D7C2a44FfDDf6b295A15c148167daaAf5Cf34f",  # Linea
 }
-
-
-def _token_to_bytes32(token_address: str) -> bytes:
-    """Convert a token address to its SWIFT bytes32 tokenOut representation.
-
-    Native ETH (both zero-address and EeeE... sentinel) maps to 32 zero bytes
-    (the Solana system program ID in the Wormhole encoding used by SWIFT).
-    ERC-20 tokens are left-padded as a normal Wormhole EVM address.
-    """
-    if token_address.lower() in _NATIVE_SENTINELS:
-        return bytes(32)
-    return address_to_bytes32(HexBytes(token_address))
-
 
 _ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
 
@@ -282,6 +261,10 @@ class Mayan(BaseBridge):
         if not token_in.is_native():
             raise BridgeError("Mayan build_bridge_tx currently only supports native ETH input")
 
+        # Convert string addresses to Address (HexBytes) at periphery boundary
+        recipient_addr = HexBytes(recipient)
+        referrer_addr = HexBytes(referrer) if referrer else None
+
         from_chain = self._chain_name(self.src_chain_id)
         to_chain = self._chain_name(self.dst_chain_id)
 
@@ -371,10 +354,10 @@ class Mayan(BaseBridge):
         # Use os.urandom for the order's random field to ensure uniqueness
         random_b32 = os.urandom(32)
 
-        trader_b32 = address_to_bytes32(HexBytes(recipient))
-        token_out_b32 = _token_to_bytes32(token_out.address)
-        dest_addr_b32 = address_to_bytes32(HexBytes(recipient))
-        referrer_b32 = address_to_bytes32(HexBytes(referrer)) if referrer else bytes(32)
+        trader_b32 = address_to_bytes32(recipient_addr)
+        token_out_b32 = token_to_bytes32(HexBytes(token_out.address))
+        dest_addr_b32 = address_to_bytes32(recipient_addr)
+        referrer_b32 = address_to_bytes32(referrer_addr) if referrer_addr else bytes(32)
 
         # SWIFT V2 OrderParams (field order differs from V1)
         order_params = MayanSwiftOrderParams(

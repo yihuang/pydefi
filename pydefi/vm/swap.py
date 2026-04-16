@@ -74,6 +74,7 @@ from eth_abi import encode
 from eth_contract.contract import ContractFunction
 from hexbytes import HexBytes
 
+from pydefi.types import Address
 from pydefi.vm.builder import Patch, Program
 from pydefi.vm.program import (
     _SWAP2,
@@ -321,7 +322,7 @@ def _build_v3_pool_swap_segment(hop: SwapHop, *, amount_reg: int) -> Program:
     # Use call_contract_abi so the ABI library locates the amountSpecified
     # offset automatically — no hardcoded byte offset.
     prog.call_contract_abi(
-        hop.pool,
+        HexBytes(hop.pool),
         "function swap(address recipient, bool zeroForOne,"
         " int256 amountSpecified, uint160 sqrtPriceLimitX96, bytes data)",
         hop.recipient,
@@ -381,7 +382,7 @@ def _build_v2_direct_swap_segment(hop: SwapHop, *, amount_reg: int, amount_out_r
     prog = Program()
 
     # --- Step 1: Get reserves --------------------------------------------------
-    prog.call_contract_abi(hop.pool, "getReserves()").pop()
+    prog.call_contract_abi(HexBytes(hop.pool), "getReserves()").pop()
 
     # --- Step 2: Compute amountOut on the EVM stack (no reserve registers) ----
     # Push reserveIn and reserveOut from returndata.
@@ -418,7 +419,7 @@ def _build_v2_direct_swap_segment(hop: SwapHop, *, amount_reg: int, amount_out_r
 
     # --- Step 3: Transfer amountIn to pair ------------------------------------
     prog.call_contract_abi(
-        hop.token_in,
+        HexBytes(hop.token_in),
         "function transfer(address to, uint256 amount)",
         hop.pool,
         Patch(load_reg(amount_reg)),
@@ -430,7 +431,7 @@ def _build_v2_direct_swap_segment(hop: SwapHop, *, amount_reg: int, amount_out_r
     #   !zero_for_one → amount0Out=amountOut, amount1Out=0 (tokenOut is token0)
     if hop.zero_for_one:
         prog.call_contract_abi(
-            hop.pool,
+            HexBytes(hop.pool),
             "function swap(uint256 amount0Out, uint256 amount1Out, address to, bytes data)",
             0,
             Patch(load_reg(amount_out_reg)),
@@ -439,7 +440,7 @@ def _build_v2_direct_swap_segment(hop: SwapHop, *, amount_reg: int, amount_out_r
         ).pop()
     else:
         prog.call_contract_abi(
-            hop.pool,
+            HexBytes(hop.pool),
             "function swap(uint256 amount0Out, uint256 amount1Out, address to, bytes data)",
             Patch(load_reg(amount_out_reg)),
             0,
@@ -758,15 +759,16 @@ def build_split_program(
 # ---------------------------------------------------------------------------
 
 
-def check_min_balance(token: str, account: str, min_amount: int) -> Program:
+def check_min_balance(token: Address, account: Address, min_amount: int) -> Program:
     """Return a Program snippet that reverts if ``balanceOf(token, account) < min_amount``.
 
     Useful as a post-swap safety guard to verify the output landed in the
     expected account.
 
     Args:
-        token: ERC-20 token address.
-        account: Account whose balance to check.
+        token: ERC-20 token address as :class:`~hexbytes.HexBytes` (``Address``).
+        account: Account whose balance to check as :class:`~hexbytes.HexBytes`
+            (``Address``).
         min_amount: Minimum required balance.
 
     Returns:
@@ -774,8 +776,8 @@ def check_min_balance(token: str, account: str, min_amount: int) -> Program:
     """
     return (
         Program()
-        ._emit(push_addr(HexBytes(account)))
-        ._emit(push_addr(HexBytes(token)))
+        ._emit(push_addr(account))
+        ._emit(push_addr(token))
         ._emit(balance_of())
         ._emit(push_u256(min_amount))
         ._emit(swap())

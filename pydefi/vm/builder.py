@@ -178,7 +178,6 @@ import struct
 from typing import TYPE_CHECKING
 
 from eth_abi import encode_with_hooks
-from hexbytes import HexBytes
 
 if TYPE_CHECKING:
     from eth_abi.hooks import EncodingContext
@@ -646,7 +645,7 @@ class Program:
 
     def call_contract(
         self,
-        to: str,
+        to: Address,
         calldata: bytes,
         *,
         value: int = 0,
@@ -667,7 +666,7 @@ class Program:
             CALL
 
         Args:
-            to: Target contract address (checksummed or lowercase hex).
+            to: Target contract address as :class:`~hexbytes.HexBytes` (``Address``).
             calldata: Pre-encoded ABI calldata.
             value: ETH value to forward with the call (wei), default 0.
             gas: Gas limit for the sub-call (0 = forward all remaining gas).
@@ -681,14 +680,14 @@ class Program:
             ._emit(push_u256(0))  # retOffset
             ._emit(push_bytes(calldata))  # argsOffset (TOS), argsLen
             ._emit(push_u256(value))
-            ._emit(push_addr(HexBytes(to)))
+            ._emit(push_addr(to))
             ._emit(gas_opcode() if gas == 0 else push_u256(gas))
             ._emit(call(require_success))
         )
 
     def call_contract_abi(
         self,
-        to: str,
+        to: Address,
         abi_sig: str,
         *args: object,
         value: int = 0,
@@ -731,7 +730,7 @@ class Program:
         accept ``0`` as a placeholder).
 
         Args:
-            to: Target contract address (hex string with ``0x`` prefix).
+            to: Target contract address as :class:`~hexbytes.HexBytes` (``Address``).
             abi_sig: Human-readable function signature, e.g.
                 ``"transfer(address,uint256)"`` or
                 ``"function exactInputSingle((address,address,uint24,...) params)"``.
@@ -808,7 +807,7 @@ class Program:
 
     def call_with_patches(
         self,
-        to: str,
+        to: Address,
         calldata: bytes,
         patches: list[PatchSpec],
         *,
@@ -887,7 +886,7 @@ class Program:
 
         # Stack now: [argsOffset(TOS), argsLen, retOffset, retSize] — ready for CALL prologue
         self._emit(push_u256(value))
-        self._emit(push_addr(HexBytes(to)))
+        self._emit(push_addr(to))
         self._emit(gas_opcode() if gas == 0 else push_u256(gas))
         self._emit(call(require_success))
         return self
