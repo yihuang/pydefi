@@ -219,7 +219,7 @@ def _build_route_split_segment(
     for leg in split.legs:
         segments.append(
             Program()
-            ._emit(dup2())  # duplicate split frame's total_in (2nd item: [.., total_in, accum])
+            ._emit(dup2())  # duplicate split frame total_in (2nd item in [... parent, total_in, accum])
             ._emit(push_u256(leg.fraction_bps))
             ._emit(mul())
             ._emit(push_u256(_BPS_DENOMINATOR))
