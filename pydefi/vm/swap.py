@@ -85,6 +85,7 @@ from pydefi.vm.program import (
     dup,
     load_reg,
     mul,
+    pop,
     push_addr,
     push_u256,
     ret_u256,
@@ -302,6 +303,43 @@ _AMOUNT_REG: int = 0
 _AMOUNT_OUT_REG: int = 1
 
 
+def _build_v3_pool_swap_segment_on_stack(hop: SwapHop) -> Program:
+    """V3 pool direct swap (stack ABI).
+
+    Stack contract:
+    - input:  ``[... , amount_in]``
+    - output: ``[... , amount_out]``
+    """
+    sqrt_price_limit_x96 = hop.sqrt_price_limit_x96
+    if sqrt_price_limit_x96 == 0:
+        sqrt_price_limit_x96 = _SQRT_PRICE_MIN if hop.zero_for_one else _SQRT_PRICE_MAX
+    callback_data = encode_v3_callback_data(hop.token_in)
+
+    prog = Program()
+    prog.call_contract_abi(
+        hop.pool,
+        "function swap(address recipient, bool zeroForOne,"
+        " int256 amountSpecified, uint160 sqrtPriceLimitX96, bytes data)",
+        hop.recipient,
+        hop.zero_for_one,
+        Patch(dup()),  # amountSpecified from stack-top amount_in
+        sqrt_price_limit_x96,
+        callback_data,
+    ).pop()
+
+    if hop.zero_for_one:
+        prog._emit(ret_u256(32))
+    else:
+        prog._emit(ret_u256(0))
+    prog._emit(bitwise_not())
+    prog._emit(push_u256(1))
+    prog._emit(add())
+    # Drop original amount_in, keep amount_out on top.
+    prog._emit(swap())
+    prog._emit(pop())
+    return prog
+
+
 def _build_v3_pool_swap_segment(hop: SwapHop, *, amount_reg: int) -> Program:
     """V3 pool direct swap.
 
@@ -312,39 +350,73 @@ def _build_v3_pool_swap_segment(hop: SwapHop, *, amount_reg: int) -> Program:
     2. Extract ``amountOut`` from return values (negate the negative delta).
     3. Store ``amountOut`` back in *amount_reg*.
     """
-    sqrt_price_limit_x96 = hop.sqrt_price_limit_x96
-    if sqrt_price_limit_x96 == 0:
-        sqrt_price_limit_x96 = _SQRT_PRICE_MIN if hop.zero_for_one else _SQRT_PRICE_MAX
-    callback_data = encode_v3_callback_data(hop.token_in)
+    return Program()._emit(load_reg(amount_reg)).extend(_build_v3_pool_swap_segment_on_stack(hop))._emit(store_reg(amount_reg))
+
+
+def _build_v2_direct_swap_segment_on_stack(hop: SwapHop, *, amount_out_reg: int = _AMOUNT_OUT_REG) -> Program:
+    """V2 pair direct swap (stack ABI).
+
+    Stack contract:
+    - input:  ``[... , amount_in]``
+    - output: ``[... , amount_out]``
+    """
+    if not 0 <= hop.fee < 10000:
+        raise ValueError(f"hop.fee must be in basis points within [0, 10000), got {hop.fee}")
+    fee_num = 10000 - hop.fee
 
     prog = Program()
-    # Use call_contract_abi so the ABI library locates the amountSpecified
-    # offset automatically — no hardcoded byte offset.
+    prog.call_contract_abi(hop.pool, "getReserves()").pop()
+    if hop.zero_for_one:
+        prog._emit(ret_u256(0))
+        prog._emit(ret_u256(32))
+    else:
+        prog._emit(ret_u256(32))
+        prog._emit(ret_u256(0))
+
+    # [amount_in, rIn, rOut] -> compute amount_out while keeping amount_in.
+    prog._emit(bytes([0x82]))  # DUP3: amount_in
+    prog._emit(push_u256(fee_num))
+    prog._emit(mul())
+    prog._emit(dup())
+    prog._emit(bytes([_SWAP2]))
+    prog._emit(mul())
+    prog._emit(bytes([_SWAP2]))
+    prog._emit(push_u256(10000))
+    prog._emit(mul())
+    prog._emit(add())
+    prog._emit(swap())
+    prog._emit(div())  # [amount_in, amount_out]
+    prog._emit(store_reg(amount_out_reg))  # consume amount_out; keep amount_in on stack
+
     prog.call_contract_abi(
+        hop.token_in,
+        "function transfer(address to, uint256 amount)",
         hop.pool,
-        "function swap(address recipient, bool zeroForOne,"
-        " int256 amountSpecified, uint160 sqrtPriceLimitX96, bytes data)",
-        hop.recipient,
-        hop.zero_for_one,
-        Patch(load_reg(amount_reg)),  # amountSpecified — patched at runtime
-        sqrt_price_limit_x96,
-        callback_data,
+        Patch(dup()),
     ).pop()
 
-    # Extract amountOut from returndata.
-    # pool.swap() returns (int256 amount0, int256 amount1):
-    #   zeroForOne → amount0 > 0 (owed by caller), amount1 < 0 (sent to recipient)
-    #   !zeroForOne → amount0 < 0 (sent to recipient), amount1 > 0 (owed by caller)
-    # amountOut = |negative value| = two's-complement negation = NOT(v) + 1
     if hop.zero_for_one:
-        prog._emit(ret_u256(32))  # amount1 (negative → negate)
+        prog.call_contract_abi(
+            hop.pool,
+            "function swap(uint256 amount0Out, uint256 amount1Out, address to, bytes data)",
+            0,
+            Patch(load_reg(amount_out_reg)),
+            hop.recipient,
+            b"",
+        ).pop()
     else:
-        prog._emit(ret_u256(0))  # amount0 (negative → negate)
-    prog._emit(bitwise_not())
-    prog._emit(push_u256(1))
-    prog._emit(add())
+        prog.call_contract_abi(
+            hop.pool,
+            "function swap(uint256 amount0Out, uint256 amount1Out, address to, bytes data)",
+            Patch(load_reg(amount_out_reg)),
+            0,
+            hop.recipient,
+            b"",
+        ).pop()
 
-    prog._emit(store_reg(amount_reg))
+    prog._emit(load_reg(amount_out_reg))
+    prog._emit(swap())
+    prog._emit(pop())
     return prog
 
 
@@ -370,88 +442,9 @@ def _build_v2_direct_swap_segment(hop: SwapHop, *, amount_reg: int, amount_out_r
             value (must differ from *amount_reg*).
     """
 
-    # hop.fee is in basis points (e.g. 30 for 0.30 %)
-    # Uniswap V2 standard: amountInWithFee = amountIn * 997 / 1000 (for 0.30 % fee)
-    # Generalised:         amountInWithFee = amountIn * (10000 - fee_bps)
-    #                      denominator     = reserveIn * 10000 + amountInWithFee
-    if not 0 <= hop.fee < 10000:
-        raise ValueError(f"hop.fee must be in basis points within [0, 10000), got {hop.fee}")
-    fee_num = 10000 - hop.fee
-
-    prog = Program()
-
-    # --- Step 1: Get reserves --------------------------------------------------
-    prog.call_contract_abi(hop.pool, "getReserves()").pop()
-
-    # --- Step 2: Compute amountOut on the EVM stack (no reserve registers) ----
-    # Push reserveIn and reserveOut from returndata.
-    # getReserves() → (reserve0, reserve1, timestamp); each field is 32 bytes.
-    if hop.zero_for_one:
-        # tokenIn = token0 → reserveIn = reserve0 (ret[0]), reserveOut = reserve1 (ret[32])
-        prog._emit(ret_u256(0))  # [rIn]
-        prog._emit(ret_u256(32))  # [rIn, rOut]
-    else:
-        # tokenIn = token1 → reserveIn = reserve1 (ret[32]), reserveOut = reserve0 (ret[0])
-        prog._emit(ret_u256(32))  # [rIn]
-        prog._emit(ret_u256(0))  # [rIn, rOut]
-
-    # amountInWithFee = amountIn * fee_num
-    prog._emit(load_reg(amount_reg))  # [rIn, rOut, amountIn]
-    prog._emit(push_u256(fee_num))  # [rIn, rOut, amountIn, fee_num]
-    prog._emit(mul())  # [rIn, rOut, aif]
-    prog._emit(dup())  # [rIn, rOut, aif, aif_dup]
-
-    # SWAP2 exchanges TOS(aif_dup) with the item 2 below TOS (rOut):
-    #   [rIn, rOut, aif, aif_dup]  →  [rIn, aif_dup, aif, rOut]
-    prog._emit(bytes([_SWAP2]))
-    prog._emit(mul())  # [rIn, aif_dup, numerator=aif*rOut]
-
-    # SWAP2 exchanges TOS(numerator) with the item 2 below TOS (rIn):
-    #   [rIn, aif_dup, numerator]  →  [numerator, aif_dup, rIn]
-    prog._emit(bytes([_SWAP2]))
-    prog._emit(push_u256(10000))  # [numerator, aif_dup, rIn, 10000]
-    prog._emit(mul())  # [numerator, aif_dup, rIn*10000]
-    prog._emit(add())  # [numerator, denominator=rIn*10000+aif_dup]
-    prog._emit(swap())  # [denominator, numerator]   (SWAP1: put numerator at TOS)
-    prog._emit(div())  # [amountOut = numerator/denominator]
-    prog._emit(store_reg(amount_out_reg))
-
-    # --- Step 3: Transfer amountIn to pair ------------------------------------
-    prog.call_contract_abi(
-        hop.token_in,
-        "function transfer(address to, uint256 amount)",
-        hop.pool,
-        Patch(load_reg(amount_reg)),
-    ).pop()
-
-    # --- Step 4: Call pair.swap with amountOut --------------------------------
-    # pair.swap(uint amount0Out, uint amount1Out, address to, bytes data)
-    #   zero_for_one → amount0Out=0, amount1Out=amountOut (tokenOut is token1)
-    #   !zero_for_one → amount0Out=amountOut, amount1Out=0 (tokenOut is token0)
-    if hop.zero_for_one:
-        prog.call_contract_abi(
-            hop.pool,
-            "function swap(uint256 amount0Out, uint256 amount1Out, address to, bytes data)",
-            0,
-            Patch(load_reg(amount_out_reg)),
-            hop.recipient,
-            b"",
-        ).pop()
-    else:
-        prog.call_contract_abi(
-            hop.pool,
-            "function swap(uint256 amount0Out, uint256 amount1Out, address to, bytes data)",
-            Patch(load_reg(amount_out_reg)),
-            0,
-            hop.recipient,
-            b"",
-        ).pop()
-
-    # --- Step 5: Update amount_reg for the next hop ---------------------------
-    prog._emit(load_reg(amount_out_reg))
-    prog._emit(store_reg(amount_reg))
-
-    return prog
+    return Program()._emit(load_reg(amount_reg)).extend(
+        _build_v2_direct_swap_segment_on_stack(hop, amount_out_reg=amount_out_reg)
+    )._emit(store_reg(amount_reg))
 
 
 # ---------------------------------------------------------------------------
@@ -801,16 +794,13 @@ def build_execution_program_for_dag(
     """
     from pydefi.vm.dag import build_execution_program_for_dag as _build
 
+    _ = (amount_reg, amount_out_reg, accum_reg, total_in_reg)
     return _build(
         dag,
         amount_in=amount_in,
         vm_address=vm_address,
         recipient=recipient,
         min_final_out=min_final_out,
-        amount_reg=amount_reg,
-        amount_out_reg=amount_out_reg,
-        accum_reg=accum_reg,
-        total_in_reg=total_in_reg,
     )
 
 
@@ -831,13 +821,10 @@ def build_quote_program_for_dag(
     """
     from pydefi.vm.dag import build_quote_program_for_dag as _build
 
+    _ = (amount_reg, amount_out_reg, accum_reg, total_in_reg)
     return _build(
         dag,
         amount_in=amount_in,
         vm_address=vm_address,
         min_final_out=min_final_out,
-        amount_reg=amount_reg,
-        amount_out_reg=amount_out_reg,
-        accum_reg=accum_reg,
-        total_in_reg=total_in_reg,
     )

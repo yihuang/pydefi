@@ -35,16 +35,12 @@ from __future__ import annotations
 from pydefi.pathfinder.graph import V3PoolEdge
 from pydefi.types import RouteAction, RouteDAG, RouteSplit, RouteSwap
 from pydefi.vm.builder import Program
-from pydefi.vm.program import add, assert_ge, div, dup, dup2, load_reg, mul, pop, push_u256, store_reg, swap
+from pydefi.vm.program import add, assert_ge, div, dup, dup2, mul, pop, push_u256, swap
 from pydefi.vm.swap import (
-    _ACCUM_REG,
-    _AMOUNT_OUT_REG,
-    _AMOUNT_REG,
-    _TOTAL_IN_REG,
     SwapHop,
     SwapProtocol,
-    _build_v2_direct_swap_segment,
-    _build_v3_pool_swap_segment,
+    _build_v2_direct_swap_segment_on_stack,
+    _build_v3_pool_swap_segment_on_stack,
 )
 
 _BPS_DENOMINATOR = 10_000
@@ -57,10 +53,6 @@ def build_execution_program_for_dag(
     vm_address: str,
     recipient: str,
     min_final_out: int = 0,
-    amount_reg: int = _AMOUNT_REG,
-    amount_out_reg: int = _AMOUNT_OUT_REG,
-    accum_reg: int = _ACCUM_REG,
-    total_in_reg: int = _TOTAL_IN_REG,
 ) -> Program:
     """Build an execution program from a :class:`RouteDAG`."""
     return _build_program_for_dag(
@@ -69,10 +61,6 @@ def build_execution_program_for_dag(
         vm_address=vm_address,
         terminal_recipient=recipient,
         min_final_out=min_final_out,
-        amount_reg=amount_reg,
-        amount_out_reg=amount_out_reg,
-        accum_reg=accum_reg,
-        total_in_reg=total_in_reg,
     )
 
 
@@ -82,10 +70,6 @@ def build_quote_program_for_dag(
     amount_in: int,
     vm_address: str,
     min_final_out: int = 0,
-    amount_reg: int = _AMOUNT_REG,
-    amount_out_reg: int = _AMOUNT_OUT_REG,
-    accum_reg: int = _ACCUM_REG,
-    total_in_reg: int = _TOTAL_IN_REG,
 ) -> Program:
     """Build a quote/simulation program from a :class:`RouteDAG`."""
     return _build_program_for_dag(
@@ -94,10 +78,6 @@ def build_quote_program_for_dag(
         vm_address=vm_address,
         terminal_recipient=vm_address,
         min_final_out=min_final_out,
-        amount_reg=amount_reg,
-        amount_out_reg=amount_out_reg,
-        accum_reg=accum_reg,
-        total_in_reg=total_in_reg,
     )
 
 
@@ -108,17 +88,7 @@ def _build_program_for_dag(
     vm_address: str,
     terminal_recipient: str,
     min_final_out: int,
-    amount_reg: int,
-    amount_out_reg: int,
-    accum_reg: int,
-    total_in_reg: int,
 ) -> Program:
-    if amount_reg == amount_out_reg:
-        raise ValueError(
-            f"build_program_for_dag: amount_reg and amount_out_reg must be different registers, "
-            f"but both are set to {amount_reg}"
-        )
-
     payload = dag.to_dict()
     actions = payload["actions"]
     if not actions:
@@ -130,10 +100,6 @@ def _build_program_for_dag(
             actions,
             vm_address=vm_address,
             terminal_recipient=terminal_recipient,
-            amount_reg=amount_reg,
-            amount_out_reg=amount_out_reg,
-            accum_reg=accum_reg,
-            total_in_reg=total_in_reg,
         )
     )
 
@@ -154,10 +120,6 @@ def _build_dag_actions(
     *,
     vm_address: str,
     terminal_recipient: str,
-    amount_reg: int,
-    amount_out_reg: int,
-    accum_reg: int,
-    total_in_reg: int,
 ) -> list[Program]:
     segments: list[Program] = []
     for i, action in enumerate(actions):
@@ -167,8 +129,6 @@ def _build_dag_actions(
                 _build_route_swap_segment_on_stack(
                     action,
                     recipient=action_recipient,
-                    amount_reg=amount_reg,
-                    amount_out_reg=amount_out_reg,
                 )
             )
             continue
@@ -179,10 +139,6 @@ def _build_dag_actions(
                     action,
                     vm_address=vm_address,
                     terminal_recipient=action_recipient,
-                    amount_reg=amount_reg,
-                    amount_out_reg=amount_out_reg,
-                    accum_reg=accum_reg,
-                    total_in_reg=total_in_reg,
                 )
             )
             continue
@@ -197,10 +153,6 @@ def _build_route_split_segment(
     *,
     vm_address: str,
     terminal_recipient: str,
-    amount_reg: int,
-    amount_out_reg: int,
-    accum_reg: int,
-    total_in_reg: int,
 ) -> list[Program]:
     if len(split.legs) == 1 and split.legs[0].fraction_bps == _BPS_DENOMINATOR:
         # Fast path: full-allocation single leg does not need split-frame
@@ -209,10 +161,6 @@ def _build_route_split_segment(
             split.legs[0].actions,
             vm_address=vm_address,
             terminal_recipient=terminal_recipient,
-            amount_reg=amount_reg,
-            amount_out_reg=amount_out_reg,
-            accum_reg=accum_reg,
-            total_in_reg=total_in_reg,
         )
 
     segments: list[Program] = [Program()._emit(push_u256(0))]
@@ -231,13 +179,9 @@ def _build_route_split_segment(
                 leg.actions,
                 vm_address=vm_address,
                 terminal_recipient=terminal_recipient,
-                amount_reg=amount_reg,
-                amount_out_reg=amount_out_reg,
-                accum_reg=accum_reg,
-                total_in_reg=total_in_reg,
             )
         )
-        segments.append(Program()._emit(swap())._emit(add()))
+        segments.append(Program()._emit(add()))
 
     segments.append(Program()._emit(swap())._emit(pop()))
     return segments
@@ -247,16 +191,11 @@ def _build_route_swap_segment_on_stack(
     swap_action: RouteSwap,
     *,
     recipient: str,
-    amount_reg: int,
-    amount_out_reg: int,
 ) -> Program:
     hop = _swap_hop_from_route_swap(swap_action, recipient=recipient)
-    program = Program()._emit(store_reg(amount_reg))
     if hop.protocol == SwapProtocol.UNISWAP_V3:
-        program.extend(_build_v3_pool_swap_segment(hop, amount_reg=amount_reg))
-    else:
-        program.extend(_build_v2_direct_swap_segment(hop, amount_reg=amount_reg, amount_out_reg=amount_out_reg))
-    return program._emit(load_reg(amount_reg))
+        return _build_v3_pool_swap_segment_on_stack(hop)
+    return _build_v2_direct_swap_segment_on_stack(hop)
 
 
 def _swap_hop_from_route_swap(swap_action: RouteSwap, *, recipient: str) -> SwapHop:
