@@ -257,6 +257,7 @@ PatchSpec = tuple[int, int, PatchSource]
 #: - *size*: number of bytes to overwrite (0, 32].
 StackPatchSpec = tuple[int, int]
 
+
 class Patch:
     """Marks a runtime-patched argument for :meth:`Program.call_contract_abi`.
 
