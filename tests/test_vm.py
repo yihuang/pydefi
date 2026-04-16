@@ -1826,8 +1826,8 @@ class TestEmitAbiEncode:
         result = mini_evm(code)
         assert not result.is_error
         fp = int.from_bytes(result.output, "big")
-        # fp should be 0x280 + 32 (initial fp + 1 word)
-        assert fp == 0x280 + 32
+        # fp should be 0x80 + 32 (initial fp + 1 word)
+        assert fp == 0x80 + 32
 
     def test_selector_only_no_args(self):
         """Selector with empty types produces 4-byte buffer."""
@@ -1932,8 +1932,8 @@ class TestEmitAbiEncodePacked:
         result = mini_evm(code)
         assert not result.is_error
         fp = int.from_bytes(result.output, "big")
-        # Padded to 32 bytes: 0x280 + 32
-        assert fp == 0x280 + 32
+        # Padded to 32 bytes: 0x80 + 32
+        assert fp == 0x80 + 32
 
 
 # ---------------------------------------------------------------------------
@@ -2277,22 +2277,22 @@ class TestMiniEVM:
         assert self._run_int(code) == len(data)
 
     def test_push_bytes_offset_is_free_memory_pointer(self):
-        # Free memory pointer is initialised to 0x280 by push_bytes.
+        # Free memory pointer is initialised to 0x80 by push_bytes.
         data = b"hello world"
         code = push_bytes(data) + swap() + pop() + RETURN_TOP  # get argsOffset
-        assert self._run_int(code) == 0x280
+        assert self._run_int(code) == 0x80
 
     def test_push_bytes_data_written_to_memory(self):
         # The data bytes are written at argsOffset.  Read the first 32-byte
         # chunk back via MLOAD and compare against the expected value.
         data = b"\xde\xad\xbe\xef" + b"\x00" * 28
-        # After push_bytes: stack = [0x280=argsOffset, 4=argsLen]
-        # Load the word at argsOffset (0x280) and return it.
+        # After push_bytes: stack = [0x80=argsOffset, 4=argsLen]
+        # Load the word at argsOffset (0x80) and return it.
         code = (
             push_bytes(data)
-            + swap()  # [argsLen, argsOffset=0x280]
-            + pop()  # [argsOffset=0x280]
-            + bytes([0x51])  # MLOAD  → 32 bytes at mem[0x280]
+            + swap()  # [argsLen, argsOffset=0x80]
+            + pop()  # [argsOffset=0x80]
+            + bytes([0x51])  # MLOAD  → 32 bytes at mem[0x80]
             + RETURN_TOP
         )
         result = self._run_int(code)

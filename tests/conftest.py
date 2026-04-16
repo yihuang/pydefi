@@ -6,7 +6,7 @@ Provides two complementary EVM testing facilities:
    for quick bytecode tests (no contract setup needed).
 
 2. :class:`MiniEVMContext` — stateful EVM context backed by ethereum-execution
-   (execution-specs) Shanghai with real DeFiVM + Analog-Labs interpreter deployed.
+   (execution-specs) Cancun with real DeFiVM + Analog-Labs interpreter deployed.
    Contracts deployed via :meth:`~MiniEVMContext.deploy` persist across
    all subsequent calls.
 
@@ -35,9 +35,10 @@ from eth_contract.contract import Contract
 from eth_contract.erc20 import ERC20
 from eth_contract.utils import get_initcode
 from eth_keys import keys
-from ethereum.forks.shanghai.state import (
+from ethereum.forks.cancun.state import (
     EMPTY_ACCOUNT,
     State,
+    TransientStorage,
     begin_transaction,
     get_account,
     get_account_optional,
@@ -49,9 +50,9 @@ from ethereum.forks.shanghai.state import (
     set_code,
     set_storage,
 )
-from ethereum.forks.shanghai.utils.address import compute_contract_address
-from ethereum.forks.shanghai.vm import BlockEnvironment, Message, TransactionEnvironment
-from ethereum.forks.shanghai.vm.interpreter import process_create_message, process_message
+from ethereum.forks.cancun.utils.address import compute_contract_address
+from ethereum.forks.cancun.vm import BlockEnvironment, Message, TransactionEnvironment
+from ethereum.forks.cancun.vm.interpreter import process_create_message, process_message
 from ethereum_types.bytes import Bytes0, Bytes20, Bytes32
 from ethereum_types.numeric import U64, U256, Uint
 
@@ -120,6 +121,8 @@ _MINI_EVM_BLOCK_ENV: BlockEnvironment = BlockEnvironment(
     base_fee_per_gas=Uint(1),
     time=U256(1),
     prev_randao=Bytes32(b"\x00" * 32),
+    excess_blob_gas=U64(0),
+    parent_beacon_block_root=Bytes32(b"\x00" * 32),
 )
 
 
@@ -159,7 +162,7 @@ def mini_evm(
     calldata: bytes = b"",
     gas: int = 1_000_000,
 ) -> EVMResult:
-    """Execute *bytecode* using ethereum-execution (Shanghai) and return the result.
+    """Execute *bytecode* using ethereum-execution (Cancun) and return the result.
 
     Runs EVM bytecode in-process without any external processes or network
     access, making it suitable for fast unit tests that verify program logic.
@@ -188,6 +191,8 @@ def mini_evm(
             gas=Uint(gas),
             access_list_addresses=set(),
             access_list_storage_keys=set(),
+            transient_storage=TransientStorage(),
+            blob_versioned_hashes=(),
             index_in_block=None,
             tx_hash=None,
         ),
@@ -206,7 +211,8 @@ def mini_evm(
         accessed_storage_keys=set(),
         parent_evm=None,
     )
-    begin_transaction(_mini_evm_state)
+    _ts = TransientStorage()
+    begin_transaction(_mini_evm_state, _ts)
     try:
         evm = process_message(msg)
         return EVMResult(
@@ -215,7 +221,7 @@ def mini_evm(
             is_error=evm.error is not None,
         )
     finally:
-        rollback_transaction(_mini_evm_state)
+        rollback_transaction(_mini_evm_state, _ts)
 
 
 # ---------------------------------------------------------------------------
@@ -223,9 +229,9 @@ def mini_evm(
 # ---------------------------------------------------------------------------
 
 #: EVM-version flag used when compiling Solidity sources inside
-#: :class:`MiniEVMContext`.  ``"shanghai"`` enables PUSH0 (required by the
-#: Analog-Labs interpreter) while remaining compatible with Solidity 0.8.24.
-_SOLC_EVM_VERSION: str = "shanghai"
+#: :class:`MiniEVMContext`.  ``"cancun"`` enables PUSH0, TLOAD, and TSTORE
+#: (required by the Analog-Labs interpreter and register-based programs).
+_SOLC_EVM_VERSION: str = "cancun"
 
 #: EIP-4844 is not used; gas price for deploy transactions in MiniEVMContext.
 _CTX_GAS_PRICE: int = 10**9
@@ -290,7 +296,7 @@ def _get_defi_vm_compiled() -> dict:
 
 @dataclass
 class MiniEVMContext:
-    """Stateful in-process EVM context backed by ethereum-execution Shanghai.
+    """Stateful in-process EVM context backed by ethereum-execution Cancun.
 
     Deploys the real Analog-Labs interpreter and DeFiVM on construction so
     :meth:`run_program` exercises the authentic dispatch path.  Contract
@@ -331,6 +337,8 @@ class MiniEVMContext:
             base_fee_per_gas=Uint(1),
             time=U256(1),
             prev_randao=Bytes32(b"\x00" * 32),
+            excess_blob_gas=U64(0),
+            parent_beacon_block_root=Bytes32(b"\x00" * 32),
         )
         # Deploy the real Analog-Labs EVM interpreter + DeFiVM.
         interp_addr = self.deploy(_get_interpreter_bin())
@@ -350,6 +358,8 @@ class MiniEVMContext:
             gas=Uint(gas),
             access_list_addresses=set(),
             access_list_storage_keys=set(),
+            transient_storage=TransientStorage(),
+            blob_versioned_hashes=(),
             index_in_block=None,
             tx_hash=None,
         )
@@ -444,7 +454,7 @@ class MiniEVMContext:
     def compile_and_deploy(self, source: str, contract_name: str, *constructor_args: object) -> bytes:
         """Compile a Solidity source string and deploy the named contract.
 
-        Uses ``py-solc-x`` with Solidity 0.8.24 and the Shanghai EVM target.
+        Uses ``py-solc-x`` with Solidity 0.8.24 and the Cancun EVM target.
         Constructor arguments are ABI-encoded and appended to the creation
         bytecode.
 

@@ -9,9 +9,9 @@ the semantics of a freshly deployed contract.
 
 Memory conventions used by the interpreter
 ------------------------------------------
-- Registers:          ``memory[0x80 + i*32]`` for ``i`` in 0..15
-- Free memory pointer: ``memory[0x40]`` (initialised to 0x280 on first use)
-- Dynamic buffers:    allocated starting at ``memory[0x280]``
+- Registers:          transient storage slot ``i`` for ``i`` in 0..15 (TLOAD/TSTORE)
+- Free memory pointer: ``memory[0x40]`` (initialised to 0x80 on first use)
+- Dynamic buffers:    allocated starting at ``memory[0x80]``
 
 Usage example::
 
@@ -61,6 +61,8 @@ OP_SELF_ADDR: int = 0x30  # ADDRESS — emitted by self_addr()
 OP_BALANCE: int = 0x31  # BALANCE — used in balance_of() ETH path
 OP_MLOAD: int = 0x51  # MLOAD — load word from memory
 OP_MSTORE: int = 0x52  # MSTORE — store word to memory
+OP_TLOAD: int = 0x5C  # TLOAD — load word from transient storage (EIP-1153)
+OP_TSTORE: int = 0x5D  # TSTORE — store word to transient storage (EIP-1153)
 OP_JUMPDEST: int = 0x5B  # JUMPDEST — marks a valid jump target
 OP_RETURNDATACOPY: int = 0x3E  # RETURNDATACOPY — copy returndata into memory
 OP_STATICCALL: int = 0xFA  # STATICCALL — used by balance_of() ERC-20 path
@@ -111,9 +113,9 @@ def gas_opcode() -> bytes:
 def fp_init() -> bytes:
     """Emit opcodes that push the current free-memory pointer onto the stack.
 
-    Computes ``fp if fp != 0 else 0x280`` where ``fp = mem[0x40]``.
+    Computes ``fp if fp != 0 else 0x80`` where ``fp = mem[0x40]``.
     If the free-memory pointer has not been initialised yet (zero), defaults
-    to ``0x280`` (past the register area).
+    to ``0x80`` (the standard Solidity heap start).
 
     This preamble is shared between :func:`push_bytes`, :func:`emit_abi_encode`,
     and :func:`emit_abi_encode_packed`.
@@ -123,12 +125,11 @@ def fp_init() -> bytes:
             _PUSH1,
             0x40,  # PUSH1 0x40
             OP_MLOAD,  # MLOAD           → [fp]
-            _PUSH2,
-            0x02,
-            0x80,  # PUSH2 0x0280    → [0x280, fp]
-            _DUP2,  # DUP2            → [fp, 0x280, fp]
-            OP_ISZERO,  # ISZERO          → [fp==0, 0x280, fp]
-            OP_MUL,  # MUL             → [0x280*(fp==0), fp]
+            _PUSH1,
+            0x80,  # PUSH1 0x80    → [0x80, fp]
+            _DUP2,  # DUP2            → [fp, 0x80, fp]
+            OP_ISZERO,  # ISZERO          → [fp==0, 0x80, fp]
+            OP_MUL,  # MUL             → [0x80*(fp==0), fp]
             OP_OR,  # OR              → [max_fp]
         ]
     )
@@ -215,19 +216,17 @@ def pop() -> bytes:
 
 
 def load_reg(i: int) -> bytes:
-    """Emit PUSH2 addr MLOAD — push register *i* onto the stack."""
+    """Emit PUSH1 i TLOAD — push register *i* from transient storage onto the stack."""
     if not 0 <= i <= 15:
         raise ValueError(f"load_reg: register index must be 0..15, got {i}")
-    addr = 0x80 + i * 32
-    return bytes([_PUSH2, addr >> 8, addr & 0xFF, OP_MLOAD])
+    return bytes([_PUSH1, i, OP_TLOAD])
 
 
 def store_reg(i: int) -> bytes:
-    """Emit PUSH2 addr MSTORE — pop TOS into register *i*."""
+    """Emit PUSH1 i TSTORE — pop TOS into transient storage register *i*."""
     if not 0 <= i <= 15:
         raise ValueError(f"store_reg: register index must be 0..15, got {i}")
-    addr = 0x80 + i * 32
-    return bytes([_PUSH2, addr >> 8, addr & 0xFF, OP_MSTORE])
+    return bytes([_PUSH1, i, OP_TSTORE])
 
 
 # ---------------------------------------------------------------------------
