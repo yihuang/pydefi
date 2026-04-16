@@ -358,7 +358,7 @@ def _build_v3_pool_swap_segment(hop: SwapHop, *, amount_reg: int) -> Program:
     )
 
 
-def _build_v2_direct_swap_segment_on_stack(hop: SwapHop, *, scratch_reg: int = _AMOUNT_OUT_REG) -> Program:
+def _build_v2_direct_swap_segment_on_stack(hop: SwapHop, *, intermediate_reg: int = _AMOUNT_OUT_REG) -> Program:
     """V2 pair direct swap (stack ABI).
 
     Stack contract:
@@ -391,7 +391,7 @@ def _build_v2_direct_swap_segment_on_stack(hop: SwapHop, *, scratch_reg: int = _
     prog._emit(add())
     prog._emit(swap())
     prog._emit(div())  # [amount_in, amount_out]
-    prog._emit(store_reg(scratch_reg))  # consume amount_out; keep amount_in on stack
+    prog._emit(store_reg(intermediate_reg))  # consume amount_out; keep amount_in on stack
 
     prog.call_contract_abi(
         hop.token_in,
@@ -405,7 +405,7 @@ def _build_v2_direct_swap_segment_on_stack(hop: SwapHop, *, scratch_reg: int = _
             hop.pool,
             "function swap(uint256 amount0Out, uint256 amount1Out, address to, bytes data)",
             0,
-            Patch(load_reg(scratch_reg)),
+            Patch(load_reg(intermediate_reg)),
             hop.recipient,
             b"",
         ).pop()
@@ -413,13 +413,13 @@ def _build_v2_direct_swap_segment_on_stack(hop: SwapHop, *, scratch_reg: int = _
         prog.call_contract_abi(
             hop.pool,
             "function swap(uint256 amount0Out, uint256 amount1Out, address to, bytes data)",
-            Patch(load_reg(scratch_reg)),
+            Patch(load_reg(intermediate_reg)),
             0,
             hop.recipient,
             b"",
         ).pop()
 
-    prog._emit(load_reg(scratch_reg))
+    prog._emit(load_reg(intermediate_reg))
     prog._emit(swap())
     prog._emit(pop())
     return prog
@@ -450,7 +450,7 @@ def _build_v2_direct_swap_segment(hop: SwapHop, *, amount_reg: int, amount_out_r
     return (
         Program()
         ._emit(load_reg(amount_reg))
-        .extend(_build_v2_direct_swap_segment_on_stack(hop, scratch_reg=amount_out_reg))
+        .extend(_build_v2_direct_swap_segment_on_stack(hop, intermediate_reg=amount_out_reg))
         ._emit(store_reg(amount_reg))
     )
 
