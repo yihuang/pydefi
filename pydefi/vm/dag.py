@@ -21,13 +21,6 @@ another:
    - execute leg actions recursively (returns ``leg_out`` at TOS)
    - accumulate via ``ADD`` (``accum += leg_out``)
 4. exit with ``SWAP1`` + ``POP`` to drop ``total_in`` and keep merged output
-
-Pool swap builders in :mod:`pydefi.vm.swap` are register-oriented; this module
-bridges them with a small stack adapter:
-
-* pre-swap: ``STORE_REG(amount_reg)`` (consume stack input)
-* execute V2/V3 segment
-* post-swap: ``LOAD_REG(amount_reg)`` (restore stack output)
 """
 
 from __future__ import annotations
