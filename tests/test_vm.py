@@ -945,7 +945,9 @@ class TestCallWithPatchesFromStack:
             dup_n(17)
 
 
-
+# ---------------------------------------------------------------------------
+# Arithmetic opcodes
+# ---------------------------------------------------------------------------
 
 
 class TestArithmeticOpcodes:
