@@ -11,11 +11,10 @@ Usage::
 
 from __future__ import annotations
 
-from pydefi.types import Token
+from pydefi.types import ChainId, Token
 
-# Chain ID constants
-_ETH = 1
-_SEP = 11155111
+_ETH = ChainId.ETHEREUM
+_SEP = ChainId.SEPOLIA
 
 # ── Tokens ────────────────────────────────────────────────────────────────────
 # { name: { "symbol": str, "decimals": int, "addresses": { chain_id: address } } }
