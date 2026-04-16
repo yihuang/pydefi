@@ -7,7 +7,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any
 
-from pydefi.types import BridgeQuote, Token, TokenAmount
+from pydefi.types import Address, BridgeQuote, Token, TokenAmount
 
 
 class BaseBridge(ABC):
@@ -56,7 +56,7 @@ class BaseBridge(ABC):
         token_in: Token,
         token_out: Token,
         amount_in: TokenAmount,
-        recipient: str,
+        recipient: Address,
         slippage_bps: int = 50,
         **kwargs: Any,
     ) -> dict[str, Any]:

@@ -362,7 +362,7 @@ class TestMayan:
         """
         m = Mayan(src_chain_id=1, dst_chain_id=42161)
         amount_in = TokenAmount(token=ETH_NATIVE, amount=10**18)  # 1 ETH
-        recipient = "0x" + "CC" * 20
+        recipient = HexBytes("0x" + "CC" * 20)
         weth = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
         swift_contract = "0x" + "AA" * 20
         swap_router = "0x" + "BB" * 20
@@ -409,7 +409,7 @@ class TestMayan:
         m = Mayan(src_chain_id=1, dst_chain_id=42161)
         amount_in = TokenAmount.from_human(USDC_ETH, "1000")
         with pytest.raises(BridgeError):
-            await m.build_bridge_tx(USDC_ETH, USDC_ARB, amount_in, "0x" + "CC" * 20)
+            await m.build_bridge_tx(USDC_ETH, USDC_ARB, amount_in, HexBytes("0x" + "CC" * 20))
 
     @pytest.mark.asyncio
     async def test_build_bridge_tx_no_swift_route_raises(self):
@@ -428,7 +428,7 @@ class TestMayan:
 
         with patch("aiohttp.ClientSession", return_value=_make_aiohttp_mock(200, mock_quote_response)):
             with pytest.raises(BridgeError):
-                await m.build_bridge_tx(ETH_NATIVE, USDC_ARB, amount_in, "0x" + "CC" * 20)
+                await m.build_bridge_tx(ETH_NATIVE, USDC_ARB, amount_in, HexBytes("0x" + "CC" * 20))
 
 
 # ---------------------------------------------------------------------------
@@ -573,7 +573,7 @@ class TestRelay:
     async def test_build_bridge_tx(self):
         r = Relay(src_chain_id=1, dst_chain_id=42161)
         amount_in = TokenAmount.from_human(USDC_ETH, "1000")
-        recipient = "0x" + "CC" * 20
+        recipient = HexBytes("0x" + "CC" * 20)
 
         mock_api_response = {
             "details": {
@@ -607,7 +607,7 @@ class TestRelay:
     async def test_build_bridge_tx_no_steps_raises(self):
         r = Relay(src_chain_id=1, dst_chain_id=42161)
         amount_in = TokenAmount.from_human(USDC_ETH, "1000")
-        recipient = "0x" + "CC" * 20
+        recipient = HexBytes("0x" + "CC" * 20)
 
         mock_api_response = {"details": {}, "steps": []}
 
@@ -619,7 +619,7 @@ class TestRelay:
     async def test_build_bridge_tx_no_items_raises(self):
         r = Relay(src_chain_id=1, dst_chain_id=42161)
         amount_in = TokenAmount.from_human(USDC_ETH, "1000")
-        recipient = "0x" + "CC" * 20
+        recipient = HexBytes("0x" + "CC" * 20)
 
         mock_api_response = {"details": {}, "steps": [{"items": []}]}
 
@@ -838,7 +838,7 @@ class TestLayerZeroOFT:
             oft_address=OFT_ADDRESS,
         )
         amount_in = TokenAmount.from_human(OFT_TOKEN_ETH, "1000")
-        recipient = "0x" + "AA" * 20
+        recipient = HexBytes("0x" + "AA" * 20)
 
         with patch.object(oft, "quote_send_fee", new=AsyncMock(return_value=5 * 10**15)):
             tx = await oft.build_bridge_tx(OFT_TOKEN_ETH, OFT_TOKEN_ARB, amount_in, recipient)
@@ -858,7 +858,7 @@ class TestLayerZeroOFT:
         )
         amount_in = TokenAmount.from_human(OFT_TOKEN_ETH, "100")
         recipient = "0x" + "AA" * 20
-        refund = "0x" + "BB" * 20
+        refund = HexBytes("0x" + "BB" * 20)
 
         with patch.object(oft, "quote_send_fee", new=AsyncMock(return_value=10**15)):
             tx = await oft.build_bridge_tx(OFT_TOKEN_ETH, OFT_TOKEN_ARB, amount_in, recipient, refund_address=refund)
@@ -885,7 +885,7 @@ class TestLayerZeroOFT:
         amount_in = TokenAmount.from_human(wrong_token, "10")
         with pytest.raises(BridgeError, match="token_in"):
             with patch.object(oft, "quote_send_fee", new=AsyncMock(return_value=10**15)):
-                await oft.build_bridge_tx(wrong_token, OFT_TOKEN_ARB, amount_in, "0x" + "AA" * 20)
+                await oft.build_bridge_tx(wrong_token, OFT_TOKEN_ARB, amount_in, HexBytes("0x" + "AA" * 20))
 
     def test_lz_eid_constants(self):
         assert _LZ_EID[1] == 30101  # Ethereum

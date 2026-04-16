@@ -25,7 +25,7 @@ from web3 import AsyncWeb3
 from pydefi.abi.bridge import ACROSS_SPOKE_POOL
 from pydefi.bridge.base import BaseBridge
 from pydefi.exceptions import BridgeError
-from pydefi.types import BridgeQuote, Token, TokenAmount
+from pydefi.types import Address, BridgeQuote, Token, TokenAmount
 
 _ACROSS_API_BASE = "https://app.across.to/api"
 
@@ -79,7 +79,8 @@ class Across(BaseBridge):
             :class:`~pydefi.exceptions.BridgeError`: On API error.
         """
         params: dict[str, Any] = {
-            "token": token.address,
+            # Convert Address to hex string for the API (periphery boundary)
+            "token": ("0x" + token.address.hex()) if isinstance(token.address, bytes) else token.address,
             "inputChainId": self.src_chain_id,
             "outputChainId": self.dst_chain_id,
             "amount": str(amount),
@@ -134,9 +135,9 @@ class Across(BaseBridge):
         token_in: Token,
         token_out: Token,
         amount_in: TokenAmount,
-        recipient: str,
+        recipient: Address,
         slippage_bps: int = 50,
-        depositor: str | None = None,
+        depositor: Address | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
         """Build an Across ``depositV3`` transaction.

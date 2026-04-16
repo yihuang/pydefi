@@ -22,7 +22,7 @@ from pydefi._utils import address_to_bytes32, token_to_bytes32
 from pydefi.abi.bridge import MAYAN_FORWARDER, MAYAN_SWIFT_V2, MayanSwiftOrderParams
 from pydefi.bridge.base import BaseBridge
 from pydefi.exceptions import BridgeError
-from pydefi.types import BridgeQuote, Token, TokenAmount
+from pydefi.types import Address, BridgeQuote, Token, TokenAmount
 
 _MAYAN_API_BASE = "https://price-api.mayan.finance/v3"
 
@@ -83,16 +83,17 @@ _CHAIN_WETH: dict[int, str] = {
 _ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
 
 
-def _mayan_token_address(address: str) -> str:
+def _mayan_token_address(address: str | Address) -> str:
     """Normalize a token address for the Mayan Price API.
 
     The Mayan API uses the zero address to represent the native gas token
     (ETH, BNB, etc.).  Any ``EeeE...`` sentinel is canonicalized here so
     that API requests always use the representation the server expects.
     """
-    if address.lower() == "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee":
+    addr = ("0x" + address.hex()) if isinstance(address, bytes) else address
+    if addr.lower() == "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee":
         return _ZERO_ADDRESS
-    return address
+    return addr
 
 
 class Mayan(BaseBridge):
@@ -224,9 +225,9 @@ class Mayan(BaseBridge):
         token_in: Token,
         token_out: Token,
         amount_in: TokenAmount,
-        recipient: str,
+        recipient: Address,
         slippage_bps: int = 50,
-        referrer: Optional[str] = None,
+        referrer: Optional[Address] = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
         """Build a Mayan SWIFT bridge transaction via the Mayan Forwarder contract.
@@ -261,9 +262,7 @@ class Mayan(BaseBridge):
         if not token_in.is_native():
             raise BridgeError("Mayan build_bridge_tx currently only supports native ETH input")
 
-        # Convert string addresses to Address (HexBytes) at periphery boundary
-        recipient_addr = HexBytes(recipient)
-        referrer_addr = HexBytes(referrer) if referrer else None
+        referrer_addr: Address | None = referrer
 
         from_chain = self._chain_name(self.src_chain_id)
         to_chain = self._chain_name(self.dst_chain_id)
@@ -354,9 +353,9 @@ class Mayan(BaseBridge):
         # Use os.urandom for the order's random field to ensure uniqueness
         random_b32 = os.urandom(32)
 
-        trader_b32 = address_to_bytes32(recipient_addr)
-        token_out_b32 = token_to_bytes32(HexBytes(token_out.address))
-        dest_addr_b32 = address_to_bytes32(recipient_addr)
+        trader_b32 = address_to_bytes32(recipient)
+        token_out_b32 = token_to_bytes32(token_out.address)
+        dest_addr_b32 = address_to_bytes32(recipient)
         referrer_b32 = address_to_bytes32(referrer_addr) if referrer_addr else bytes(32)
 
         # SWIFT V2 OrderParams (field order differs from V1)

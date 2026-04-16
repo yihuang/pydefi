@@ -171,9 +171,9 @@ _USDC: dict[int, str] = {
 # Used as both mintRecipient and destinationCaller for HyperCore-bound transfers.
 # Mainnet address verified on-chain (tokenMessenger() == TokenMessengerV2).
 # Docs: https://developers.circle.com/cctp/concepts/cctp-on-hypercore
-_CCTP_FORWARDER: dict[bool, str] = {
-    True: "0xb21d281dedb17ae5b501f6aa8256fe38c4e45757",  # HyperEVM mainnet (verified)
-    False: "0x02e39ECb8368b41bF68FF99ff351aC9864e5E2a2",  # HyperEVM testnet
+_CCTP_FORWARDER: dict[bool, Address] = {
+    True: HexBytes("0xb21d281dedb17ae5b501f6aa8256fe38c4e45757"),  # HyperEVM mainnet (verified)
+    False: HexBytes("0x02e39ECb8368b41bF68FF99ff351aC9864e5E2a2"),  # HyperEVM testnet
 }
 
 
@@ -220,8 +220,6 @@ def encode_cctp_forward_hook_data(
 
     # With recipient: 20 bytes address + 4 bytes dex = 24 bytes of data
     data_length = (24).to_bytes(4, "big")
-    if len(recipient) != 20:
-        raise ValueError(f"recipient must be a 20-byte EVM address, got {len(recipient)} bytes")
     dex_bytes = (destination_dex & 0xFFFFFFFF).to_bytes(4, "big")
     return magic + version + data_length + recipient + dex_bytes
 
@@ -270,7 +268,7 @@ class CCTP(BaseBridge):
         token_messenger_address: str | None = None,
         src_usdc_address: str | None = None,
         api_base_url: str = _IRIS_API_BASE,
-        cctp_forwarder_address: str | None = None,
+        cctp_forwarder_address: Address | None = None,
         is_mainnet: bool = True,
     ) -> None:
         super().__init__(src_chain_id, dst_chain_id)
@@ -429,10 +427,10 @@ class CCTP(BaseBridge):
         token_in: Token,
         token_out: Token,
         amount_in: TokenAmount,
-        recipient: str,
+        recipient: Address,
         slippage_bps: int = 0,
         dst_domain: int | None = None,
-        destination_caller: str | None = None,
+        destination_caller: Address | None = None,
         max_fee: int = 0,
         min_finality_threshold: int = FINALITY_THRESHOLD_CONFIRMED,
         hypercore_dex: int = HYPERCORE_DEX_PERP,
@@ -486,17 +484,12 @@ class CCTP(BaseBridge):
         """
         _dst_domain = dst_domain if dst_domain is not None else self._cctp_domain(self.dst_chain_id)
 
-        # Convert string addresses to Address (HexBytes) at periphery boundary
-        recipient_addr = HexBytes(recipient)
-        destination_caller_addr = HexBytes(destination_caller) if destination_caller else None
-
         if self.dst_chain_id == ChainId.HYPERCORE:
             # For HyperCore: mint USDC on HyperEVM to the CctpForwarder, which
             # reads the hookData and deposits it into the recipient's HyperCore account.
-            forwarder_addr = HexBytes(self.cctp_forwarder_address)
-            mint_recipient = address_to_bytes32(forwarder_addr)
-            dst_caller_bytes = address_to_bytes32(forwarder_addr)
-            hook_data = encode_cctp_forward_hook_data(recipient_addr, hypercore_dex)
+            mint_recipient = address_to_bytes32(self.cctp_forwarder_address)
+            dst_caller_bytes = address_to_bytes32(self.cctp_forwarder_address)
+            hook_data = encode_cctp_forward_hook_data(recipient, hypercore_dex)
 
             call_data = CCTP_TOKEN_MESSENGER_V2.fns.depositForBurnWithHook(
                 amount_in.amount,
@@ -509,8 +502,8 @@ class CCTP(BaseBridge):
                 hook_data,
             ).data
         else:
-            mint_recipient = address_to_bytes32(recipient_addr)
-            dst_caller_bytes = address_to_bytes32(destination_caller_addr) if destination_caller_addr else b"\x00" * 32
+            mint_recipient = address_to_bytes32(recipient)
+            dst_caller_bytes = address_to_bytes32(destination_caller) if destination_caller else b"\x00" * 32
 
             call_data = CCTP_TOKEN_MESSENGER_V2.fns.depositForBurn(
                 amount_in.amount,
@@ -532,7 +525,7 @@ class CCTP(BaseBridge):
     async def build_bridge_compose_tx(
         self,
         amount_in: TokenAmount,
-        composer_address: str,
+        composer_address: Address,
         program: bytes,
         dst_domain: int | None = None,
         max_fee: int = 0,
@@ -577,10 +570,8 @@ class CCTP(BaseBridge):
 
         _dst_domain = dst_domain if dst_domain is not None else self._cctp_domain(self.dst_chain_id)
 
-        # Convert string address to Address (HexBytes) at periphery boundary
-        composer_addr = HexBytes(composer_address)
-        mint_recipient = address_to_bytes32(composer_addr)
-        destination_caller = address_to_bytes32(composer_addr)
+        mint_recipient = address_to_bytes32(composer_address)
+        destination_caller = address_to_bytes32(composer_address)
 
         call_data = CCTP_TOKEN_MESSENGER_V2.fns.depositForBurnWithHook(
             amount_in.amount,

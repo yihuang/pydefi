@@ -54,16 +54,19 @@ class Token:
 
     Attributes:
         chain_id: The chain this token lives on.
-        address: Checksum address of the ERC-20 contract.  Use the sentinel
-            value ``"0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"`` for the
-            native gas token (ETH, MATIC, BNB …).
+        address: Token contract address.  For EVM tokens this is a 20-byte
+            :class:`~hexbytes.HexBytes` (``Address``) — any ``0x``-prefixed
+            hex string passed at construction is automatically converted.
+            For non-EVM chains (e.g. Solana) this remains a plain ``str``.
+            Use the sentinel value ``"0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"``
+            (or its ``HexBytes`` equivalent) for the native gas token.
         symbol: Human-readable ticker symbol (e.g. ``"USDC"``).
         decimals: Token precision (default 18).
         name: Optional long-form name.
     """
 
     chain_id: int
-    address: str
+    address: str | Address
     symbol: str
     decimals: int = 18
     name: str | None = None
@@ -71,8 +74,16 @@ class Token:
     # Sentinel for native currency (class variable, not an instance field)
     NATIVE_ADDRESS: ClassVar[str] = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"
 
+    def __post_init__(self) -> None:
+        # Auto-convert 0x-prefixed hex strings to Address (HexBytes) for EVM tokens.
+        # Non-EVM addresses (e.g. Solana base58) don't start with "0x" and are kept as str.
+        if isinstance(self.address, str) and self.address.startswith("0x"):
+            object.__setattr__(self, "address", HexBytes(self.address))
+
     def is_native(self) -> bool:
         """Return ``True`` if this token represents the native gas currency."""
+        if isinstance(self.address, bytes):
+            return self.address == HexBytes(self.NATIVE_ADDRESS)
         return self.address.lower() == self.NATIVE_ADDRESS.lower()
 
     def __str__(self) -> str:

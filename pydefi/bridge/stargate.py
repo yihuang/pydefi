@@ -16,13 +16,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from hexbytes import HexBytes
 from web3 import AsyncWeb3
 
 from pydefi.abi.bridge import STARGATE_ROUTER
 from pydefi.bridge.base import BaseBridge
 from pydefi.exceptions import BridgeError
-from pydefi.types import BridgeQuote, Token, TokenAmount
+from pydefi.types import Address, BridgeQuote, Token, TokenAmount
 
 # LayerZero chain IDs differ from EVM chain IDs.
 # Solana uses the LayerZero V2 endpoint ID (30168).
@@ -97,7 +96,7 @@ class Stargate(BaseBridge):
     async def quote_lz_fee(
         self,
         dst_chain_id: int,
-        recipient: str,
+        recipient: Address,
         dst_gas: int = 200_000,
     ) -> int:
         """Estimate the LayerZero messaging fee for a cross-chain transfer.
@@ -112,12 +111,11 @@ class Stargate(BaseBridge):
         """
         lz_dst_chain = self._lz_chain_id(dst_chain_id)
         lz_tx_params = (dst_gas, 0, b"")
-        to_bytes = HexBytes(recipient)
         try:
             result = await STARGATE_ROUTER.fns.quoteLayerZeroFee(
                 lz_dst_chain,
                 1,  # TYPE_SWAP_REMOTE
-                to_bytes,
+                recipient,
                 b"",
                 lz_tx_params,
             ).call(self.w3, to=self.router_address)
@@ -162,7 +160,7 @@ class Stargate(BaseBridge):
         token_in: Token,
         token_out: Token,
         amount_in: TokenAmount,
-        recipient: str,
+        recipient: Address,
         slippage_bps: int = 50,
         dst_gas: int = 200_000,
         **kwargs: Any,
@@ -192,7 +190,6 @@ class Stargate(BaseBridge):
         min_amount = self._apply_slippage(amount_out_raw, slippage_bps)
 
         lz_tx_params = (dst_gas, 0, b"")
-        to_bytes = HexBytes(recipient)
 
         # Build call data via the Contract ABI
         call_data = STARGATE_ROUTER.fns.swap(
@@ -203,7 +200,7 @@ class Stargate(BaseBridge):
             amount_in.amount,
             min_amount,
             lz_tx_params,
-            to_bytes,
+            recipient,
             b"",
         ).data
 
