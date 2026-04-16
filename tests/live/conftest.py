@@ -39,6 +39,7 @@ from web3 import AsyncWeb3
 from pydefi.rpc import get_w3
 from pydefi.types import ChainId
 from tests.live.sol_utils import compile_interpreter_sync
+from tests.well_known import ZERO_ADDR as ZERO_ADDR
 from tests.well_known import mainnet as mainnet
 
 # ---------------------------------------------------------------------------
