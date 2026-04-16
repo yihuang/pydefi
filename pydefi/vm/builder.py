@@ -405,8 +405,16 @@ class Program:
         return self._emit(push_bytes(data))
 
     def dup(self) -> "Program":
-        """Emit DUP."""
+        """Emit DUP1 — duplicate the top stack item."""
         return self._emit(dup())
+
+    def dup_n(self, n: int) -> "Program":
+        """Emit DUPn — duplicate the stack item *n* positions from the top.
+
+        Args:
+            n: Stack depth (1 = TOS, …, 16 = sixteenth item).
+        """
+        return self._emit(dup_n(n))
 
     def swap(self) -> "Program":
         """Emit SWAP."""
@@ -566,6 +574,55 @@ class Program:
     def patch_addr(self, offset: int) -> "Program":
         """Emit PATCH_ADDR at *offset*."""
         return self._emit(patch_value(offset, 20))
+
+    def patch_bytes_from_stack(self, patches: list[StackPatchSpec]) -> "Program":
+        """Apply calldata patches consuming values from the stack.
+
+        This is the **stand-alone patching** half of
+        :meth:`call_with_patches_from_stack`.  Use it when you want to
+        patch a calldata buffer already on the stack and then issue the
+        external call separately (or conditionally).
+
+        The caller must have pushed the calldata buffer with
+        :meth:`push_bytes` (or equivalent) so that the stack is::
+
+            [argsOffset(TOS), argsLen(2nd), patch1_val(3rd), …, patchN_val(2+N)]
+
+        Each ``(offset, size)`` entry in *patches* consumes the next value
+        from below ``argsLen`` and writes it into the calldata buffer.
+
+        Stack before: ``[argsOffset(TOS), argsLen(2nd), val1(3rd), …, valN]``
+        Stack after:  ``[argsOffset(TOS), argsLen(2nd)]``
+
+        Per-patch bytecode emitted::
+
+            SWAP1   ; [argsLen, argsOffset, val_i, …]
+            SWAP2   ; [val_i, argsOffset, argsLen, …]
+            <patch_value(offset, size)>  ; [argsOffset, argsLen, …]
+
+        Args:
+            patches: List of ``(offset, size)`` descriptors.  The first entry
+                consumes the value currently at stack position 3 (just below
+                ``argsLen``), the second consumes position 3 again (after the
+                previous arg was consumed), and so on.
+
+        Returns:
+            ``self`` for chaining.
+
+        Raises:
+            ValueError: If any patch *size* is not in the range ``(0, 32]``.
+        """
+        for offset, size in patches:
+            if not (0 < size <= 32):
+                raise ValueError(
+                    f"patch_bytes_from_stack: patch size {size!r} not supported; expected 0 < size <= 32"
+                )
+            # SWAP1+SWAP2 rotates the next arg to TOS with argsOffset at 2nd —
+            # exactly the layout patch_value expects — consuming the arg directly.
+            self._emit(bytes([0x90]))  # SWAP1: [argsLen, argsOffset, val_i, …]
+            self._emit(bytes([0x91]))  # SWAP2: [val_i, argsOffset, argsLen, …]
+            self._emit(patch_value(offset, size))  # [argsOffset, argsLen, …]
+        return self
 
     def ret_u256(self, offset: int) -> "Program":
         """Emit RET_U256 — push uint256 from last returndata at *offset*."""
@@ -919,9 +976,17 @@ class Program:
 
         The *patches* list is consumed in order: the first entry consumes the
         value at the **top of the stack** (TOS), the second entry the value
-        below that, and so on.  After the external call completes, all consumed
-        stack values are removed so the net stack effect is identical to
-        :meth:`call_with_patches`.
+        below that, and so on.  All patch values are consumed before the
+        external call is issued, so no post-call cleanup is emitted.
+
+        Internally, this is implemented as :meth:`push_bytes` followed by
+        :meth:`patch_bytes_from_stack` and then a compact call frame insertion.
+        The net bytecode is smaller than the DUP-based alternative because:
+
+        - No ``DUP`` instructions are needed to read args.
+        - No ``SWAP1 POP`` cleanup is needed after the call.
+        - ``retOffset`` and ``retLen`` are inserted via a 7-byte sequence
+          instead of two 33-byte ``PUSH32`` instructions.
 
         Example::
 
@@ -958,44 +1023,31 @@ class Program:
             ``self`` for chaining.
 
         Raises:
-            ValueError: If *patches* has more than 12 entries (EVM DUP only
-                reaches 16 deep; 4 stack slots are consumed by call setup).
             ValueError: If any patch *size* is not in the range ``(0, 32]``.
         """
-        n = len(patches)
-        if n > 12:
-            raise ValueError(
-                f"call_with_patches_from_stack: at most 12 stack patches supported (got {n}); "
-                "EVM DUP reaches only 16 deep and 4 slots are occupied by call setup"
-            )
+        # Push calldata buffer; args remain below it on the stack.
+        # Stack: [argsOffset(TOS), argsLen(2nd), arg1(3rd), …, argN(2+N)]
+        self._emit(push_bytes(calldata))
 
-        # Push call frame (adds 4 items: argsOffset, argsLen, retOffset, retSize)
-        self._emit(push_u256(0))  # retSize
-        self._emit(push_u256(0))  # retOffset
-        self._emit(push_bytes(calldata))  # argsOffset (TOS), argsLen
+        # Apply all patches, consuming each arg directly (no DUP needed).
+        self.patch_bytes_from_stack(patches)
 
-        # Stack: [argsOffset(1), argsLen(2), retOffset(3), retSize(4), arg1(5), ..., argN(4+N)]
-        # For the i-th patch (1-indexed), arg_i is at position 4+i from TOS.
-        for i, (offset, size) in enumerate(patches, start=1):
-            if not (0 < size <= 32):
-                raise ValueError(
-                    f"call_with_patches_from_stack: patch size {size!r} not supported; expected 0 < size <= 32"
-                )
-            self._emit(dup_n(4 + i))  # duplicate arg_i to TOS
-            self._emit(patch_value(offset, size))  # apply patch, restores argsOffset to TOS
+        # Stack is now: [argsOffset(TOS), argsLen(2nd), …]
+        # Insert retOffset=0 and retLen=0 *below* argsLen using a compact 7-byte
+        # SWAP/PUSH1 sequence instead of two 33-byte PUSH32 instructions:
+        #
+        #   SWAP1          → [argsLen, argsOffset, …]
+        #   PUSH1 0x00     → [0(retOffset), argsLen, argsOffset, …]
+        #   SWAP1          → [argsLen, 0(retOffset), argsOffset, …]
+        #   PUSH1 0x00     → [0(retLen), argsLen, 0(retOffset), argsOffset, …]
+        #   SWAP3          → [argsOffset, argsLen, 0(retOffset), 0(retLen), …]
+        self._emit(bytes([0x90, 0x60, 0x00, 0x90, 0x60, 0x00, 0x92]))
 
-        # Stack: [argsOffset(TOS), argsLen, retOffset, retSize, arg1, ..., argN, ...]
+        # Stack: [argsOffset(TOS), argsLen, retOffset=0, retLen=0, …]
         self._emit(push_u256(value))
         self._emit(push_addr(to))
         self._emit(gas_opcode() if gas == 0 else push_u256(gas))
         self._emit(call(require_success))
-
-        # After CALL: [success(TOS), arg1, ..., argN, ...]
-        # Remove the original arg values while keeping success on TOS.
-        for _ in range(n):
-            self._emit(swap())
-            self._emit(pop())
-
         return self
 
     # ------------------------------------------------------------------

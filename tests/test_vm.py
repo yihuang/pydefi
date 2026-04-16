@@ -811,55 +811,66 @@ class TestCallWithPatchesFromStack:
         """4-byte selector + two 32-byte zero placeholders."""
         return bytes.fromhex("deadbeef") + b"\x00" * 64
 
-    def test_no_patches_equals_call_with_patches(self):
-        """With an empty patches list, call_with_patches_from_stack == call_with_patches (no cleanup needed)."""
-        cd = self._template()
-        expected = Program().call_with_patches(ADDR_A, cd, []).build()
-        actual = Program().call_with_patches_from_stack(ADDR_A, cd, []).build()
-        assert actual == expected
+    # ------------------------------------------------------------------
+    # Helpers — opcode bytes for the optimised implementation
+    # ------------------------------------------------------------------
 
-    def test_single_u256_patch(self):
-        """Single stack-source patch: DUP5 + patch_value + SWAP1 + POP cleanup."""
-        cd = self._template()
-        from pydefi.vm.program import dup_n
+    # 7-byte compact ret-frame insertion used by call_with_patches_from_stack.
+    # From [argsOff, argsLen, …]:
+    #   SWAP1  → [argsLen, argsOff, …]
+    #   PUSH1 0  → [0, argsLen, argsOff, …]   (retOffset placeholder)
+    #   SWAP1  → [argsLen, 0, argsOff, …]
+    #   PUSH1 0  → [0, argsLen, 0, argsOff, …] (retLen placeholder)
+    #   SWAP3  → [argsOff, argsLen, 0, 0, …]
+    _RET_FRAME = bytes([0x90, 0x60, 0x00, 0x90, 0x60, 0x00, 0x92])
 
+    # Per-patch preamble: SWAP1 + SWAP2 rotates the next arg to TOS.
+    _ROTATE_ARG = bytes([0x90, 0x91])
+
+    def test_no_patches(self):
+        """With an empty patches list, the bytecode is push_bytes + ret_frame + call."""
+        cd = self._template()
         expected = (
-            push_u256(0)
-            + push_u256(0)  # retSize, retOffset
-            + push_bytes(cd)
-            + dup_n(5)  # arg1 is at position 5 after setup (4 setup items + 1)
-            + patch_value(4, 32)
+            push_bytes(cd)
+            + self._RET_FRAME
             + push_u256(0)  # value
             + push_addr(ADDR_A)
             + gas_opcode()
             + call(True)
-            + swap()  # bring arg1 past success flag
-            + pop()  # discard arg1
+        )
+        actual = Program().call_with_patches_from_stack(ADDR_A, cd, []).build()
+        assert actual == expected
+
+    def test_single_u256_patch(self):
+        """Single stack-source patch: SWAP1+SWAP2+patch_value, no post-call cleanup."""
+        cd = self._template()
+        expected = (
+            push_bytes(cd)
+            + self._ROTATE_ARG
+            + patch_value(4, 32)
+            + self._RET_FRAME
+            + push_u256(0)  # value
+            + push_addr(ADDR_A)
+            + gas_opcode()
+            + call(True)
         )
         actual = Program().call_with_patches_from_stack(ADDR_A, cd, [(4, 32)]).build()
         assert actual == expected
 
     def test_two_patches(self):
-        """Two stack-source patches: DUP5 + DUP6 sequence with two SWAP1/POP cleanups."""
+        """Two stack-source patches: each uses SWAP1+SWAP2+patch_value."""
         cd = self._template()
-        from pydefi.vm.program import dup_n
-
         expected = (
-            push_u256(0)
-            + push_u256(0)  # retSize, retOffset
-            + push_bytes(cd)
-            + dup_n(5)  # arg1 at position 5
+            push_bytes(cd)
+            + self._ROTATE_ARG
             + patch_value(4, 32)
-            + dup_n(6)  # arg2 at position 6
+            + self._ROTATE_ARG
             + patch_value(4 + 32 + 12, 20)
+            + self._RET_FRAME
             + push_u256(0)  # value
             + push_addr(ADDR_A)
             + gas_opcode()
             + call(True)
-            + swap()
-            + pop()  # remove arg1
-            + swap()
-            + pop()  # remove arg2
         )
         actual = (
             Program()
@@ -878,20 +889,15 @@ class TestCallWithPatchesFromStack:
     def test_value_and_gas_forwarded(self):
         """value and gas parameters are reflected in CALL prologue."""
         cd = self._template()
-        from pydefi.vm.program import dup_n
-
         expected = (
-            push_u256(0)
-            + push_u256(0)  # retSize, retOffset
-            + push_bytes(cd)
-            + dup_n(5)
+            push_bytes(cd)
+            + self._ROTATE_ARG
             + patch_value(4, 32)
+            + self._RET_FRAME
             + push_u256(10**18)  # value
             + push_addr(ADDR_A)
             + push_u256(50_000)  # gas
             + call(True)
-            + swap()
-            + pop()
         )
         actual = Program().call_with_patches_from_stack(ADDR_A, cd, [(4, 32)], value=10**18, gas=50_000).build()
         assert actual == expected
@@ -899,29 +905,26 @@ class TestCallWithPatchesFromStack:
     def test_require_success_false(self):
         """require_success=False emits CALL without the success-check block."""
         cd = self._template()
-        from pydefi.vm.program import dup_n
-
         expected = (
-            push_u256(0)
-            + push_u256(0)
-            + push_bytes(cd)
-            + dup_n(5)
+            push_bytes(cd)
+            + self._ROTATE_ARG
             + patch_value(4, 32)
+            + self._RET_FRAME
             + push_u256(0)
             + push_addr(ADDR_A)
             + gas_opcode()
             + call(False)
-            + swap()
-            + pop()
         )
         actual = Program().call_with_patches_from_stack(ADDR_A, cd, [(4, 32)], require_success=False).build()
         assert actual == expected
 
-    def test_too_many_patches_raises(self):
-        """More than 12 patches raises ValueError."""
-        cd = self._template() + b"\x00" * (13 * 32)
-        with pytest.raises(ValueError, match="at most 12"):
-            Program().call_with_patches_from_stack(ADDR_A, cd, [(4 + i * 32, 32) for i in range(13)]).build()
+    def test_no_patch_limit(self):
+        """More than 12 patches are now supported (no DUP depth constraint)."""
+        cd = self._template() + b"\x00" * (16 * 32)
+        # 13 patches — previously would have raised ValueError
+        patches = [(4 + i * 32, 32) for i in range(13)]
+        bytecode = Program().call_with_patches_from_stack(ADDR_A, cd, patches).build()
+        assert len(bytecode) > 0
 
     def test_invalid_patch_size_raises(self):
         with pytest.raises(ValueError, match="patch size"):
@@ -943,6 +946,47 @@ class TestCallWithPatchesFromStack:
             dup_n(0)
         with pytest.raises(ValueError, match="depth must be 1..16"):
             dup_n(17)
+
+
+class TestPatchBytesFromStack:
+    """Tests for the stand-alone patch_bytes_from_stack helper."""
+
+    def _template(self) -> bytes:
+        return bytes.fromhex("deadbeef") + b"\x00" * 64
+
+    _ROTATE_ARG = bytes([0x90, 0x91])  # SWAP1 + SWAP2
+
+    def test_no_patches_noop(self):
+        """With no patches, patch_bytes_from_stack emits nothing."""
+        cd = self._template()
+        p = Program().push_bytes(cd)
+        before = p.build()
+        p.patch_bytes_from_stack([])
+        assert p.build() == before
+
+    def test_single_patch_bytecode(self):
+        """Verify the exact bytecode for a single patch."""
+        cd = self._template()
+        expected = push_bytes(cd) + self._ROTATE_ARG + patch_value(4, 32)
+        actual = Program().push_bytes(cd).patch_bytes_from_stack([(4, 32)]).build()
+        assert actual == expected
+
+    def test_two_patches_bytecode(self):
+        """Two patches each emit SWAP1+SWAP2+patch_value."""
+        cd = self._template()
+        expected = (
+            push_bytes(cd)
+            + self._ROTATE_ARG
+            + patch_value(4, 32)
+            + self._ROTATE_ARG
+            + patch_value(36, 20)
+        )
+        actual = Program().push_bytes(cd).patch_bytes_from_stack([(4, 32), (36, 20)]).build()
+        assert actual == expected
+
+    def test_invalid_patch_size_raises(self):
+        with pytest.raises(ValueError, match="patch size"):
+            Program().push_bytes(self._template()).patch_bytes_from_stack([(4, 0)]).build()
 
 
 class TestArithmeticOpcodes:
