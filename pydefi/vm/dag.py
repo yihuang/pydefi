@@ -115,8 +115,8 @@ def _build_program_for_dag(
 ) -> Program:
     if amount_reg == amount_out_reg:
         raise ValueError(
-            f"build_program_for_dag: amount_reg ({amount_reg}) and amount_out_reg ({amount_out_reg}) "
-            "must be different registers"
+            f"build_program_for_dag: amount_reg and amount_out_reg must be different registers, "
+            f"but both are set to {amount_reg}"
         )
 
     payload = dag.to_dict()
@@ -219,7 +219,7 @@ def _build_route_split_segment(
     for leg in split.legs:
         segments.append(
             Program()
-            ._emit(dup2())  # duplicate split frame total_in (2nd item in [... parent, total_in, accum])
+            ._emit(dup2())  # duplicate split frame total_in (2nd item in [.., total_in, accum])
             ._emit(push_u256(leg.fraction_bps))
             ._emit(mul())
             ._emit(push_u256(_BPS_DENOMINATOR))
