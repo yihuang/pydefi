@@ -85,7 +85,6 @@ from pydefi.vm.program import (
     dup,
     load_reg,
     mul,
-    pop,
     push_addr,
     push_u256,
     ret_u256,
@@ -334,9 +333,6 @@ def _build_v3_pool_swap_segment_on_stack(hop: SwapHop) -> Program:
     prog._emit(bitwise_not())
     prog._emit(push_u256(1))
     prog._emit(add())
-    # Drop original amount_in, keep amount_out on top.
-    prog._emit(swap())
-    prog._emit(pop())
     return prog
 
 
@@ -401,6 +397,7 @@ def _build_v2_direct_swap_segment_on_stack(hop: SwapHop, *, intermediate_reg: in
     ).pop()
 
     if hop.zero_for_one:
+        prog._emit(load_reg(intermediate_reg))
         prog.call_contract_abi(
             hop.pool,
             "function swap(uint256 amount0Out, uint256 amount1Out, address to, bytes data)",
@@ -410,6 +407,7 @@ def _build_v2_direct_swap_segment_on_stack(hop: SwapHop, *, intermediate_reg: in
             b"",
         ).pop()
     else:
+        prog._emit(load_reg(intermediate_reg))
         prog.call_contract_abi(
             hop.pool,
             "function swap(uint256 amount0Out, uint256 amount1Out, address to, bytes data)",
@@ -420,8 +418,6 @@ def _build_v2_direct_swap_segment_on_stack(hop: SwapHop, *, intermediate_reg: in
         ).pop()
 
     prog._emit(load_reg(intermediate_reg))
-    prog._emit(swap())
-    prog._emit(pop())
     return prog
 
 
