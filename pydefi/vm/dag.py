@@ -147,7 +147,7 @@ def _build_route_split_segment(
     vm_address: str,
     terminal_recipient: str,
 ) -> list[Program]:
-    if len(split.legs) == 1 and split.legs[0].fraction_bps == _BPS_DENOMINATOR:
+    if len(split.legs) == 1:
         # Fast path: full-allocation single leg does not need split-frame
         # bookkeeping; emit leg actions directly.
         return _build_dag_actions(
