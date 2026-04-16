@@ -15,7 +15,7 @@ from hexbytes import HexBytes
 # Type aliases
 # ---------------------------------------------------------------------------
 
-#: EVM address as 20 raw bytes (canonical intermediate representation).
+#: Address as raw bytes (canonical intermediate representation), 20 bytes for EVM, 32 bytes for Solana.
 #: Use ``HexBytes(addr_str)`` to convert a 0x-prefixed hex string to Address.
 Address = HexBytes
 
