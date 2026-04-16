@@ -43,6 +43,8 @@ from pydefi.vm.swap import (
     _build_v3_pool_swap_segment,
 )
 
+_BPS_DENOMINATOR = 10_000
+
 
 def build_execution_program_for_dag(
     dag: RouteDAG,
@@ -188,7 +190,7 @@ def _build_route_split_segment(
     accum_reg: int,
     total_in_reg: int,
 ) -> list[Program]:
-    if len(split.legs) == 1 and split.legs[0].fraction_bps == 10_000:
+    if len(split.legs) == 1 and split.legs[0].fraction_bps == _BPS_DENOMINATOR:
         # Fast path: full-allocation single leg does not need split accounting
         # registers; emit the leg actions directly.
         return _build_dag_actions(
@@ -216,7 +218,7 @@ def _build_route_split_segment(
             ._emit(load_reg(total_in_reg))
             ._emit(push_u256(leg.fraction_bps))
             ._emit(mul())
-            ._emit(push_u256(10000))
+            ._emit(push_u256(_BPS_DENOMINATOR))
             ._emit(swap())
             ._emit(div())
             ._emit(store_reg(amount_reg))
