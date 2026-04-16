@@ -72,6 +72,7 @@ from enum import Enum
 
 from eth_abi import encode
 from eth_contract.contract import ContractFunction
+from hexbytes import HexBytes
 
 from pydefi.vm.builder import Patch, Program
 from pydefi.vm.program import (
@@ -209,10 +210,10 @@ def encode_v3_path(tokens: list[str], fees: list[int]) -> bytes:
     """
     if len(fees) != len(tokens) - 1:
         raise ValueError(f"encode_v3_path: len(fees) ({len(fees)}) must equal len(tokens)-1 ({len(tokens) - 1})")
-    result = bytes.fromhex(tokens[0].removeprefix("0x").zfill(40))
+    result = bytes(HexBytes(tokens[0]))
     for fee, token in zip(fees, tokens[1:]):
         result += fee.to_bytes(3, "big")
-        result += bytes.fromhex(token.removeprefix("0x").zfill(40))
+        result += bytes(HexBytes(token))
     return result
 
 

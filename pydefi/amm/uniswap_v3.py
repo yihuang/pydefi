@@ -11,6 +11,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 from eth_contract import Contract
+from hexbytes import HexBytes
 from web3 import AsyncWeb3
 
 from pydefi.abi.amm import (
@@ -258,8 +259,8 @@ class UniswapV3(BaseAMM):
         """
         if len(fees) != len(tokens) - 1:
             raise ValueError("len(fees) must equal len(tokens) - 1")
-        result = bytes.fromhex(tokens[0].address[2:].lower().zfill(40))
+        result = bytes(HexBytes(tokens[0].address))
         for fee, token in zip(fees, tokens[1:]):
             result += fee.to_bytes(3, "big")
-            result += bytes.fromhex(token.address[2:].lower().zfill(40))
+            result += bytes(HexBytes(token.address))
         return result

@@ -9,6 +9,16 @@ from decimal import ROUND_DOWN, Decimal
 from enum import IntEnum
 from typing import ClassVar
 
+# ---------------------------------------------------------------------------
+# Type aliases
+# ---------------------------------------------------------------------------
+
+#: EVM address as a 0x-prefixed hex string (checksummed or lowercase, 42 chars).
+Address = str
+
+#: 32-byte hash or log topic as a 0x-prefixed hex string (66 chars).
+Hash = str
+
 
 class ChainId(IntEnum):
     """Well-known chain IDs (EVM and non-EVM)."""

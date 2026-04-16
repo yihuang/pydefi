@@ -13,9 +13,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from hexbytes import HexBytes
 from web3 import AsyncWeb3, Web3
 
+from pydefi._utils import address_to_bytes32
 from pydefi.abi.bridge import LAYERZERO_OFT, MessagingFee, OFTSendParam
 from pydefi.bridge.base import BaseBridge
 from pydefi.exceptions import BridgeError
@@ -95,7 +95,7 @@ class LayerZeroOFT(BaseBridge):
     @staticmethod
     def _address_to_bytes32(address: str) -> bytes:
         """Convert an EVM address to a zero-padded 32-byte value."""
-        return HexBytes(address).rjust(32, b"\x00")
+        return address_to_bytes32(address)
 
     def _validate_tokens(self, token_in: Token, token_out: Token) -> None:
         """Validate that token addresses match the configured OFT contracts.

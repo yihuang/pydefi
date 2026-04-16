@@ -16,7 +16,9 @@ from decimal import Decimal
 from typing import Any, Optional
 
 import aiohttp
+from hexbytes import HexBytes
 
+from pydefi._utils import address_to_bytes32
 from pydefi.abi.bridge import MAYAN_FORWARDER, MAYAN_SWIFT_V2, MayanSwiftOrderParams
 from pydefi.bridge.base import BaseBridge
 from pydefi.exceptions import BridgeError
@@ -87,13 +89,6 @@ _CHAIN_WETH: dict[int, str] = {
 }
 
 
-def _addr_to_bytes32(addr: str) -> bytes:
-    """Left-pad an EVM address into a 32-byte Wormhole representation."""
-    hex_addr = addr[2:] if addr.startswith("0x") else addr
-    # EVM addresses are 40 hex chars; zero-pad to 64 chars (32 bytes)
-    return bytes.fromhex(hex_addr.lower().zfill(64))
-
-
 def _token_to_bytes32(token_address: str) -> bytes:
     """Convert a token address to its SWIFT bytes32 tokenOut representation.
 
@@ -103,7 +98,7 @@ def _token_to_bytes32(token_address: str) -> bytes:
     """
     if token_address.lower() in _NATIVE_SENTINELS:
         return bytes(32)
-    return _addr_to_bytes32(token_address)
+    return address_to_bytes32(token_address)
 
 
 _ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
@@ -376,10 +371,10 @@ class Mayan(BaseBridge):
         # Use os.urandom for the order's random field to ensure uniqueness
         random_b32 = os.urandom(32)
 
-        trader_b32 = _addr_to_bytes32(recipient)
+        trader_b32 = address_to_bytes32(recipient)
         token_out_b32 = _token_to_bytes32(token_out.address)
-        dest_addr_b32 = _addr_to_bytes32(recipient)
-        referrer_b32 = _addr_to_bytes32(referrer) if referrer else bytes(32)
+        dest_addr_b32 = address_to_bytes32(recipient)
+        referrer_b32 = address_to_bytes32(referrer) if referrer else bytes(32)
 
         # SWIFT V2 OrderParams (field order differs from V1)
         order_params = MayanSwiftOrderParams(
@@ -438,7 +433,7 @@ class Mayan(BaseBridge):
         forward_calldata: bytes = MAYAN_FORWARDER.fns.swapAndForwardEth(
             amount_in.amount,  # uint256 amountIn (ETH to swap)
             swap_router_address,  # address swapProtocol (DEX router)
-            bytes.fromhex(swap_router_calldata.removeprefix("0x")),  # bytes swapData
+            bytes(HexBytes(swap_router_calldata)),  # bytes swapData
             swift_input_contract,  # address middleToken (WETH)
             min_middle_amount,  # uint256 minMiddleAmount
             swift_contract,  # address mayanProtocol (SWIFT V2 contract)

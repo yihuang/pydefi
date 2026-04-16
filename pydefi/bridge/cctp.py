@@ -66,6 +66,7 @@ import aiohttp
 from hexbytes import HexBytes
 from web3 import AsyncWeb3, Web3
 
+from pydefi._utils import address_to_bytes32
 from pydefi.abi.bridge import CCTP_TOKEN_MESSENGER_V2
 from pydefi.bridge.base import BaseBridge
 from pydefi.exceptions import BridgeError
@@ -219,7 +220,7 @@ def encode_cctp_forward_hook_data(
 
     # With recipient: 20 bytes address + 4 bytes dex = 24 bytes of data
     data_length = (24).to_bytes(4, "big")
-    addr_bytes = bytes.fromhex(recipient[2:] if recipient.startswith("0x") else recipient)
+    addr_bytes = bytes(HexBytes(recipient))
     if len(addr_bytes) != 20:
         raise ValueError(f"recipient must be a 20-byte EVM address, got {len(addr_bytes)} bytes")
     dex_bytes = (destination_dex & 0xFFFFFFFF).to_bytes(4, "big")
@@ -311,7 +312,7 @@ class CCTP(BaseBridge):
     @staticmethod
     def _address_to_bytes32(address: str) -> bytes:
         """Left-pad an EVM address to 32 bytes."""
-        return HexBytes(address).rjust(32, b"\x00")
+        return address_to_bytes32(address)
 
     # -----------------------------------------------------------------------
     # Circle Iris v2 API

@@ -59,8 +59,10 @@ from pydefi.exceptions import (
 from pydefi.pool_data.base import BasePoolDataProvider, PoolData
 from pydefi.rpc import MultiRpcProvider, fetch_chain_rpcs, get_w3
 from pydefi.types import (
+    Address,
     BridgeQuote,
     ChainId,
+    Hash,
     SwapRoute,
     SwapStep,
     SwapTransaction,
@@ -73,6 +75,8 @@ __version__ = "0.1.0"
 __all__ = [
     # Types
     "ChainId",
+    "Address",
+    "Hash",
     "Token",
     "TokenAmount",
     "SwapStep",
