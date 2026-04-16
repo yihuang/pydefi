@@ -70,7 +70,7 @@ Composition example::
 
 Calldata surgery — push the patch value onto the stack first, then call::
 
-    from pydefi.vm.program import ret_u256, load_reg
+    from pydefi.vm.program import ret_u256
 
     # double_sel(5) → 10; patch that into double_sel(0) template → double_sel(10) → 20
     bytecode = (
@@ -89,12 +89,10 @@ Calldata surgery — push the patch value onto the stack first, then call::
 
 Calldata surgery with a register source::
 
-    from pydefi.vm.program import load_reg
-
     # Amount was saved to reg 0 earlier in the program
     bytecode = (
         Program()
-        .load_reg(0)                         # push register 0 value → TOS
+        .push_u256(0)                         # push register 0 value → TOS
         .call_with_patches(
             ROUTER,
             swap_template,
@@ -253,13 +251,12 @@ class Patch:
     Example::
 
         from pydefi.vm import Program, Patch
-        from pydefi.vm.program import load_reg, ret_u256
 
         # Patch uint256 amountIn from register 1
         bytecode = (
             Program()
-            .load_reg(1)
-            .load_reg(2)
+            .push_u256(1)
+            .push_u256(2)
             .call_contract_abi(
                 ROUTER,
                 "function swap(uint256 amountIn, uint256 minOut)",
@@ -790,13 +787,12 @@ class Program:
         Example with :class:`Patch`::
 
             from pydefi.vm import Program, Patch
-            from pydefi.vm.program import load_reg
 
             # Patch uint256 amountIn from register 1 and uint256 minOut from register 2
             bytecode = (
                 Program()
-                .load_reg(2)
-                .load_reg(1)
+                .push_u256(2)
+                .push_u256(1)
                 .call_contract_abi(
                     ROUTER,
                     "function swap(uint256 amountIn, uint256 minOut)",
@@ -873,7 +869,7 @@ class Program:
 
         Example::
 
-            from pydefi.vm.program import ret_u256, load_reg
+            from pydefi.vm.program import ret_u256
 
             # Push the amount value (from last returndata) first, then call.
             program = (
