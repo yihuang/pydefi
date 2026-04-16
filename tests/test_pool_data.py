@@ -3,7 +3,6 @@
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from hexbytes import HexBytes
 
 from pydefi.exceptions import PoolDataError
 from pydefi.pathfinder.graph import PoolEdge, V3PoolEdge

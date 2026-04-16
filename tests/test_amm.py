@@ -3,7 +3,6 @@
 from decimal import Decimal
 
 import pytest
-from hexbytes import HexBytes
 
 from pydefi.amm.uniswap_v2 import UniswapV2
 from pydefi.amm.uniswap_v3 import UniswapV3

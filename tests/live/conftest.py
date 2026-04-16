@@ -34,7 +34,6 @@ import time
 
 import aiohttp
 import pytest
-from hexbytes import HexBytes
 from web3 import AsyncWeb3
 
 from pydefi.rpc import get_w3

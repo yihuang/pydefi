@@ -5,7 +5,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from hexbytes import HexBytes
 
-from pydefi._utils import address_to_bytes32
 from pydefi.bridge.across import Across
 from pydefi.bridge.base import BaseBridge
 from pydefi.bridge.cctp import (
