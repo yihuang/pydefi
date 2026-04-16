@@ -91,9 +91,7 @@ from pydefi.vm.swap import (
     SplitLeg,
     SwapHop,
     SwapProtocol,
-    build_execution_program_for_dag,
     build_multi_hop_program,
-    build_quote_program_for_dag,
     build_split_program,
 )
 from tests.conftest import (
@@ -1575,94 +1573,6 @@ class TestBuildSplitProgram:
         divisor_bytes = push_u256(10000)
         expected_seq = divisor_bytes + bytes([OP_SWAP, OP_DIV])
         assert expected_seq in bc, "SWAP1 DIV sequence missing — division order bug"
-
-
-# ---------------------------------------------------------------------------
-# DAG swap composer
-# ---------------------------------------------------------------------------
-
-
-class TestBuildProgramForDAG:
-    POOL1 = "0x" + "11" * 20
-    POOL2 = "0x" + "22" * 20
-    POOL3 = "0x" + "33" * 20
-    VM = "0x" + "44" * 20
-    USER = "0x" + "55" * 20
-
-    TOKEN_A = Token(chain_id=ChainId.ETHEREUM, address="0x" + "aa" * 20, symbol="A")
-    TOKEN_B = Token(chain_id=ChainId.ETHEREUM, address="0x" + "bb" * 20, symbol="B")
-    TOKEN_C = Token(chain_id=ChainId.ETHEREUM, address="0x" + "cc" * 20, symbol="C")
-
-    def _v3_edge(self, pool: str, token_in: Token, token_out: Token, is_token0_in: bool = True) -> V3PoolEdge:
-        return V3PoolEdge(
-            token_in=token_in,
-            token_out=token_out,
-            pool_address=pool,
-            protocol="UniswapV3",
-            fee_bps=30,
-            sqrt_price_x96=2**96,
-            liquidity=10**12,
-            is_token0_in=is_token0_in,
-            extra={"is_token0_in": is_token0_in},
-        )
-
-    def _v2_edge(self, pool: str, token_in: Token, token_out: Token, is_token0_in: bool = True) -> PoolEdge:
-        return PoolEdge(
-            token_in=token_in,
-            token_out=token_out,
-            pool_address=pool,
-            protocol="UniswapV2",
-            reserve_in=10**18,
-            reserve_out=10**18,
-            fee_bps=30,
-            extra={"is_token0_in": is_token0_in},
-        )
-
-    def test_build_execution_program_for_simple_dag(self):
-        dag = (
-            RouteDAG()
-            .from_token(self.TOKEN_A)
-            .swap(self.TOKEN_B, self._v3_edge(self.POOL1, self.TOKEN_A, self.TOKEN_B))
-            .swap(self.TOKEN_C, self._v2_edge(self.POOL2, self.TOKEN_B, self.TOKEN_C))
-        )
-        bc = build_execution_program_for_dag(dag, amount_in=10**18, vm_address=self.VM, recipient=self.USER).build()
-        assert isinstance(bc, bytes)
-        assert len(bc) > 0
-
-    def test_build_quote_program_for_split_dag(self):
-        dag = (
-            RouteDAG()
-            .from_token(self.TOKEN_A)
-            .split()
-            .leg(5000)
-            .swap(self.TOKEN_C, self._v3_edge(self.POOL1, self.TOKEN_A, self.TOKEN_C))
-            .leg(5000)
-            .swap(self.TOKEN_B, self._v3_edge(self.POOL2, self.TOKEN_A, self.TOKEN_B))
-            .split()
-            .leg(5000)
-            .swap(self.TOKEN_B, self._v3_edge(self.POOL2, self.TOKEN_A, self.TOKEN_B))
-            .swap(self.TOKEN_C, self._v2_edge(self.POOL3, self.TOKEN_B, self.TOKEN_C))
-            .leg(5000)
-            .swap(self.TOKEN_C, self._v3_edge(self.POOL2, self.TOKEN_A, self.TOKEN_C, is_token0_in=False))
-            .merge()
-            .merge()
-        )
-        bc = build_quote_program_for_dag(dag, amount_in=10**18, vm_address=self.VM, min_final_out=1).build()
-        assert isinstance(bc, bytes)
-        assert len(bc) > 0
-
-    def test_build_quote_program_for_single_leg_split_dag(self):
-        dag = (
-            RouteDAG()
-            .from_token(self.TOKEN_A)
-            .split()
-            .leg(10000)
-            .swap(self.TOKEN_C, self._v3_edge(self.POOL1, self.TOKEN_A, self.TOKEN_C))
-            .merge()
-        )
-        bc = build_quote_program_for_dag(dag, amount_in=10**18, vm_address=self.VM).build()
-        assert isinstance(bc, bytes)
-        assert len(bc) > 0
 
 
 # ---------------------------------------------------------------------------

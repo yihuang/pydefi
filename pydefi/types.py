@@ -4,6 +4,7 @@ Common types used throughout pydefi.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from decimal import ROUND_DOWN, Decimal
 from enum import IntEnum
@@ -169,14 +170,14 @@ class RouteSplitLeg:
     """One branch in a split section of a route DAG."""
 
     fraction_bps: int
-    actions: list[RouteAction]
+    actions: tuple[RouteAction, ...]
 
 
 @dataclass(frozen=True)
 class RouteSplit:
     """A split/merge section of a route DAG."""
 
-    legs: list[RouteSplitLeg]
+    legs: tuple[RouteSplitLeg, ...]
     token_out: Token
 
 
@@ -267,7 +268,10 @@ class RouteDAG:
 
         merged_token = next(iter(end_tokens))
         split_action = RouteSplit(
-            legs=[RouteSplitLeg(fraction_bps=leg.fraction_bps, actions=list(leg.actions)) for leg in split_ctx.legs],
+            legs=tuple(
+                RouteSplitLeg(fraction_bps=leg.fraction_bps, actions=tuple(leg.actions))
+                for leg in split_ctx.legs
+            ),
             token_out=merged_token,
         )
 
@@ -287,7 +291,7 @@ class RouteDAG:
             raise ValueError("RouteDAG has unmerged split legs")
         if self.token_in is None:
             raise ValueError("RouteDAG.from_token() must be called before serialization")
-        return {"token_in": self.token_in, "actions": self.actions}
+        return {"token_in": self.token_in, "actions": _freeze_actions(self.actions)}
 
     def _current_actions(self) -> list[RouteAction]:
         if not self._split_stack:
@@ -305,6 +309,27 @@ class RouteDAG:
         if split_ctx.active_leg is None:
             raise ValueError("leg() must be called before swap() inside split()")
         split_ctx.active_leg.current_token = token
+
+
+def _freeze_actions(actions: Sequence[RouteAction]) -> tuple[RouteAction, ...]:
+    frozen: list[RouteAction] = []
+    for action in actions:
+        if isinstance(action, RouteSwap):
+            frozen.append(action)
+            continue
+        frozen.append(
+            RouteSplit(
+                legs=tuple(
+                    RouteSplitLeg(
+                        fraction_bps=leg.fraction_bps,
+                        actions=_freeze_actions(leg.actions),
+                    )
+                    for leg in action.legs
+                ),
+                token_out=action.token_out,
+            )
+        )
+    return tuple(frozen)
 
 
 @dataclass

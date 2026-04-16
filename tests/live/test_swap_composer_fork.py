@@ -26,6 +26,9 @@ import solcx
 from eth_abi import decode
 from web3.exceptions import ContractLogicError, Web3RPCError
 
+from pydefi.pathfinder.graph import PoolEdge, V3PoolEdge
+from pydefi.types import ChainId, RouteDAG, Token
+from pydefi.vm import build_execution_program_for_dag
 from pydefi.vm.swap import (
     SplitLeg,
     SwapHop,
@@ -1169,3 +1172,74 @@ class TestSplitSwapComposer:
 
         with pytest.raises((ContractLogicError, Web3RPCError)):
             await vm.functions.execute(bytecode).transact({"from": deployer})
+
+
+@pytest.mark.fork
+class TestDAGProgramFork:
+    async def test_execution_program_for_dag_runs_on_vm(self, ctx):
+        w3 = ctx["w3"]
+        deployer = ctx["deployer"]
+        vm_address = ctx["vm_address"]
+        vm = ctx["vm"]
+        token0 = ctx["token0"]
+        token0_address = ctx["token0_address"]
+        token1_address = ctx["token1_address"]
+        v3pool_address = ctx["v3pool_address"]
+        v2pair = ctx["v2pair"]
+        v2pair_address = ctx["v2pair_address"]
+
+        amount_in = 1000
+        await token0.functions.mint(vm_address, amount_in).transact({"from": deployer})
+        bal_before = await token0.functions.balanceOf(deployer).call()
+
+        token0_meta = Token(chain_id=ChainId.ETHEREUM, address=token0_address, symbol="T0")
+        token1_meta = Token(chain_id=ChainId.ETHEREUM, address=token1_address, symbol="T1")
+
+        v3_edge = V3PoolEdge(
+            token_in=token0_meta,
+            token_out=token1_meta,
+            pool_address=v3pool_address,
+            protocol="UniswapV3",
+            fee_bps=30,
+            sqrt_price_x96=2**96,
+            liquidity=10**12,
+            is_token0_in=True,
+        )
+
+        pair_token0 = await v2pair.functions.token0().call()
+        v2_edge = PoolEdge(
+            token_in=token1_meta,
+            token_out=token0_meta,
+            pool_address=v2pair_address,
+            protocol="UniswapV2",
+            reserve_in=10**12,
+            reserve_out=10**12,
+            fee_bps=30,
+            extra={"is_token0_in": pair_token0.lower() == token1_address.lower()},
+        )
+
+        dag = (
+            RouteDAG()
+            .from_token(token0_meta)
+            .split()
+            .leg(5000)
+            .swap(token1_meta, v3_edge)
+            .leg(5000)
+            .swap(token1_meta, v3_edge)
+            .merge()
+            .swap(token0_meta, v2_edge)
+        )
+        bytecode = build_execution_program_for_dag(
+            dag,
+            amount_in=amount_in,
+            vm_address=vm_address,
+            recipient=deployer,
+            min_final_out=1,
+        ).build()
+
+        tx = await vm.functions.execute(bytecode).transact({"from": deployer})
+        receipt = await w3.eth.get_transaction_receipt(tx)
+        assert receipt["status"] == 1
+
+        bal_after = await token0.functions.balanceOf(deployer).call()
+        assert bal_after > bal_before

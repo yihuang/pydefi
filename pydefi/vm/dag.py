@@ -25,10 +25,12 @@ another:
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from pydefi.pathfinder.graph import V3PoolEdge
 from pydefi.types import RouteAction, RouteDAG, RouteSplit, RouteSwap
 from pydefi.vm.builder import Program
-from pydefi.vm.program import add, assert_ge, div, dup, dup2, mul, pop, push_u256, swap
+from pydefi.vm.program import add, assert_ge, assert_le, div, dup, dup2, mul, pop, push_u256, swap
 from pydefi.vm.swap import (
     SwapHop,
     SwapProtocol,
@@ -37,6 +39,7 @@ from pydefi.vm.swap import (
 )
 
 _BPS_DENOMINATOR = 10_000
+_MAX_TOTAL_IN_FOR_SPLIT = ((1 << 256) - 1) // _BPS_DENOMINATOR
 
 
 def build_execution_program_for_dag(
@@ -109,7 +112,7 @@ def _build_program_for_dag(
 
 
 def _build_dag_actions(
-    actions: list[RouteAction],
+    actions: Sequence[RouteAction],
     *,
     vm_address: str,
     terminal_recipient: str,
@@ -156,7 +159,14 @@ def _build_route_split_segment(
             terminal_recipient=terminal_recipient,
         )
 
-    segments: list[Program] = [Program()._emit(push_u256(0))]
+    segments: list[Program] = [
+        Program()
+        ._emit(dup())
+        ._emit(push_u256(_MAX_TOTAL_IN_FOR_SPLIT))
+        ._emit(swap())
+        ._emit(assert_le("split: total_in overflow guard"))
+        ._emit(push_u256(0))
+    ]
     for leg in split.legs:
         segments.append(
             Program()

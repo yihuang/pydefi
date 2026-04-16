@@ -204,6 +204,11 @@ def dup() -> bytes:
     return bytes([OP_DUP])
 
 
+def dup2() -> bytes:
+    """Emit DUP2 — duplicate the second stack item."""
+    return bytes([_DUP2])
+
+
 def dup_n(n: int) -> bytes:
     """Emit DUPn — duplicate the stack item *n* positions from the top.
 
