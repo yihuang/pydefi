@@ -18,6 +18,7 @@ The stateful :class:`TestMiniEVMContext` tests deploy real Solidity contracts
 (via ``py-solc-x``) to validate DeFiVM programs against the authentic
 Analog-Labs interpreter dispatch path.
 """
+
 from __future__ import annotations
 
 import struct
