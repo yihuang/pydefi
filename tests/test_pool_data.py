@@ -9,26 +9,13 @@ from pydefi.pathfinder.graph import PoolEdge, V3PoolEdge
 from pydefi.pool_data.base import BasePoolDataProvider, PoolData
 from pydefi.pool_data.geckoterminal import GeckoTerminal
 from pydefi.pool_data.subgraph import UniswapV2Subgraph, UniswapV3Subgraph
-from pydefi.types import ChainId, Token
+from pydefi.types import ChainId
+from tests.addrs import DAI, USDC, WETH, ZERO_ADDR
 
 # ---------------------------------------------------------------------------
 # Shared test tokens
 # ---------------------------------------------------------------------------
 
-WETH = Token(
-    chain_id=ChainId.ETHEREUM,
-    address="0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
-    symbol="WETH",
-    decimals=18,
-    name="Wrapped Ether",
-)
-USDC = Token(
-    chain_id=ChainId.ETHEREUM,
-    address="0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
-    symbol="USDC",
-    decimals=6,
-    name="USD Coin",
-)
 
 POOL_ADDR = "0x" + "ab" * 20
 
@@ -183,12 +170,6 @@ class TestBuildGraph:
     def test_build_graph_multiple_pools(self):
         provider = ConcreteProvider()
         POOL_ADDR2 = "0x" + "cd" * 20
-        DAI = Token(
-            chain_id=ChainId.ETHEREUM,
-            address="0x6B175474E89094C44Da98b954EedeAC495271d0F",
-            symbol="DAI",
-            decimals=18,
-        )
         pools = [
             PoolData(
                 pool_address=POOL_ADDR,
@@ -330,7 +311,7 @@ class TestGeckoTerminal:
             new=AsyncMock(side_effect=PoolDataError("Not found", status_code=404)),
         ):
             with pytest.raises(PoolDataError):
-                await client.get_pool("0x0000000000000000000000000000000000000000")
+                await client.get_pool(ZERO_ADDR)
 
     @pytest.mark.asyncio
     async def test_get_top_pools_returns_list(self):
@@ -536,7 +517,7 @@ class TestUniswapV2Subgraph:
         client = UniswapV2Subgraph(chain_id=ChainId.ETHEREUM)
         with patch.object(client, "_query", new=AsyncMock(return_value={"pair": None})):
             with pytest.raises(PoolDataError, match="not found"):
-                await client.get_pool("0x0000000000000000000000000000000000000000")
+                await client.get_pool(ZERO_ADDR)
 
     @pytest.mark.asyncio
     async def test_get_top_pools(self):
@@ -630,7 +611,7 @@ class TestUniswapV3Subgraph:
         client = UniswapV3Subgraph(chain_id=ChainId.ETHEREUM)
         with patch.object(client, "_query", new=AsyncMock(return_value={"pool": None})):
             with pytest.raises(PoolDataError, match="not found"):
-                await client.get_pool("0x0000000000000000000000000000000000000000")
+                await client.get_pool(ZERO_ADDR)
 
     @pytest.mark.asyncio
     async def test_get_top_pools(self):

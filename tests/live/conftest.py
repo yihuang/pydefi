@@ -37,56 +37,21 @@ import pytest
 from web3 import AsyncWeb3
 
 from pydefi.rpc import get_w3
-from pydefi.types import ChainId, Token
+from pydefi.types import ChainId
+from tests.addrs import INTERPRETER_ADDR
 from tests.live.sol_utils import compile_interpreter_sync
 
 # ---------------------------------------------------------------------------
 # Public RPC
 # ---------------------------------------------------------------------------
 
-ETH_RPC_URL = os.environ.get("ETH_RPC_URL", "https://eth.drpc.org")
+ETH_RPC_URL = os.environ.get("ETH_RPC_URL") or "https://eth.drpc.org"
 
 # ---------------------------------------------------------------------------
 # Solana public RPC (used for simulation and as the surfpool upstream)
 # ---------------------------------------------------------------------------
 
 SOLANA_RPC_URL = os.environ.get("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com")
-
-# ---------------------------------------------------------------------------
-# Well-known Ethereum mainnet tokens
-# ---------------------------------------------------------------------------
-
-WETH = Token(
-    chain_id=ChainId.ETHEREUM,
-    address="0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
-    symbol="WETH",
-    decimals=18,
-)
-USDC = Token(
-    chain_id=ChainId.ETHEREUM,
-    address="0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
-    symbol="USDC",
-    decimals=6,
-)
-DAI = Token(
-    chain_id=ChainId.ETHEREUM,
-    address="0x6B175474E89094C44Da98b954EedeAC495271d0F",
-    symbol="DAI",
-    decimals=18,
-)
-USDT = Token(
-    chain_id=ChainId.ETHEREUM,
-    address="0xdAC17F958D2ee523a2206206994597C13D831ec7",
-    symbol="USDT",
-    decimals=6,
-)
-
-# ---------------------------------------------------------------------------
-# Analog-Labs EVM interpreter (shared by all DeFiVM fork tests)
-# ---------------------------------------------------------------------------
-
-# Well-known mainnet address where the interpreter is pre-deployed via CREATE2.
-INTERPRETER_ADDR = "0x0000000000001e3F4F615cd5e20c681Cf7d85e8D"
 
 
 async def _ensure_interpreter(w3: AsyncWeb3, deployer: str) -> str:
@@ -265,7 +230,7 @@ async def fork_w3_module():
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 pass
-        pytest.fail("Anvil did not start within 30 seconds")
+        pytest.fail("Anvil did not start within 60 seconds")
 
     yield w3
 

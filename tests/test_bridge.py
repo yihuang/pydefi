@@ -18,6 +18,7 @@ from pydefi.bridge.relay import Relay
 from pydefi.bridge.stargate import _LZ_CHAIN_ID, _POOL_IDS, Stargate
 from pydefi.exceptions import BridgeError
 from pydefi.types import ChainId, Token, TokenAmount
+from tests.addrs import ETH_WHALE, USDC, WETH
 
 
 def _make_aiohttp_mock(status: int, response_data) -> MagicMock:
@@ -53,7 +54,7 @@ def _make_aiohttp_mock(status: int, response_data) -> MagicMock:
 
 USDC_ETH = Token(
     chain_id=ChainId.ETHEREUM,
-    address="0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+    address=USDC.address,
     symbol="USDC",
     decimals=6,
 )
@@ -361,7 +362,7 @@ class TestMayan:
         m = Mayan(src_chain_id=1, dst_chain_id=42161)
         amount_in = TokenAmount(token=ETH_NATIVE, amount=10**18)  # 1 ETH
         recipient = "0x" + "CC" * 20
-        weth = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+        weth = WETH.address
         swift_contract = "0x" + "AA" * 20
         swap_router = "0x" + "BB" * 20
 
@@ -718,7 +719,7 @@ class TestLayerZeroOFT:
             oft._lz_eid(999999)
 
     def test_address_to_bytes32(self):
-        addr = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"
+        addr = ETH_WHALE
         result = LayerZeroOFT._address_to_bytes32(addr)
         assert len(result) == 32
         # Address bytes should appear in the last 20 bytes
@@ -906,7 +907,7 @@ class TestLayerZeroOFT:
 # CCTP encode_cctp_forward_hook_data tests
 # ---------------------------------------------------------------------------
 
-_MOCK_RECIPIENT = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"
+_MOCK_RECIPIENT = ETH_WHALE
 
 
 class TestEncodeCctpForwardHookData:

@@ -24,9 +24,13 @@ from __future__ import annotations
 import struct
 
 import pytest
+from eth_abi import encode
+from eth_abi.exceptions import EncodingTypeError
+from eth_contract.contract import ContractFunction
+from eth_contract.erc20 import ERC20
+from eth_utils import keccak
 
-from pydefi.vm import Program
-from pydefi.vm.abi import emit_abi_encode, emit_abi_encode_packed
+from pydefi.vm import Patch, Program, emit_abi_encode, emit_abi_encode_packed
 from pydefi.vm.program import (
     OP_ADD,
     OP_AND,
@@ -57,6 +61,7 @@ from pydefi.vm.program import (
     call,
     div,
     dup,
+    dup_n,
     eq,
     gas_opcode,
     gt,
@@ -347,20 +352,14 @@ class TestCallContractHelper:
 
 class TestABIHelpers:
     def test_erc20_transfer_selector(self):
-        from eth_contract.erc20 import ERC20
-
         cd = bytes(ERC20.fns.transfer(ADDR_A, 100).data)
         assert cd[:4] == bytes.fromhex("a9059cbb")
 
     def test_erc20_transfer_total_length(self):
-        from eth_contract.erc20 import ERC20
-
         cd = bytes(ERC20.fns.transfer(ADDR_A, 100).data)
         assert len(cd) == 4 + 32 + 32  # selector + address_word + uint256
 
     def test_erc20_transfer_address_encoding(self):
-        from eth_contract.erc20 import ERC20
-
         cd = bytes(ERC20.fns.transfer(ADDR_A, 0).data)
         # Address is right-aligned in a 32-byte word (bytes 4..35)
         addr_word = cd[4:36]
@@ -368,41 +367,29 @@ class TestABIHelpers:
         assert addr_word[12:] == bytes.fromhex(ADDR_A[2:])
 
     def test_erc20_transfer_amount_encoding(self):
-        from eth_contract.erc20 import ERC20
-
         amount = 1_000_000
         cd = bytes(ERC20.fns.transfer(ADDR_A, amount).data)
         amount_word = cd[36:68]
         assert int.from_bytes(amount_word, "big") == amount
 
     def test_erc20_approve_selector(self):
-        from eth_contract.erc20 import ERC20
-
         cd = bytes(ERC20.fns.approve(ADDR_B, 2**256 - 1).data)
         assert cd[:4] == bytes.fromhex("095ea7b3")
 
     def test_erc20_approve_max_approval(self):
-        from eth_contract.erc20 import ERC20
-
         cd = bytes(ERC20.fns.approve(ADDR_B, 2**256 - 1).data)
         amount_word = cd[36:68]
         assert amount_word == b"\xff" * 32
 
     def test_erc20_transfer_from_selector(self):
-        from eth_contract.erc20 import ERC20
-
         cd = bytes(ERC20.fns.transferFrom(ADDR_A, ADDR_B, 500).data)
         assert cd[:4] == bytes.fromhex("23b872dd")
 
     def test_erc20_transfer_from_total_length(self):
-        from eth_contract.erc20 import ERC20
-
         cd = bytes(ERC20.fns.transferFrom(ADDR_A, ADDR_B, 500).data)
         assert len(cd) == 4 + 32 + 32 + 32
 
     def test_erc20_transfer_from_addresses(self):
-        from eth_contract.erc20 import ERC20
-
         cd = bytes(ERC20.fns.transferFrom(ADDR_A, ADDR_B, 0).data)
         from_word = cd[4:36]
         to_word = cd[36:68]
@@ -410,20 +397,14 @@ class TestABIHelpers:
         assert to_word[12:] == bytes.fromhex(ADDR_B[2:])
 
     def test_erc20_balance_of_selector(self):
-        from eth_contract.erc20 import ERC20
-
         cd = bytes(ERC20.fns.balanceOf(ADDR_A).data)
         assert cd[:4] == bytes.fromhex("70a08231")
 
     def test_erc20_balance_of_total_length(self):
-        from eth_contract.erc20 import ERC20
-
         cd = bytes(ERC20.fns.balanceOf(ADDR_A).data)
         assert len(cd) == 4 + 32
 
     def test_erc20_approve_zero_amount(self):
-        from eth_contract.erc20 import ERC20
-
         cd = bytes(ERC20.fns.approve(ADDR_A, 0).data)
         assert cd[36:68] == b"\x00" * 32
 
@@ -436,8 +417,6 @@ class TestABIHelpers:
 class TestIntegration:
     def test_approve_then_balance_check(self):
         """Program that approves and then checks balance — pure byte verification."""
-        from eth_contract.erc20 import ERC20
-
         approve_cd = bytes(ERC20.fns.approve(ADDR_B, 10**18).data)
         bytecode = (
             Program()
@@ -473,8 +452,6 @@ class TestIntegration:
 
     def test_multi_call_program(self):
         """Three sequential calls produce a valid byte sequence."""
-        from eth_contract.erc20 import ERC20
-
         cd1 = bytes(ERC20.fns.approve(ADDR_B, 100).data)
         cd2 = bytes(ERC20.fns.transfer(ADDR_A, 100).data)
         cd3 = bytes(ERC20.fns.balanceOf(ADDR_A).data)
@@ -615,122 +592,93 @@ class TestProgramComposition:
 
 
 # ---------------------------------------------------------------------------
-# Program: call_with_patches (calldata surgery)
+# Program: call_with_patches (stack-based calldata surgery)
 # ---------------------------------------------------------------------------
 
 
 class TestCallWithPatches:
+    """Tests for call_with_patches — stack-based calldata patching.
+
+    The caller pushes patch values onto the stack *before* the call (last value
+    deepest, first value at TOS).  call_with_patches emits push_bytes, then
+    SWAP1+SWAP2+patch_value for each ``(offset, size)`` pair, then issues CALL.
+    """
+
     def _template(self) -> bytes:
         """4-byte selector + two 32-byte zero placeholders."""
         return bytes.fromhex("deadbeef") + b"\x00" * 64
 
-    def test_no_patches_equals_call_contract(self):
-        """With an empty patches list, call_with_patches == call_contract."""
+    # 7-byte compact ret-frame insertion.
+    # From [argsOff, argsLen, …]:
+    #   SWAP1  → [argsLen, argsOff, …]
+    #   PUSH1 0  → [0, argsLen, argsOff, …]   (retOffset placeholder)
+    #   SWAP1  → [argsLen, 0, argsOff, …]
+    #   PUSH1 0  → [0, argsLen, 0, argsOff, …] (retLen placeholder)
+    #   SWAP3  → [argsOff, argsLen, 0, 0, …]
+    _RET_FRAME = bytes([0x90, 0x60, 0x00, 0x90, 0x60, 0x00, 0x92])
+
+    # Per-patch preamble: SWAP1 + SWAP2 rotates the next value to TOS.
+    _ROTATE_ARG = bytes([0x90, 0x91])
+
+    def test_no_patches(self):
+        """With an empty patches list the bytecode is push_bytes + ret_frame + call."""
         cd = self._template()
-        expected = Program().call_contract(ADDR_A, cd).build()
+        expected = (
+            push_bytes(cd)
+            + self._RET_FRAME
+            + push_u256(0)  # value
+            + push_addr(ADDR_A)
+            + gas_opcode()
+            + call(True)
+        )
         actual = Program().call_with_patches(ADDR_A, cd, []).build()
         assert actual == expected
 
-    def test_bytes_u256_patch(self):
-        """Bytes opcodes for u256 patch: emits opcodes + patch_value(4, 32)."""
+    def test_single_u256_patch(self):
+        """Single patch: SWAP1+SWAP2+patch_value(4, 32), value consumed from stack."""
         cd = self._template()
-        # Manually build equivalent low-level sequence
         expected = (
-            push_u256(0)
-            + push_u256(0)  # retSize, retOffset
-            + push_bytes(cd)
-            + push_u256(42)
+            push_bytes(cd)
+            + self._ROTATE_ARG
             + patch_value(4, 32)
+            + self._RET_FRAME
             + push_u256(0)  # value
             + push_addr(ADDR_A)
-            + gas_opcode()  # gas (forward all)
+            + gas_opcode()
             + call(True)
         )
-        actual = Program().call_with_patches(ADDR_A, cd, [(4, 32, push_u256(42))]).build()
+        actual = Program().call_with_patches(ADDR_A, cd, [(4, 32)]).build()
         assert actual == expected
 
-    def test_bytes_addr_patch(self):
-        """Bytes opcodes for addr patch: emits opcodes + patch_value(16, 20)."""
+    def test_single_addr_patch(self):
+        """addr-size patch: SWAP1+SWAP2+patch_value(16, 20)."""
         cd = self._template()
         expected = (
-            push_u256(0)
-            + push_u256(0)  # retSize, retOffset
-            + push_bytes(cd)
-            + push_addr(ADDR_B)
+            push_bytes(cd)
+            + self._ROTATE_ARG
             + patch_value(16, 20)
-            + push_u256(0)
-            + push_addr(ADDR_A)
-            + gas_opcode()  # gas (forward all)
-            + call(True)
-        )
-        actual = Program().call_with_patches(ADDR_A, cd, [(16, 20, push_addr(ADDR_B))]).build()
-        assert actual == expected
-
-    def test_ret_u256_patch(self):
-        """ret_u256(offset) bytes emits ret_u256 + patch_value(4, 32)."""
-        cd = self._template()
-        expected = (
-            push_u256(0)
-            + push_u256(0)  # retSize, retOffset
-            + push_bytes(cd)
-            + ret_u256(0)
-            + patch_value(4, 32)
+            + self._RET_FRAME
             + push_u256(0)
             + push_addr(ADDR_A)
             + gas_opcode()
             + call(True)
         )
-        actual = Program().call_with_patches(ADDR_A, cd, [(4, 32, ret_u256(0))]).build()
-        assert actual == expected
-
-    def test_reg_patch(self):
-        """load_reg(idx) bytes emits load_reg + patch_value(4, 32)."""
-        cd = self._template()
-        expected = (
-            push_u256(0)
-            + push_u256(0)  # retSize, retOffset
-            + push_bytes(cd)
-            + load_reg(3)
-            + patch_value(4, 32)
-            + push_u256(0)
-            + push_addr(ADDR_A)
-            + gas_opcode()
-            + call(True)
-        )
-        actual = Program().call_with_patches(ADDR_A, cd, [(4, 32, load_reg(3))]).build()
-        assert actual == expected
-
-    def test_reg_patch_addr(self):
-        """load_reg(idx) with size=20 emits load_reg + patch_value(16, 20)."""
-        cd = self._template()
-        expected = (
-            push_u256(0)
-            + push_u256(0)  # retSize, retOffset
-            + push_bytes(cd)
-            + load_reg(5)
-            + patch_value(16, 20)
-            + push_u256(0)
-            + push_addr(ADDR_A)
-            + gas_opcode()
-            + call(True)
-        )
-        actual = Program().call_with_patches(ADDR_A, cd, [(16, 20, load_reg(5))]).build()
+        actual = Program().call_with_patches(ADDR_A, cd, [(16, 20)]).build()
         assert actual == expected
 
     def test_multiple_patches(self):
-        """Multiple patches are applied in order."""
+        """Multiple patches consume stack values in order."""
         cd = self._template()
         expected = (
-            push_u256(0)
-            + push_u256(0)  # retSize, retOffset
-            + push_bytes(cd)
-            + push_u256(100)
+            push_bytes(cd)
+            + self._ROTATE_ARG
             + patch_value(4, 32)
-            + push_addr(ADDR_B)
+            + self._ROTATE_ARG
             + patch_value(4 + 32 + 12, 20)
-            + push_u256(0)
+            + self._RET_FRAME
+            + push_u256(0)  # value
             + push_addr(ADDR_A)
-            + gas_opcode()  # gas (forward all)
+            + gas_opcode()
             + call(True)
         )
         actual = (
@@ -739,8 +687,8 @@ class TestCallWithPatches:
                 ADDR_A,
                 cd,
                 [
-                    (4, 32, push_u256(100)),
-                    (4 + 32 + 12, 20, push_addr(ADDR_B)),
+                    (4, 32),
+                    (4 + 32 + 12, 20),
                 ],
             )
             .build()
@@ -751,59 +699,104 @@ class TestCallWithPatches:
         """value and gas parameters are reflected in CALL prologue."""
         cd = self._template()
         expected = (
-            push_u256(0)
-            + push_u256(0)  # retSize, retOffset
-            + push_bytes(cd)
+            push_bytes(cd)
+            + self._ROTATE_ARG
+            + patch_value(4, 32)
+            + self._RET_FRAME
             + push_u256(10**18)  # value
             + push_addr(ADDR_A)
             + push_u256(50_000)  # gas
             + call(True)
         )
-        actual = Program().call_with_patches(ADDR_A, cd, [], value=10**18, gas=50_000).build()
+        actual = Program().call_with_patches(ADDR_A, cd, [(4, 32)], value=10**18, gas=50_000).build()
         assert actual == expected
 
     def test_require_success_false(self):
         """require_success=False emits CALL without the success-check block."""
         cd = self._template()
         expected = (
-            push_u256(0) + push_u256(0) + push_bytes(cd) + push_u256(0) + push_addr(ADDR_A) + gas_opcode() + call(False)
+            push_bytes(cd)
+            + self._ROTATE_ARG
+            + patch_value(4, 32)
+            + self._RET_FRAME
+            + push_u256(0)
+            + push_addr(ADDR_A)
+            + gas_opcode()
+            + call(False)
         )
-        actual = Program().call_with_patches(ADDR_A, cd, [], require_success=False).build()
+        actual = Program().call_with_patches(ADDR_A, cd, [(4, 32)], require_success=False).build()
         assert actual == expected
+
+    def test_many_patches_supported(self):
+        """Supports more than 12 patches in a single stack-patched call."""
+        cd = self._template() + b"\x00" * (16 * 32)
+        # Exercise a case with 13 patches to confirm large patch counts are supported.
+        patches = [(4 + i * 32, 32) for i in range(13)]
+        bytecode = Program().call_with_patches(ADDR_A, cd, patches).build()
+        assert len(bytecode) > 0
 
     def test_invalid_patch_size_raises(self):
         with pytest.raises(ValueError, match="patch size"):
-            Program().call_with_patches(ADDR_A, self._template(), [(4, 0, push_u256(0))]).build()
-
-    def test_non_bytes_opcodes_raises(self):
-        """Passing a non-bytes source raises TypeError."""
-        with pytest.raises(TypeError, match="opcodes must be bytes or bytearray"):
-            Program().call_with_patches(ADDR_A, self._template(), [(4, 32, 42)]).build()
-
-    def test_non_bytes_str_opcodes_raises(self):
-        """Passing a string raises TypeError."""
-        with pytest.raises(TypeError, match="opcodes must be bytes or bytearray"):
-            Program().call_with_patches(ADDR_A, self._template(), [(4, 32, "0xdeadbeef")]).build()
-
-    def test_non_bytes_none_opcodes_raises(self):
-        """Passing None raises TypeError."""
-        with pytest.raises(TypeError, match="opcodes must be bytes or bytearray"):
-            Program().call_with_patches(ADDR_A, self._template(), [(4, 32, None)]).build()
+            Program().call_with_patches(ADDR_A, self._template(), [(4, 0)]).build()
 
     def test_chained_with_composition(self):
         """call_with_patches works correctly when composed with other programs."""
         cd = self._template()
         step1 = Program().call_contract(ADDR_A, cd).pop()
-        step2 = Program().call_with_patches(ADDR_A, cd, [(4, 32, ret_u256(0))]).pop()
+        step2 = Program().call_with_patches(ADDR_A, cd, [(4, 32)]).pop()
         combined = step1 + step2
         bytecode = combined.build()
         assert len(bytecode) > 0
         assert bytes(cd[:4]) in bytecode  # selector embedded via PUSH32 in push_bytes
 
+    def test_dup_n_range(self):
+        """dup_n emits the correct DUP opcode for each valid depth."""
+        assert dup_n(1) == bytes([0x80])  # DUP1
+        assert dup_n(5) == bytes([0x84])  # DUP5
+        assert dup_n(16) == bytes([0x8F])  # DUP16
 
-# ---------------------------------------------------------------------------
-# Arithmetic opcodes
-# ---------------------------------------------------------------------------
+    def test_dup_n_out_of_range_raises(self):
+        """dup_n raises ValueError for invalid depths."""
+
+        with pytest.raises(ValueError, match="depth must be 1..16"):
+            dup_n(0)
+        with pytest.raises(ValueError, match="depth must be 1..16"):
+            dup_n(17)
+
+
+class TestPatchBytesFromStack:
+    """Tests for the stand-alone patch_bytes_from_stack helper."""
+
+    def _template(self) -> bytes:
+        return bytes.fromhex("deadbeef") + b"\x00" * 64
+
+    _ROTATE_ARG = bytes([0x90, 0x91])  # SWAP1 + SWAP2
+
+    def test_no_patches_noop(self):
+        """With no patches, patch_bytes_from_stack emits nothing."""
+        cd = self._template()
+        p = Program().push_bytes(cd)
+        before = p.build()
+        p.patch_bytes_from_stack([])
+        assert p.build() == before
+
+    def test_single_patch_bytecode(self):
+        """Verify the exact bytecode for a single patch."""
+        cd = self._template()
+        expected = push_bytes(cd) + self._ROTATE_ARG + patch_value(4, 32)
+        actual = Program().push_bytes(cd).patch_bytes_from_stack([(4, 32)]).build()
+        assert actual == expected
+
+    def test_two_patches_bytecode(self):
+        """Two patches each emit SWAP1+SWAP2+patch_value."""
+        cd = self._template()
+        expected = push_bytes(cd) + self._ROTATE_ARG + patch_value(4, 32) + self._ROTATE_ARG + patch_value(36, 20)
+        actual = Program().push_bytes(cd).patch_bytes_from_stack([(4, 32), (36, 20)]).build()
+        assert actual == expected
+
+    def test_invalid_patch_size_raises(self):
+        with pytest.raises(ValueError, match="patch size"):
+            Program().push_bytes(self._template()).patch_bytes_from_stack([(4, 0)]).build()
 
 
 class TestArithmeticOpcodes:
@@ -882,20 +875,22 @@ class TestSplitSwapComposition:
 
         step4 = (
             Program()
+            .load_reg(1)  # push share0 → TOS (consumed by patch)
             .call_with_patches(
                 ADDR_B,
                 self._SWAP12,
-                [(self.AMOUNT_OFFSET, 32, load_reg(1))],
+                [(self.AMOUNT_OFFSET, 32)],
             )
             .pop()
         )
 
         step5 = (
             Program()
+            .load_reg(2)  # push share1 → TOS (consumed by patch)
             .call_with_patches(
                 ADDR_B,
                 self._SWAP13,
-                [(self.AMOUNT_OFFSET, 32, load_reg(2))],
+                [(self.AMOUNT_OFFSET, 32)],
             )
             .pop()
         )
@@ -960,27 +955,18 @@ class TestEncodeCalldata:
 
     def test_no_args_selector(self):
         """A zero-argument function yields only the 4-byte selector."""
-        from eth_contract.contract import ContractFunction
-        from eth_utils import keccak
-
         result = ContractFunction.from_abi("function totalSupply() view returns (uint256)")().data
         expected_selector = keccak(text="totalSupply()")[:4]
         assert result == expected_selector
 
     def test_transfer_selector_and_encoding(self):
         """transfer(address,uint256) matches the known ERC-20 selector."""
-        from eth_contract.contract import ContractFunction
-        from eth_contract.erc20 import ERC20
-
         calldata = ContractFunction.from_abi("function transfer(address,uint256)")(ADDR_A, 1000).data
         assert calldata[:4].hex() == "a9059cbb"
         assert calldata == ERC20.fns.transfer(ADDR_A, 1000).data
 
     def test_approve_selector_and_encoding(self):
         """approve(address,uint256) matches the known ERC-20 selector."""
-        from eth_contract.contract import ContractFunction
-        from eth_contract.erc20 import ERC20
-
         calldata = ContractFunction.from_abi(
             "function approve(address spender, uint256 amount) external returns (bool)"
         )(ADDR_B, 2**256 - 1).data
@@ -989,25 +975,18 @@ class TestEncodeCalldata:
 
     def test_function_keyword_optional(self):
         """Both bare and 'function'-prefixed signatures yield identical calldata."""
-        from eth_contract.contract import ContractFunction
-
         bare = ContractFunction.from_abi("function transfer(address,uint256)")(ADDR_A, 42).data
         full = ContractFunction.from_abi("function transfer(address to, uint256 amount)")(ADDR_A, 42).data
         assert bare == full
 
     def test_param_names_optional(self):
         """Signatures with and without parameter names are equivalent."""
-        from eth_contract.contract import ContractFunction
-
         with_names = ContractFunction.from_abi("function transfer(address to, uint256 amount)")(ADDR_A, 7).data
         without_names = ContractFunction.from_abi("function transfer(address,uint256)")(ADDR_A, 7).data
         assert with_names == without_names
 
     def test_tuple_type_encoding(self):
         """Tuple (struct) arguments are encoded correctly."""
-        from eth_abi import encode
-        from eth_contract.contract import ContractFunction
-        from eth_utils import keccak
 
         sig = (
             "function exactInputSingle("
@@ -1029,15 +1008,11 @@ class TestEncodeCalldata:
 
     def test_result_starts_with_selector_length(self):
         """The result is at least 4 bytes (selector) for any function."""
-        from eth_contract.contract import ContractFunction
-
         result = ContractFunction.from_abi("function fallback_()")().data
         assert len(result) == 4  # only selector, no args
 
     def test_uint256_arg(self):
         """A uint256 argument is encoded as a 32-byte big-endian word."""
-        from eth_contract.contract import ContractFunction
-
         result = ContractFunction.from_abi("function foo(uint256 x)")(0xDEAD).data
         assert len(result) == 4 + 32
         assert int.from_bytes(result[4:], "big") == 0xDEAD
@@ -1048,8 +1023,6 @@ class TestCallContractAbi:
 
     def test_produces_same_bytecode_as_call_contract(self):
         """call_contract_abi(to, sig, *args) == call_contract(to, ContractFunction.from_abi(sig)(*args).data)."""
-        from eth_contract.contract import ContractFunction
-
         sig = "function transfer(address,uint256)"
         args = [ADDR_B, 500]
 
@@ -1076,8 +1049,6 @@ class TestCallContractAbi:
 
     def test_value_and_gas_forwarded(self):
         """ETH value and gas limit are forwarded to the underlying call_contract."""
-        from eth_contract.contract import ContractFunction
-
         sig = "function transfer(address,uint256)"
         args = [ADDR_B, 42]
 
@@ -1089,8 +1060,6 @@ class TestCallContractAbi:
 
     def test_require_success_false(self):
         """require_success=False is forwarded correctly."""
-        from eth_contract.contract import ContractFunction
-
         sig = "function transfer(address,uint256)"
         args = [ADDR_B, 1]
 
@@ -1120,24 +1089,8 @@ class TestCallContractAbi:
 class TestPatch:
     """Verify the Patch class and call_contract_abi Patch integration."""
 
-    def test_patch_stores_opcodes_as_bytes(self):
-        from pydefi.vm import Patch
-
-        p = Patch(load_reg(2))
-        assert p.opcodes == load_reg(2)
-        assert isinstance(p.opcodes, bytes)
-
-    def test_patch_accepts_bytearray(self):
-        from pydefi.vm import Patch
-
-        p = Patch(bytearray(load_reg(3)))
-        assert p.opcodes == load_reg(3)
-        assert isinstance(p.opcodes, bytes)
-
     def test_no_patch_args_unchanged(self):
         """call_contract_abi with no Patch args behaves exactly as before."""
-        from eth_contract.contract import ContractFunction
-
         sig = "function transfer(address,uint256)"
         via_patch_path = Program().call_contract_abi(ADDR_A, sig, ADDR_B, 42).build()
         calldata = bytes(ContractFunction.from_abi(sig)(ADDR_B, 42).data)
@@ -1146,13 +1099,11 @@ class TestPatch:
 
     def test_all_patch_args_uint256(self):
         """Two uint256 Patch args: opcodes appear in the built bytecode."""
-        from pydefi.vm import Patch
-
         sig = "function t(uint256 input1, uint256 input2)"
-        p1 = Patch(load_reg(1))
-        p2 = Patch(load_reg(2))
+        p1 = Patch()
+        p2 = Patch()
 
-        bytecode = Program().call_contract_abi(ADDR_A, sig, p1, p2).build()
+        bytecode = Program().load_reg(2).load_reg(1).call_contract_abi(ADDR_A, sig, p1, p2).build()
         assert len(bytecode) > 0
 
         # The built bytecode must contain opcodes for both patches
@@ -1161,12 +1112,10 @@ class TestPatch:
 
     def test_mixed_patch_and_static_args(self):
         """Static args are baked in; only Patch args produce patch entries."""
-        from pydefi.vm import Patch
-
         sig = "function transfer(address to, uint256 amount)"
         # Only the amount is patched; the recipient is static
-        p_amount = Patch(ret_u256(0))
-        bytecode = Program().call_contract_abi(ADDR_A, sig, ADDR_B, p_amount).build()
+        p_amount = Patch()
+        bytecode = Program().ret_u256(0).call_contract_abi(ADDR_A, sig, ADDR_B, p_amount).build()
 
         # ADDR_B must be baked into the calldata template in the bytecode.
         # push_bytes splits calldata into 32-byte chunks, so the 20-byte address
@@ -1179,104 +1128,78 @@ class TestPatch:
 
     def test_patch_with_function_keyword_prefix(self):
         """'function' keyword in abi_sig is handled correctly with Patch args."""
-        from pydefi.vm import Patch
-
         sig = "function foo(uint256 x)"
-        p = Patch(load_reg(0))
-        bytecode = Program().call_contract_abi(ADDR_A, sig, p).build()
+        p = Patch()
+        bytecode = Program().load_reg(0).call_contract_abi(ADDR_A, sig, p).build()
         assert len(bytecode) > 0
 
     def test_patch_value_and_gas_forwarded(self):
         """ETH value and gas are forwarded through the patched call."""
-        from pydefi.vm import Patch
-
         sig = "function foo(uint256 x)"
-        p = Patch(load_reg(0))
-        bytecode_with = Program().call_contract_abi(ADDR_A, sig, p, value=1000, gas=50000).build()
-        bytecode_without = Program().call_contract_abi(ADDR_A, sig, p).build()
+        p = Patch()
+        bytecode_with = Program().load_reg(0).call_contract_abi(ADDR_A, sig, p, value=1000, gas=50000).build()
+        bytecode_without = Program().load_reg(0).call_contract_abi(ADDR_A, sig, p).build()
         # With value/gas the bytecode must differ
         assert bytecode_with != bytecode_without
 
     def test_patch_require_success_false(self):
         """require_success=False is propagated through the patch path."""
-        from pydefi.vm import Patch
-
         sig = "function foo(uint256 x)"
-        p = Patch(load_reg(0))
-        bc_true = Program().call_contract_abi(ADDR_A, sig, p, require_success=True).build()
-        bc_false = Program().call_contract_abi(ADDR_A, sig, p, require_success=False).build()
+        p = Patch()
+        bc_true = Program().load_reg(0).call_contract_abi(ADDR_A, sig, p, require_success=True).build()
+        bc_false = Program().load_reg(0).call_contract_abi(ADDR_A, sig, p, require_success=False).build()
         assert bc_true != bc_false
 
     def test_patch_chaining_returns_self(self):
         """call_contract_abi with Patch returns self for chaining."""
-        from pydefi.vm import Patch
-
         p = Program()
-        result = p.call_contract_abi(ADDR_A, "function foo(uint256 x)", Patch(load_reg(0)))
+        result = p.load_reg(0).call_contract_abi(ADDR_A, "function foo(uint256 x)", Patch())
         assert result is p
 
     def test_wrong_arg_count_raises(self):
         """Passing the wrong number of args raises ValueError."""
-        from pydefi.vm import Patch
-
         sig = "function foo(uint256 x, uint256 y)"
         with pytest.raises(ValueError, match="expected 2 argument"):
-            Program().call_contract_abi(ADDR_A, sig, Patch(load_reg(0))).build()
+            Program().load_reg(0).call_contract_abi(ADDR_A, sig, Patch()).build()
 
     def test_bool_type_raises(self):
         """Patching a bool parameter fails: BooleanEncoder rejects integer 0."""
-        from eth_abi.exceptions import EncodingTypeError
-
-        from pydefi.vm import Patch
-
         sig = "function foo(bool flag)"
         with pytest.raises(EncodingTypeError):
-            Program().call_contract_abi(ADDR_A, sig, Patch(load_reg(0))).build()
+            Program().load_reg(0).call_contract_abi(ADDR_A, sig, Patch()).build()
 
     def test_small_uint_works(self):
         """Patching a uint8 parameter now works (ABI encodes it as a 32-byte word)."""
-        from pydefi.vm import Patch
-
         sig = "function foo(uint8 x)"
-        bytecode = Program().call_contract_abi(ADDR_A, sig, Patch(load_reg(0))).build()
+        bytecode = Program().load_reg(0).call_contract_abi(ADDR_A, sig, Patch()).build()
         assert len(bytecode) > 0
         assert load_reg(0) in bytecode
 
     def test_patch_two_uint256_args_unique_offsets(self):
         """Two Patch args of the same type get distinct offsets."""
-        from pydefi.vm import Patch
-
         sig = "function foo(uint256 a, uint256 b)"
-        bytecode = Program().call_contract_abi(ADDR_A, sig, Patch(load_reg(0)), Patch(load_reg(1))).build()
+        bytecode = Program().load_reg(1).load_reg(0).call_contract_abi(ADDR_A, sig, Patch(), Patch()).build()
         assert len(bytecode) > 0
 
     def test_patch_address_arg_raises(self):
         """Patching an address parameter fails: AddressEncoder rejects integer 0."""
-        from eth_abi.exceptions import EncodingTypeError
-
-        from pydefi.vm import Patch
-
         sig = "function setRecipient(address recipient)"
-        p = Patch(load_reg(3))
+        p = Patch()
         with pytest.raises(EncodingTypeError):
-            Program().call_contract_abi(ADDR_A, sig, p).build()
+            Program().load_reg(3).call_contract_abi(ADDR_A, sig, p).build()
 
     def test_patch_int_type_works(self):
         """Patching a signed int256 parameter works (sign bit is masked to zero)."""
-        from pydefi.vm import Patch
-
         sig = "function foo(int256 x)"
-        bytecode = Program().call_contract_abi(ADDR_A, sig, Patch(load_reg(0))).build()
+        bytecode = Program().load_reg(0).call_contract_abi(ADDR_A, sig, Patch()).build()
         assert len(bytecode) > 0
         assert load_reg(0) in bytecode
 
     def test_patch_inside_list_works(self):
         """Patch inside an ABI array argument (list) is located and applied correctly."""
-        from pydefi.vm import Patch
-
         sig = "function foo(uint256[] amounts)"
-        p = Patch(load_reg(0))
-        bytecode = Program().call_contract_abi(ADDR_A, sig, [p, 999_999_999_999]).build()
+        p = Patch()
+        bytecode = Program().load_reg(0).call_contract_abi(ADDR_A, sig, [p, 999_999_999_999]).build()
         assert len(bytecode) > 0
         assert load_reg(0) in bytecode
         # 999_999_999_999 = 0xe8d4a50fff; push_bytes splits into 32-byte chunks so
@@ -1286,23 +1209,19 @@ class TestPatch:
 
     def test_patch_in_nested_tuple(self):
         """Patch inside a tuple argument is located and applied correctly."""
-        from pydefi.vm import Patch
-
         sig = "function foo((uint256 amount, uint256 minOut) params)"
-        p1 = Patch(load_reg(1))
-        p2 = Patch(load_reg(2))
-        bytecode = Program().call_contract_abi(ADDR_A, sig, (p1, p2)).build()
+        p1 = Patch()
+        p2 = Patch()
+        bytecode = Program().load_reg(2).load_reg(1).call_contract_abi(ADDR_A, sig, (p1, p2)).build()
         assert len(bytecode) > 0
         assert load_reg(1) in bytecode
         assert load_reg(2) in bytecode
 
     def test_patch_in_nested_tuple_mixed(self):
         """Patch mixed with a static value inside a tuple works correctly."""
-        from pydefi.vm import Patch
-
         sig = "function foo((uint256 amount, uint256 minOut) params)"
-        p = Patch(load_reg(1))
-        bytecode = Program().call_contract_abi(ADDR_A, sig, (p, 999_999_999_999)).build()
+        p = Patch()
+        bytecode = Program().load_reg(1).call_contract_abi(ADDR_A, sig, (p, 999_999_999_999)).build()
         assert len(bytecode) > 0
         assert load_reg(1) in bytecode
         # The static value must be baked in; push_bytes splits into 32-byte chunks
@@ -1979,8 +1898,6 @@ class TestProgramAbiEncode:
 
     def test_exports(self):
         """emit_abi_encode and emit_abi_encode_packed are in pydefi.vm."""
-        from pydefi.vm import emit_abi_encode, emit_abi_encode_packed
-
         assert callable(emit_abi_encode)
         assert callable(emit_abi_encode_packed)
 
@@ -2481,8 +2398,6 @@ class TestMiniEVMContext:
 
     def test_program_transfer_tokens(self, evm_ctx):
         """A DeFiVM program can transfer ERC-20 tokens between addresses."""
-        from eth_contract.erc20 import ERC20
-
         token = evm_ctx.deploy_mock_token()
         executor = evm_ctx.program_executor
         recipient = b"\x99" * 20
@@ -2529,8 +2444,6 @@ class TestMiniEVMContext:
 
     def test_call_mint_and_balance(self, evm_ctx):
         """call() can invoke contract functions directly (no program needed)."""
-        from eth_contract.erc20 import ERC20
-
         token = evm_ctx.deploy_mock_token()
         holder = b"\x44" * 20
         amount = 42 * 10**18
@@ -2578,8 +2491,6 @@ class TestMiniEVMContext:
 
     def test_storage_mutations_persist(self, evm_ctx):
         """Token balance changes persist between run_program executions."""
-        from eth_contract.erc20 import ERC20
-
         token = evm_ctx.deploy_mock_token()
         executor = evm_ctx.program_executor
         holder = b"\x77" * 20

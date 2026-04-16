@@ -319,13 +319,14 @@ def _build_v3_pool_swap_segment(hop: SwapHop, *, amount_reg: int) -> Program:
     prog = Program()
     # Use call_contract_abi so the ABI library locates the amountSpecified
     # offset automatically — no hardcoded byte offset.
+    prog.load_reg(amount_reg)  # amountSpecified — patched at runtime
     prog.call_contract_abi(
         hop.pool,
         "function swap(address recipient, bool zeroForOne,"
         " int256 amountSpecified, uint160 sqrtPriceLimitX96, bytes data)",
         hop.recipient,
         hop.zero_for_one,
-        Patch(load_reg(amount_reg)),  # amountSpecified — patched at runtime
+        Patch(),
         sqrt_price_limit_x96,
         callback_data,
     ).pop()
@@ -416,23 +417,25 @@ def _build_v2_direct_swap_segment(hop: SwapHop, *, amount_reg: int, amount_out_r
     prog._emit(store_reg(amount_out_reg))
 
     # --- Step 3: Transfer amountIn to pair ------------------------------------
+    prog.load_reg(amount_reg)
     prog.call_contract_abi(
         hop.token_in,
         "function transfer(address to, uint256 amount)",
         hop.pool,
-        Patch(load_reg(amount_reg)),
+        Patch(),
     ).pop()
 
     # --- Step 4: Call pair.swap with amountOut --------------------------------
     # pair.swap(uint amount0Out, uint amount1Out, address to, bytes data)
     #   zero_for_one → amount0Out=0, amount1Out=amountOut (tokenOut is token1)
     #   !zero_for_one → amount0Out=amountOut, amount1Out=0 (tokenOut is token0)
+    prog.load_reg(amount_out_reg)
     if hop.zero_for_one:
         prog.call_contract_abi(
             hop.pool,
             "function swap(uint256 amount0Out, uint256 amount1Out, address to, bytes data)",
             0,
-            Patch(load_reg(amount_out_reg)),
+            Patch(),
             hop.recipient,
             b"",
         ).pop()
@@ -440,7 +443,7 @@ def _build_v2_direct_swap_segment(hop: SwapHop, *, amount_reg: int, amount_out_r
         prog.call_contract_abi(
             hop.pool,
             "function swap(uint256 amount0Out, uint256 amount1Out, address to, bytes data)",
-            Patch(load_reg(amount_out_reg)),
+            Patch(),
             0,
             hop.recipient,
             b"",

@@ -13,8 +13,7 @@ import pytest
 
 from pydefi.amm.curve import CurvePool
 from pydefi.types import TokenAmount
-
-from .conftest import DAI, USDC, USDT
+from tests.addrs import DAI, USDC, USDT
 
 # Curve 3pool on Ethereum mainnet
 CURVE_3POOL = "0xbEbc44782C7dB0a1A60Cb6fe97d0b483032FF1C7"
