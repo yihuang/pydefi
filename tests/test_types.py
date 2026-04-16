@@ -304,7 +304,7 @@ class TestRouteDAG:
         assert isinstance(nested, RouteSplit)
         assert [leg.fraction_bps for leg in nested.legs] == [5000, 5000]
 
-    def test_nested_split_allowed_on_empty_active_leg(self):
+    def test_nested_split_from_empty_active_leg(self):
         dag = (
             RouteDAG()
             .from_token(self.token0)

@@ -241,6 +241,8 @@ class TestRouterLive:
         """Nested split from an empty active leg should compile with live pool edges."""
         g = await self._build_v2_graph(eth_w3)
         edge_weth_usdc = next(edge for edge in g.edges_from(WETH) if edge.token_out == USDC)
+        edge_weth_dai = next(edge for edge in g.edges_from(WETH) if edge.token_out == DAI)
+        edge_dai_usdc = next(edge for edge in g.edges_from(DAI) if edge.token_out == USDC)
 
         dag = (
             RouteDAG()
@@ -251,7 +253,8 @@ class TestRouterLive:
             .leg(5000)
             .swap(USDC, edge_weth_usdc)
             .leg(5000)
-            .swap(USDC, edge_weth_usdc)
+            .swap(DAI, edge_weth_dai)
+            .swap(USDC, edge_dai_usdc)
             .merge()
             .leg(5000)
             .swap(USDC, edge_weth_usdc)
