@@ -16,7 +16,7 @@ from hexbytes import HexBytes
 # ---------------------------------------------------------------------------
 
 #: Address as raw bytes (canonical intermediate representation), 20 bytes for EVM, 32 bytes for Solana.
-#: Use ``HexBytes(addr_str)`` to convert a 0x-prefixed hex string to Address.
+#: Use ``decode_address(addr_str, chain_id)`` to convert from a human-readable string at the periphery.
 Address = HexBytes
 
 #: 32-byte hash or log topic as raw bytes (canonical intermediate representation).
@@ -54,12 +54,13 @@ class Token:
 
     Attributes:
         chain_id: The chain this token lives on.
-        address: Token contract address.  For EVM tokens this is a 20-byte
-            :class:`~hexbytes.HexBytes` (``Address``) — any ``0x``-prefixed
-            hex string passed at construction is automatically converted.
-            For non-EVM chains (e.g. Solana) this remains a plain ``str``.
-            Use the sentinel value ``"0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"``
-            (or its ``HexBytes`` equivalent) for the native gas token.
+        address: Token contract address as raw bytes (:class:`~hexbytes.HexBytes`,
+            i.e. ``Address``).  For EVM chains this is 20 bytes; for Solana it is
+            32 bytes (public key).  Use
+            :func:`~pydefi._utils.decode_address` to convert a human-readable
+            string to ``Address`` at the periphery before constructing a
+            :class:`Token`.  Use
+            :func:`~pydefi._utils.encode_address` to format for external APIs.
         symbol: Human-readable ticker symbol (e.g. ``"USDC"``).
         decimals: Token precision (default 18).
         name: Optional long-form name.
@@ -75,16 +76,17 @@ class Token:
     NATIVE_ADDRESS: ClassVar[str] = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"
 
     def __post_init__(self) -> None:
-        # Auto-convert 0x-prefixed hex strings to Address (HexBytes) for EVM tokens.
-        # Non-EVM addresses (e.g. Solana base58) don't start with "0x" and are kept as str.
-        if isinstance(self.address, str) and self.address.startswith("0x"):
-            object.__setattr__(self, "address", HexBytes(self.address))
+        # Ensure address is always raw bytes (Address / HexBytes).
+        # String→Address conversion must happen at peripheries via decode_address().
+        if not isinstance(self.address, bytes):
+            raise TypeError(
+                f"Token.address must be Address (bytes/HexBytes), got {type(self.address).__name__!r}. "
+                "Use decode_address(addr_str, chain_id) to convert from a string at the periphery."
+            )
 
     def is_native(self) -> bool:
         """Return ``True`` if this token represents the native gas currency."""
-        if isinstance(self.address, bytes):
-            return self.address == HexBytes(self.NATIVE_ADDRESS)
-        return self.address.lower() == self.NATIVE_ADDRESS.lower()
+        return bytes(self.address) == bytes(HexBytes(self.NATIVE_ADDRESS))
 
     def __str__(self) -> str:
         return f"{self.symbol}({self.chain_id})"

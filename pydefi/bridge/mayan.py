@@ -18,7 +18,7 @@ from typing import Any, Optional
 import aiohttp
 from hexbytes import HexBytes
 
-from pydefi._utils import address_to_bytes32, token_to_bytes32
+from pydefi._utils import address_to_bytes32, encode_address, token_to_bytes32
 from pydefi.abi.bridge import MAYAN_FORWARDER, MAYAN_SWIFT_V2, MayanSwiftOrderParams
 from pydefi.bridge.base import BaseBridge
 from pydefi.exceptions import BridgeError
@@ -83,17 +83,19 @@ _CHAIN_WETH: dict[int, str] = {
 _ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
 
 
-def _mayan_token_address(address: str | Address) -> str:
+_EEEEE_SENTINEL_BYTES = b"\xee" * 20
+
+
+def _mayan_token_address(address: Address, chain_id: int) -> str:
     """Normalize a token address for the Mayan Price API.
 
     The Mayan API uses the zero address to represent the native gas token
     (ETH, BNB, etc.).  Any ``EeeE...`` sentinel is canonicalized here so
     that API requests always use the representation the server expects.
     """
-    addr = ("0x" + address.hex()) if isinstance(address, bytes) else address
-    if addr.lower() == "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee":
+    if bytes(address) == _EEEEE_SENTINEL_BYTES:
         return _ZERO_ADDRESS
-    return addr
+    return encode_address(address, chain_id)
 
 
 class Mayan(BaseBridge):
@@ -153,8 +155,8 @@ class Mayan(BaseBridge):
 
         params: dict[str, Any] = {
             "amountIn": human_amount,
-            "fromToken": _mayan_token_address(token_in.address),
-            "toToken": _mayan_token_address(token_out.address),
+            "fromToken": _mayan_token_address(token_in.address, token_in.chain_id),
+            "toToken": _mayan_token_address(token_out.address, token_out.chain_id),
             "fromChain": from_chain,
             "toChain": to_chain,
             "slippageBps": "auto",
@@ -278,8 +280,8 @@ class Mayan(BaseBridge):
         # native gas tokens; the EeeE... sentinel is not recognised.
         params: dict[str, Any] = {
             "amountIn64": str(amount_in.amount),
-            "fromToken": _mayan_token_address(token_in.address),
-            "toToken": _mayan_token_address(token_out.address),
+            "fromToken": _mayan_token_address(token_in.address, token_in.chain_id),
+            "toToken": _mayan_token_address(token_out.address, token_out.chain_id),
             "fromChain": from_chain,
             "toChain": to_chain,
             "slippageBps": slippage_bps,
@@ -381,7 +383,7 @@ class Mayan(BaseBridge):
         swap_params = {
             "forwarderAddress": _MAYAN_FORWARDER,
             "slippageBps": slippage_bps,
-            "fromToken": _mayan_token_address(token_in.address),
+            "fromToken": _mayan_token_address(token_in.address, token_in.chain_id),
             "middleToken": swift_input_contract,  # WETH (or other swift input)
             "chainName": from_chain,
             "amountIn64": str(amount_in.amount),

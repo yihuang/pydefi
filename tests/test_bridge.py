@@ -55,13 +55,13 @@ def _make_aiohttp_mock(status: int, response_data) -> MagicMock:
 
 USDC_ETH = Token(
     chain_id=ChainId.ETHEREUM,
-    address="0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+    address=HexBytes("0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
     symbol="USDC",
     decimals=6,
 )
 USDC_ARB = Token(
     chain_id=ChainId.ARBITRUM,
-    address="0xFF970A61A04b1cA14834A43f5dE4533eBDDB5CC8",
+    address=HexBytes("0xFF970A61A04b1cA14834A43f5dE4533eBDDB5CC8"),
     symbol="USDC",
     decimals=6,
 )
@@ -125,7 +125,7 @@ class TestStargate:
         assert sg._pool_id(USDC_ETH) == _POOL_IDS["USDC"]
 
     def test_pool_id_unknown_raises(self):
-        unknown_token = Token(chain_id=1, address="0x" + "AB" * 20, symbol="UNKNOWN")
+        unknown_token = Token(chain_id=1, address=HexBytes("0x" + "AB" * 20), symbol="UNKNOWN")
         sg = Stargate(
             w3=None,
             src_chain_id=1,
@@ -259,13 +259,13 @@ class TestBaseBridge:
 
 ETH_NATIVE = Token(
     chain_id=ChainId.ETHEREUM,
-    address="0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",
+    address=HexBytes("0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"),
     symbol="ETH",
     decimals=18,
 )
 ETH_ARB = Token(
     chain_id=ChainId.ARBITRUM,
-    address="0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",
+    address=HexBytes("0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"),
     symbol="ETH",
     decimals=18,
 )
@@ -639,20 +639,20 @@ OFT_DST_ADDRESS = "0x" + "EE" * 20
 # e.g. USDT0 at 0x1E4a5963aBFD975d8c9021ce480b42188849D41d).
 OFT_TOKEN_ETH = Token(
     chain_id=ChainId.ETHEREUM,
-    address=OFT_ADDRESS,
+    address=HexBytes(OFT_ADDRESS),
     symbol="OFT",
     decimals=18,
 )
 OFT_TOKEN_ARB = Token(
     chain_id=ChainId.ARBITRUM,
-    address=OFT_ADDRESS,
+    address=HexBytes(OFT_ADDRESS),
     symbol="OFT",
     decimals=18,
 )
 # Token for a non-unified OFT (different address on the destination chain).
 OFT_TOKEN_ARB_ALT = Token(
     chain_id=ChainId.ARBITRUM,
-    address=OFT_DST_ADDRESS,
+    address=HexBytes(OFT_DST_ADDRESS),
     symbol="OFT",
     decimals=18,
 )
@@ -765,7 +765,7 @@ class TestLayerZeroOFT:
         )
         wrong_token = Token(
             chain_id=ChainId.ETHEREUM,
-            address="0x" + "FF" * 20,
+            address=HexBytes("0x" + "FF" * 20),
             symbol="WRONG",
             decimals=18,
         )
@@ -784,7 +784,7 @@ class TestLayerZeroOFT:
         )
         wrong_token = Token(
             chain_id=ChainId.ARBITRUM,
-            address="0x" + "FF" * 20,
+            address=HexBytes("0x" + "FF" * 20),
             symbol="WRONG",
             decimals=18,
         )
@@ -824,7 +824,7 @@ class TestLayerZeroOFT:
         mock_contract.fns.quoteSend = mock_quote_send
 
         with patch("pydefi.bridge.layerzero_oft.LAYERZERO_OFT", mock_contract):
-            fee = await oft.quote_send_fee(1_000_000, "0x" + "AA" * 20)
+            fee = await oft.quote_send_fee(1_000_000, HexBytes("0x" + "AA" * 20))
 
         assert fee == 5 * 10**15
         mock_quote_send.assert_called_once()
@@ -857,7 +857,7 @@ class TestLayerZeroOFT:
             oft_address=OFT_ADDRESS,
         )
         amount_in = TokenAmount.from_human(OFT_TOKEN_ETH, "100")
-        recipient = "0x" + "AA" * 20
+        recipient = HexBytes("0x" + "AA" * 20)
         refund = HexBytes("0x" + "BB" * 20)
 
         with patch.object(oft, "quote_send_fee", new=AsyncMock(return_value=10**15)):
@@ -865,7 +865,7 @@ class TestLayerZeroOFT:
 
         assert tx["to"] == OFT_ADDRESS
         # The refund address must be encoded into the calldata
-        assert refund[2:].lower() in tx["data"].lower()
+        assert refund.hex() in tx["data"].lower()
 
     @pytest.mark.asyncio
     async def test_build_bridge_tx_validates_token_in(self):
@@ -878,7 +878,7 @@ class TestLayerZeroOFT:
         )
         wrong_token = Token(
             chain_id=ChainId.ETHEREUM,
-            address="0x" + "FF" * 20,
+            address=HexBytes("0x" + "FF" * 20),
             symbol="WRONG",
             decimals=18,
         )

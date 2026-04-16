@@ -17,13 +17,14 @@ from typing import Any
 
 import aiohttp
 
+from pydefi._utils import decode_address, encode_address
 from pydefi.amm.base import BaseSolanaAMM
 from pydefi.exceptions import InsufficientLiquidityError
-from pydefi.types import SwapRoute, SwapStep, Token, TokenAmount
+from pydefi.types import ChainId, SwapRoute, SwapStep, Token, TokenAmount
 
 _RAYDIUM_API_BASE = "https://transaction-v1.raydium.io"
-# Native SOL mint address (used to detect when wrapping/unwrapping is needed)
-_SOL_MINT = "So11111111111111111111111111111111111111112"
+# Native SOL mint address bytes (used to detect when wrapping/unwrapping is needed)
+_SOL_MINT_BYTES = decode_address("So11111111111111111111111111111111111111112", ChainId.SOLANA)
 
 
 class Raydium(BaseSolanaAMM):
@@ -88,8 +89,8 @@ class Raydium(BaseSolanaAMM):
                 Raydium cannot find a route or returns an error.
         """
         params: dict[str, Any] = {
-            "inputMint": amount_in.token.address,
-            "outputMint": token_out.address,
+            "inputMint": encode_address(amount_in.token.address, amount_in.token.chain_id),
+            "outputMint": encode_address(token_out.address, token_out.chain_id),
             "amount": str(amount_in.amount),
             "slippageBps": slippage_bps,
             "txVersion": kwargs.pop("txVersion", "V0"),
@@ -119,8 +120,8 @@ class Raydium(BaseSolanaAMM):
             :class:`~pydefi.types.SwapStep` describing the Raydium hop.
         """
         params: dict[str, Any] = {
-            "inputMint": amount_in.token.address,
-            "outputMint": token_out.address,
+            "inputMint": encode_address(amount_in.token.address, amount_in.token.chain_id),
+            "outputMint": encode_address(token_out.address, token_out.chain_id),
             "amount": str(amount_in.amount),
             "slippageBps": slippage_bps,
             "txVersion": kwargs.pop("txVersion", "V0"),
@@ -186,8 +187,8 @@ class Raydium(BaseSolanaAMM):
         """
         # Step 1: get compute quote (includes the full route plan Raydium needs)
         compute_params: dict[str, Any] = {
-            "inputMint": amount_in.token.address,
-            "outputMint": token_out.address,
+            "inputMint": encode_address(amount_in.token.address, amount_in.token.chain_id),
+            "outputMint": encode_address(token_out.address, token_out.chain_id),
             "amount": str(amount_in.amount),
             "slippageBps": slippage_bps,
             "txVersion": "V0",
@@ -198,8 +199,8 @@ class Raydium(BaseSolanaAMM):
         url = f"{self.api_url.rstrip('/')}/transaction/swap-base-in"
         # Raydium requires wrapSol/unwrapSol when the native SOL mint is involved
         # so that the API can auto-create/close the wSOL token account.
-        wrap_sol = kwargs.pop("wrapSol", amount_in.token.address == _SOL_MINT)
-        unwrap_sol = kwargs.pop("unwrapSol", token_out.address == _SOL_MINT)
+        wrap_sol = kwargs.pop("wrapSol", bytes(amount_in.token.address) == bytes(_SOL_MINT_BYTES))
+        unwrap_sol = kwargs.pop("unwrapSol", bytes(token_out.address) == bytes(_SOL_MINT_BYTES))
         payload: dict[str, Any] = {
             "swapResponse": compute_response,
             "txVersion": "V0",

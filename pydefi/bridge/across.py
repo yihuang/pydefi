@@ -22,6 +22,7 @@ from typing import Any
 import aiohttp
 from web3 import AsyncWeb3
 
+from pydefi._utils import encode_address
 from pydefi.abi.bridge import ACROSS_SPOKE_POOL
 from pydefi.bridge.base import BaseBridge
 from pydefi.exceptions import BridgeError
@@ -79,8 +80,8 @@ class Across(BaseBridge):
             :class:`~pydefi.exceptions.BridgeError`: On API error.
         """
         params: dict[str, Any] = {
-            # Convert Address to hex string for the API (periphery boundary)
-            "token": ("0x" + token.address.hex()) if isinstance(token.address, bytes) else token.address,
+            # Encode address to string for the API (periphery boundary)
+            "token": encode_address(token.address, token.chain_id),
             "inputChainId": self.src_chain_id,
             "outputChainId": self.dst_chain_id,
             "amount": str(amount),

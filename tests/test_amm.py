@@ -3,6 +3,7 @@
 from decimal import Decimal
 
 import pytest
+from hexbytes import HexBytes
 
 from pydefi.amm.uniswap_v2 import UniswapV2
 from pydefi.amm.uniswap_v3 import UniswapV3
@@ -28,19 +29,19 @@ from pydefi.types import ChainId, SwapTransaction, Token, TokenAmount
 
 WETH = Token(
     chain_id=ChainId.ETHEREUM,
-    address="0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+    address=HexBytes("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
     symbol="WETH",
     decimals=18,
 )
 USDC = Token(
     chain_id=ChainId.ETHEREUM,
-    address="0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+    address=HexBytes("0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
     symbol="USDC",
     decimals=6,
 )
 DAI = Token(
     chain_id=ChainId.ETHEREUM,
-    address="0x6B175474E89094C44Da98b954EedeAC495271d0F",
+    address=HexBytes("0x6B175474E89094C44Da98b954EedeAC495271d0F"),
     symbol="DAI",
     decimals=18,
 )
@@ -172,8 +173,8 @@ class TestUniswapV3Math:
 
     def test_encode_path_contains_token_addresses(self):
         path = UniswapV3._encode_path([WETH, USDC], [3000])
-        weth_bytes = bytes.fromhex(WETH.address[2:].lower())
-        usdc_bytes = bytes.fromhex(USDC.address[2:].lower())
+        weth_bytes = bytes(WETH.address)
+        usdc_bytes = bytes(USDC.address)
         assert weth_bytes in path
         assert usdc_bytes in path
 

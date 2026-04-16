@@ -26,6 +26,7 @@ from typing import Any
 
 import aiohttp
 
+from pydefi._utils import encode_address
 from pydefi.aggregator.base import AggregatorQuote, BaseAggregator
 from pydefi.exceptions import AggregatorError
 from pydefi.types import ChainId, SwapRoute, SwapStep, Token, TokenAmount
@@ -104,8 +105,8 @@ class Jupiter(BaseAggregator):
             :class:`~pydefi.exceptions.AggregatorError`: On API errors.
         """
         params: dict[str, Any] = {
-            "inputMint": amount_in.token.address,
-            "outputMint": token_out.address,
+            "inputMint": encode_address(amount_in.token.address, amount_in.token.chain_id),
+            "outputMint": encode_address(token_out.address, token_out.chain_id),
             "amount": str(amount_in.amount),
             "slippageBps": slippage_bps,
             **kwargs,
@@ -161,8 +162,8 @@ class Jupiter(BaseAggregator):
         """
         # Fetch the raw quote response – Jupiter /swap requires the full quote object
         quote_params: dict[str, Any] = {
-            "inputMint": amount_in.token.address,
-            "outputMint": token_out.address,
+            "inputMint": encode_address(amount_in.token.address, amount_in.token.chain_id),
+            "outputMint": encode_address(token_out.address, token_out.chain_id),
             "amount": str(amount_in.amount),
             "slippageBps": slippage_bps,
         }
@@ -387,8 +388,8 @@ class JupiterSwapV2(BaseAggregator):
             :class:`~pydefi.exceptions.AggregatorError`: On API errors.
         """
         params: dict[str, Any] = {
-            "inputMint": amount_in.token.address,
-            "outputMint": token_out.address,
+            "inputMint": encode_address(amount_in.token.address, amount_in.token.chain_id),
+            "outputMint": encode_address(token_out.address, token_out.chain_id),
             "amount": str(amount_in.amount),
             **kwargs,
         }
@@ -461,8 +462,8 @@ class JupiterSwapV2(BaseAggregator):
             :class:`~pydefi.exceptions.AggregatorError`: On API errors.
         """
         params: dict[str, Any] = {
-            "inputMint": amount_in.token.address,
-            "outputMint": token_out.address,
+            "inputMint": encode_address(amount_in.token.address, amount_in.token.chain_id),
+            "outputMint": encode_address(token_out.address, token_out.chain_id),
             "amount": str(amount_in.amount),
             "taker": taker,
             **kwargs,

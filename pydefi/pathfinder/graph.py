@@ -339,9 +339,9 @@ class PoolGraph:
     """
 
     def __init__(self) -> None:
-        # adjacency list: token_in_address -> list[PoolEdge]
-        self._adj: defaultdict[str, list[PoolEdge]] = defaultdict(list)
-        self._tokens: dict[str, Token] = {}
+        # adjacency list: token_in_address (bytes) -> list[PoolEdge]
+        self._adj: defaultdict[bytes, list[PoolEdge]] = defaultdict(list)
+        self._tokens: dict[bytes, Token] = {}
 
     def find_best_route_gas_aware(
         self,
@@ -361,24 +361,24 @@ class PoolGraph:
         if amount_in <= 0:
             return []
 
-        src_addr = start.address.lower()
-        dst_addr = end.address.lower()
+        src_addr = bytes(start.address)
+        dst_addr = bytes(end.address)
         if src_addr == dst_addr:
             raise ValueError("token_in and token_out must be different")
 
         # state -> (cumulative_weight, current_amount, path)
-        best: dict[tuple[str, int], tuple[float, int, list[PoolEdge]]] = {(src_addr, 0): (0.0, amount_in, [])}
+        best: dict[tuple[bytes, int], tuple[float, int, list[PoolEdge]]] = {(src_addr, 0): (0.0, amount_in, [])}
 
         for hop in range(max_hops):
             current_states = [(k, v) for k, v in best.items() if k[1] == hop]
             for (token_addr, _), (cur_weight, cur_amount, path) in current_states:
-                visited_tokens: set[str] = {e.token_in.address.lower() for e in path}
+                visited_tokens: set[bytes] = {bytes(e.token_in.address) for e in path}
                 visited_tokens.add(token_addr)
 
                 token: Token = path[-1].token_out if path else start
 
                 for edge in self.edges_from(token):
-                    next_addr = edge.token_out.address.lower()
+                    next_addr = bytes(edge.token_out.address)
                     if next_addr in visited_tokens:
                         continue
 
@@ -417,10 +417,10 @@ class PoolGraph:
         Args:
             edge: The :class:`PoolEdge` to add.
         """
-        key = edge.token_in.address.lower()
+        key = bytes(edge.token_in.address)
         self._adj[key].append(edge)
-        self._tokens[edge.token_in.address.lower()] = edge.token_in
-        self._tokens[edge.token_out.address.lower()] = edge.token_out
+        self._tokens[bytes(edge.token_in.address)] = edge.token_in
+        self._tokens[bytes(edge.token_out.address)] = edge.token_out
 
     def add_bidirectional_pool(
         self,
@@ -479,7 +479,7 @@ class PoolGraph:
         Returns:
             List of :class:`PoolEdge` objects.
         """
-        return list(self._adj[token.address.lower()])
+        return list(self._adj[bytes(token.address)])
 
     def edges_to(self, token: Token) -> list[PoolEdge]:
         """Return all edges that arrive at *token*.
@@ -493,7 +493,7 @@ class PoolGraph:
         result: list[PoolEdge] = []
         for edges in self._adj.values():
             for e in edges:
-                if e.token_out.address.lower() == token.address.lower():
+                if bytes(e.token_out.address) == bytes(token.address):
                     result.append(e)
         return result
 

@@ -47,6 +47,7 @@ Solana quick-start::
     )
 """
 
+from pydefi._utils import decode_address, encode_address
 from pydefi.exceptions import (
     AggregatorError,
     BridgeError,
@@ -83,6 +84,9 @@ __all__ = [
     "SwapRoute",
     "SwapTransaction",
     "BridgeQuote",
+    # Address utilities
+    "encode_address",
+    "decode_address",
     # Pool data
     "PoolData",
     "BasePoolDataProvider",

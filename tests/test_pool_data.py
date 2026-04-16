@@ -3,6 +3,7 @@
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from hexbytes import HexBytes
 
 from pydefi.exceptions import PoolDataError
 from pydefi.pathfinder.graph import PoolEdge, V3PoolEdge
@@ -17,14 +18,14 @@ from pydefi.types import ChainId, Token
 
 WETH = Token(
     chain_id=ChainId.ETHEREUM,
-    address="0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+    address=HexBytes("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
     symbol="WETH",
     decimals=18,
     name="Wrapped Ether",
 )
 USDC = Token(
     chain_id=ChainId.ETHEREUM,
-    address="0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+    address=HexBytes("0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
     symbol="USDC",
     decimals=6,
     name="USD Coin",
@@ -185,7 +186,7 @@ class TestBuildGraph:
         POOL_ADDR2 = "0x" + "cd" * 20
         DAI = Token(
             chain_id=ChainId.ETHEREUM,
-            address="0x6B175474E89094C44Da98b954EedeAC495271d0F",
+            address=HexBytes("0x6B175474E89094C44Da98b954EedeAC495271d0F"),
             symbol="DAI",
             decimals=18,
         )
@@ -381,8 +382,8 @@ class TestGeckoTerminal:
 
         # The endpoint path should contain both addresses comma-separated
         call_path = mock_get.call_args[0][0]
-        assert WETH.address.lower() in call_path
-        assert USDC.address.lower() in call_path
+        assert ("0x" + WETH.address.hex()) in call_path
+        assert ("0x" + USDC.address.hex()) in call_path
         assert "multi" in call_path
 
     @pytest.mark.asyncio
@@ -421,13 +422,13 @@ class TestGeckoTerminal:
         mock_get = AsyncMock(return_value=_MOCK_LIST_RESPONSE)
         with patch.object(client, "_get", new=mock_get):
             # Pass the same address twice (mixed case)
-            await client.get_pools_for_tokens([WETH.address, WETH.address.lower()], limit=5)
+            await client.get_pools_for_tokens([WETH.address, WETH.address], limit=5)
 
         # Only one unique address → one chunk → only one _get call per page
         assert mock_get.call_count == 1
         call_path = mock_get.call_args[0][0]
         # The comma-separated list should contain the address only once
-        assert call_path.count(WETH.address.lower()) == 1
+        assert call_path.count("0x" + WETH.address.hex()) == 1
 
     def test_parse_pool_missing_token_raises_pool_data_error(self):
         """_parse_pool should raise PoolDataError when token is missing from included."""

@@ -4,6 +4,7 @@ import math
 from decimal import Decimal
 
 import pytest
+from hexbytes import HexBytes
 
 from pydefi.exceptions import NoRouteFoundError
 from pydefi.pathfinder.graph import PoolEdge, PoolGraph, V3PoolEdge
@@ -16,25 +17,25 @@ from pydefi.types import ChainId, Token, TokenAmount
 
 WETH = Token(
     chain_id=ChainId.ETHEREUM,
-    address="0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+    address=HexBytes("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
     symbol="WETH",
     decimals=18,
 )
 USDC = Token(
     chain_id=ChainId.ETHEREUM,
-    address="0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+    address=HexBytes("0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
     symbol="USDC",
     decimals=6,
 )
 DAI = Token(
     chain_id=ChainId.ETHEREUM,
-    address="0x6B175474E89094C44Da98b954EedeAC495271d0F",
+    address=HexBytes("0x6B175474E89094C44Da98b954EedeAC495271d0F"),
     symbol="DAI",
     decimals=18,
 )
 WBTC = Token(
     chain_id=ChainId.ETHEREUM,
-    address="0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599",
+    address=HexBytes("0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599"),
     symbol="WBTC",
     decimals=8,
 )

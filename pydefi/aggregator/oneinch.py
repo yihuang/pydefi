@@ -11,6 +11,7 @@ from typing import Any
 
 import aiohttp
 
+from pydefi._utils import encode_address
 from pydefi.aggregator.base import AggregatorQuote, BaseAggregator
 from pydefi.exceptions import AggregatorError
 from pydefi.types import SwapRoute, SwapStep, Token, TokenAmount
@@ -84,10 +85,8 @@ class OneInch(BaseAggregator):
             An :class:`~pydefi.aggregator.base.AggregatorQuote`.
         """
         params: dict[str, Any] = {
-            "src": ("0x" + amount_in.token.address.hex())
-            if isinstance(amount_in.token.address, bytes)
-            else amount_in.token.address,
-            "dst": ("0x" + token_out.address.hex()) if isinstance(token_out.address, bytes) else token_out.address,
+            "src": encode_address(amount_in.token.address, amount_in.token.chain_id),
+            "dst": encode_address(token_out.address, token_out.chain_id),
             "amount": str(amount_in.amount),
             **kwargs,
         }
@@ -131,10 +130,8 @@ class OneInch(BaseAggregator):
             ``tx_data`` populated.
         """
         params: dict[str, Any] = {
-            "src": ("0x" + amount_in.token.address.hex())
-            if isinstance(amount_in.token.address, bytes)
-            else amount_in.token.address,
-            "dst": ("0x" + token_out.address.hex()) if isinstance(token_out.address, bytes) else token_out.address,
+            "src": encode_address(amount_in.token.address, amount_in.token.chain_id),
+            "dst": encode_address(token_out.address, token_out.chain_id),
             "amount": str(amount_in.amount),
             "from": from_address,
             "slippage": self._slippage_to_percent(slippage_bps),
