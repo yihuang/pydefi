@@ -39,6 +39,7 @@ from pydefi.vm.swap import (
 )
 
 _BPS_DENOMINATOR = 10_000
+# Guard for `total_in * fraction_bps` before dividing by 10_000 in multi-leg splits.
 _MAX_TOTAL_IN_FOR_SPLIT = ((1 << 256) - 1) // _BPS_DENOMINATOR
 
 
