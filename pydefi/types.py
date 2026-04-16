@@ -180,7 +180,7 @@ class RouteSplit:
     token_out: Token
 
 
-RouteAction: TypeAlias = "RouteSwap | RouteSplit"
+RouteAction: TypeAlias = RouteSwap | RouteSplit
 
 
 @dataclass
