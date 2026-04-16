@@ -1734,6 +1734,19 @@ class TestBuildProgramForDAG:
         assert isinstance(bc, bytes)
         assert len(bc) > 0
 
+    def test_build_quote_program_for_single_leg_split_dag(self):
+        dag = (
+            RouteDAG()
+            .from_token(self.TOKEN_A)
+            .split()
+            .leg(10000)
+            .swap(self.TOKEN_C, self._v3_edge(self.POOL1, self.TOKEN_A, self.TOKEN_C))
+            .merge()
+        )
+        bc = build_quote_program_for_dag(dag, amount_in=10**18, vm_address=self.VM).build()
+        assert isinstance(bc, bytes)
+        assert len(bc) > 0
+
 
 # ---------------------------------------------------------------------------
 # In-VM ABI encoding — pydefi.vm.abi (EVM bytecode generators)

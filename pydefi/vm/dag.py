@@ -183,6 +183,19 @@ def _build_route_split_segment(
     accum_reg: int,
     total_in_reg: int,
 ) -> list[Program]:
+    if len(split.legs) == 1 and split.legs[0].fraction_bps == 10_000:
+        # Fast path: full-allocation single leg does not need split accounting
+        # registers; emit the leg actions directly.
+        return _build_dag_actions(
+            split.legs[0].actions,
+            vm_address=vm_address,
+            terminal_recipient=terminal_recipient,
+            amount_reg=amount_reg,
+            amount_out_reg=amount_out_reg,
+            accum_reg=accum_reg,
+            total_in_reg=total_in_reg,
+        )
+
     segments: list[Program] = []
     segments.append(
         Program()._emit(load_reg(amount_reg))._emit(store_reg(total_in_reg))._emit(push_u256(0))._emit(store_reg(accum_reg))
