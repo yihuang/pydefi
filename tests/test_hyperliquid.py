@@ -13,7 +13,7 @@ from pydefi.hyperliquid.signing import (
     sign_send_to_evm_with_data_action,
     sign_usd_transfer_action,
 )
-from tests.well_known import mainnet
+from tests.well_known import ZERO_ADDR, mainnet
 
 # ---------------------------------------------------------------------------
 # Test fixtures — deterministic private key, no real funds
@@ -39,7 +39,7 @@ class TestSignInner:
                 "name": "HyperliquidSignTransaction",
                 "version": "1",
                 "chainId": chain_id,
-                "verifyingContract": mainnet.ZERO_ADDR,
+                "verifyingContract": ZERO_ADDR,
             },
             "types": {
                 "HyperliquidTransaction:UsdSend": USD_SEND_SIGN_TYPES,

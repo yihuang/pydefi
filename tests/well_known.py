@@ -21,6 +21,9 @@ from __future__ import annotations
 
 from pydefi.types import ChainId, Token
 
+#: The zero address — chain-agnostic EVM sentinel value.
+ZERO_ADDR = "0x0000000000000000000000000000000000000000"
+
 # ---------------------------------------------------------------------------
 # Ethereum mainnet (chain_id = 1)
 # ---------------------------------------------------------------------------
@@ -57,7 +60,6 @@ class mainnet:
     # ── Utility ───────────────────────────────────────────────────────────
     #: vitalik.eth — well-funded address used for impersonation in fork tests.
     ETH_WHALE = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"
-    ZERO_ADDR = "0x0000000000000000000000000000000000000000"
     #: Analog-Labs EVM interpreter — pre-deployed via CREATE2 on mainnet.
     INTERPRETER_ADDR = "0x0000000000001e3F4F615cd5e20c681Cf7d85e8D"
 
@@ -87,26 +89,3 @@ class sepolia:
     V3_ROUTER = "0x3bFA4769FB09eefC5a80d6E87c3B9C650f7Ae48E"  # SwapRouter02
     V3_QUOTER = "0xEd1f6473345F45b75F8179591dd5bA1888cf2FB3"  # QuoterV2
     V3_FACTORY = "0x0227628f3F023bb0B980b67D528571c95c6DaC1c"
-
-    # ── CCTP (Circle Cross-Chain Transfer Protocol) ───────────────────────
-    CCTP_TOKEN_MESSENGER = "0x8fe6b999dc680ccfdd5bf7eb0974218be2542daa"
-    CCTP_MESSAGE_TRANSMITTER_V2 = "0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275"
-    CCTP_DOMAIN = 0
-
-    # ── Cross-chain ───────────────────────────────────────────────────────
-    ZERO_ADDR = "0x0000000000000000000000000000000000000000"
-
-
-# ---------------------------------------------------------------------------
-# Arbitrum Sepolia testnet (chain_id = 421614)
-# ---------------------------------------------------------------------------
-
-
-class arbitrum_sepolia:
-    """Well-known Arbitrum Sepolia addresses."""
-
-    USDC = "0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d"
-
-    # ── CCTP ──────────────────────────────────────────────────────────────
-    CCTP_MESSAGE_TRANSMITTER_V2 = "0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275"
-    CCTP_DOMAIN = 3

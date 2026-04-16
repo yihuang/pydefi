@@ -86,7 +86,6 @@ PAIR_USDC_USDT = mainnet.PAIR_USDC_USDT
 
 # Utility
 ETH_WHALE = mainnet.ETH_WHALE
-ZERO_ADDR = mainnet.ZERO_ADDR
 
 # ---------------------------------------------------------------------------
 # Analog-Labs EVM interpreter (shared by all DeFiVM fork tests)
