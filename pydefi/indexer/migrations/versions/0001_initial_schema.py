@@ -56,6 +56,7 @@ def upgrade() -> None:
     )
     op.create_index(op.f("ix_v2syncevent_block_number"), "v2syncevent", ["block_number"], unique=False)
     op.create_index(op.f("ix_v2syncevent_pool_address"), "v2syncevent", ["pool_address"], unique=False)
+    op.create_index("uq_v2syncevent_tx_log", "v2syncevent", ["tx_hash", "log_index"], unique=True)
     op.create_table(
         "v3swapevent",
         sa.Column("id", sa.Integer(), nullable=False),
@@ -74,6 +75,7 @@ def upgrade() -> None:
     )
     op.create_index(op.f("ix_v3swapevent_block_number"), "v3swapevent", ["block_number"], unique=False)
     op.create_index(op.f("ix_v3swapevent_pool_address"), "v3swapevent", ["pool_address"], unique=False)
+    op.create_index("uq_v3swapevent_tx_log", "v3swapevent", ["tx_hash", "log_index"], unique=True)
     op.create_table(
         "indexerstate",
         sa.Column("address", sa.String(), nullable=False),
@@ -84,9 +86,11 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_table("indexerstate")
+    op.drop_index("uq_v3swapevent_tx_log", table_name="v3swapevent")
     op.drop_index(op.f("ix_v3swapevent_pool_address"), table_name="v3swapevent")
     op.drop_index(op.f("ix_v3swapevent_block_number"), table_name="v3swapevent")
     op.drop_table("v3swapevent")
+    op.drop_index("uq_v2syncevent_tx_log", table_name="v2syncevent")
     op.drop_index(op.f("ix_v2syncevent_pool_address"), table_name="v2syncevent")
     op.drop_index(op.f("ix_v2syncevent_block_number"), table_name="v2syncevent")
     op.drop_table("v2syncevent")
