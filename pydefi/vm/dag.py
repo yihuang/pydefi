@@ -19,7 +19,7 @@ another:
    - ``DUP2`` total_in
    - compute ``leg_amount = total_in * bps / 10_000``
    - execute leg actions recursively (returns ``leg_out`` at TOS)
-   - accumulate via ``SWAP1`` + ``ADD`` (``accum += leg_out``)
+   - accumulate via ``ADD`` (``accum += leg_out``)
 4. exit with ``SWAP1`` + ``POP`` to drop ``total_in`` and keep merged output
 
 Pool swap builders in :mod:`pydefi.vm.swap` are register-oriented; this module
