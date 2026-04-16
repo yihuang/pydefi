@@ -2,7 +2,7 @@
 Internal conversion utilities for pydefi.
 
 Common helpers for converting between hex strings, bytes, and canonical
-``HexBytes`` representations for EVM addresses and hashes/topics.
+representations for EVM addresses and hashes/topics.
 
 Chain-aware encoding
 --------------------
@@ -21,17 +21,9 @@ are handled correctly.
 from __future__ import annotations
 
 import base58
+from hexbytes import HexBytes
 
-from pydefi.types import Address, ChainId, Hash
-
-# Bytes representation of the two common native-token sentinel addresses:
-#   zero address (0x000…000) and the "EeeE…" burn address.
-_NATIVE_ADDRESS_SENTINELS: frozenset[bytes] = frozenset(
-    {
-        b"\x00" * 20,
-        b"\xee" * 20,
-    }
-)
+from pydefi.types import NATIVE_ADDRESSES, ZERO_HASH, Address, ChainId, Hash
 
 
 def address_to_bytes32(address: Address) -> Hash:
@@ -40,12 +32,12 @@ def address_to_bytes32(address: Address) -> Hash:
     The 20-byte address is placed in the rightmost 20 bytes.
 
     Args:
-        address: An EVM address as :class:`~hexbytes.HexBytes` (``Address``).
+        address: canonical ``Address``.
 
     Returns:
         32 bytes with the address right-aligned (left zero-padded).
     """
-    return Hash(b"\x00" * (32 - len(address)) + bytes(address))
+    return address.rjust(32, b"\x00")
 
 
 def token_to_bytes32(address: Address) -> Hash:
@@ -57,14 +49,13 @@ def token_to_bytes32(address: Address) -> Hash:
     :func:`address_to_bytes32`).
 
     Args:
-        address: A 20-byte token address as :class:`~hexbytes.HexBytes`
-            (``Address``).
+        address: canonical ``Address``.
 
     Returns:
         A 32-byte :class:`~hexbytes.HexBytes` (``Hash``) value.
     """
-    if bytes(address) in _NATIVE_ADDRESS_SENTINELS:
-        return Hash(b"\x00" * 32)
+    if address in NATIVE_ADDRESSES:
+        return ZERO_HASH
     return address_to_bytes32(address)
 
 
@@ -109,5 +100,11 @@ def decode_address(addr_str: str, chain_id: int) -> Address:
         Raw address as :class:`~hexbytes.HexBytes` (``Address``).
     """
     if chain_id == ChainId.SOLANA:
-        return Address(base58.b58decode(addr_str))
-    return Address(bytes.fromhex(addr_str.removeprefix("0x")))
+        bz = base58.b58decode(addr_str)
+        if len(bz) != 32:
+            raise ValueError(f"Invalid Solana address: {addr_str!r}")
+    else:
+        bz = HexBytes(addr_str)
+        if len(bz) != 20:
+            raise ValueError(f"Invalid EVM address: {addr_str!r}")
+    return Address(bz)

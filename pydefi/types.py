@@ -7,9 +7,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import ROUND_DOWN, Decimal
 from enum import IntEnum
-from typing import ClassVar
 
 from hexbytes import HexBytes
+
+from ._utils import encode_address
 
 # ---------------------------------------------------------------------------
 # Type aliases
@@ -18,10 +19,19 @@ from hexbytes import HexBytes
 #: Address as raw bytes (canonical intermediate representation), 20 bytes for EVM, 32 bytes for Solana.
 #: Use ``decode_address(addr_str, chain_id)`` to convert from a human-readable string at the periphery.
 Address = HexBytes
+ZERO_ADDRESS = Address(b"\x00" * 20)
+NATIVE_SENTINEL = Address(b"\xee" * 20)  # "0xEeee…", used by some protocols to represent native token
 
+NATIVE_ADDRESSES: frozenset[Address] = frozenset(
+    {
+        ZERO_ADDRESS,
+        NATIVE_SENTINEL,
+    }
+)
 #: 32-byte hash or log topic as raw bytes (canonical intermediate representation).
 #: Use ``HexBytes(hash_str)`` to convert a 0x-prefixed hex string to Hash.
 Hash = HexBytes
+ZERO_HASH = Hash(b"\x00" * 32)
 
 
 class ChainId(IntEnum):
@@ -72,25 +82,17 @@ class Token:
     decimals: int = 18
     name: str | None = None
 
-    # Sentinel for native currency (class variable, not an instance field)
-    NATIVE_ADDRESS: ClassVar[str] = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"
-
-    def __post_init__(self) -> None:
-        # Ensure address is always raw bytes (Address / HexBytes).
-        # String→Address conversion must happen at peripheries via decode_address().
-        if not isinstance(self.address, bytes):
-            raise TypeError(
-                f"Token.address must be Address (bytes/HexBytes), got {type(self.address).__name__!r}. "
-                "Use decode_address(addr_str, chain_id) to convert from a string at the periphery."
-            )
-
     def is_native(self) -> bool:
         """Return ``True`` if this token represents the native gas currency."""
-        return bytes(self.address) == bytes(HexBytes(self.NATIVE_ADDRESS))
+        return self.address in NATIVE_ADDRESSES
 
     def __str__(self) -> str:
         return f"{self.symbol}({self.chain_id})"
 
+    @property
+    def encoded_address(self) -> str:
+        """Return the chain-specific string representation of the token's address."""
+        return encode_address(self.address, self.chain_id)
 
 @dataclass
 class TokenAmount:
