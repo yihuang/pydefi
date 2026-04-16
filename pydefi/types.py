@@ -66,7 +66,7 @@ class Token:
     """
 
     chain_id: int
-    address: str | Address
+    address: Address
     symbol: str
     decimals: int = 18
     name: str | None = None
