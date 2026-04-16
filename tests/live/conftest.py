@@ -163,7 +163,7 @@ async def fork_w3(request: pytest.FixtureRequest):
 
     1. Finds a free local TCP port.
     2. Launches ``anvil --fork-url <ETH_RPC_URL>`` as a subprocess.
-    3. Polls the JSON-RPC endpoint until the node is ready (up to 60 s).
+    3. Polls the JSON-RPC endpoint until the node is ready (up to 30 s).
     4. Yields an :class:`~web3.AsyncWeb3` instance connected to the fork.
     5. Terminates the Anvil process on fixture teardown.
 
@@ -197,7 +197,7 @@ async def fork_w3(request: pytest.FixtureRequest):
     # exceptions) until the process is fully started, so we intentionally
     # swallow all exceptions here.
     w3 = AsyncWeb3(AsyncWeb3.AsyncHTTPProvider(url))
-    deadline = time.monotonic() + 60
+    deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
         try:
             await w3.eth.chain_id
@@ -214,7 +214,7 @@ async def fork_w3(request: pytest.FixtureRequest):
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 pass
-        pytest.fail("Anvil did not start within 60 seconds")
+        pytest.fail("Anvil did not start within 30 seconds")
 
     yield w3
 
@@ -255,7 +255,7 @@ async def fork_w3_module():
     )
 
     w3 = AsyncWeb3(AsyncWeb3.AsyncHTTPProvider(url))
-    deadline = time.monotonic() + 60
+    deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
         try:
             await w3.eth.chain_id
