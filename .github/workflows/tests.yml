@@ -129,7 +129,7 @@ jobs:
 
       - name: Run live integration tests
         env:
-          ETH_RPC_URL: https://eth.drpc.org
+          ETH_RPC_URL: ${{ secrets.ETH_RPC_URL }}
           JUPITER_API_KEY: ${{ secrets.JUPITER_API_KEY }}
           UNISWAP_API_KEY: ${{ secrets.UNISWAP_API_KEY }}
         run: pytest -m live -v --reruns 3 --reruns-delay 5
@@ -159,6 +159,8 @@ jobs:
 
       - name: Run fork transaction execution tests
         env:
-          ETH_RPC_URL: https://eth.drpc.org
+          ETH_RPC_URL: ${{ secrets.ETH_RPC_URL }}
+          JUPITER_API_KEY: ${{ secrets.JUPITER_API_KEY }}
+          UNISWAP_API_KEY: ${{ secrets.UNISWAP_API_KEY }}
         run: pytest -m fork -v --reruns 2 --reruns-delay 5
 
