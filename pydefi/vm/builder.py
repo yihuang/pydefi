@@ -914,7 +914,7 @@ class Program:
         This is a variant of :meth:`call_with_patches` designed for the case
         where patch values were already pushed onto the stack before the call.
         Instead of supplying opcode bytes for each patch, the caller pushes
-        values onto the stack in order (first-patch value deepest, last-patch
+        values onto the stack in order (last-patch value deepest, first-patch
         value at TOS), then calls this method with ``(offset, size)`` pairs.
 
         The *patches* list is consumed in order: the first entry consumes the
