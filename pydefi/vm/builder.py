@@ -795,8 +795,8 @@ class Program:
             # Patch uint256 amountIn from register 1 and uint256 minOut from register 2
             bytecode = (
                 Program()
-                .load_reg(1)
                 .load_reg(2)
+                .load_reg(1)
                 .call_contract_abi(
                     ROUTER,
                     "function swap(uint256 amountIn, uint256 minOut)",

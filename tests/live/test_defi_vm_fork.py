@@ -783,12 +783,11 @@ class TestDeFiVMFork:
 
         program = (
             push_u256(7)
-            + store_reg(0)
             + Program()
             .call_contract_abi(
                 adapter,
                 "function double(uint256 x) external pure returns (uint256)",
-                Patch(load_reg(0)),
+                Patch(),
             )
             .pop()
             .build()
@@ -817,15 +816,13 @@ class TestDeFiVMFork:
 
         program = (
             push_u256(11)
-            + store_reg(0)
             + push_u256(6)
-            + store_reg(1)
             + Program()
             .call_contract_abi(
                 adapter,
                 "function addInputs(uint256 a, uint256 b) external pure returns (uint256)",
-                Patch(load_reg(0)),
-                Patch(load_reg(1)),
+                Patch(),
+                Patch(),
             )
             .pop()
             .build()
@@ -844,7 +841,7 @@ class TestDeFiVMFork:
         """Chain two calls: first via static call_contract_abi, second with a Patch.
 
         double(5) → 10 stored in register 0, then double(10) via call_contract_abi
-        with Patch(load_reg(0)).  Verifies the final result equals 20.
+        with Patch().  Verifies the final result equals 20.
         """
         w3 = ctx["w3"]
         vm = ctx["vm"]
@@ -858,9 +855,8 @@ class TestDeFiVMFork:
             Program().call_contract_abi(adapter, double_sig, 5).pop().build()
             # Store result from retdata into register 0
             + ret_u256(0)
-            + store_reg(0)
             # Call 2: double(reg0) using Patch
-            + Program().call_contract_abi(adapter, double_sig, Patch(load_reg(0))).pop().build()
+            + Program().call_contract_abi(adapter, double_sig, Patch()).pop().build()
             # Verify result == 20
             + push_u256(20)
             + ret_u256(0)
