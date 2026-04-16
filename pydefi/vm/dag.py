@@ -3,27 +3,31 @@
 This module compiles :class:`pydefi.types.RouteDAG` action trees into DeFiVM
 program fragments for execution and quote simulation.
 
-Stack/register conventions
---------------------------
-The DAG compiler reuses the existing swap segment builders from
-``pydefi.vm.swap`` (V2/V3 direct pool calls). Those segment builders use a
-register-based amount convention, so DAG compilation follows the same ABI:
+Stack conventions
+-----------------
+All DAG actions communicate amounts through the EVM stack:
 
-* ``amount_reg``: current amount entering/leaving each action.
-* ``amount_out_reg``: scratch register for V2 output patching.
-* ``total_in_reg``: split-local immutable total used for per-leg pro-rata math.
-* ``accum_reg``: split-local accumulator for merged leg outputs.
+* action input: ``amount_in`` is at TOS before the action
+* action output: ``amount_out`` is at TOS after the action
 
-Nested splits are handled recursively with the same register contract:
+Split handling uses stack frames, so nested multi-way splits do not clobber one
+another:
 
-1. parent action leaves the active amount in ``amount_reg``
-2. split snapshots this value into ``total_in_reg`` and zeroes ``accum_reg``
-3. each leg computes ``leg_amount = total_in * fraction_bps / 10000`` into
-   ``amount_reg``, executes leg actions recursively, and adds the leg output
-   into ``accum_reg``
-4. merged amount is moved back to ``amount_reg`` for downstream actions
+1. enter split with ``[... parent, total_in]``
+2. initialise frame as ``[... parent, total_in, accum=0]``
+3. each leg:
+   - ``DUP2`` total_in
+   - compute ``leg_amount = total_in * bps / 10_000``
+   - execute leg actions recursively (returns ``leg_out`` at TOS)
+   - accumulate via ``SWAP1`` + ``ADD`` (``accum += leg_out``)
+4. exit with ``SWAP1`` + ``POP`` to drop ``total_in`` and keep merged output
 
-This keeps split semantics deterministic for arbitrary multi-way nested DAGs.
+Pool swap builders in :mod:`pydefi.vm.swap` are register-oriented; this module
+bridges them with a small stack adapter:
+
+* pre-swap: ``STORE_REG(amount_reg)`` (consume stack input)
+* execute V2/V3 segment
+* post-swap: ``LOAD_REG(amount_reg)`` (restore stack output)
 """
 
 from __future__ import annotations
@@ -31,7 +35,7 @@ from __future__ import annotations
 from pydefi.pathfinder.graph import V3PoolEdge
 from pydefi.types import RouteAction, RouteDAG, RouteSplit, RouteSwap
 from pydefi.vm.builder import Program
-from pydefi.vm.program import add, assert_ge, div, load_reg, mul, push_u256, store_reg, swap
+from pydefi.vm.program import add, assert_ge, div, dup, load_reg, mul, pop, push_u256, store_reg, swap
 from pydefi.vm.swap import (
     _ACCUM_REG,
     _AMOUNT_OUT_REG,
@@ -44,6 +48,7 @@ from pydefi.vm.swap import (
 )
 
 _BPS_DENOMINATOR = 10_000
+_DUP2 = bytes([0x81])
 
 
 def build_execution_program_for_dag(
@@ -109,12 +114,18 @@ def _build_program_for_dag(
     accum_reg: int,
     total_in_reg: int,
 ) -> Program:
+    if amount_reg == amount_out_reg:
+        raise ValueError(
+            f"build_program_for_dag: amount_reg ({amount_reg}) and amount_out_reg ({amount_out_reg}) "
+            "must be different registers"
+        )
+
     payload = dag.to_dict()
     actions = payload["actions"]
     if not actions:
         raise ValueError("build_program_for_dag: route DAG must contain at least one action")
 
-    segments: list[Program] = [Program()._emit(push_u256(amount_in))._emit(store_reg(amount_reg))]
+    segments: list[Program] = [Program()._emit(push_u256(amount_in))]
     segments.extend(
         _build_dag_actions(
             actions,
@@ -130,8 +141,9 @@ def _build_program_for_dag(
     if min_final_out > 0:
         segments.append(
             Program()
+            ._emit(dup())
             ._emit(push_u256(min_final_out))
-            ._emit(load_reg(amount_reg))
+            ._emit(swap())
             ._emit(assert_ge("slippage: out too low"))
         )
 
@@ -152,13 +164,14 @@ def _build_dag_actions(
     for i, action in enumerate(actions):
         action_recipient = terminal_recipient if i == len(actions) - 1 else vm_address
         if isinstance(action, RouteSwap):
-            hop = _swap_hop_from_route_swap(action, recipient=action_recipient)
-            if hop.protocol == SwapProtocol.UNISWAP_V3:
-                segments.append(_build_v3_pool_swap_segment(hop, amount_reg=amount_reg))
-            else:
-                segments.append(
-                    _build_v2_direct_swap_segment(hop, amount_reg=amount_reg, amount_out_reg=amount_out_reg)
+            segments.append(
+                _build_route_swap_segment_on_stack(
+                    action,
+                    recipient=action_recipient,
+                    amount_reg=amount_reg,
+                    amount_out_reg=amount_out_reg,
                 )
+            )
             continue
 
         if isinstance(action, RouteSplit):
@@ -191,8 +204,6 @@ def _build_route_split_segment(
     total_in_reg: int,
 ) -> list[Program]:
     if len(split.legs) == 1 and split.legs[0].fraction_bps == _BPS_DENOMINATOR:
-        # Fast path: full-allocation single leg does not need split accounting
-        # registers; emit the leg actions directly.
         return _build_dag_actions(
             split.legs[0].actions,
             vm_address=vm_address,
@@ -203,25 +214,16 @@ def _build_route_split_segment(
             total_in_reg=total_in_reg,
         )
 
-    segments: list[Program] = []
-    segments.append(
-        Program()
-        ._emit(load_reg(amount_reg))
-        ._emit(store_reg(total_in_reg))
-        ._emit(push_u256(0))
-        ._emit(store_reg(accum_reg))
-    )
-
+    segments: list[Program] = [Program()._emit(push_u256(0))]
     for leg in split.legs:
         segments.append(
             Program()
-            ._emit(load_reg(total_in_reg))
+            ._emit(_DUP2)
             ._emit(push_u256(leg.fraction_bps))
             ._emit(mul())
             ._emit(push_u256(_BPS_DENOMINATOR))
             ._emit(swap())
             ._emit(div())
-            ._emit(store_reg(amount_reg))
         )
         segments.extend(
             _build_dag_actions(
@@ -234,12 +236,26 @@ def _build_route_split_segment(
                 total_in_reg=total_in_reg,
             )
         )
-        segments.append(
-            Program()._emit(load_reg(amount_reg))._emit(load_reg(accum_reg))._emit(add())._emit(store_reg(accum_reg))
-        )
+        segments.append(Program()._emit(swap())._emit(add()))
 
-    segments.append(Program()._emit(load_reg(accum_reg))._emit(store_reg(amount_reg)))
+    segments.append(Program()._emit(swap())._emit(pop()))
     return segments
+
+
+def _build_route_swap_segment_on_stack(
+    swap_action: RouteSwap,
+    *,
+    recipient: str,
+    amount_reg: int,
+    amount_out_reg: int,
+) -> Program:
+    hop = _swap_hop_from_route_swap(swap_action, recipient=recipient)
+    program = Program()._emit(store_reg(amount_reg))
+    if hop.protocol == SwapProtocol.UNISWAP_V3:
+        program.extend(_build_v3_pool_swap_segment(hop, amount_reg=amount_reg))
+    else:
+        program.extend(_build_v2_direct_swap_segment(hop, amount_reg=amount_reg, amount_out_reg=amount_out_reg))
+    return program._emit(load_reg(amount_reg))
 
 
 def _swap_hop_from_route_swap(swap_action: RouteSwap, *, recipient: str) -> SwapHop:
