@@ -269,8 +269,7 @@ class RouteDAG:
         merged_token = next(iter(end_tokens))
         split_action = RouteSplit(
             legs=tuple(
-                RouteSplitLeg(fraction_bps=leg.fraction_bps, actions=tuple(leg.actions))
-                for leg in split_ctx.legs
+                RouteSplitLeg(fraction_bps=leg.fraction_bps, actions=tuple(leg.actions)) for leg in split_ctx.legs
             ),
             token_out=merged_token,
         )
