@@ -767,7 +767,13 @@ class TestCallWithPatches:
         """require_success=False emits CALL without the success-check block."""
         cd = self._template()
         expected = (
-            push_u256(0) + push_u256(0) + push_bytes(cd) + push_u256(0) + push_addr(HexBytes(ADDR_A)) + gas_opcode() + call(False)
+            push_u256(0)
+            + push_u256(0)
+            + push_bytes(cd)
+            + push_u256(0)
+            + push_addr(HexBytes(ADDR_A))
+            + gas_opcode()
+            + call(False)
         )
         actual = Program().call_with_patches(ADDR_A, cd, [], require_success=False).build()
         assert actual == expected
