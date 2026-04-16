@@ -61,12 +61,13 @@ _MIN_V2_USDC_RESERVE = 1_000 * 10**6  # at least $1 000 USDC
 _MIN_V2_WETH_RESERVE = 1 * 10**16  # at least 0.01 WETH
 
 # For V3 USDC/WETH the sqrtPriceX96 should represent a price between
-# $500 and $10 000 per WETH.
-# price = (sqrtPriceX96 / 2**96)^2 * (10**12)  (adjusts for 6/18 decimals)
-# At $500/ETH  → sqrtPriceX96 ≈ 1.5e18
-# At $10000/ETH → sqrtPriceX96 ≈ 6.7e18
-_MIN_V3_SQRT_PRICE = 10**17
-_MAX_V3_SQRT_PRICE = 10**20
+# $100 and $100 000 per WETH.
+# sqrtPriceX96 = sqrt(raw_WETH / raw_USDC) * 2**96
+# raw_WETH per raw_USDC = (1 / price_usd) * 1e18 / 1e6 = 1e12 / price_usd
+# At $100/ETH   → sqrtPriceX96 ≈ 7.9e33
+# At $100000/ETH → sqrtPriceX96 ≈ 2.5e32
+_MIN_V3_SQRT_PRICE = 10**32
+_MAX_V3_SQRT_PRICE = 10**34
 
 # How many recent blocks to back-fill — large enough that the active
 # USDC/WETH pools almost certainly had transactions, small enough to
