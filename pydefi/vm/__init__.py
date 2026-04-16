@@ -38,7 +38,7 @@ Two complementary interfaces are provided:
 """
 
 from pydefi.vm.abi import emit_abi_encode, emit_abi_encode_packed
-from pydefi.vm.builder import Patch, PatchSource, PatchSpec, Program, StackPatchSpec
+from pydefi.vm.builder import Patch, PatchSpec, Program
 from pydefi.vm.program import (
     OP_ADD,
     OP_AND,
@@ -131,9 +131,7 @@ __all__ = [
     "Program",
     # Patch type aliases and Patch class
     "Patch",
-    "PatchSource",
     "PatchSpec",
-    "StackPatchSpec",
     # Opcode constants
     "OP_PUSH_U256",
     "OP_PUSH_ADDR",
