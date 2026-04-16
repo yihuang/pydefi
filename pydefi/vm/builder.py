@@ -181,6 +181,8 @@ from eth_abi import encode_with_hooks
 if TYPE_CHECKING:
     from eth_abi.hooks import EncodingContext
 
+from eth_contract.contract import ContractFunction
+
 from pydefi.vm.abi import emit_abi_encode, emit_abi_encode_packed
 from pydefi.vm.program import (
     OP_JUMPDEST,
@@ -236,27 +238,17 @@ PatchSpec = tuple[int, int]
 
 
 class Patch:
-    """Marks a runtime-patched argument for :meth:`Program.call_contract_abi`.
+    """Marks a runtime-patched argument for :meth:`Program.call_contract_abi`,
+    the value is fetched from stack, see :meth:`Program.call_with_patches`.
 
-    Wrap opcode bytes (any instruction sequence that pushes exactly one value
-    onto the stack) in a :class:`Patch` to signal that the corresponding
-    positional argument in ``call_contract_abi`` should be filled at runtime
-    rather than baked into the calldata template.
-
-    ``call_contract_abi`` automatically passes each :class:`Patch` object as a
-    callable hook to :func:`eth_abi.encode_with_hooks`.  The encoding library
-    calls the hook with an :class:`~eth_abi.hooks.EncodingContext` that carries
-    the exact byte offset and size of the value in the encoded output; the hook
-    stores those in :attr:`offset` and :attr:`size` and returns ``0`` as a
-    placeholder.  After encoding, ``call_contract_abi`` emits all patch
-    *opcodes* (in reverse patch order, so the first patch value lands at TOS)
-    and then delegates to :meth:`~Program.call_with_patches`.
+    ``call_contract_abi`` glues :func:`eth_abi.encode_with_hooks` and
+    :meth:`~Program.call_with_patches`, see their docs for details.
 
     Args:
-        opcodes: Raw DeFiVM bytecode that, when executed, pushes the runtime
-            value onto the stack.  Any instruction sequence that leaves a
-            single item on the stack is valid — for example
-            ``load_reg(1)``, ``ret_u256(0)``, or ``push_u256(42)``.
+        placeholder: Value to use as a placeholder for ABI encoding, default to 0,
+            which works for numeric types.  For non-numeric types like ``address``
+            or ``bool``, you may need to provide a different placeholder value that
+            successfully encodes.
 
     Example::
 
@@ -266,19 +258,20 @@ class Patch:
         # Patch uint256 amountIn from register 1
         bytecode = (
             Program()
+            .load_reg(1)
+            .load_reg(2)
             .call_contract_abi(
                 ROUTER,
                 "function swap(uint256 amountIn, uint256 minOut)",
-                Patch(load_reg(1)),
-                Patch(load_reg(2)),
+                Patch(),
+                Patch(),
             )
             .pop()
             .build()
         )
     """
 
-    def __init__(self, opcodes: bytes | bytearray, placeholder: object = 0) -> None:
-        self.opcodes: bytes = bytes(opcodes)
+    def __init__(self, placeholder: object = 0) -> None:
         self.placeholder = placeholder
         self.offset: int | None = None  # set by __call__ during encode_with_hooks
         self.size: int | None = None  # set by __call__ during encode_with_hooks
@@ -290,7 +283,7 @@ class Patch:
         the size of the encoded value, then returns the placeholder value for the
         ABI encoder.
         """
-        self.offset = 4 + ctx.offset
+        self.offset = 4 + ctx.offset # add 4 bytes for the function selector prefix
         self.size = ctx.size
         return self.placeholder
 
@@ -758,7 +751,7 @@ class Program:
            hook with an :class:`~eth_abi.hooks.EncodingContext` carrying the
            exact byte offset and size of that value in the encoded output.
         3. Delegates to :meth:`call_with_patches` with the discovered offsets
-           and sizes, using the :attr:`~Patch.opcodes` as the source.
+           and sizes.
 
         :class:`Patch` may appear as a leaf element at any nesting depth —
         directly as a function argument, inside a ``tuple`` (struct) argument, or
@@ -802,17 +795,18 @@ class Program:
             # Patch uint256 amountIn from register 1 and uint256 minOut from register 2
             bytecode = (
                 Program()
+                .load_reg(1)
+                .load_reg(2)
                 .call_contract_abi(
                     ROUTER,
                     "function swap(uint256 amountIn, uint256 minOut)",
-                    Patch(load_reg(1)),
-                    Patch(load_reg(2)),
+                    Patch(),
+                    Patch(),
                 )
                 .pop()
                 .build()
             )
         """
-        from eth_contract.contract import ContractFunction
 
         normalised = abi_sig if abi_sig.lstrip().startswith("function ") else "function " + abi_sig
         fn = ContractFunction.from_abi(normalised)
@@ -842,12 +836,7 @@ class Program:
         patches: list[PatchSpec] = [
             (p.offset, p.size) for p in patch_list if p.offset is not None and p.size is not None
         ]
-        # Push patch values in reverse order so the first patch value lands at TOS
-        # when call_with_patches is invoked (it calls push_bytes first, which puts
-        # argsOffset/argsLen on top, leaving the first patch value just below argsLen).
-        for p in reversed(patch_list):
-            if p.offset is not None and p.size is not None:
-                self._emit(p.opcodes)
+        # caller should have pushed source values on the top of stack.
         return self.call_with_patches(to, calldata, patches, value=value, gas=gas, require_success=require_success)
 
     def call_with_patches(
