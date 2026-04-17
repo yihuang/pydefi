@@ -47,8 +47,6 @@ Solana quick-start::
     )
 """
 
-# activate the monkey-patch
-import pydefi.abi.codec  # noqa: F401
 from pydefi._utils import decode_address, encode_address
 from pydefi.exceptions import (
     AggregatorError,
