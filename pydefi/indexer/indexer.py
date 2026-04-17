@@ -60,6 +60,7 @@ import asyncio
 import logging
 from typing import Any, Optional
 
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlmodel import Session, SQLModel, create_engine, select
 from web3 import AsyncWeb3, Web3
 from web3.types import BlockNumber
@@ -368,8 +369,7 @@ class PoolIndexer:
 
             # Update checkpoints for all pools/factories that had events in this batch.
             seen_addrs: set[str] = {lg["address"].lower() for lg in logs}
-            for addr in seen_addrs:
-                self._set_last_indexed_block(addr, end)
+            self._set_last_indexed_blocks({addr: end for addr in seen_addrs})
             current = end + 1
 
         # Advance checkpoints to *to_block* for all addresses included in this
@@ -377,8 +377,8 @@ class PoolIndexer:
         if target_addr is not None:
             self._set_last_indexed_block(target_addr, to_block)
         else:
-            for addr in set(self._pool_protocol) | set(self._factory_protocol):
-                self._set_last_indexed_block(addr, to_block)
+            final_addrs = set(self._pool_protocol) | set(self._factory_protocol)
+            self._set_last_indexed_blocks({addr: to_block for addr in final_addrs})
 
         return total_stored
 
@@ -814,17 +814,31 @@ class PoolIndexer:
 
     def _get_last_indexed_block(self, address: str) -> Optional[int]:
         """Return the last indexed block for *address* from the DB."""
+        return self._get_last_indexed_blocks([address]).get(address)
+
+    def _get_last_indexed_blocks(self, addresses: list[str]) -> dict[str, int]:
+        """Return last indexed block for each address in a single query."""
+        if not addresses:
+            return {}
         with Session(self._engine) as session:
-            state = session.get(IndexerState, address)
-            return state.last_indexed_block if state else None
+            rows = session.exec(
+                select(IndexerState).where(IndexerState.address.in_(addresses))  # type: ignore[attr-defined]
+            ).all()
+            return {row.address: row.last_indexed_block for row in rows}
 
     def _set_last_indexed_block(self, address: str, block_number: int) -> None:
         """Persist the checkpoint for *address*."""
-        with Session(self._engine) as session:
-            state = session.get(IndexerState, address)
-            if state is None:
-                session.add(IndexerState(address=address, last_indexed_block=block_number))
-            else:
-                state.last_indexed_block = block_number
-                session.add(state)
-            session.commit()
+        self._set_last_indexed_blocks({address: block_number})
+
+    def _set_last_indexed_blocks(self, updates: dict[str, int]) -> None:
+        """Persist checkpoints for multiple addresses in a single transaction."""
+        if not updates:
+            return
+        rows = [{"address": addr, "last_indexed_block": bn} for addr, bn in updates.items()]
+        stmt = sqlite_insert(IndexerState).values(rows)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["address"],
+            set_={"last_indexed_block": stmt.excluded.last_indexed_block},
+        )
+        with self._engine.begin() as conn:
+            conn.execute(stmt)
