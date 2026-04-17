@@ -264,8 +264,6 @@ class Mayan(BaseBridge):
         if not token_in.is_native():
             raise BridgeError("Mayan build_bridge_tx currently only supports native ETH input")
 
-        referrer_addr: Address | None = referrer
-
         from_chain = self._chain_name(self.src_chain_id)
         to_chain = self._chain_name(self.dst_chain_id)
 
@@ -358,7 +356,7 @@ class Mayan(BaseBridge):
         trader_b32 = address_to_bytes32(recipient)
         token_out_b32 = token_to_bytes32(token_out.address)
         dest_addr_b32 = address_to_bytes32(recipient)
-        referrer_b32 = address_to_bytes32(referrer_addr) if referrer_addr else bytes(32)
+        referrer_b32 = address_to_bytes32(referrer) if referrer else bytes(32)
 
         # SWIFT V2 OrderParams (field order differs from V1)
         order_params = MayanSwiftOrderParams(
