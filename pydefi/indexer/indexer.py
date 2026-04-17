@@ -569,12 +569,10 @@ class PoolIndexer:
         if not logs:
             return 0
 
-        # Batch-fetch timestamps for all unique block numbers first.
-        block_numbers: set[int] = {int(log["blockNumber"]) for log in logs}
-        timestamps: dict[int, int] = {}
-        for bn in block_numbers:
-            block = await self.w3.eth.get_block(BlockNumber(bn))
-            timestamps[bn] = int(block["timestamp"])
+        # Fetch timestamps for all unique block numbers in one parallel gather.
+        unique_bns = list({int(log["blockNumber"]) for log in logs})
+        fetched = await asyncio.gather(*[self.w3.eth.get_block(BlockNumber(bn)) for bn in unique_bns])
+        timestamps = {bn: int(b["timestamp"]) for bn, b in zip(unique_bns, fetched)}
 
         stored = 0
         with Session(self._engine) as session:
