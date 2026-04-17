@@ -23,6 +23,7 @@ from pathlib import Path
 import pytest
 import solcx
 from eth_contract.erc20 import ERC20
+from hexbytes import HexBytes
 from web3.exceptions import ContractLogicError, Web3RPCError
 
 from pydefi.types import Address
@@ -513,7 +514,7 @@ class TestDeFiVMFork:
         called_topic = keccak(b"Called(address,uint256,bytes)")
         adapter_log = None
         for log in receipt["logs"]:
-            if log["address"].lower() == adapter.lower() and log["topics"][0] == called_topic:
+            if HexBytes(log["address"]) == adapter and log["topics"][0] == called_topic:
                 adapter_log = log
                 break
         assert adapter_log is not None, "Expected Called event from adapter"
@@ -562,7 +563,7 @@ class TestDeFiVMFork:
         called_topic = keccak(b"Called(address,uint256,bytes)")
         adapter_log = None
         for log in receipt["logs"]:
-            if log["address"].lower() == adapter.lower() and log["topics"][0] == called_topic:
+            if HexBytes(log["address"]) == adapter and log["topics"][0] == called_topic:
                 adapter_log = log
                 break
         assert adapter_log is not None, "Expected Called event from adapter"
@@ -1051,7 +1052,7 @@ class TestApproveProxyFork:
         vm_address = proxy_ctx["vm_address"]
 
         stored_vm = await proxy.functions.vm().call()
-        assert stored_vm.lower() == vm_address.lower()
+        assert HexBytes(stored_vm) == vm_address
 
     async def test_eth_forwarding(self, proxy_ctx):
         """ETH sent to proxy.execute() is forwarded to DeFiVM."""
