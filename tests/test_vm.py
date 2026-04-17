@@ -1033,9 +1033,7 @@ class TestCallContractAbi:
 
     def test_selector_in_bytecode(self):
         """The ERC-20 transfer selector 0xa9059cbb appears inside the built bytecode."""
-        bytecode = (
-            Program().call_contract_abi(ADDR_A, "transfer(address,uint256)", ADDR_B, 1000).pop().build()
-        )
+        bytecode = Program().call_contract_abi(ADDR_A, "transfer(address,uint256)", ADDR_B, 1000).pop().build()
         # The selector bytes should be somewhere inside the push_bytes payload
         assert bytes.fromhex("a9059cbb") in bytecode
 
@@ -1047,9 +1045,7 @@ class TestCallContractAbi:
 
     def test_no_args_function(self):
         """call_contract_abi works for a zero-argument function."""
-        bytecode = (
-            Program().call_contract_abi(ADDR_A, "function totalSupply() view returns (uint256)").pop().build()
-        )
+        bytecode = Program().call_contract_abi(ADDR_A, "function totalSupply() view returns (uint256)").pop().build()
         assert len(bytecode) > 0
 
     def test_value_and_gas_forwarded(self):
@@ -1059,9 +1055,7 @@ class TestCallContractAbi:
 
         via_abi = Program().call_contract_abi(ADDR_A, sig, *args, value=100, gas=50000).build()
         via_manual = (
-            Program()
-            .call_contract(ADDR_A, ContractFunction.from_abi(sig)(*args).data, value=100, gas=50000)
-            .build()
+            Program().call_contract(ADDR_A, ContractFunction.from_abi(sig)(*args).data, value=100, gas=50000).build()
         )
         assert via_abi == via_manual
 
@@ -1072,9 +1066,7 @@ class TestCallContractAbi:
 
         via_abi = Program().call_contract_abi(ADDR_A, sig, *args, require_success=False).build()
         via_manual = (
-            Program()
-            .call_contract(ADDR_A, ContractFunction.from_abi(sig)(*args).data, require_success=False)
-            .build()
+            Program().call_contract(ADDR_A, ContractFunction.from_abi(sig)(*args).data, require_success=False).build()
         )
         assert via_abi == via_manual
 
