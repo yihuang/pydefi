@@ -716,6 +716,11 @@ class PoolIndexer:
         t0_symbol, t0_decimals = await self._fetch_token_meta(token0_addr)
         t1_symbol, t1_decimals = await self._fetch_token_meta(token1_addr)
 
+        # Re-check after async fetch: another handler in the same batch may have
+        # already registered this pool while we were awaiting token metadata.
+        if pair_addr_lower in self._pool_protocol:
+            return
+
         pool = Pool(
             pool_address=pair_addr_lower,
             protocol=protocol,
@@ -770,6 +775,11 @@ class PoolIndexer:
 
         t0_symbol, t0_decimals = await self._fetch_token_meta(token0_addr)
         t1_symbol, t1_decimals = await self._fetch_token_meta(token1_addr)
+
+        # Re-check after async fetch: another handler in the same batch may have
+        # already registered this pool while we were awaiting token metadata.
+        if pool_addr_lower in self._pool_protocol:
+            return
 
         pool = Pool(
             pool_address=pool_addr_lower,
