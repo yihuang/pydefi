@@ -571,7 +571,7 @@ class TestDeFiVMFork:
         calldata_len = int.from_bytes(encoded[96:128], "big")
         received_calldata = encoded[128 : 128 + calldata_len]
         # Expected: selector + 12 zero bytes + 20-byte address (raw byte-for-byte patch)
-        addr_bytes = bytes.fromhex(adapter.removeprefix("0x"))
+        addr_bytes = bytes(adapter)
         expected_calldata = selector + b"\x00" * 12 + addr_bytes
         assert received_calldata == expected_calldata
 

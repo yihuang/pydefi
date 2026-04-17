@@ -25,6 +25,7 @@ from pathlib import Path
 
 import pytest
 import solcx
+from hexbytes import HexBytes
 from web3 import AsyncWeb3
 from web3.exceptions import ContractLogicError, Web3RPCError
 
@@ -510,7 +511,7 @@ class TestOFTComposerFork:
         events = composer.events.Composed().process_receipt(receipt)
         assert len(events) == 1
         evt = events[0]["args"]
-        assert evt["from"] == oft_address
+        assert HexBytes(evt["from"]) == oft_address
         assert evt["guid"] == guid
         assert evt["amountLD"] == amount_ld
 
@@ -640,7 +641,7 @@ class TestOFTComposerFork:
         # PATCH_ADDR(80) does MSTORE(buf+68, _from): writes 12 leading zeros then
         # the 20-byte address into data[0..31].
         last_data = await target.functions.lastData().call()
-        expected_addr_bytes = bytes.fromhex(oft_address.lower().removeprefix("0x"))
+        expected_addr_bytes = bytes(oft_address)
         assert last_data[:12] == b"\x00" * 12
         assert last_data[12:32] == expected_addr_bytes
 

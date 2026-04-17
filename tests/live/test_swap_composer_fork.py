@@ -588,12 +588,11 @@ class TestDeFiVMCallbacks:
         # v2pair was deployed with pair.token0 = token1_address; simulateFlashSwap
         # mints and checks pair.token0, so we must repay with token1.
         token1_address = ctx["token1_address"]
-        token1 = ctx["token1"]
 
         flash_amount = 2_000_000
         amount_owed = 2_006_000
 
-        await ERC20.fns.mint(vm_address, amount_owed).transact(w3, deployer, to=token1)
+        await ERC20.fns.mint(vm_address, amount_owed).transact(w3, deployer, to=token1_address)
         data = encode_v2_callback_data(token1_address, amount_owed)
 
         receipt = await MOCK_V2_PAIR.fns.simulateFlashSwap(
@@ -619,13 +618,12 @@ class TestDeFiVMCallbacks:
         await ERC20.fns.mint(vm_address, amount_owed).transact(w3, deployer, to=token1_address)
         data = encode_v2_callback_data(token1_address, amount_owed)
 
-        tx = await MOCK_V2_PAIR.fns.simulateAerodromeHook(
+        receipt = await MOCK_V2_PAIR.fns.simulateAerodromeHook(
             vm_address,
             flash_amount,
             data,
             amount_owed,
         ).transact(w3, deployer, to=ctx["v2pair"])
-        receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
 
     async def test_unknown_selector_reverts(self, ctx):
@@ -666,12 +664,11 @@ class TestMultiHopSwapComposer:
         v3pool_address = ctx["v3pool_address"]
         token0_address = ctx["token0_address"]
         token1_address = ctx["token1_address"]
-        token0 = ctx["token0"]
         token1 = ctx["token1"]
 
         amount_in = 1000
         # Mint token0 to VM (user deposit)
-        await ERC20.fns.mint(vm_address, amount_in).transact(w3, deployer, to=token0)
+        await ERC20.fns.mint(vm_address, amount_in).transact(w3, deployer, to=token0_address)
 
         hops = [
             SwapHop(
@@ -689,8 +686,7 @@ class TestMultiHopSwapComposer:
         program = build_multi_hop_program(hops, min_final_out=1800)
         bytecode = program.build()
 
-        tx = await DeFiVM.fns.execute(bytecode).transact(w3, deployer, to=vm_address)
-        receipt = await w3.eth.get_transaction_receipt(tx)
+        receipt = await DeFiVM.fns.execute(bytecode).transact(w3, deployer, to=vm_address)
         assert receipt["status"] == 1, "V3 single-hop failed"
 
         out_balance = await token1.functions.balanceOf(deployer).call()
@@ -709,17 +705,16 @@ class TestMultiHopSwapComposer:
         v2pair = ctx["v2pair"]
         token1_address = ctx["token1_address"]  # token0 of pair
         token0_address = ctx["token0_address"]  # token1 of pair
-        token1 = ctx["token1"]
         token0 = ctx["token0"]
 
         # MockV2Pair was deployed with token0=token1_address, token1=token0_address
         # and reserves token0=RESERVE0=1M, token1=RESERVE1=3M
         # Check actual pair token0
         pair_token0 = await MOCK_V2_PAIR.fns.token0().call(w3, to=v2pair)
-        zero_for_one = pair_token0.lower() == token1_address.lower()
+        zero_for_one = HexBytes(pair_token0) == token1_address
 
         amount_in = 1000
-        await ERC20.fns.mint(vm_address, amount_in).transact(w3, deployer, to=token1)
+        await ERC20.fns.mint(vm_address, amount_in).transact(w3, deployer, to=token1_address)
 
         hops = [
             SwapHop(
@@ -737,8 +732,7 @@ class TestMultiHopSwapComposer:
         program = build_multi_hop_program(hops)
         bytecode = program.build()
 
-        tx = await DeFiVM.fns.execute(bytecode).transact(w3, deployer, to=vm_address)
-        receipt = await w3.eth.get_transaction_receipt(tx)
+        receipt = await DeFiVM.fns.execute(bytecode).transact(w3, deployer, to=vm_address)
         assert receipt["status"] == 1, "V2 single-hop failed"
 
         # V2 formula: amountOut = amountIn * 997 * reserve1 / (reserve0 * 1000 + amountIn * 997)
@@ -773,13 +767,13 @@ class TestMultiHopSwapComposer:
         token0 = ctx["token0"]
 
         amount_in = 1000
-        await ERC20.fns.mint(vm_address, amount_in).transact(w3, deployer, to=ctx["token0"])
+        await ERC20.fns.mint(vm_address, amount_in).transact(w3, deployer, to=ctx["token0_address"])
 
         # Determine direction for V2 pair
         pair_token0 = await MOCK_V2_PAIR.fns.token0().call(w3, to=v2pair)
         # V2 pair has token0=token1_address, token1=token0_address
         # Hop 2: tokenIn=token1, tokenOut=token0
-        zero_for_one_v2 = pair_token0 == token1_address
+        zero_for_one_v2 = HexBytes(pair_token0) == token1_address
 
         hops = [
             SwapHop(
@@ -808,8 +802,7 @@ class TestMultiHopSwapComposer:
         program = build_multi_hop_program(hops)
         bytecode = program.build()
 
-        tx = await DeFiVM.fns.execute(bytecode).transact(w3, deployer, to=vm_address)
-        receipt = await w3.eth.get_transaction_receipt(tx)
+        receipt = await DeFiVM.fns.execute(bytecode).transact(w3, deployer, to=vm_address)
         assert receipt["status"] == 1, "Two-hop swap failed"
 
         # Verify we received some token0 back
