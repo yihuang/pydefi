@@ -171,7 +171,7 @@ class Across(BaseBridge):
             amount_in.amount,
             output_amount,
             self.dst_chain_id,
-            ZERO_ADDRESS, # exclusiveRelayer (none)
+            ZERO_ADDRESS,  # exclusiveRelayer (none)
             quote_timestamp,
             fill_deadline,
             0,  # exclusivityDeadline

@@ -166,7 +166,7 @@ class GasZip(BaseBridge):
             raise BridgeError("GasZip only supports native gas tokens for bridging")
 
         # Validate and encode recipient address as uint256
-        to_uint256 = int.from_bytes(recipient, 'big')
+        to_uint256 = int.from_bytes(recipient, "big")
         call_data: bytes = GASZIP.fns.deposit(
             to_uint256,
             [self.dst_chain_id],

@@ -402,7 +402,7 @@ class GeckoTerminal(BasePoolDataProvider):
         Returns:
             A list of up to *limit* :class:`PoolData` objects.
         """
-        addr_str = token_address.to_0x_hex() # assume EVM address for now
+        addr_str = token_address.to_0x_hex()  # assume EVM address for now
         pools: list[PoolData] = []
         page = 1
         while len(pools) < limit:
