@@ -37,8 +37,7 @@ def address_to_bytes32(address: Address) -> Hash:
     Returns:
         32 bytes with the address right-aligned (left zero-padded).
     """
-    address_bytes = bytes(address)
-    return Hash(b"\x00" * (32 - len(address_bytes)) + address_bytes)
+    return Hash(b"\x00" * (32 - len(address)) + address)
 
 
 def token_to_bytes32(address: Address) -> Hash:

@@ -59,7 +59,7 @@ class CurvePool(BaseAMM):
     def _coin_index(self, token: Token) -> int:
         """Return the pool index for *token*."""
         for i, t in enumerate(self._tokens):
-            if bytes(t.address) == bytes(token.address):
+            if t.address == token.address:
                 return i
         raise ValueError(f"Token {token.symbol} not found in this Curve pool")
 

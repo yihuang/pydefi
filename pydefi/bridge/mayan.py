@@ -22,7 +22,7 @@ from pydefi._utils import address_to_bytes32, encode_address, token_to_bytes32
 from pydefi.abi.bridge import MAYAN_FORWARDER, MAYAN_SWIFT_V2, MayanSwiftOrderParams
 from pydefi.bridge.base import BaseBridge
 from pydefi.exceptions import BridgeError
-from pydefi.types import Address, BridgeQuote, Token, TokenAmount
+from pydefi.types import Address, BridgeQuote, NATIVE_SENTINEL, Token, TokenAmount
 
 _MAYAN_API_BASE = "https://price-api.mayan.finance/v3"
 
@@ -83,9 +83,6 @@ _CHAIN_WETH: dict[int, Address] = {
 _ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
 
 
-_EEEEE_SENTINEL_BYTES = b"\xee" * 20
-
-
 def _mayan_token_address(address: Address, chain_id: int) -> str:
     """Normalize a token address for the Mayan Price API.
 
@@ -93,7 +90,7 @@ def _mayan_token_address(address: Address, chain_id: int) -> str:
     (ETH, BNB, etc.).  Any ``EeeE...`` sentinel is canonicalized here so
     that API requests always use the representation the server expects.
     """
-    if address == _EEEEE_SENTINEL_BYTES:
+    if address == NATIVE_SENTINEL:
         return _ZERO_ADDRESS
     return encode_address(address, chain_id)
 
@@ -348,7 +345,6 @@ class Mayan(BaseBridge):
             Decimal(str(swift_route.get("minMiddleAmount") or "0")) * Decimal(10**swift_input_decimals)
         )
         # swiftInputContract is the ERC-20 that SWIFT V2 will receive (typically WETH).
-        # Decode to Address at the periphery; fall back to our known weth_address.
         _raw_swift_input = swift_route.get("swiftInputContract")
         swift_input_contract: Address = HexBytes(_raw_swift_input) if _raw_swift_input else weth_address
 

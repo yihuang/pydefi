@@ -18,7 +18,7 @@ from decimal import Decimal
 
 from pydefi.exceptions import NoRouteFoundError
 from pydefi.pathfinder.graph import PoolEdge, PoolGraph
-from pydefi.types import SwapRoute, SwapStep, Token, TokenAmount
+from pydefi.types import Address, SwapRoute, SwapStep, Token, TokenAmount
 
 
 class Router:
@@ -111,14 +111,14 @@ class Router:
     ) -> SwapRoute:
         """Find the best route by output amount only (ignoring gas costs)."""
         src = amount_in.token
-        dst_addr = bytes(token_out.address)
+        dst_addr = token_out.address
 
-        if bytes(src.address) == dst_addr:
+        if src.address == dst_addr:
             raise ValueError("token_in and token_out must be different")
 
         # DP table: best[(token_addr, hops)] = (max_raw_output, path_of_edges)
         # Seed with the source state at hop depth 0.
-        best: dict[tuple[bytes, int], tuple[int, list[PoolEdge]]] = {(bytes(src.address), 0): (amount_in.amount, [])}
+        best: dict[tuple[Address, int], tuple[int, list[PoolEdge]]] = {(src.address, 0): (amount_in.amount, [])}
 
         for hop in range(max_hops):
             # Snapshot all states at the current depth to avoid processing
@@ -127,7 +127,7 @@ class Router:
 
             for (token_addr, _), (current_amount, path) in current_states:
                 # Tokens already on this path (cycle prevention).
-                visited_tokens: set[bytes] = {bytes(e.token_in.address) for e in path}
+                visited_tokens: set[Address] = {e.token_in.address for e in path}
                 visited_tokens.add(token_addr)
 
                 # Retrieve the Token object: use the last edge's output token,
@@ -135,7 +135,7 @@ class Router:
                 token: Token = path[-1].token_out if path else src
 
                 for edge in self.graph.edges_from(token):
-                    next_addr = bytes(edge.token_out.address)
+                    next_addr = edge.token_out.address
                     if next_addr in visited_tokens:
                         continue
 
@@ -150,9 +150,8 @@ class Router:
 
         # Collect the best path to the destination across all hop depths.
         best_result: tuple[int, list[PoolEdge]] | None = None
-        dst_addr_bytes = bytes(dst_addr)
         for h in range(1, max_hops + 1):
-            entry = best.get((dst_addr_bytes, h))
+            entry = best.get((dst_addr, h))
             if entry is not None:
                 if best_result is None or entry[0] > best_result[0]:
                     best_result = entry
@@ -265,25 +264,25 @@ class Router:
             :class:`ValueError`: If ``token_in`` and ``token_out`` are the same.
         """
         src = amount_in.token
-        dst_addr = bytes(token_out.address)
+        dst_addr = token_out.address
         routes: list[SwapRoute] = []
 
-        if bytes(src.address) == dst_addr:
+        if src.address == dst_addr:
             raise ValueError("token_in and token_out must be different")
 
         # Dominance pruning: best raw output seen for each (token_addr, hop_depth).
         # A path is pruned when it arrives at a state with a lower amount than
         # one already explored — any onward route will be dominated.
-        best_at: dict[tuple[bytes, int], int] = {}
+        best_at: dict[tuple[Address, int], int] = {}
 
         def dfs(
             current_token: Token,
             current_amount: int,
             path: list[PoolEdge],
-            visited_tokens: set[bytes],
+            visited_tokens: set[Address],
         ) -> None:
             depth = len(path)
-            tok_addr = bytes(current_token.address)
+            tok_addr = current_token.address
 
             # Prune dominated states.
             existing = best_at.get((tok_addr, depth))
@@ -316,7 +315,7 @@ class Router:
                 return
 
             for edge in self.graph.edges_from(current_token):
-                next_addr = bytes(edge.token_out.address)
+                next_addr = edge.token_out.address
                 if next_addr in visited_tokens:
                     continue
                 next_amount = edge.amount_out(current_amount)
@@ -329,7 +328,7 @@ class Router:
                     visited_tokens | {next_addr},
                 )
 
-        dfs(src, amount_in.amount, [], {bytes(src.address)})
+        dfs(src, amount_in.amount, [], {src.address})
 
         if not routes:
             raise NoRouteFoundError(f"No route found from {amount_in.token.symbol} to {token_out.symbol}")
