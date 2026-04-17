@@ -438,10 +438,11 @@ class PoolIndexer:
         current_block: int = await self.w3.eth.block_number  # type: ignore[assignment]
 
         # Determine the earliest un-indexed block across all tracked addresses.
-        all_addrs = list(self._pool_protocol) + list(self._factory_protocol)
+        all_addrs = list(set(self._pool_protocol) | set(self._factory_protocol))
+        checkpoints = self._get_last_indexed_blocks(all_addrs)
         from_block = current_block
         for addr in all_addrs:
-            last = self._get_last_indexed_block(addr)
+            last = checkpoints.get(addr)
             candidate = last + 1 if last is not None else current_block
             if candidate < from_block:
                 from_block = candidate
@@ -465,13 +466,10 @@ class PoolIndexer:
                 from_block,
                 current_block,
             )
-        # Advance checkpoints for every tracked address.
-        for addr in all_addrs:
-            self._set_last_indexed_block(addr, current_block)
-        # Also advance any factories that were just auto-discovered in this run.
-        for addr in list(self._factory_protocol):
-            if addr not in all_addrs:
-                self._set_last_indexed_block(addr, current_block)
+        # Advance checkpoints for every tracked address, including any pools that
+        # were auto-discovered during _process_logs (not in the pre-fetch all_addrs).
+        all_addrs_after = set(self._pool_protocol) | set(self._factory_protocol)
+        self._set_last_indexed_blocks({addr: current_block for addr in all_addrs_after})
 
     # ------------------------------------------------------------------
     # State queries
