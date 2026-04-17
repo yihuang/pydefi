@@ -69,15 +69,15 @@ _MAYAN_SDK_VERSION = "13_2_0"
 _SWIFT_NORMALIZE_DECIMALS = 8
 
 # WETH ERC-20 addresses per chain (needed for native-ETH input with SWIFT V2)
-_CHAIN_WETH: dict[int, str] = {
-    1: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",  # Ethereum
-    42161: "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1",  # Arbitrum
-    10: "0x4200000000000000000000000000000000000006",  # Optimism
-    8453: "0x4200000000000000000000000000000000000006",  # Base
-    137: "0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619",  # Polygon
-    56: "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c",  # BSC (WBNB)
-    43114: "0x49D5c2BdFfac6CE2BFdB6640F4F80f226bc10bAB",  # Avalanche
-    59144: "0xe5D7C2a44FfDDf6b295A15c148167daaAf5Cf34f",  # Linea
+_CHAIN_WETH: dict[int, Address] = {
+    1: HexBytes("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),  # Ethereum
+    42161: HexBytes("0x82aF49447D8a07e3bd95BD0d56f35241523fBab1"),  # Arbitrum
+    10: HexBytes("0x4200000000000000000000000000000000000006"),  # Optimism
+    8453: HexBytes("0x4200000000000000000000000000000000000006"),  # Base
+    137: HexBytes("0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619"),  # Polygon
+    56: HexBytes("0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c"),  # BSC (WBNB)
+    43114: HexBytes("0x49D5c2BdFfac6CE2BFdB6640F4F80f226bc10bAB"),  # Avalanche
+    59144: HexBytes("0xe5D7C2a44FfDDf6b295A15c148167daaAf5Cf34f"),  # Linea
 }
 
 _ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
@@ -347,8 +347,10 @@ class Mayan(BaseBridge):
         min_middle_amount = int(
             Decimal(str(swift_route.get("minMiddleAmount") or "0")) * Decimal(10**swift_input_decimals)
         )
-        # swiftInputContract is the ERC-20 that SWIFT V2 will receive (typically WETH)
-        swift_input_contract = swift_route.get("swiftInputContract") or weth_address
+        # swiftInputContract is the ERC-20 that SWIFT V2 will receive (typically WETH).
+        # Decode to Address at the periphery; fall back to our known weth_address.
+        _raw_swift_input = swift_route.get("swiftInputContract")
+        swift_input_contract: Address = HexBytes(_raw_swift_input) if _raw_swift_input else weth_address
 
         # Use os.urandom for the order's random field to ensure uniqueness
         random_b32 = os.urandom(32)
@@ -382,7 +384,7 @@ class Mayan(BaseBridge):
             "forwarderAddress": _MAYAN_FORWARDER,
             "slippageBps": slippage_bps,
             "fromToken": _mayan_token_address(token_in.address, token_in.chain_id),
-            "middleToken": swift_input_contract,  # WETH (or other swift input)
+            "middleToken": encode_address(swift_input_contract, self.src_chain_id),  # WETH (or other swift input)
             "chainName": from_chain,
             "amountIn64": str(amount_in.amount),
             "sdkVersion": _MAYAN_SDK_VERSION,
