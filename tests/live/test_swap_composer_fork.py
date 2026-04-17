@@ -23,9 +23,13 @@ from pathlib import Path
 
 import pytest
 import solcx
-from eth_abi import decode
+from eth_contract import Contract
+from eth_contract.erc20 import ERC20
+from hexbytes import HexBytes
 from web3.exceptions import ContractLogicError, Web3RPCError
 
+from pydefi.abi import DeFiVM
+from pydefi.abi.codec import codec
 from pydefi.types import Address
 from pydefi.vm.swap import (
     SplitLeg,
@@ -274,6 +278,16 @@ contract MockV2Pair {
 }
 """
 
+MOCK_V2_PAIR = Contract.from_abi([
+    "function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast)",
+    "function token0() external view returns (address)",
+    "function token1() external view returns (address)",
+    "function swap(uint amount0Out, uint amount1Out, address to, bytes calldata data) external",
+    "function simulateFlashSwap(address callee, uint256 amountOut, bytes calldata data, uint256 repayAmount) external",
+    "function simulateAerodromeHook(address callee, uint256 amountOut, bytes calldata data, uint256 repayAmount) external",
+])
+
+
 
 # ---------------------------------------------------------------------------
 # Module-scoped fixtures
@@ -326,7 +340,7 @@ async def ctx(fork_w3_module, compiled_vm, compiled_pools, interpreter_addr):
     # Deploy pair with token1_address as its token0 and token0_address as its token1
     # (reversed order gives us a hop2 of token1→token0).
     # Actual token balances are minted to the pair after deployment.
-    v2pair_address = await deploy(
+    v2pair = await deploy(
         w3,
         v2pair_compiled,
         deployer,
@@ -335,13 +349,12 @@ async def ctx(fork_w3_module, compiled_vm, compiled_pools, interpreter_addr):
         RESERVE0,
         RESERVE1,
     )
-    v2pair = w3.eth.contract(address=v2pair_address, abi=v2pair_compiled["abi"])
 
     # Mint reserves to v2pair so it can give tokens during swaps
     await token0.functions.mint(v3pool_address, 10**24).transact({"from": deployer})
     await token1.functions.mint(v3pool_address, 10**24).transact({"from": deployer})
-    await token0.functions.mint(v2pair_address, RESERVE0).transact({"from": deployer})
-    await token1.functions.mint(v2pair_address, RESERVE1).transact({"from": deployer})
+    await token0.functions.mint(v2pair, RESERVE0).transact({"from": deployer})
+    await token1.functions.mint(v2pair, RESERVE1).transact({"from": deployer})
 
     return {
         "w3": w3,
@@ -354,7 +367,6 @@ async def ctx(fork_w3_module, compiled_vm, compiled_pools, interpreter_addr):
         "v3pool": v3pool,
         "v3pool_address": v3pool_address,
         "v2pair": v2pair,
-        "v2pair_address": v2pair_address,
         "deployer": deployer,
         "accounts": accounts,
         "_compiled_pools": compiled_pools,
@@ -378,8 +390,8 @@ class TestCallbackDataEncoding:
     def test_encode_v3_callback_data_roundtrip(self):
         """The encoded address can be decoded back."""
         data = encode_v3_callback_data(WETH_ADDR)
-        (decoded,) = decode(["address"], data)
-        assert decoded.lower() == WETH_ADDR.lower()
+        (decoded,) = codec.decode(["address"], data)
+        assert decoded == WETH_ADDR
 
     def test_encode_v2_callback_data_length(self):
         """encode_v2_callback_data returns 64 bytes (address + uint256)."""
@@ -390,8 +402,8 @@ class TestCallbackDataEncoding:
         """The encoded (tokenIn, amountOwed) can be decoded back."""
         amount_owed = 3_003_000
         data = encode_v2_callback_data(WETH_ADDR, amount_owed)
-        decoded_token, decoded_amount = decode(["address", "uint256"], data)
-        assert decoded_token.lower() == WETH_ADDR.lower()
+        decoded_token, decoded_amount = codec.decode(["address", "uint256"], data)
+        assert decoded_token == WETH_ADDR
         assert decoded_amount == amount_owed
 
 
@@ -453,24 +465,24 @@ class TestCalldataBuilders:
         hops = [
             SwapHop(
                 protocol=SwapProtocol.UNISWAP_V3,
-                pool="0x1111111111111111111111111111111111111111",
+                pool=HexBytes("0x1111111111111111111111111111111111111111"),
                 token_in=WETH_ADDR,
                 token_out=USDC_ADDR,
                 fee=500,
                 amount_in=10**18,
                 amount_out_min=0,
-                recipient="0x2222222222222222222222222222222222222222",
+                recipient=HexBytes("0x2222222222222222222222222222222222222222"),
                 zero_for_one=True,
             ),
             SwapHop(
                 protocol=SwapProtocol.UNISWAP_V2,
-                pool="0x3333333333333333333333333333333333333333",
+                pool=HexBytes("0x3333333333333333333333333333333333333333"),
                 token_in=USDC_ADDR,
                 token_out=DAI_ADDR,
                 fee=30,
                 amount_in=0,
                 amount_out_min=0,
-                recipient="0x4444444444444444444444444444444444444444",
+                recipient=HexBytes("0x4444444444444444444444444444444444444444"),
                 zero_for_one=True,
             ),
         ]
@@ -584,16 +596,15 @@ class TestDeFiVMCallbacks:
         flash_amount = 2_000_000
         amount_owed = 2_006_000
 
-        await token1.functions.mint(vm_address, amount_owed).transact({"from": deployer})
+        await ERC20.fns.mint(vm_address, amount_owed).transact(w3, deployer, to=token1)
         data = encode_v2_callback_data(token1_address, amount_owed)
 
-        tx = await v2pair.functions.simulateFlashSwap(
+        receipt = await MOCK_V2_PAIR.fns.simulateFlashSwap(
             vm_address,
             flash_amount,
             data,
             amount_owed,
-        ).transact({"from": deployer})
-        receipt = await w3.eth.get_transaction_receipt(tx)
+        ).transact(w3, deployer, to=v2pair)
         assert receipt["status"] == 1, "V2 callback repayment failed"
 
     async def test_aerodrome_hook_repays_pool(self, ctx):
@@ -601,24 +612,22 @@ class TestDeFiVMCallbacks:
         w3 = ctx["w3"]
         deployer = ctx["deployer"]
         vm_address = ctx["vm_address"]
-        v2pair = ctx["v2pair"]
         # v2pair was deployed with pair.token0 = token1_address; simulateAerodromeHook
         # mints and checks pair.token0, so we must repay with token1.
         token1_address = ctx["token1_address"]
-        token1 = ctx["token1"]
 
         flash_amount = 1_500_000
         amount_owed = 1_504_500
 
-        await token1.functions.mint(vm_address, amount_owed).transact({"from": deployer})
+        await ERC20.fns.mint(vm_address, amount_owed).transact(w3, deployer, to=token1_address)
         data = encode_v2_callback_data(token1_address, amount_owed)
 
-        tx = await v2pair.functions.simulateAerodromeHook(
+        tx = await MOCK_V2_PAIR.fns.simulateAerodromeHook(
             vm_address,
             flash_amount,
             data,
             amount_owed,
-        ).transact({"from": deployer})
+        ).transact(w3, deployer, to= ctx["v2pair"])
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
 
@@ -666,7 +675,7 @@ class TestMultiHopSwapComposer:
 
         amount_in = 1000
         # Mint token0 to VM (user deposit)
-        await token0.functions.mint(vm_address, amount_in).transact({"from": deployer})
+        await ERC20.fns.mint(vm_address, amount_in).transact(w3, deployer, to=token0)
 
         hops = [
             SwapHop(
@@ -684,7 +693,7 @@ class TestMultiHopSwapComposer:
         program = build_multi_hop_program(hops, min_final_out=1800)
         bytecode = program.build()
 
-        tx = await vm.functions.execute(bytecode).transact({"from": deployer})
+        tx = await DeFiVM.fns.execute(bytecode).transact(w3, deployer, to=vm_address)
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1, "V3 single-hop failed"
 
@@ -702,7 +711,6 @@ class TestMultiHopSwapComposer:
         deployer = ctx["deployer"]
         vm_address = ctx["vm_address"]
         vm = ctx["vm"]
-        v2pair_address = ctx["v2pair_address"]
         v2pair = ctx["v2pair"]
         token1_address = ctx["token1_address"]  # token0 of pair
         token0_address = ctx["token0_address"]  # token1 of pair
@@ -712,16 +720,16 @@ class TestMultiHopSwapComposer:
         # MockV2Pair was deployed with token0=token1_address, token1=token0_address
         # and reserves token0=RESERVE0=1M, token1=RESERVE1=3M
         # Check actual pair token0
-        pair_token0 = await v2pair.functions.token0().call()
+        pair_token0 = await MOCK_V2_PAIR.fns.token0().call(w3, to=v2pair)
         zero_for_one = pair_token0.lower() == token1_address.lower()
 
         amount_in = 1000
-        await token1.functions.mint(vm_address, amount_in).transact({"from": deployer})
+        await ERC20.fns.mint(vm_address, amount_in).transact(w3, deployer, to=token1)
 
         hops = [
             SwapHop(
                 protocol=SwapProtocol.UNISWAP_V2,
-                pool=v2pair_address,
+                pool=v2pair,
                 token_in=token1_address,
                 token_out=token0_address,
                 fee=30,
@@ -734,12 +742,12 @@ class TestMultiHopSwapComposer:
         program = build_multi_hop_program(hops)
         bytecode = program.build()
 
-        tx = await vm.functions.execute(bytecode).transact({"from": deployer})
+        tx = await DeFiVM.fns.execute(bytecode).transact(w3, deployer, to=vm_address)
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1, "V2 single-hop failed"
 
         # V2 formula: amountOut = amountIn * 997 * reserve1 / (reserve0 * 1000 + amountIn * 997)
-        reserve0, reserve1, _ = await v2pair.functions.getReserves().call()
+        reserve0, reserve1, _ = await MOCK_V2_PAIR.fns.getReserves().call(w3, to=v2pair)
         # zero_for_one: amountIn reduces reserve0, amountOut comes from reserve1
         if zero_for_one:
             expected_approx = amount_in * 997 * reserve1 // (reserve0 * 1000 + amount_in * 997)
@@ -765,20 +773,19 @@ class TestMultiHopSwapComposer:
         vm_address = ctx["vm_address"]
         vm = ctx["vm"]
         v3pool_address = ctx["v3pool_address"]
-        v2pair_address = ctx["v2pair_address"]
         v2pair = ctx["v2pair"]
         token0_address = ctx["token0_address"]
         token1_address = ctx["token1_address"]
         token0 = ctx["token0"]
 
         amount_in = 1000
-        await ctx["token0"].functions.mint(vm_address, amount_in).transact({"from": deployer})
+        await ERC20.fns.mint(vm_address, amount_in).transact(w3, deployer, to=ctx["token0"])
 
         # Determine direction for V2 pair
-        pair_token0 = await v2pair.functions.token0().call()
+        pair_token0 = await MOCK_V2_PAIR.fns.token0().call(w3, to=v2pair)
         # V2 pair has token0=token1_address, token1=token0_address
         # Hop 2: tokenIn=token1, tokenOut=token0
-        zero_for_one_v2 = pair_token0.lower() == token1_address.lower()
+        zero_for_one_v2 = pair_token0 == token1_address
 
         hops = [
             SwapHop(
@@ -794,7 +801,7 @@ class TestMultiHopSwapComposer:
             ),
             SwapHop(
                 protocol=SwapProtocol.UNISWAP_V2,
-                pool=v2pair_address,
+                pool=v2pair,
                 token_in=token1_address,
                 token_out=token0_address,
                 fee=30,
@@ -807,7 +814,7 @@ class TestMultiHopSwapComposer:
         program = build_multi_hop_program(hops)
         bytecode = program.build()
 
-        tx = await vm.functions.execute(bytecode).transact({"from": deployer})
+        tx = await DeFiVM.fns.execute(bytecode).transact(w3, deployer, to=vm_address)
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1, "Two-hop swap failed"
 
@@ -819,14 +826,14 @@ class TestMultiHopSwapComposer:
         """build_multi_hop_program with min_final_out reverts when output is too low."""
         deployer = ctx["deployer"]
         vm_address = ctx["vm_address"]
+        w3 = ctx["w3"]
         vm = ctx["vm"]
         v3pool_address = ctx["v3pool_address"]
         token0_address = ctx["token0_address"]
         token1_address = ctx["token1_address"]
-        token0 = ctx["token0"]
 
         amount_in = 100
-        await token0.functions.mint(vm_address, amount_in).transact({"from": deployer})
+        await ERC20.fns.mint(vm_address, amount_in).transact(w3, deployer, to=token0_address)
 
         hops = [
             SwapHop(

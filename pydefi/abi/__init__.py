@@ -7,7 +7,7 @@ Import Contract objects and ABIStruct classes from the sub-modules::
     from pydefi.abi.bridge import CCTP_TOKEN_MESSENGER_V2, LAYERZERO_OFT
 """
 
-from pydefi.abi.amm import (
+from .amm import (
     CURVE_POOL,
     CURVE_REGISTRY,
     UNISWAP_V2_FACTORY,
@@ -23,7 +23,7 @@ from pydefi.abi.amm import (
     QuoteExactInputSingleParams,
     QuoteExactOutputSingleParams,
 )
-from pydefi.abi.bridge import (
+from .bridge import (
     ACROSS_SPOKE_POOL,
     CCTP_TOKEN_MESSENGER_V2,
     GASZIP,
@@ -37,6 +37,7 @@ from pydefi.abi.bridge import (
     MessagingFee,
     OFTSendParam,
 )
+from .vm import DeFiVM
 
 __all__ = [
     # amm
@@ -67,4 +68,6 @@ __all__ = [
     "MayanSwiftOrderParams",
     "MessagingFee",
     "OFTSendParam",
+    # vm
+    "DeFiVM",
 ]

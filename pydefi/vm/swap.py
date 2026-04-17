@@ -127,7 +127,7 @@ V2_AMOUNT_OUT_OFFSET: int = 96
 # ---------------------------------------------------------------------------
 
 
-def encode_v3_callback_data(token_in: str) -> bytes:
+def encode_v3_callback_data(token_in: Address) -> bytes:
     """Encode the ``data`` field for a V3-style flash-swap callback.
 
     The DeFiVM fallback handler expects ``abi.encode(address tokenIn)`` in the
@@ -143,7 +143,7 @@ def encode_v3_callback_data(token_in: str) -> bytes:
     return encode(["address"], [token_in])
 
 
-def encode_v2_callback_data(token_in: str, amount_owed: int) -> bytes:
+def encode_v2_callback_data(token_in: Address, amount_owed: int) -> bytes:
     """Encode the ``data`` field for a V2-style flash-swap callback.
 
     The DeFiVM fallback handler expects ``abi.encode(address tokenIn,
@@ -166,11 +166,11 @@ def encode_v2_callback_data(token_in: str, amount_owed: int) -> bytes:
 
 
 def v3_pool_swap_calldata(
-    recipient: str,
+    recipient: Address,
     zero_for_one: bool,
     amount_in: int,
     sqrt_price_limit_x96: int,
-    token_in: str,
+    token_in: Address,
 ) -> bytes:
     """Build calldata for a direct ``pool.swap()`` call (Uniswap V3 pool).
 
@@ -196,7 +196,7 @@ def v3_pool_swap_calldata(
     return _V3_POOL_SWAP_FN(recipient, zero_for_one, amount_in, sqrt_price_limit_x96, callback_data).data
 
 
-def encode_v3_path(tokens: list[str], fees: list[int]) -> bytes:
+def encode_v3_path(tokens: list[Address], fees: list[int]) -> bytes:
     """Encode a V3 multi-hop path as ABI-packed bytes.
 
     Args:
@@ -211,10 +211,10 @@ def encode_v3_path(tokens: list[str], fees: list[int]) -> bytes:
     """
     if len(fees) != len(tokens) - 1:
         raise ValueError(f"encode_v3_path: len(fees) ({len(fees)}) must equal len(tokens)-1 ({len(tokens) - 1})")
-    result = HexBytes(tokens[0])
+    result = tokens[0]
     for fee, token in zip(fees, tokens[1:]):
         result += fee.to_bytes(3, "big")
-        result += HexBytes(token)
+        result += token
     return result
 
 
@@ -279,13 +279,13 @@ class SwapHop:
     """
 
     protocol: SwapProtocol
-    pool: str
-    token_in: str
-    token_out: str
+    pool: Address
+    token_in: Address
+    token_out: Address
     fee: int
     amount_in: int
     amount_out_min: int
-    recipient: str
+    recipient: Address
     zero_for_one: bool
     sqrt_price_limit_x96: int = field(default=0)
 
