@@ -16,7 +16,7 @@ import aiohttp
 from pydefi._utils import decode_address
 from pydefi.exceptions import PoolDataError
 from pydefi.pool_data.base import BasePoolDataProvider, PoolData
-from pydefi.types import ChainId, Token
+from pydefi.types import Address, ChainId, Token
 
 # Well-known Uniswap V2 subgraph URLs keyed by chain ID
 _UNISWAP_V2_SUBGRAPHS: dict[int, str] = {
@@ -229,7 +229,7 @@ class UniswapV2Subgraph(Subgraph):
                 continue
         return result
 
-    async def get_pools_for_token(self, token_address: str | bytes, limit: int = 100) -> list[PoolData]:
+    async def get_pools_for_token(self, token_address: Address, limit: int = 100) -> list[PoolData]:
         """Fetch Uniswap V2 pairs that contain a specific token.
 
         Args:
@@ -239,7 +239,7 @@ class UniswapV2Subgraph(Subgraph):
         Returns:
             A list of :class:`PoolData` objects.
         """
-        addr_str = ("0x" + token_address.hex()) if isinstance(token_address, bytes) else token_address
+        addr_str = "0x" + token_address.hex()
         query = """
         query PairsForToken($token: String!, $limit: Int!) {
             pairs(
@@ -402,17 +402,17 @@ class UniswapV3Subgraph(Subgraph):
                 continue
         return result
 
-    async def get_pools_for_token(self, token_address: str | bytes, limit: int = 100) -> list[PoolData]:
+    async def get_pools_for_token(self, token_address: Address, limit: int = 100) -> list[PoolData]:
         """Fetch Uniswap V3 pools that contain a specific token.
 
         Args:
-            token_address: ERC-20 token address (str or bytes ``Address``).
+            token_address: ERC-20 token address (``Address``).
             limit: Maximum number of pools to return.
 
         Returns:
             A list of :class:`PoolData` objects.
         """
-        addr_str = ("0x" + token_address.hex()) if isinstance(token_address, bytes) else token_address
+        addr_str = "0x" + token_address.hex()
         query = """
         query PoolsForToken($token: String!, $limit: Int!) {
             pools(

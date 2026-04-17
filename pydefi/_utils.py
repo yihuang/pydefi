@@ -13,8 +13,8 @@ on the chain:
 * **EVM chains** — ``0x``-prefixed lowercase hex (20 bytes).
 * **Solana** — base-58 encoding (32-byte public key).
 
-Never call ``HexBytes(str)`` or ``"0x" + addr.hex()`` directly inside library
-code; always go through these helpers so that Solana and future non-EVM chains
+Only call ``HexBytes(str)`` or ``to_checksum_address`` directly if EVM chains only,
+otherwise always go through these helpers so that Solana and future non-EVM chains
 are handled correctly.
 """
 

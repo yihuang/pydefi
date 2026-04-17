@@ -249,7 +249,7 @@ class LayerZeroOFT(BaseBridge):
 
         return {
             "to": self.oft_address,
-            "data": "0x" + call_data.hex() if isinstance(call_data, bytes) else call_data,
+            "data": "0x" + call_data.hex(),
             "value": str(native_fee),
             "gas": str(300_000),
         }

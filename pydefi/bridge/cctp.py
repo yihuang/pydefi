@@ -519,7 +519,7 @@ class CCTP(BaseBridge):
 
         return {
             "to": self.token_messenger_address,
-            "data": "0x" + call_data.hex() if isinstance(call_data, bytes) else call_data,
+            "data": "0x" + call_data.hex(),
             "value": "0",
             "gas": str(200_000),
         }
@@ -588,7 +588,7 @@ class CCTP(BaseBridge):
 
         return {
             "to": self.token_messenger_address,
-            "data": "0x" + call_data.hex() if isinstance(call_data, bytes) else call_data,
+            "data": "0x" + call_data.hex(),
             "value": "0",
             "gas": str(220_000),
         }

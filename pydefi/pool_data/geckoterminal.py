@@ -15,7 +15,7 @@ import aiohttp
 from pydefi._utils import decode_address
 from pydefi.exceptions import PoolDataError
 from pydefi.pool_data.base import BasePoolDataProvider, PoolData
-from pydefi.types import ChainId, Token
+from pydefi.types import Address, ChainId, Token
 
 # GeckoTerminal network slugs keyed by EVM chain ID
 _CHAIN_TO_NETWORK: dict[int, str] = {
@@ -392,7 +392,7 @@ class GeckoTerminal(BasePoolDataProvider):
                 page += 1
         return pools
 
-    async def get_pools_for_token(self, token_address: str | bytes, limit: int = 100) -> list[PoolData]:
+    async def get_pools_for_token(self, token_address: Address, limit: int = 100) -> list[PoolData]:
         """Fetch pools that contain a specific token.
 
         Args:
@@ -402,12 +402,12 @@ class GeckoTerminal(BasePoolDataProvider):
         Returns:
             A list of up to *limit* :class:`PoolData` objects.
         """
-        addr_str = ("0x" + token_address.hex()) if isinstance(token_address, bytes) else token_address
+        addr_str = token_address.to_0x_hex() # assume EVM address for now
         pools: list[PoolData] = []
         page = 1
         while len(pools) < limit:
             data = await self._get(
-                f"networks/{self._network}/tokens/{addr_str.lower()}/pools",
+                f"networks/{self._network}/tokens/{addr_str}/pools",
                 params={
                     "include": "base_token,quote_token,dex",
                     "page": page,

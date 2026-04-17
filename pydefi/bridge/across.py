@@ -25,7 +25,7 @@ from web3 import AsyncWeb3
 from pydefi.abi.bridge import ACROSS_SPOKE_POOL
 from pydefi.bridge.base import BaseBridge
 from pydefi.exceptions import BridgeError
-from pydefi.types import Address, BridgeQuote, Token, TokenAmount
+from pydefi.types import ZERO_ADDRESS, Address, BridgeQuote, Token, TokenAmount
 
 _ACROSS_API_BASE = "https://app.across.to/api"
 
@@ -171,7 +171,7 @@ class Across(BaseBridge):
             amount_in.amount,
             output_amount,
             self.dst_chain_id,
-            "0x" + "00" * 20,  # exclusiveRelayer (none)
+            ZERO_ADDRESS, # exclusiveRelayer (none)
             quote_timestamp,
             fill_deadline,
             0,  # exclusivityDeadline
@@ -182,7 +182,7 @@ class Across(BaseBridge):
 
         return {
             "to": self.spoke_pool_address,
-            "data": "0x" + call_data.hex() if isinstance(call_data, bytes) else call_data,
+            "data": "0x" + call_data.hex(),
             "value": value,
             "gas": str(300_000),
         }

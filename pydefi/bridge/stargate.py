@@ -206,7 +206,7 @@ class Stargate(BaseBridge):
 
         return {
             "to": self.router_address,
-            "data": "0x" + call_data.hex() if isinstance(call_data, bytes) else call_data,
+            "data": "0x" + call_data.hex(),
             "value": str(lz_fee),
             "gas": str(500_000),
         }
