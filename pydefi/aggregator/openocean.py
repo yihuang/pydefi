@@ -194,7 +194,7 @@ class OpenOcean(BaseAggregator):
             "outTokenAddress": token_out.encoded_address,
             "amount": str(amount_in.human_amount),
             "slippage": str(self._slippage_to_percent(slippage_bps)),
-            "account": from_address,
+            "account": "0x" + from_address.hex() if isinstance(from_address, bytes) else from_address,
             **kwargs,
         }
         data = await self._get("swap", params)

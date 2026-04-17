@@ -77,6 +77,8 @@ def encode_address(address: Address, chain_id: int) -> str:
         Human-readable string representation suitable for the target chain.
     """
     if chain_id == ChainId.SOLANA:
+        if isinstance(address, str):
+            return address
         return base58.b58encode(bytes(address)).decode()
     return "0x" + address.hex()
 
