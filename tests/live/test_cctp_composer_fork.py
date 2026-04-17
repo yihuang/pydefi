@@ -25,9 +25,11 @@ from pathlib import Path
 
 import pytest
 import solcx
+from hexbytes import HexBytes
 from web3 import AsyncWeb3
 from web3.exceptions import ContractLogicError, Web3RPCError
 
+from pydefi.types import ZERO_ADDRESS, Address, Hash
 from pydefi.vm.program import (
     call,
     pop,
@@ -171,11 +173,11 @@ def make_cctp_v2_message(
     source_domain: int,
     nonce: bytes,
     amount: int,
-    mint_recipient: str,
-    hook_data: bytes = b"",
+    mint_recipient: Address,
+    hook_data: Hash = HexBytes(b""),
     fee_executed: int = 0,
     destination_domain: int = 6,  # Base
-    burn_token: str = "0x" + "0" * 40,
+    burn_token: Address = ZERO_ADDRESS,
 ) -> bytes:
     """Build a synthetic CCTP v2 burn message.
 
@@ -231,8 +233,8 @@ def make_cctp_v2_message(
 
     # BurnMessageV2 body
     burn_msg_version = (1).to_bytes(4, "big")
-    burn_token_bytes = int(burn_token, 16).to_bytes(32, "big")
-    mint_recipient_bytes = int(mint_recipient, 16).to_bytes(32, "big")
+    burn_token_bytes = int.from_bytes(burn_token, "big").to_bytes(32, "big")
+    mint_recipient_bytes = int.from_bytes(mint_recipient, "big").to_bytes(32, "big")
     amount_bytes = amount.to_bytes(32, "big")
     msg_sender_bytes = (0).to_bytes(32, "big")
     max_fee_bytes = (0).to_bytes(32, "big")
@@ -283,7 +285,7 @@ def _compile_mock_contracts() -> dict[str, dict]:
     }
 
 
-async def _deploy(w3: AsyncWeb3, compiled: dict, deployer: str, *args) -> str:
+async def _deploy(w3: AsyncWeb3, compiled: dict, deployer: Address, *args) -> Address:
     return await deploy(w3, compiled, deployer, *args)
 
 
@@ -378,12 +380,12 @@ async def ctx(cctp_fork_w3, compiled_cctp_composer, compiled_mocks, compiled_def
 
 
 def _make_message_and_attestation(
-    composer_address: str,
+    composer_address: Address,
     amount: int,
-    hook_data: bytes = b"",
+    hook_data: Hash = HexBytes(b""),
     nonce: int = 1,
     fee_executed: int = 0,
-):
+) -> tuple[bytes, bytes]:
     """Return (message_bytes, attestation_bytes) for a CCTP v2 compose call."""
     message = make_cctp_v2_message(
         source_domain=_ETHEREUM_DOMAIN,
@@ -438,7 +440,9 @@ class TestCCTPComposerBasic:
             + pop()  # discard success flag
         )
 
-        message, attestation = _make_message_and_attestation(composer.address, amount, hook_data=program, nonce=1)
+        message, attestation = _make_message_and_attestation(
+            HexBytes(composer.address), amount, hook_data=HexBytes(program), nonce=1
+        )
 
         pre_call_count = await target.functions.callCount().call()
         pre_vm = await usdc.functions.balanceOf(vm_address).call()
@@ -484,7 +488,7 @@ class TestCCTPComposerBasic:
         )
 
         message, attestation = _make_message_and_attestation(
-            composer.address, amount, hook_data=program, nonce=2, fee_executed=fee
+            HexBytes(composer.address), amount, hook_data=HexBytes(program), nonce=2, fee_executed=fee
         )
 
         pre_vm = await usdc.functions.balanceOf(vm_address).call()
@@ -522,7 +526,9 @@ class TestCCTPComposerBasic:
             + pop()
         )
 
-        message, attestation = _make_message_and_attestation(composer.address, amount, hook_data=program, nonce=3)
+        message, attestation = _make_message_and_attestation(
+            HexBytes(composer.address), amount, hook_data=HexBytes(program), nonce=3
+        )
 
         pre_target_bal = await w3.eth.get_balance(target.address)
         tx = await composer.functions.receiveAndExecute(message, attestation).transact(
@@ -557,7 +563,9 @@ class TestCCTPComposerBasic:
             + pop()
         )
 
-        message, attestation = _make_message_and_attestation(composer.address, amount, hook_data=program, nonce=4)
+        message, attestation = _make_message_and_attestation(
+            HexBytes(composer.address), amount, hook_data=HexBytes(program), nonce=4
+        )
 
         pre_count = await target.functions.callCount().call()
         tx = await composer.functions.receiveAndExecute(message, attestation).transact({"from": deployer})
@@ -594,7 +602,7 @@ class TestCCTPComposerBasic:
         )
 
         message, attestation = _make_message_and_attestation(
-            composer.address, amount, hook_data=program, nonce=nonce_int, fee_executed=fee
+            HexBytes(composer.address), amount, hook_data=HexBytes(program), nonce=nonce_int, fee_executed=fee
         )
 
         tx = await composer.functions.receiveAndExecute(message, attestation).transact({"from": deployer})
@@ -637,7 +645,9 @@ class TestCCTPComposerBasic:
             + pop()
         )
 
-        message, attestation = _make_message_and_attestation(composer.address, amount, hook_data=program, nonce=6)
+        message, attestation = _make_message_and_attestation(
+            HexBytes(composer.address), amount, hook_data=HexBytes(program), nonce=6
+        )
 
         tx = await composer.functions.receiveAndExecute(message, attestation).transact({"from": deployer})
         receipt = await w3.eth.get_transaction_receipt(tx)
@@ -677,7 +687,9 @@ class TestCCTPComposerErrors:
             + pop()
         )
 
-        message, attestation = _make_message_and_attestation(composer.address, amount, hook_data=program, nonce=50)
+        message, attestation = _make_message_and_attestation(
+            HexBytes(composer.address), amount, hook_data=HexBytes(program), nonce=50
+        )
 
         with pytest.raises((ContractLogicError, Web3RPCError)):
             await composer.functions.receiveAndExecute(message, attestation).transact({"from": deployer})
@@ -714,7 +726,9 @@ class TestCCTPComposerErrors:
             + pop()
         )
 
-        message, attestation = _make_message_and_attestation(composer.address, amount, hook_data=program, nonce=51)
+        message, attestation = _make_message_and_attestation(
+            HexBytes(composer.address), amount, hook_data=HexBytes(program), nonce=51
+        )
 
         with pytest.raises((ContractLogicError, Web3RPCError)):
             await composer.functions.receiveAndExecute(message, attestation).transact({"from": deployer})

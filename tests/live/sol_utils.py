@@ -10,6 +10,8 @@ from pathlib import Path
 import solcx
 from web3 import AsyncWeb3
 
+from pydefi.types import Address
+
 
 def ensure_solc(version: str = "0.8.24") -> None:
     """Install *version* of solc once (no-op if already installed)."""
@@ -44,12 +46,12 @@ def compile_sol_source(source: str, contract_name: str, *, evm_version: str = "d
     return result[f"<stdin>:{contract_name}"]
 
 
-async def deploy(w3: AsyncWeb3, compiled: dict, deployer: str, *args) -> str:
+async def deploy(w3: AsyncWeb3, compiled: dict, deployer: Address, *args) -> Address:
     """Deploy a contract and return its address."""
     contract = w3.eth.contract(abi=compiled["abi"], bytecode=compiled["bin"])
     tx_hash = await contract.constructor(*args).transact({"from": deployer})
     receipt = await w3.eth.get_transaction_receipt(tx_hash)
-    return receipt["contractAddress"]
+    return Address(receipt["contractAddress"])
 
 
 # ---------------------------------------------------------------------------
