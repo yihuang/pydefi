@@ -17,14 +17,12 @@ from typing import Any
 
 import aiohttp
 
-from pydefi._utils import decode_address
 from pydefi.amm.base import BaseSolanaAMM
 from pydefi.exceptions import InsufficientLiquidityError
-from pydefi.types import ChainId, SwapRoute, SwapStep, Token, TokenAmount
+from pydefi.types import SwapRoute, SwapStep, Token, TokenAmount
 
 _RAYDIUM_API_BASE = "https://transaction-v1.raydium.io"
-# Native SOL mint address bytes (used to detect when wrapping/unwrapping is needed)
-_SOL_MINT_BYTES = decode_address("So11111111111111111111111111111111111111112", ChainId.SOLANA)
+_SOL_MINT = "So11111111111111111111111111111111111111112"
 
 
 class Raydium(BaseSolanaAMM):
@@ -199,8 +197,8 @@ class Raydium(BaseSolanaAMM):
         url = f"{self.api_url.rstrip('/')}/transaction/swap-base-in"
         # Raydium requires wrapSol/unwrapSol when the native SOL mint is involved
         # so that the API can auto-create/close the wSOL token account.
-        wrap_sol = kwargs.pop("wrapSol", amount_in.token.address == _SOL_MINT_BYTES)
-        unwrap_sol = kwargs.pop("unwrapSol", token_out.address == _SOL_MINT_BYTES)
+        wrap_sol = kwargs.pop("wrapSol", amount_in.token.address == _SOL_MINT)
+        unwrap_sol = kwargs.pop("unwrapSol", token_out.address == _SOL_MINT)
         payload: dict[str, Any] = {
             "swapResponse": compute_response,
             "txVersion": "V0",
