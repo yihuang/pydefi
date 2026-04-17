@@ -305,7 +305,7 @@ class GeckoTerminal(BasePoolDataProvider):
             page += 1
         return pools
 
-    async def get_pools_for_tokens(self, token_addresses: list[str | bytes], limit: int = 100) -> list[PoolData]:
+    async def get_pools_for_tokens(self, token_addresses: list[Address], limit: int = 100) -> list[PoolData]:
         """Fetch pools that contain any of the given tokens (batch query).
 
         Uses the GeckoTerminal ``/tokens/multi/{addresses}/pools`` endpoint to
@@ -321,8 +321,7 @@ class GeckoTerminal(BasePoolDataProvider):
         sent to the API.
 
         Args:
-            token_addresses: List of ERC-20 token addresses to query (str or
-                bytes ``Address``).
+            token_addresses: List of ERC-20 token addresses to query (``Address``).
             limit: Maximum total number of pools to return.
 
         Returns:
@@ -332,17 +331,11 @@ class GeckoTerminal(BasePoolDataProvider):
         if not token_addresses:
             return []
 
-        # Normalize all addresses to lowercase hex strings at the periphery
-        def _to_str(addr: str | bytes) -> str:
-            if isinstance(addr, bytes):
-                return "0x" + addr.hex()
-            return addr
-
         # Deduplicate while preserving order
         seen_input: set[str] = set()
         unique_addresses: list[str] = []
         for addr in token_addresses:
-            key = _to_str(addr).lower()
+            key = "0x" + addr.hex()
             if key not in seen_input:
                 seen_input.add(key)
                 unique_addresses.append(key)
