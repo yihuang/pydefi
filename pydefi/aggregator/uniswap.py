@@ -181,7 +181,7 @@ class UniswapAPI(BaseAggregator):
             "slippageTolerance": self._slippage_to_percent(slippage_bps),
         }
         if swapper is not None:
-            body["swapper"] = swapper
+            body["swapper"] = "0x" + swapper.hex() if isinstance(swapper, bytes) else swapper
         body.update(kwargs)
 
         data = await self._post("v1/quote", body)
@@ -249,7 +249,7 @@ class UniswapAPI(BaseAggregator):
             "tokenOutChainId": self.chain_id,
             "amount": str(amount_in.amount),
             "type": "EXACT_INPUT",
-            "swapper": wallet_address,
+            "swapper": "0x" + wallet_address.hex() if isinstance(wallet_address, bytes) else wallet_address,
             "slippageTolerance": self._slippage_to_percent(slippage_bps),
         }
         quote_body.update(kwargs)
