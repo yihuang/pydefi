@@ -210,8 +210,15 @@ class PoolIndexer:
         with Session(self._engine) as session:
             existing = session.get(Pool, addr)
             if existing:
-                for field, value in pool.model_dump(exclude={"pool_address"}).items():
-                    setattr(existing, field, value)
+                existing.protocol = pool.protocol
+                existing.chain_id = pool.chain_id
+                existing.token0_address = pool.token0_address
+                existing.token0_symbol = pool.token0_symbol
+                existing.token0_decimals = pool.token0_decimals
+                existing.token1_address = pool.token1_address
+                existing.token1_symbol = pool.token1_symbol
+                existing.token1_decimals = pool.token1_decimals
+                existing.fee_bps = pool.fee_bps
                 session.add(existing)
             else:
                 session.add(pool)
