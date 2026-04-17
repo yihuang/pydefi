@@ -161,6 +161,10 @@ class PoolIndexer:
                 self._factory_protocol[factory.factory_address.lower()] = factory.protocol
                 self._factory_chain_id[factory.factory_address.lower()] = factory.chain_id
 
+    @property
+    def _all_tracked_addresses(self) -> set[str]:
+        return set(self._pool_protocol) | set(self._factory_protocol)
+
     # ------------------------------------------------------------------
     # Pool registration
     # ------------------------------------------------------------------
@@ -195,6 +199,8 @@ class PoolIndexer:
             fee_bps: Swap fee in basis points (default ``30``).
         """
         addr = pool_address.lower()
+        if not (addr.startswith("0x") and len(addr) == 42):
+            raise ValueError(f"Invalid pool address: {pool_address!r}")
         pool = Pool(
             pool_address=addr,
             protocol=protocol,
@@ -384,8 +390,7 @@ class PoolIndexer:
         if target_addr is not None:
             self._set_last_indexed_block(target_addr, to_block)
         else:
-            final_addrs = set(self._pool_protocol) | set(self._factory_protocol)
-            self._set_last_indexed_blocks({addr: to_block for addr in final_addrs})
+            self._set_last_indexed_blocks({addr: to_block for addr in self._all_tracked_addresses})
 
         return total_stored
 
@@ -438,7 +443,7 @@ class PoolIndexer:
         current_block: int = await self.w3.eth.block_number  # type: ignore[assignment]
 
         # Determine the earliest un-indexed block across all tracked addresses.
-        all_addrs = list(set(self._pool_protocol) | set(self._factory_protocol))
+        all_addrs = list(self._all_tracked_addresses)
         checkpoints = self._get_last_indexed_blocks(all_addrs)
         from_block = current_block
         for addr in all_addrs:
@@ -468,8 +473,7 @@ class PoolIndexer:
             )
         # Advance checkpoints for every tracked address, including any pools that
         # were auto-discovered during _process_logs (not in the pre-fetch all_addrs).
-        all_addrs_after = set(self._pool_protocol) | set(self._factory_protocol)
-        self._set_last_indexed_blocks({addr: current_block for addr in all_addrs_after})
+        self._set_last_indexed_blocks({addr: current_block for addr in self._all_tracked_addresses})
 
     # ------------------------------------------------------------------
     # State queries
@@ -772,6 +776,10 @@ class PoolIndexer:
         protocol = self._factory_protocol[factory_address]
         chain_id = self._factory_chain_id[factory_address]
         fee_bps = fee // 100  # V3 fee is in hundredths of a bip; convert to bps
+        if fee % 100 != 0:
+            logger.warning(
+                "V3 pool %s fee %d is not evenly divisible by 100; rounding down to %d bps", pool_addr, fee, fee_bps
+            )
 
         t0_symbol, t0_decimals = await self._fetch_token_meta(token0_addr)
         t1_symbol, t1_decimals = await self._fetch_token_meta(token1_addr)
@@ -809,17 +817,26 @@ class PoolIndexer:
     async def _fetch_token_meta(self, token_address: str) -> tuple[str, int]:
         """Return ``(symbol, decimals)`` for *token_address* via ERC-20 calls.
 
-        Falls back to ``("", 18)`` if the calls fail (e.g. non-standard tokens).
+        Falls back to ``("", 18)`` for non-standard or non-ERC-20 tokens.
+        Unexpected errors (network timeouts, etc.) are logged and re-raised.
         """
         from eth_contract.erc20 import ERC20
 
         try:
             symbol: str = await ERC20.fns.symbol().call(self.w3, to=token_address)
-        except Exception:
+        except (ValueError, TypeError, OverflowError):
+            # Non-standard token: missing or malformed symbol() response.
+            symbol = ""
+        except Exception as exc:
+            logger.warning("Unexpected error fetching symbol for %s: %s", token_address, exc)
             symbol = ""
         try:
             decimals: int = await ERC20.fns.decimals().call(self.w3, to=token_address)
-        except Exception:
+        except (ValueError, TypeError, OverflowError):
+            # Non-standard token: missing or malformed decimals() response.
+            decimals = 18
+        except Exception as exc:
+            logger.warning("Unexpected error fetching decimals for %s: %s", token_address, exc)
             decimals = 18
         return symbol, decimals
 
