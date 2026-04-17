@@ -64,8 +64,6 @@ DEFI_VM_SOL_FILE = REPO_ROOT / "pydefi" / "vm" / "DeFiVM.sol"
 WETH_ADDR: Address = WETH.address
 USDC_ADDR: Address = USDC.address
 DAI_ADDR: Address = DAI.address
-UNISWAP_V3_ROUTER: Address = UNISWAP_V3_ROUTER
-UNISWAP_V2_ROUTER: Address = UNISWAP_V2_ROUTER
 
 # ---------------------------------------------------------------------------
 # Mock pool contracts (inline Solidity)
@@ -278,15 +276,16 @@ contract MockV2Pair {
 }
 """
 
-MOCK_V2_PAIR = Contract.from_abi([
-    "function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast)",
-    "function token0() external view returns (address)",
-    "function token1() external view returns (address)",
-    "function swap(uint amount0Out, uint amount1Out, address to, bytes calldata data) external",
-    "function simulateFlashSwap(address callee, uint256 amountOut, bytes calldata data, uint256 repayAmount) external",
-    "function simulateAerodromeHook(address callee, uint256 amountOut, bytes calldata data, uint256 repayAmount) external",
-])
-
+MOCK_V2_PAIR = Contract.from_abi(
+    [
+        "function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast)",
+        "function token0() external view returns (address)",
+        "function token1() external view returns (address)",
+        "function swap(uint amount0Out, uint amount1Out, address to, bytes calldata data) external",
+        "function simulateFlashSwap(address callee, uint256 amountOut, bytes calldata data, uint256 repayAmount) external",
+        "function simulateAerodromeHook(address callee, uint256 amountOut, bytes calldata data, uint256 repayAmount) external",
+    ]
+)
 
 
 # ---------------------------------------------------------------------------
@@ -627,7 +626,7 @@ class TestDeFiVMCallbacks:
             flash_amount,
             data,
             amount_owed,
-        ).transact(w3, deployer, to= ctx["v2pair"])
+        ).transact(w3, deployer, to=ctx["v2pair"])
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
 
