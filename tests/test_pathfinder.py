@@ -4,7 +4,6 @@ import math
 from decimal import Decimal
 
 import pytest
-from hexbytes import HexBytes
 
 from pydefi.exceptions import NoRouteFoundError
 from pydefi.pathfinder.graph import PoolEdge, PoolGraph, V3PoolEdge

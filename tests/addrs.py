@@ -9,7 +9,7 @@ No pytest, no network I/O — safe to import from unit tests.
 from __future__ import annotations
 
 from pydefi.deployments import get_address, get_token
-from pydefi.types import Address, ChainId, ZERO_ADDRESS
+from pydefi.types import ZERO_ADDRESS, Address, ChainId
 
 # ── Chain-agnostic ────────────────────────────────────────────────────────────
 
