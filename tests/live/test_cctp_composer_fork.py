@@ -174,7 +174,7 @@ def make_cctp_v2_message(
     nonce: bytes,
     amount: int,
     mint_recipient: Address,
-    hook_data: Hash = HexBytes(b""),
+    hook_data: bytes = b"",
     fee_executed: int = 0,
     destination_domain: int = 6,  # Base
     burn_token: Address = ZERO_ADDRESS,
@@ -382,7 +382,7 @@ async def ctx(cctp_fork_w3, compiled_cctp_composer, compiled_mocks, compiled_def
 def _make_message_and_attestation(
     composer_address: Address,
     amount: int,
-    hook_data: Hash = HexBytes(b""),
+    hook_data: Hash = b"",
     nonce: int = 1,
     fee_executed: int = 0,
 ) -> tuple[bytes, bytes]:

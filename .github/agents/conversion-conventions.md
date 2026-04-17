@@ -18,6 +18,8 @@ Two type aliases are defined in `pydefi.types` and re-exported from `pydefi`:
 Because `HexBytes` is a `bytes` subclass, `Address` and `Hash` values can be
 used anywhere `bytes` is expected without extra wrapping.
 
+For other bytes values with variable length (e.g. signatures, call data), use `bytes` directly without an alias.
+
 ---
 
 ## 2. The "Conversions at Peripheries" Rule
@@ -98,6 +100,22 @@ token_b32: Hash = token_to_bytes32(HexBytes(token_address))
 `token_to_bytes32(address: Address) -> Hash` returns 32 zero bytes for native
 token sentinels (zero address or `0xEeEe…` form) and `address_to_bytes32`
 padding for all other ERC-20 token addresses.
+
+### Re-use Constants
+
+`pydefi.types` modules has defined constants for the native token sentinels, re-use them instead of hardcoding the values:
+
+```python
+from pydefi.types import ZERO_ADDRESS, NATIVE_ADDRESSES
+
+# ✗ wrong — hardcoded values
+token = Address("0x0000000000000000000000000000000000000000")
+token_address in ("0x0000000000000000000000000000000000000000", "0xEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEe")
+
+# ✓ correct — use constants
+token = ZERO_ADDRESS
+token_address in NATIVE_ADDRESSES:
+```
 
 ---
 
