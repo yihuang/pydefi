@@ -22,7 +22,7 @@ from pydefi._utils import address_to_bytes32, encode_address, token_to_bytes32
 from pydefi.abi.bridge import MAYAN_FORWARDER, MAYAN_SWIFT_V2, MayanSwiftOrderParams
 from pydefi.bridge.base import BaseBridge
 from pydefi.exceptions import BridgeError
-from pydefi.types import Address, BridgeQuote, NATIVE_SENTINEL, Token, TokenAmount
+from pydefi.types import NATIVE_SENTINEL, Address, BridgeQuote, Token, TokenAmount
 
 _MAYAN_API_BASE = "https://price-api.mayan.finance/v3"
 

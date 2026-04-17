@@ -16,7 +16,7 @@ import aiohttp
 from pydefi._utils import encode_address
 from pydefi.bridge.base import BaseBridge
 from pydefi.exceptions import BridgeError
-from pydefi.types import Address, BridgeQuote, NATIVE_SENTINEL, Token, TokenAmount
+from pydefi.types import NATIVE_SENTINEL, Address, BridgeQuote, Token, TokenAmount
 
 _RELAY_API_BASE = "https://api.relay.link"
 

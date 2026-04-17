@@ -44,8 +44,6 @@ from pydefi.vm.swap import (
 )
 from tests.addrs import (
     DAI,
-    UNISWAP_V2_ROUTER,
-    UNISWAP_V3_ROUTER,
     USDC,
     WETH,
 )
@@ -665,7 +663,6 @@ class TestMultiHopSwapComposer:
         w3 = ctx["w3"]
         deployer = ctx["deployer"]
         vm_address = ctx["vm_address"]
-        vm = ctx["vm"]
         v3pool_address = ctx["v3pool_address"]
         token0_address = ctx["token0_address"]
         token1_address = ctx["token1_address"]
@@ -709,7 +706,6 @@ class TestMultiHopSwapComposer:
         w3 = ctx["w3"]
         deployer = ctx["deployer"]
         vm_address = ctx["vm_address"]
-        vm = ctx["vm"]
         v2pair = ctx["v2pair"]
         token1_address = ctx["token1_address"]  # token0 of pair
         token0_address = ctx["token0_address"]  # token1 of pair
@@ -770,7 +766,6 @@ class TestMultiHopSwapComposer:
         w3 = ctx["w3"]
         deployer = ctx["deployer"]
         vm_address = ctx["vm_address"]
-        vm = ctx["vm"]
         v3pool_address = ctx["v3pool_address"]
         v2pair = ctx["v2pair"]
         token0_address = ctx["token0_address"]
