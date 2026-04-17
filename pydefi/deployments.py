@@ -135,7 +135,9 @@ def get_token(name: str, chain_id: int) -> Token:
     addr = entry["addresses"].get(chain_id)
     if addr is None:
         raise KeyError(f"Token {name!r} has no deployment on chain {chain_id}")
-    return Token(chain_id=chain_id, address=decode_address(addr, chain_id), symbol=entry["symbol"], decimals=entry["decimals"])
+    return Token(
+        chain_id=chain_id, address=decode_address(addr, chain_id), symbol=entry["symbol"], decimals=entry["decimals"]
+    )
 
 
 def chains_for(name: str) -> list[int]:

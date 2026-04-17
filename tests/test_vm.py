@@ -24,12 +24,12 @@ from __future__ import annotations
 import struct
 
 import pytest
-from hexbytes import HexBytes
 from eth_abi import encode
 from eth_abi.exceptions import EncodingTypeError
 from eth_contract.contract import ContractFunction
 from eth_contract.erc20 import ERC20
 from eth_utils import keccak
+from hexbytes import HexBytes
 
 from pydefi.vm import Patch, Program, emit_abi_encode, emit_abi_encode_packed
 from pydefi.vm.program import (

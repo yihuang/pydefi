@@ -94,6 +94,7 @@ class Token:
 
         return encode_address(self.address, self.chain_id)
 
+
 @dataclass
 class TokenAmount:
     """A specific quantity of a :class:`Token`.

@@ -179,9 +179,9 @@ from eth_abi import encode_with_hooks
 if TYPE_CHECKING:
     from eth_abi.hooks import EncodingContext
 
-from pydefi.types import Address
 from eth_contract.contract import ContractFunction
 
+from pydefi.types import Address
 from pydefi.vm.abi import emit_abi_encode, emit_abi_encode_packed
 from pydefi.vm.program import (
     OP_JUMPDEST,
