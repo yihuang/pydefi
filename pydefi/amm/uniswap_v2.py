@@ -16,7 +16,7 @@ from web3 import AsyncWeb3
 from pydefi.abi.amm import UNISWAP_V2_FACTORY, UNISWAP_V2_PAIR, UNISWAP_V2_ROUTER
 from pydefi.amm.base import BaseAMM
 from pydefi.exceptions import InsufficientLiquidityError
-from pydefi.types import SwapRoute, SwapStep, Token, TokenAmount
+from pydefi.types import Address, SwapRoute, SwapStep, Token, TokenAmount
 
 
 class UniswapV2(BaseAMM):
@@ -52,7 +52,7 @@ class UniswapV2(BaseAMM):
         """Return a :class:`~eth_contract.Contract` bound to a V2 factory."""
         return UNISWAP_V2_FACTORY(to=factory_address)
 
-    def get_pair_contract(self, pair_address: str) -> Contract:
+    def get_pair_contract(self, pair_address: Address) -> Contract:
         """Return a :class:`~eth_contract.Contract` bound to a V2 pair."""
         return UNISWAP_V2_PAIR(to=pair_address)
 

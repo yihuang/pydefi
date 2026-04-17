@@ -9,7 +9,7 @@ from pydefi.pathfinder.graph import PoolEdge, V3PoolEdge
 from pydefi.pool_data.base import BasePoolDataProvider, PoolData
 from pydefi.pool_data.geckoterminal import GeckoTerminal
 from pydefi.pool_data.subgraph import UniswapV2Subgraph, UniswapV3Subgraph
-from pydefi.types import ChainId
+from pydefi.types import Address, ChainId
 from tests.addrs import DAI, USDC, WETH, ZERO_ADDR
 
 # ---------------------------------------------------------------------------
@@ -17,7 +17,7 @@ from tests.addrs import DAI, USDC, WETH, ZERO_ADDR
 # ---------------------------------------------------------------------------
 
 
-POOL_ADDR = "0x" + "ab" * 20
+POOL_ADDR: Address = Address("0x" + "ab" * 20)
 
 
 # ---------------------------------------------------------------------------

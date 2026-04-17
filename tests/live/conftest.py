@@ -37,7 +37,7 @@ import pytest
 from web3 import AsyncWeb3
 
 from pydefi.rpc import get_w3
-from pydefi.types import ChainId
+from pydefi.types import Address, ChainId
 from tests.addrs import INTERPRETER_ADDR
 from tests.live.sol_utils import compile_interpreter_sync
 
@@ -54,7 +54,7 @@ ETH_RPC_URL = os.environ.get("ETH_RPC_URL") or "https://eth.drpc.org"
 SOLANA_RPC_URL = os.environ.get("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com")
 
 
-async def _ensure_interpreter(w3: AsyncWeb3, deployer: str) -> str:
+async def _ensure_interpreter(w3: AsyncWeb3, deployer: str) -> Address:
     """Return EVM interpreter address, compiling + deploying one if needed.
 
     If the Analog-Labs interpreter is pre-deployed on this fork, returns its
@@ -70,7 +70,7 @@ async def _ensure_interpreter(w3: AsyncWeb3, deployer: str) -> str:
     contract = w3.eth.contract(abi=compiled[key]["abi"], bytecode=compiled[key]["bin"])
     tx_hash = await contract.constructor().transact({"from": deployer})
     receipt = await w3.eth.get_transaction_receipt(tx_hash)
-    return receipt["contractAddress"]
+    return Address(receipt["contractAddress"])
 
 
 # ---------------------------------------------------------------------------
@@ -79,7 +79,7 @@ async def _ensure_interpreter(w3: AsyncWeb3, deployer: str) -> str:
 
 
 @pytest.fixture(scope="module")
-async def interpreter_addr(fork_w3_module) -> str:
+async def interpreter_addr(fork_w3_module) -> Address:
     """Return EVM interpreter address for this fork's Anvil instance.
 
     If the Analog-Labs interpreter is already deployed at its well-known

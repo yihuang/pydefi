@@ -26,6 +26,7 @@ import solcx
 from eth_abi import decode
 from web3.exceptions import ContractLogicError, Web3RPCError
 
+from pydefi.types import Address
 from pydefi.vm.swap import (
     SplitLeg,
     SwapHop,
@@ -56,11 +57,11 @@ DEFI_VM_SOL_FILE = REPO_ROOT / "pydefi" / "vm" / "DeFiVM.sol"
 # Well-known mainnet addresses (for ABI/selector tests only; no live calls)
 # ---------------------------------------------------------------------------
 
-WETH_ADDR = WETH.address
-USDC_ADDR = USDC.address
-DAI_ADDR = DAI.address
-UNISWAP_V3_ROUTER = UNISWAP_V3_ROUTER
-UNISWAP_V2_ROUTER = UNISWAP_V2_ROUTER
+WETH_ADDR: Address = WETH.address
+USDC_ADDR: Address = USDC.address
+DAI_ADDR: Address = DAI.address
+UNISWAP_V3_ROUTER: Address = UNISWAP_V3_ROUTER
+UNISWAP_V2_ROUTER: Address = UNISWAP_V2_ROUTER
 
 # ---------------------------------------------------------------------------
 # Mock pool contracts (inline Solidity)

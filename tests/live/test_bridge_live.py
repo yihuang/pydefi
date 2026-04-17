@@ -19,7 +19,7 @@ from pydefi.bridge.layerzero_oft import LayerZeroOFT
 from pydefi.bridge.mayan import Mayan
 from pydefi.bridge.relay import Relay
 from pydefi.exceptions import BridgeError
-from pydefi.types import ChainId, Token, TokenAmount
+from pydefi.types import Address, ChainId, Token, TokenAmount
 from tests.addrs import ETH_WHALE, USDC
 
 # ---------------------------------------------------------------------------
@@ -29,7 +29,7 @@ from tests.addrs import ETH_WHALE, USDC
 # USDC on Arbitrum (native USDC, not the deprecated bridged USDC.e)
 USDC_ARB = Token(
     chain_id=ChainId.ARBITRUM,
-    address="0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
+    address=Address("0xaf88d065e77c8cC2239327C5EDb3A432268e5831"),
     symbol="USDC",
     decimals=6,
 )
@@ -38,7 +38,7 @@ USDC_ARB = Token(
 # via SWIFT V1 `createOrderWithEth` where swiftInputContract == ZeroAddress)
 WETH_ARB = Token(
     chain_id=ChainId.ARBITRUM,
-    address="0x82aF49447D8a07e3bd95BD0d56f35241523fBab1",
+    address=Address("0x82aF49447D8a07e3bd95BD0d56f35241523fBab1"),
     symbol="WETH",
     decimals=18,
 )
@@ -46,19 +46,19 @@ WETH_ARB = Token(
 # Native ETH sentinel used by bridges
 ETH_NATIVE = Token(
     chain_id=ChainId.ETHEREUM,
-    address="0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",
+    address=Address("0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"),
     symbol="ETH",
     decimals=18,
 )
 ETH_NATIVE_ARB = Token(
     chain_id=ChainId.ARBITRUM,
-    address="0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",
+    address=Address("0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"),
     symbol="ETH",
     decimals=18,
 )
 
 # GasZip deposit contract on Ethereum mainnet
-GASZIP_CONTRACT_ETH = "0x391E7C679d29bD940d63be94AD22A25d25b5A604"
+GASZIP_CONTRACT_ETH: Address = Address("0x391E7C679d29bD940d63be94AD22A25d25b5A604")
 
 # Sanity bounds for USDC bridge quotes (1 000 USDC in, expect 900–1 100 USDC out)
 BRIDGE_AMOUNT_USDC = 1_000 * 10**6
@@ -261,7 +261,7 @@ class TestRelayLive:
 # Same contract address on Ethereum and Arbitrum (CREATE2 deployment).
 # Ethereum: https://etherscan.io/token/0x6985884C4392D348587B19cb9eAAf157F13271cd
 # Arbitrum: https://arbiscan.io/token/0x6985884C4392D348587B19cb9eAAf157F13271cd
-_ZRO_ADDRESS = "0x6985884C4392D348587B19cb9eAAf157F13271cd"
+_ZRO_ADDRESS: Address = Address("0x6985884C4392D348587B19cb9eAAf157F13271cd")
 
 ZRO_ETH = Token(
     chain_id=ChainId.ETHEREUM,

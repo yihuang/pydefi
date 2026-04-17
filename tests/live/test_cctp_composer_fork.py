@@ -441,7 +441,7 @@ class TestCCTPComposerBasic:
         )
 
         message, attestation = _make_message_and_attestation(
-            HexBytes(composer.address), amount, hook_data=HexBytes(program), nonce=1
+            composer.address, amount, hook_data=HexBytes(program), nonce=1
         )
 
         pre_call_count = await target.functions.callCount().call()

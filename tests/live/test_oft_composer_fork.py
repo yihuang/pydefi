@@ -28,6 +28,7 @@ import solcx
 from web3 import AsyncWeb3
 from web3.exceptions import ContractLogicError, Web3RPCError
 
+from pydefi.types import Address
 from pydefi.vm.program import (
     call,
     load_reg,
@@ -62,7 +63,7 @@ def _compile_defi_vm() -> dict:
     return compile_sol_file(DEFI_VM_SOL_FILE, "DeFiVM")
 
 
-async def _deploy(w3: AsyncWeb3, compiled: dict, deployer: str, *args) -> str:
+async def _deploy(w3: AsyncWeb3, compiled: dict, deployer: Address, *args) -> Address:
     """Deploy a contract and return its address."""
     return await deploy(w3, compiled, deployer, *args)
 
@@ -822,7 +823,7 @@ class TestOFTComposerFork:
         oft_address = ctx["oft_address"]
 
         non_owner = accounts[1]
-        fresh_recipient = "0x000000000000000000000000000000000000dEaD"
+        fresh_recipient: Address = Address("0x000000000000000000000000000000000000dEaD")
 
         with pytest.raises((ContractLogicError, Web3RPCError)):
             await composer.functions.rescueToken(oft_address, fresh_recipient, 1).transact({"from": non_owner})

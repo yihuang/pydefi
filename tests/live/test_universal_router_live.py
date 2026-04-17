@@ -34,7 +34,7 @@ from pydefi.amm.universal_router import (
     V3Hop,
     V4Hop,
 )
-from pydefi.types import TokenAmount
+from pydefi.types import Address, TokenAmount
 from tests.addrs import ETH_WHALE, UNISWAP_V3_QUOTER, UNISWAP_V3_ROUTER, UNISWAP_V4_POOL_MANAGER, USDC, WETH, ZERO_ADDR
 
 # ---------------------------------------------------------------------------
@@ -87,7 +87,7 @@ def _compute_v4_pool_id(
     currency1: str,
     fee: int,
     tick_spacing: int,
-    hooks: str = ZERO_ADDR,
+    hooks: Address = ZERO_ADDR,
 ) -> bytes:
     """Return the 32-byte PoolId = keccak256(abi.encode(PoolKey))."""
     return Web3.keccak(

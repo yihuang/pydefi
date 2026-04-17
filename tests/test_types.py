@@ -2,9 +2,8 @@
 
 from decimal import Decimal
 
-from hexbytes import HexBytes
-
 from pydefi.types import (
+    Address,
     BridgeQuote,
     ChainId,
     SwapRoute,
@@ -36,7 +35,7 @@ class TestToken:
         )
         self.native = Token(
             chain_id=ChainId.ETHEREUM,
-            address=HexBytes("0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"),
+            address=Address("0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"),
             symbol="ETH",
             decimals=18,
         )
@@ -55,7 +54,7 @@ class TestToken:
     def test_is_native_case_insensitive(self):
         upper = Token(
             chain_id=1,
-            address=HexBytes("0xEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE"),
+            address=Address("0xEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE"),
             symbol="ETH",
         )
         assert upper.is_native()
@@ -146,9 +145,9 @@ class TestTokenAmount:
 
 class TestSwapRoute:
     def setup_method(self):
-        self.weth = Token(chain_id=1, address=HexBytes("0x" + "C0" * 20), symbol="WETH", decimals=18)
-        self.usdc = Token(chain_id=1, address=HexBytes("0x" + "A0" * 20), symbol="USDC", decimals=6)
-        self.dai = Token(chain_id=1, address=HexBytes("0x" + "D0" * 20), symbol="DAI", decimals=18)
+        self.weth = Token(chain_id=1, address=Address("0x" + "C0" * 20), symbol="WETH", decimals=18)
+        self.usdc = Token(chain_id=1, address=Address("0x" + "A0" * 20), symbol="USDC", decimals=6)
+        self.dai = Token(chain_id=1, address=Address("0x" + "D0" * 20), symbol="DAI", decimals=18)
 
     def test_single_hop_route(self):
         step = SwapStep(
@@ -214,8 +213,8 @@ class TestSwapRoute:
 
 class TestBridgeQuote:
     def setup_method(self):
-        self.usdc_eth = Token(chain_id=1, address=HexBytes("0x" + "A0" * 20), symbol="USDC", decimals=6)
-        self.usdc_arb = Token(chain_id=42161, address=HexBytes("0x" + "A1" * 20), symbol="USDC", decimals=6)
+        self.usdc_eth = Token(chain_id=1, address=Address("0x" + "A0" * 20), symbol="USDC", decimals=6)
+        self.usdc_arb = Token(chain_id=42161, address=Address("0x" + "A1" * 20), symbol="USDC", decimals=6)
 
     def test_bridge_quote_creation(self):
         amount_in = TokenAmount.from_human(self.usdc_eth, "1000")

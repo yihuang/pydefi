@@ -29,8 +29,8 @@ from eth_abi.exceptions import EncodingTypeError
 from eth_contract.contract import ContractFunction
 from eth_contract.erc20 import ERC20
 from eth_utils import keccak
-from hexbytes import HexBytes
 
+from pydefi.types import Address
 from pydefi.vm import Patch, Program, emit_abi_encode, emit_abi_encode_packed
 from pydefi.vm.program import (
     OP_ADD,
@@ -108,9 +108,9 @@ from tests.conftest import (
 # Helpers
 # ---------------------------------------------------------------------------
 
-ADDR_A = HexBytes("0x" + "aA" * 20)
-ADDR_B = HexBytes("0x" + "bB" * 20)
-ADDR_ZERO = HexBytes("0x" + "00" * 20)
+ADDR_A: Address = Address("0x" + "aA" * 20)
+ADDR_B: Address = Address("0x" + "bB" * 20)
+ADDR_ZERO: Address = Address("0x" + "00" * 20)
 
 
 # ---------------------------------------------------------------------------

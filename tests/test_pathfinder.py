@@ -9,7 +9,7 @@ from hexbytes import HexBytes
 from pydefi.exceptions import NoRouteFoundError
 from pydefi.pathfinder.graph import PoolEdge, PoolGraph, V3PoolEdge
 from pydefi.pathfinder.router import Router
-from pydefi.types import ChainId, Token, TokenAmount
+from pydefi.types import Address, ChainId, Token, TokenAmount
 from tests.addrs import DAI, USDC, WETH
 
 # ---------------------------------------------------------------------------
@@ -18,15 +18,15 @@ from tests.addrs import DAI, USDC, WETH
 
 WBTC = Token(
     chain_id=ChainId.ETHEREUM,
-    address=HexBytes("0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599"),
+    address=Address("0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599"),
     symbol="WBTC",
     decimals=8,
 )
 
-POOL_A = "0x" + "11" * 20
-POOL_B = "0x" + "22" * 20
-POOL_C = "0x" + "33" * 20
-POOL_D = "0x" + "44" * 20
+POOL_A: Address = Address("0x" + "11" * 20)
+POOL_B: Address = Address("0x" + "22" * 20)
+POOL_C: Address = Address("0x" + "33" * 20)
+POOL_D: Address = Address("0x" + "44" * 20)
 
 
 # ---------------------------------------------------------------------------

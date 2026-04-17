@@ -25,6 +25,7 @@ import solcx
 from eth_contract.erc20 import ERC20
 from web3.exceptions import ContractLogicError, Web3RPCError
 
+from pydefi.types import Address
 from pydefi.vm import Patch, Program
 from pydefi.vm.program import (
     assert_ge,
@@ -58,9 +59,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SOL_FILE = REPO_ROOT / "pydefi" / "vm" / "DeFiVM.sol"
 APPROVE_PROXY_SOL_FILE = REPO_ROOT / "pydefi" / "vm" / "ApproveProxy.sol"
 
-WETH_MAINNET = WETH.address
+WETH_MAINNET: Address = WETH.address
 # Coinbase 8 — a well-funded address on mainnet (used for introspection only)
-WHALE = "0x77134cbC06cB00b66F4c7e623D5fdBF6777635EC"
+WHALE: Address = Address("0x77134cbC06cB00b66F4c7e623D5fdBF6777635EC")
 
 
 def _compile_defi_vm() -> dict:
