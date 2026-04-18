@@ -339,7 +339,7 @@ async def ctx(fork_w3_module, compiled_vm, compiled_pools, interpreter_addr):
     # Deploy pair with token1_address as its token0 and token0_address as its token1
     # (reversed order gives us a hop2 of token1→token0).
     # Actual token balances are minted to the pair after deployment.
-    v2pair = await deploy(
+    v2pair_address = await deploy(
         w3,
         v2pair_compiled,
         deployer,
@@ -348,12 +348,13 @@ async def ctx(fork_w3_module, compiled_vm, compiled_pools, interpreter_addr):
         RESERVE0,
         RESERVE1,
     )
+    v2pair = w3.eth.contract(address=v2pair_address, abi=v2pair_compiled["abi"])
 
     # Mint reserves to v2pair so it can give tokens during swaps
     await token0.functions.mint(v3pool_address, 10**24).transact({"from": deployer})
     await token1.functions.mint(v3pool_address, 10**24).transact({"from": deployer})
-    await token0.functions.mint(v2pair, RESERVE0).transact({"from": deployer})
-    await token1.functions.mint(v2pair, RESERVE1).transact({"from": deployer})
+    await token0.functions.mint(v2pair_address, RESERVE0).transact({"from": deployer})
+    await token1.functions.mint(v2pair_address, RESERVE1).transact({"from": deployer})
 
     return {
         "w3": w3,
@@ -366,6 +367,7 @@ async def ctx(fork_w3_module, compiled_vm, compiled_pools, interpreter_addr):
         "v3pool": v3pool,
         "v3pool_address": v3pool_address,
         "v2pair": v2pair,
+        "v2pair_address": v2pair_address,
         "deployer": deployer,
         "accounts": accounts,
         "_compiled_pools": compiled_pools,
@@ -586,7 +588,7 @@ class TestDeFiVMCallbacks:
         w3 = ctx["w3"]
         deployer = ctx["deployer"]
         vm_address = ctx["vm_address"]
-        v2pair = ctx["v2pair"]
+        v2pair_address = ctx["v2pair_address"]
         # v2pair was deployed with pair.token0 = token1_address; simulateFlashSwap
         # mints and checks pair.token0, so we must repay with token1.
         token1_address = ctx["token1_address"]
@@ -602,7 +604,7 @@ class TestDeFiVMCallbacks:
             flash_amount,
             data,
             amount_owed,
-        ).transact(w3, deployer, to=v2pair)
+        ).transact(w3, deployer, to=v2pair_address)
         assert receipt["status"] == 1, "V2 callback repayment failed"
 
     async def test_aerodrome_hook_repays_pool(self, ctx):
@@ -625,7 +627,7 @@ class TestDeFiVMCallbacks:
             flash_amount,
             data,
             amount_owed,
-        ).transact(w3, deployer, to=ctx["v2pair"])
+        ).transact(w3, deployer, to=ctx["v2pair_address"])
         assert receipt["status"] == 1
 
     async def test_unknown_selector_reverts(self, ctx):
@@ -704,7 +706,7 @@ class TestMultiHopSwapComposer:
         w3 = ctx["w3"]
         deployer = ctx["deployer"]
         vm_address = ctx["vm_address"]
-        v2pair = ctx["v2pair"]
+        v2pair_address = ctx["v2pair_address"]
         token1_address = ctx["token1_address"]  # token0 of pair
         token0_address = ctx["token0_address"]  # token1 of pair
         token0 = ctx["token0"]
@@ -712,7 +714,7 @@ class TestMultiHopSwapComposer:
         # MockV2Pair was deployed with token0=token1_address, token1=token0_address
         # and reserves token0=RESERVE0=1M, token1=RESERVE1=3M
         # Check actual pair token0
-        pair_token0 = await MOCK_V2_PAIR.fns.token0().call(w3, to=v2pair)
+        pair_token0 = await MOCK_V2_PAIR.fns.token0().call(w3, to=v2pair_address)
         zero_for_one = HexBytes(pair_token0) == token1_address
 
         amount_in = 1000
@@ -721,7 +723,7 @@ class TestMultiHopSwapComposer:
         hops = [
             SwapHop(
                 protocol=SwapProtocol.UNISWAP_V2,
-                pool=v2pair,
+                pool=v2pair_address,
                 token_in=token1_address,
                 token_out=token0_address,
                 fee=30,
@@ -738,7 +740,7 @@ class TestMultiHopSwapComposer:
         assert receipt["status"] == 1, "V2 single-hop failed"
 
         # V2 formula: amountOut = amountIn * 997 * reserve1 / (reserve0 * 1000 + amountIn * 997)
-        reserve0, reserve1, _ = await MOCK_V2_PAIR.fns.getReserves().call(w3, to=v2pair)
+        reserve0, reserve1, _ = await MOCK_V2_PAIR.fns.getReserves().call(w3, to=v2pair_address)
         # zero_for_one: amountIn reduces reserve0, amountOut comes from reserve1
         if zero_for_one:
             expected_approx = amount_in * 997 * reserve1 // (reserve0 * 1000 + amount_in * 997)
@@ -763,7 +765,7 @@ class TestMultiHopSwapComposer:
         deployer = ctx["deployer"]
         vm_address = ctx["vm_address"]
         v3pool_address = ctx["v3pool_address"]
-        v2pair = ctx["v2pair"]
+        v2pair_address = ctx["v2pair_address"]
         token0_address = ctx["token0_address"]
         token1_address = ctx["token1_address"]
         token0 = ctx["token0"]
@@ -772,7 +774,7 @@ class TestMultiHopSwapComposer:
         await ERC20.fns.mint(vm_address, amount_in).transact(w3, deployer, to=ctx["token0_address"])
 
         # Determine direction for V2 pair
-        pair_token0 = await MOCK_V2_PAIR.fns.token0().call(w3, to=v2pair)
+        pair_token0 = await MOCK_V2_PAIR.fns.token0().call(w3, to=v2pair_address)
         # V2 pair has token0=token1_address, token1=token0_address
         # Hop 2: tokenIn=token1, tokenOut=token0
         zero_for_one_v2 = HexBytes(pair_token0) == token1_address
@@ -791,7 +793,7 @@ class TestMultiHopSwapComposer:
             ),
             SwapHop(
                 protocol=SwapProtocol.UNISWAP_V2,
-                pool=v2pair,
+                pool=v2pair_address,
                 token_in=token1_address,
                 token_out=token0_address,
                 fee=30,
@@ -1209,7 +1211,7 @@ class TestDAGProgramFork:
             reserve_in=10**12,
             reserve_out=10**12,
             fee_bps=30,
-            extra={"is_token0_in": pair_token0.lower() == token1_address.lower()},
+            extra={"is_token0_in": HexBytes(pair_token0) == token1_address},
         )
 
         dag = (
