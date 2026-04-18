@@ -138,7 +138,6 @@ class SwapRoute:
     amount_in: TokenAmount
     amount_out: TokenAmount
     price_impact: Decimal = Decimal(0)
-    dag: "RouteDAG | None" = None
 
     def __post_init__(self) -> None:
         if not self.steps:

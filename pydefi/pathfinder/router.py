@@ -18,7 +18,7 @@ from decimal import Decimal
 
 from pydefi.exceptions import NoRouteFoundError
 from pydefi.pathfinder.graph import PoolEdge, PoolGraph
-from pydefi.types import RouteDAG, SwapRoute, SwapStep, Token, TokenAmount
+from pydefi.types import MAX_BPS, RouteDAG, RouteSplit, RouteSwap, SwapRoute, SwapStep, Token, TokenAmount
 
 
 class Router:
@@ -177,7 +177,6 @@ class Router:
             amount_in=amount_in,
             amount_out=TokenAmount(token=token_out, amount=final_amount),
             price_impact=self._estimate_price_impact(final_path, amount_in.amount),
-            dag=self._edges_to_dag(src, final_path),
         )
 
     def _find_best_route_gas_aware(
@@ -227,7 +226,6 @@ class Router:
             amount_in=amount_in,
             amount_out=TokenAmount(token=token_out, amount=final_amount),
             price_impact=self._estimate_price_impact(path, amount_in.amount),
-            dag=self._edges_to_dag(amount_in.token, path),
         )
 
     def find_all_routes(
@@ -309,7 +307,6 @@ class Router:
                         amount_in=amount_in,
                         amount_out=TokenAmount(token=token_out, amount=current_amount),
                         price_impact=self._estimate_price_impact(path, amount_in.amount),
-                        dag=self._edges_to_dag(src, path),
                     )
                 )
                 return
@@ -358,9 +355,8 @@ class Router:
             token_out_price_usd=token_out_price_usd,
             max_hops=max_hops,
         )
-        if route.dag is None:
-            raise ValueError("internal Router error: missing DAG representation")
-        return route.dag
+        edges = [self.graph.get_edge(step.pool_address, step.token_in, step.token_out) for step in route.steps]
+        return self._edges_to_dag(route.token_in, edges)
 
     def find_all_routes_dag(
         self,
@@ -370,9 +366,302 @@ class Router:
     ) -> list[RouteDAG]:
         """Find top-*k* routes and return them as :class:`~pydefi.types.RouteDAG` objects."""
         routes = self.find_all_routes(amount_in, token_out, top_k=top_k)
-        if any(route.dag is None for route in routes):
-            raise ValueError("internal Router error: missing DAG representation in find_all_routes()")
-        return [route.dag for route in routes if route.dag is not None]
+        return [
+            self._edges_to_dag(
+                route.token_in,
+                [self.graph.get_edge(step.pool_address, step.token_in, step.token_out) for step in route.steps],
+            )
+            for route in routes
+        ]
+
+    def find_best_split(
+        self,
+        amount_in: TokenAmount,
+        token_out: Token,
+        max_splits: int = 2,
+        step_bps: int = 1000,
+        max_hops: int | None = None,
+    ) -> RouteDAG:
+        """Find the N-way allocation of *amount_in* across routes that maximises output.
+
+        Distributes the input across up to *max_splits* diverse candidate routes
+        to maximise aggregate output — the same strategy used by Uniswap Smart
+        Path and UniRoute.  All weight vectors from 1-way up to *max_splits*-way
+        are evaluated in a single pass by :meth:`_best_n_way_split`.
+
+        Algorithm
+        ---------
+        1. Discover up to *max_splits* diverse candidate routes via
+           :meth:`_find_top_routes` (one per distinct first-hop pool).
+        2. Enumerate every weight vector ``(w_0, …, w_{n-1})`` where each
+           ``w_i`` is a non-negative multiple of *step_bps* and
+           ``sum(w_i) == 10 000``.
+        3. Evaluate each allocation off-chain via :meth:`_follow_route`.
+        4. Return the best allocation as a :class:`~pydefi.types.RouteDAG`.
+
+        A single-leg result (no split improves on the best route) is returned
+        as a linear DAG without a :class:`~pydefi.types.RouteSplit` node.
+
+        .. note::
+            Search cost is ``C(k+n-1, n-1)`` (stars-and-bars) where
+            ``k = MAX_BPS // step_bps`` and ``n = max_splits``.  At the
+            default ``step_bps=1000`` (k=10): 2-way → 11 evals, 3-way → 66,
+            4-way → 286.
+
+        Args:
+            amount_in: Total input amount.
+            token_out: Desired output token.
+            step_bps: Weight granularity in basis points (default ``1000`` = 10%).
+            max_splits: Maximum number of split legs to consider (default ``2``).
+            max_hops: Forwarded to :meth:`_find_top_routes`.
+
+        Returns:
+            A :class:`~pydefi.types.RouteDAG` — linear when a single route
+            wins, split/merge when multiple legs improve output.
+
+        Raises:
+            :class:`~pydefi.exceptions.NoRouteFoundError`: If no route exists.
+            :class:`ValueError`: If *max_splits* < 1.
+        """
+        if max_splits < 1:
+            raise ValueError("max_splits must be >= 1")
+        routes = self._find_top_routes(amount_in, token_out, top_n=max_splits, max_hops=max_hops)
+        edge_index: dict[tuple[str, str], PoolEdge] = {
+            (edge.pool_address.lower(), edge.token_in.address.lower()): edge for edge in self.graph
+        }
+        legs = self._best_n_way_split(routes, amount_in, edge_index, step_bps)
+
+        if len(legs) == 1:
+            _, edges = legs[0]
+            return self._edges_to_dag(amount_in.token, edges)
+
+        dag = RouteDAG().from_token(amount_in.token)
+        dag.split()
+        for weight_bps, edges in legs:
+            dag.leg(weight_bps)
+            for edge in edges:
+                dag.swap(edge.token_out, edge)
+        dag.merge()
+        return dag
+
+    def _find_top_routes(
+        self,
+        amount_in: TokenAmount,
+        token_out: Token,
+        top_n: int,
+        max_hops: int | None = None,
+    ) -> list[SwapRoute]:
+        """Find the top-*n* diverse routes by output, deduplicated by first-hop pool.
+
+        Similar to :meth:`find_best_route` but tracks the best *top_n* paths
+        at each ``(token, hop)`` state, then deduplicates by first-hop pool
+        address so each returned route starts through a genuinely different pool.
+
+        Args:
+            amount_in: Exact input amount.
+            token_out: Desired output token.
+            top_n: Maximum number of diverse routes to return.
+            max_hops: Maximum hop depth. Defaults to ``self.max_hops``.
+
+        Returns:
+            List of :class:`~pydefi.types.SwapRoute` sorted by output descending.
+            May contain fewer than *top_n* entries if the graph lacks diversity.
+
+        Raises:
+            :class:`~pydefi.exceptions.NoRouteFoundError`: If no path exists.
+        """
+        effective_max_hops = self.max_hops if max_hops is None else max_hops
+        src = amount_in.token
+        dst_addr = token_out.address.lower()
+
+        if src.address.lower() == dst_addr:
+            raise ValueError("token_in and token_out must be different")
+
+        best: dict[tuple[str, int], list[tuple[int, list[PoolEdge]]]] = {
+            (src.address.lower(), 0): [(amount_in.amount, [])]
+        }
+
+        for hop in range(effective_max_hops):
+            current_states = [(k, v) for k, v in best.items() if k[1] == hop and v]
+            updated_keys: set[tuple[str, int]] = set()
+            for (token_addr, _), candidates in current_states:
+                token: Token = candidates[0][1][-1].token_out if candidates[0][1] else src
+
+                for current_amount, path in candidates:
+                    visited = {e.token_in.address.lower() for e in path}
+                    visited.add(token_addr)
+
+                    for edge in self.graph.edges_from(token):
+                        next_addr = edge.token_out.address.lower()
+                        if next_addr in visited:
+                            continue
+                        next_amount = edge.amount_out(current_amount)
+                        if next_amount <= 0:
+                            continue
+                        next_key = (next_addr, hop + 1)
+                        best.setdefault(next_key, []).append((next_amount, path + [edge]))
+                        updated_keys.add(next_key)
+
+            for key in updated_keys:
+                lst = best[key]
+                lst.sort(key=lambda x: x[0], reverse=True)
+                best[key] = lst[:top_n]
+
+        all_candidates: list[tuple[int, list[PoolEdge]]] = []
+        for h in range(1, effective_max_hops + 1):
+            all_candidates.extend(best.get((dst_addr, h), []))
+
+        if not all_candidates:
+            raise NoRouteFoundError(
+                f"No route found from {amount_in.token.symbol} to {token_out.symbol} within {effective_max_hops} hops"
+            )
+
+        all_candidates.sort(key=lambda x: x[0], reverse=True)
+
+        seen_first_pools: set[str] = set()
+        diverse: list[tuple[int, list[PoolEdge]]] = []
+        for amount, path in all_candidates:
+            first_pool = path[0].pool_address.lower()
+            if first_pool not in seen_first_pools:
+                seen_first_pools.add(first_pool)
+                diverse.append((amount, path))
+            if len(diverse) >= top_n:
+                break
+
+        routes: list[SwapRoute] = []
+        for final_amount, final_path in diverse:
+            steps = [
+                SwapStep(
+                    token_in=edge.token_in,
+                    token_out=edge.token_out,
+                    pool_address=edge.pool_address,
+                    protocol=edge.protocol,
+                    fee=edge.fee_bps,
+                )
+                for edge in final_path
+            ]
+            routes.append(
+                SwapRoute(
+                    steps=steps,
+                    amount_in=amount_in,
+                    amount_out=TokenAmount(token=token_out, amount=final_amount),
+                    price_impact=self._estimate_price_impact(final_path, amount_in.amount),
+                )
+            )
+        return routes
+
+    def _follow_route(
+        self,
+        route: SwapRoute,
+        raw_amount: int,
+        edge_index: dict[tuple[str, str], PoolEdge],
+    ) -> int:
+        """Walk each step of *route* at *raw_amount* and return the output amount."""
+        current = raw_amount
+        for step in route.steps:
+            key = (step.pool_address.lower(), step.token_in.address.lower())
+            edge = edge_index.get(key)
+            if edge is None:
+                return 0
+            current = edge.amount_out(current)
+            if current <= 0:
+                return 0
+        return current
+
+    def _best_n_way_split(
+        self,
+        routes: list[SwapRoute],
+        amount_in: TokenAmount,
+        edge_index: dict[tuple[str, str], PoolEdge],
+        step_bps: int,
+    ) -> list[tuple[int, list[PoolEdge]]]:
+        """Return the best N-way weight allocation across *routes* at *step_bps* granularity.
+
+        Enumerates every weight vector ``(w_0, …, w_{n-1})`` where each ``w_i``
+        is a non-negative multiple of *step_bps* and the vector sums to
+        ``MAX_BPS``.  Degenerate single-leg vectors are included, so the
+        result is always at least as good as any one route alone.
+
+        Integer-division rounding is corrected by adding the leftover to the
+        last leg with a non-zero weight so leg amounts sum exactly to
+        ``amount_in.amount``.
+
+        Returns:
+            List of ``(weight_bps, edges)`` pairs for legs with ``weight_bps > 0``,
+            ordered by the original route ranking.
+        """
+        total = amount_in.amount
+        n = len(routes)
+        best_legs: list[tuple[int, list[PoolEdge]]] = []
+        best_total: int = 0
+
+        # Pre-build per-route edge lists once to avoid repeated dict lookups.
+        route_edges: list[list[PoolEdge]] = []
+        for route in routes:
+            edges = [edge_index[(step.pool_address.lower(), step.token_in.address.lower())] for step in route.steps]
+            route_edges.append(edges)
+
+        def _follow_edges(edges: list[PoolEdge], raw_amount: int) -> int:
+            for edge in edges:
+                raw_amount = edge.amount_out(raw_amount)
+                if raw_amount <= 0:
+                    return 0
+            return raw_amount
+
+        def _enumerate(idx: int, remaining_bps: int, weights: list[int]) -> None:
+            nonlocal best_legs, best_total
+            if idx == n - 1:
+                weights.append(remaining_bps)
+                amts: list[int] = [total * w // MAX_BPS for w in weights]
+                last_nz = max(i for i in range(n) if weights[i] > 0)
+                amts[last_nz] += total - sum(amts)
+                outs = [_follow_edges(route_edges[i], amts[i]) if amts[i] > 0 else 0 for i in range(n)]
+                combined = sum(outs)
+                if combined > best_total:
+                    best_total = combined
+                    best_legs = [(weights[i], route_edges[i]) for i in range(n) if weights[i] > 0]
+                weights.pop()
+                return
+            for w in range(0, remaining_bps + 1, step_bps):
+                weights.append(w)
+                _enumerate(idx + 1, remaining_bps - w, weights)
+                weights.pop()
+
+        _enumerate(0, MAX_BPS, [])
+        return best_legs
+
+    def simulate(self, dag: RouteDAG, amount_in: int) -> int:
+        """Simulate the output amount for *dag* at *amount_in* using off-chain edge math.
+
+        Handles both linear DAGs and split/merge DAGs recursively.
+
+        Args:
+            dag: The route DAG to simulate.
+            amount_in: Input amount in raw token units.
+
+        Returns:
+            Simulated output amount in raw token units.
+        """
+        return self._simulate_actions(dag.actions, amount_in)
+
+    def _simulate_actions(self, actions: list | tuple, amount: int) -> int:
+        for action in actions:
+            if isinstance(action, RouteSwap):
+                amount = action.pool.amount_out(amount)
+            elif isinstance(action, RouteSplit):
+                total = 0
+                for leg in action.legs:
+                    leg_amount = amount * leg.fraction_bps // MAX_BPS
+                    total += self._simulate_actions(leg.actions, leg_amount)
+                amount = total
+        return amount
+
+    @staticmethod
+    def dag_leg_weights(dag: RouteDAG) -> list[int]:
+        """Return ``fraction_bps`` for each split leg, or ``[10000]`` for a linear DAG."""
+        if dag.actions and isinstance(dag.actions[0], RouteSplit):
+            return [leg.fraction_bps for leg in dag.actions[0].legs]
+        return [MAX_BPS]
 
     @staticmethod
     def _edges_to_dag(token_in: Token, edges: list[PoolEdge]) -> RouteDAG:

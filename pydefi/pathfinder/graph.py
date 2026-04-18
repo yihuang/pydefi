@@ -486,6 +486,21 @@ class PoolGraph:
         """
         return list(self._adj[token.address.lower()])
 
+    def get_edge(self, pool_address: str, token_in: Token, token_out: Token) -> PoolEdge:
+        """Return the edge for *pool_address* in the *token_in* → *token_out* direction.
+
+        Raises:
+            KeyError: If no matching edge is found.
+        """
+        pool_addr_lower = pool_address.lower()
+        for edge in self._adj[token_in.address.lower()]:
+            if (
+                edge.pool_address.lower() == pool_addr_lower
+                and edge.token_out.address.lower() == token_out.address.lower()
+            ):
+                return edge
+        raise KeyError(f"No edge found for pool {pool_address} ({token_in.symbol} → {token_out.symbol})")
+
     def edges_to(self, token: Token) -> list[PoolEdge]:
         """Return all edges that arrive at *token*.
 

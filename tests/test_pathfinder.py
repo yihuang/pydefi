@@ -443,9 +443,9 @@ class TestRouter:
         assert route.token_in == WETH
         assert route.token_out == USDC
         assert route.amount_out.amount > 0
-        assert route.dag is not None
-        assert isinstance(route.dag, RouteDAG)
-        dag_payload = route.dag.to_dict()
+        dag = router.find_best_route_dag(amount_in, USDC)
+        assert isinstance(dag, RouteDAG)
+        dag_payload = dag.to_dict()
         assert dag_payload["token_in"] == WETH
         assert isinstance(dag_payload["actions"][0], RouteSwap)
         assert len(dag_payload["actions"]) == len(route.steps)
@@ -479,8 +479,7 @@ class TestRouter:
         assert route.token_in == WETH
         assert route.token_out == DAI
         assert len(route.steps) == 2
-        assert route.dag is not None
-        dag_payload = route.dag.to_dict()
+        dag_payload = router.find_best_route_dag(amount_in, DAI).to_dict()
         assert [a.pool.pool_address for a in dag_payload["actions"]] == [POOL_A, POOL_B]
 
     def test_find_best_route_no_path_raises(self):
@@ -531,7 +530,7 @@ class TestRouter:
         # Routes should be sorted by descending output amount
         for i in range(len(routes) - 1):
             assert routes[i].amount_out.amount >= routes[i + 1].amount_out.amount
-        assert all(route.dag is not None for route in routes)
+        assert len(router.find_all_routes_dag(amount_in, DAI)) == len(routes)
 
     def test_find_all_routes_top_k(self):
         g = self._make_graph()
@@ -690,3 +689,108 @@ class TestRouter:
         dags = router.find_all_routes_dag(TokenAmount(token=WETH, amount=10**18), DAI, top_k=2)
         assert len(dags) >= 1
         assert all(isinstance(dag, RouteDAG) for dag in dags)
+
+
+# ---------------------------------------------------------------------------
+# find_best_split tests
+# ---------------------------------------------------------------------------
+
+
+class TestFindBestSplit:
+    """Tests for Router.find_best_split — N-way split routing."""
+
+    POOL_A2 = "0x" + "55" * 20  # second WETH→USDC pool
+
+    def _make_split_graph(self) -> PoolGraph:
+        """Two independent WETH→USDC pools so a split is possible."""
+        g = PoolGraph()
+        g.add_pool(
+            PoolEdge(
+                WETH, USDC, POOL_A, "UniswapV2", reserve_in=1_000 * 10**18, reserve_out=2_000_000 * 10**6, fee_bps=30
+            )
+        )
+        g.add_pool(
+            PoolEdge(
+                WETH,
+                USDC,
+                self.POOL_A2,
+                "UniswapV3",
+                reserve_in=1_000 * 10**18,
+                reserve_out=2_000_000 * 10**6,
+                fee_bps=5,
+            )
+        )
+        return g
+
+    def test_single_pool_returns_linear_dag(self):
+        """With only one route available the result is a linear DAG (no split node)."""
+        g = PoolGraph()
+        g.add_pool(PoolEdge(WETH, USDC, POOL_A, "UniswapV2", reserve_in=10**21, reserve_out=2 * 10**9, fee_bps=30))
+        router = Router(g)
+        dag = router.find_best_split(TokenAmount(WETH, 10**18), USDC)
+        payload = dag.to_dict()
+        assert payload["token_in"] == WETH
+        from pydefi.types import RouteSplit
+
+        assert not any(isinstance(a, RouteSplit) for a in payload["actions"])
+        assert payload["actions"][-1].token_out == USDC
+
+    def test_two_pools_may_produce_split(self):
+        """With two pools of equal depth a split is at least as good as a single route."""
+        g = self._make_split_graph()
+        router = Router(g)
+        amount_in = TokenAmount(WETH, 10**18)
+        dag = router.find_best_split(amount_in, USDC)
+        assert isinstance(dag, RouteDAG)
+        payload = dag.to_dict()
+        assert payload["token_in"] == WETH
+        assert payload["actions"][-1].token_out == USDC
+
+    def test_split_dag_structure(self):
+        """When a split is chosen the DAG root action is a RouteSplit.
+
+        Two shallow equal pools (same fee, 10 ETH reserve each) with a 1 ETH
+        input: price impact per pool is ~9% for 100% allocation but only ~5%
+        per pool for 50/50, so splitting strictly wins.
+        """
+        from pydefi.types import RouteSplit
+
+        g = PoolGraph()
+        g.add_pool(
+            PoolEdge(WETH, USDC, POOL_A, "UniswapV2", reserve_in=10 * 10**18, reserve_out=20_000 * 10**6, fee_bps=30)
+        )
+        g.add_pool(
+            PoolEdge(
+                WETH, USDC, self.POOL_A2, "UniswapV2", reserve_in=10 * 10**18, reserve_out=20_000 * 10**6, fee_bps=30
+            )
+        )
+        router = Router(g)
+        dag = router.find_best_split(TokenAmount(WETH, 10**18), USDC, step_bps=5000)
+        payload = dag.to_dict()
+        split = payload["actions"][0]
+        assert isinstance(split, RouteSplit)
+        assert sum(leg.fraction_bps for leg in split.legs) == 10_000
+        assert split.token_out == USDC
+
+    def test_max_splits_one_returns_linear(self):
+        """max_splits=1 forces a single-route result even when two pools exist."""
+        g = self._make_split_graph()
+        router = Router(g)
+        dag = router.find_best_split(TokenAmount(WETH, 10**18), USDC, max_splits=1)
+        payload = dag.to_dict()
+        from pydefi.types import RouteSplit
+
+        assert not any(isinstance(a, RouteSplit) for a in payload["actions"])
+
+    def test_invalid_max_splits_raises(self):
+        g = self._make_split_graph()
+        router = Router(g)
+        with pytest.raises(ValueError, match="max_splits"):
+            router.find_best_split(TokenAmount(WETH, 10**18), USDC, max_splits=0)
+
+    def test_no_route_raises(self):
+        g = PoolGraph()
+        g.add_pool(PoolEdge(WETH, USDC, POOL_A, "UniswapV2", reserve_in=10**21, reserve_out=2 * 10**9, fee_bps=30))
+        router = Router(g)
+        with pytest.raises(NoRouteFoundError):
+            router.find_best_split(TokenAmount(WETH, 10**18), DAI)

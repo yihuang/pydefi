@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from abc import ABC
+from abc import ABC, abstractmethod
 
 
 class BasePool(ABC):
@@ -11,3 +11,7 @@ class BasePool(ABC):
     pool_address: str
     protocol: str
     fee_bps: int
+
+    @abstractmethod
+    def amount_out(self, amount_in: int) -> int:
+        """Return the output amount for a given input amount."""
