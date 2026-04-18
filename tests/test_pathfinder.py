@@ -8,7 +8,7 @@ import pytest
 from pydefi.exceptions import NoRouteFoundError
 from pydefi.pathfinder.graph import PoolEdge, PoolGraph, V3PoolEdge
 from pydefi.pathfinder.router import Router
-from pydefi.types import Address, ChainId, Token, TokenAmount
+from pydefi.types import Address, ChainId, RouteDAG, RouteSwap, Token, TokenAmount
 from tests.addrs import DAI, USDC, WETH
 
 # ---------------------------------------------------------------------------
@@ -443,6 +443,13 @@ class TestRouter:
         assert route.token_in == WETH
         assert route.token_out == USDC
         assert route.amount_out.amount > 0
+        assert route.dag is not None
+        assert isinstance(route.dag, RouteDAG)
+        dag_payload = route.dag.to_dict()
+        assert dag_payload["token_in"] == WETH
+        assert isinstance(dag_payload["actions"][0], RouteSwap)
+        assert len(dag_payload["actions"]) == len(route.steps)
+        assert [a.pool.pool_address for a in dag_payload["actions"]] == [s.pool_address for s in route.steps]
 
     def test_find_best_route_two_hop(self):
         g = PoolGraph()
@@ -472,6 +479,9 @@ class TestRouter:
         assert route.token_in == WETH
         assert route.token_out == DAI
         assert len(route.steps) == 2
+        assert route.dag is not None
+        dag_payload = route.dag.to_dict()
+        assert [a.pool.pool_address for a in dag_payload["actions"]] == [POOL_A, POOL_B]
 
     def test_find_best_route_no_path_raises(self):
         g = PoolGraph()
@@ -521,6 +531,7 @@ class TestRouter:
         # Routes should be sorted by descending output amount
         for i in range(len(routes) - 1):
             assert routes[i].amount_out.amount >= routes[i + 1].amount_out.amount
+        assert all(route.dag is not None for route in routes)
 
     def test_find_all_routes_top_k(self):
         g = self._make_graph()
@@ -663,3 +674,19 @@ class TestRouter:
         assert gross_path != gas_path
         assert len(gross_best.steps) == 2
         assert len(gas_best.steps) == 1
+
+    def test_find_best_route_dag(self):
+        g = self._make_graph()
+        router = Router(g)
+        dag = router.find_best_route_dag(TokenAmount(token=WETH, amount=10**18), USDC)
+        payload = dag.to_dict()
+        assert payload["token_in"] == WETH
+        assert len(payload["actions"]) >= 1
+        assert payload["actions"][-1].token_out == USDC
+
+    def test_find_all_routes_dag(self):
+        g = self._make_graph()
+        router = Router(g)
+        dags = router.find_all_routes_dag(TokenAmount(token=WETH, amount=10**18), DAI, top_k=2)
+        assert len(dags) >= 1
+        assert all(isinstance(dag, RouteDAG) for dag in dags)

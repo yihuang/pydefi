@@ -118,8 +118,11 @@ class TestPoolData:
             extra=extra,
         )
         edges = pool.to_pool_edges()
+        assert edges[0].extra["foo"] == "bar"
+        assert edges[0].extra["is_token0_in"] is True
+        assert edges[1].extra["foo"] == "bar"
+        assert edges[1].extra["is_token0_in"] is False
         for edge in edges:
-            assert edge.extra == extra
             assert edge.extra is not extra  # must be a copy
 
 
