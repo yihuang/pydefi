@@ -711,7 +711,7 @@ class TestMultiHopSwapComposer:
         # and reserves token0=RESERVE0=1M, token1=RESERVE1=3M
         # Check actual pair token0
         pair_token0 = await MOCK_V2_PAIR.fns.token0().call(w3, to=v2pair)
-        zero_for_one = HexBytes(pair_token0) == token1_address
+        zero_for_one = pair_token0 == token1_address
 
         amount_in = 1000
         await ERC20.fns.mint(vm_address, amount_in).transact(w3, deployer, to=token1_address)
@@ -773,7 +773,7 @@ class TestMultiHopSwapComposer:
         pair_token0 = await MOCK_V2_PAIR.fns.token0().call(w3, to=v2pair)
         # V2 pair has token0=token1_address, token1=token0_address
         # Hop 2: tokenIn=token1, tokenOut=token0
-        zero_for_one_v2 = HexBytes(pair_token0) == token1_address
+        zero_for_one_v2 = pair_token0 == token1_address
 
         hops = [
             SwapHop(
