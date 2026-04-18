@@ -351,7 +351,7 @@ class TestOFTComposerFork:
         target_address = ctx["target_address"]
         target = ctx["target"]
 
-        calldata = target.encode_abi("execute", [b"hello"])
+        calldata = HexBytes(target.encode_abi("execute", [b"hello"]))
         # The composer pre-pushes amountLD and _from onto the stack.
         # Save them to R0/_from and R1/amountLD so the stack is clean for the call.
         program = store_reg(0) + store_reg(1) + self._call_target(target_address, calldata)
@@ -392,8 +392,8 @@ class TestOFTComposerFork:
 
         before = await target.functions.callCount().call()
 
-        calldata_a = target.encode_abi("execute", [b"call_a"])
-        calldata_b = target.encode_abi("execute", [b"call_b"])
+        calldata_a = HexBytes(target.encode_abi("execute", [b"call_a"]))
+        calldata_b = HexBytes(target.encode_abi("execute", [b"call_b"]))
         program = (
             store_reg(0)
             + store_reg(1)
@@ -439,7 +439,7 @@ class TestOFTComposerFork:
 
         before_balance = await w3.eth.get_balance(target_address)
 
-        calldata = target.encode_abi("execute", [b"with_eth"])
+        calldata = HexBytes(target.encode_abi("execute", [b"with_eth"]))
         # Pass eth_amount as the call value; DeFiVM forwards it from its own balance
         # (received via vm.execute{value: msg.value}).
         program = (
@@ -490,7 +490,7 @@ class TestOFTComposerFork:
 
         amount_ld = 777 * 10**18
         guid = b"\xde\xad" + b"\x00" * 30
-        calldata = target.encode_abi("execute", [b"event_test"])
+        calldata = HexBytes(target.encode_abi("execute", [b"event_test"]))
         program = store_reg(0) + store_reg(1) + self._call_target(target_address, calldata)
         message = make_compose_message(nonce=4, src_eid=30184, amount_ld=amount_ld, program=program)
 
@@ -537,7 +537,7 @@ class TestOFTComposerFork:
         #   [4:36]   ABI offset = 0x20 (32)
         #   [36:68]  data length = 32
         #   [68:100] data content (32 zero bytes -- will be patched with amountLD)
-        template = target.encode_abi("execute", [b"\x00" * 32])
+        template = HexBytes(target.encode_abi("execute", [b"\x00" * 32]))
 
         # Program:
         #   Stack start: [amountLD, _from]  (_from on top)
@@ -596,7 +596,7 @@ class TestOFTComposerFork:
         target = ctx["target"]
 
         # Same calldata template; we'll patch the 20-byte address at offset 68.
-        template = target.encode_abi("execute", [b"\x00" * 32])
+        template = HexBytes(target.encode_abi("execute", [b"\x00" * 32]))
 
         # Program:
         #   STORE_REG 0 -> R0 = _from   (pop from top)
@@ -685,7 +685,7 @@ class TestOFTComposerFork:
 
         before_count = await target.functions.callCount().call()
 
-        calldata_ok = target.encode_abi("execute", [b"before_fail"])
+        calldata_ok = HexBytes(target.encode_abi("execute", [b"before_fail"]))
         # First call succeeds; second call (to RevertingTarget) always reverts.
         # DeFiVM's requireSuccess=True causes the whole execute() to revert.
         program = (
@@ -734,7 +734,7 @@ class TestOFTComposerFork:
 
         random_oft = w3.eth.account.create().address
 
-        calldata = target.encode_abi("execute", [b"random_oft"])
+        calldata = HexBytes(target.encode_abi("execute", [b"random_oft"]))
         program = store_reg(0) + store_reg(1) + self._call_target(target_address, calldata)
         # amount_ld=0 skips token transfer; this test only verifies there is no OFT whitelist.
         message = make_compose_message(nonce=9, src_eid=30101, amount_ld=0, program=program)
@@ -868,7 +868,7 @@ class TestOFTComposerFork:
 
         # Build calldata for token.transfer(fresh_recipient, token_amount).
         # After the composer's token transfer, DeFiVM holds the tokens and can use them.
-        vm_forward_calldata = oft.encode_abi("transfer", [fresh_recipient, token_amount])
+        vm_forward_calldata = HexBytes(oft.encode_abi("transfer", [fresh_recipient, token_amount]))
         program = (
             store_reg(0)  # R0 = _from (OFT address)
             + store_reg(1)  # R1 = amountLD
@@ -939,7 +939,7 @@ class TestOFTComposerFork:
         assert await token.functions.balanceOf(composer.address).call() == token_amount
 
         # Build calldata for token.transfer(fresh_recipient, token_amount).
-        vm_forward_calldata = token.encode_abi("transfer", [fresh_recipient, token_amount])
+        vm_forward_calldata = HexBytes(token.encode_abi("transfer", [fresh_recipient, token_amount]))
         program = (
             store_reg(0)  # R0 = _from (adapter address)
             + store_reg(1)  # R1 = amountLD

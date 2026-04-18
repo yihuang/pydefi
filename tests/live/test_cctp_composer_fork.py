@@ -426,7 +426,7 @@ class TestCCTPComposerBasic:
         amount = 1000 * 10**6  # 1000 USDC
 
         # Build the DeFiVM program (will be embedded as hookData).
-        target_calldata = target.encode_abi("execute", [b"\xde\xad\xbe\xef"])
+        target_calldata = HexBytes(target.encode_abi("execute", [b"\xde\xad\xbe\xef"]))
         program = (
             store_reg(0)  # R0 = sourceDomain (top of stack after prologue)
             + store_reg(1)  # R1 = amountReceived
@@ -473,7 +473,7 @@ class TestCCTPComposerBasic:
         fee = 1 * 10**6  # 1 USDC relayer fee
         expected_received = amount - fee
 
-        target_calldata = target.encode_abi("execute", [b"fee_test"])
+        target_calldata = HexBytes(target.encode_abi("execute", [b"fee_test"]))
         program = (
             store_reg(0)  # R0 = sourceDomain
             + store_reg(1)  # R1 = amountReceived (should be amount - fee)
@@ -512,7 +512,7 @@ class TestCCTPComposerBasic:
         amount = 100 * 10**6  # 100 USDC
         eth_value = 10**16  # 0.01 ETH
 
-        target_calldata = target.encode_abi("execute", [b"with eth"])
+        target_calldata = HexBytes(target.encode_abi("execute", [b"with eth"]))
         program = (
             store_reg(0)
             + store_reg(1)
@@ -549,7 +549,7 @@ class TestCCTPComposerBasic:
         target_address = ctx["target_address"]
 
         amount = 0
-        target_calldata = target.encode_abi("execute", [b"zero"])
+        target_calldata = HexBytes(target.encode_abi("execute", [b"zero"]))
         program = (
             store_reg(0)
             + store_reg(1)
@@ -587,7 +587,7 @@ class TestCCTPComposerBasic:
         nonce_int = 5
         nonce_bytes32 = nonce_int.to_bytes(32, "big")
 
-        target_calldata = target.encode_abi("execute", [b"event"])
+        target_calldata = HexBytes(target.encode_abi("execute", [b"event"]))
         program = (
             store_reg(0)
             + store_reg(1)
@@ -631,7 +631,7 @@ class TestCCTPComposerBasic:
         pre_composer = await usdc.functions.balanceOf(composer.address).call()
         pre_vm = await usdc.functions.balanceOf(vm_address).call()
 
-        transfer_calldata = usdc.encode_abi("transfer", [fresh_recipient, amount])
+        transfer_calldata = HexBytes(usdc.encode_abi("transfer", [fresh_recipient, amount]))
         program = (
             store_reg(0)
             + store_reg(1)
@@ -673,7 +673,7 @@ class TestCCTPComposerErrors:
         await transmitter.functions.setFail(True).transact({"from": deployer})
 
         amount = 100 * 10**6
-        target_calldata = target.encode_abi("execute", [b"fail"])
+        target_calldata = HexBytes(target.encode_abi("execute", [b"fail"]))
         program = (
             store_reg(0)
             + store_reg(1)
