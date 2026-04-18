@@ -180,6 +180,7 @@ if TYPE_CHECKING:
     from eth_abi.hooks import EncodingContext
 
 from eth_contract.contract import ContractFunction
+from hexbytes import HexBytes
 
 from pydefi.types import Address
 from pydefi.vm.abi import emit_abi_encode, emit_abi_encode_packed
@@ -823,7 +824,9 @@ class Program:
 
         # Fast path: no Patch objects anywhere in the argument tree.
         if not patch_list:
-            return self.call_contract(to, fn(*args).data, value=value, gas=gas, require_success=require_success)
+            return self.call_contract(
+                to, HexBytes(fn(*args).data), value=value, gas=gas, require_success=require_success
+            )
 
         # Slow path: Patch objects are callable hooks; encode_with_hooks calls
         # each one with the EncodingContext so each Patch stores its offset/size.
