@@ -208,7 +208,7 @@ class UniswapAPI(BaseAggregator):
         self,
         amount_in: TokenAmount,
         token_out: Token,
-        wallet_address: str,
+        wallet_address: Address,
         slippage_bps: int = 50,
         deadline: Optional[int] = None,
         **kwargs: Any,
@@ -250,7 +250,7 @@ class UniswapAPI(BaseAggregator):
             "tokenOutChainId": self.chain_id,
             "amount": str(amount_in.amount),
             "type": "EXACT_INPUT",
-            "swapper": "0x" + wallet_address.hex() if isinstance(wallet_address, bytes) else wallet_address,
+            "swapper": encode_address(wallet_address, self.chain_id),
             "slippageTolerance": self._slippage_to_percent(slippage_bps),
         }
         quote_body.update(kwargs)

@@ -412,7 +412,7 @@ class TestCalldataBuilders:
         from eth_utils import keccak
 
         calldata = v3_pool_swap_calldata(
-            recipient="0x1234567890123456789012345678901234567890",
+            recipient=Address("0x1234567890123456789012345678901234567890"),
             zero_for_one=True,
             amount_in=10**18,
             sqrt_price_limit_x96=0,
@@ -442,13 +442,13 @@ class TestCalldataBuilders:
         hops = [
             SwapHop(
                 protocol=SwapProtocol.UNISWAP_V3,
-                pool="0x1234567890123456789012345678901234567890",
+                pool=Address("0x1234567890123456789012345678901234567890"),
                 token_in=WETH_ADDR,
                 token_out=USDC_ADDR,
                 fee=500,
                 amount_in=10**18,
                 amount_out_min=0,
-                recipient="0x1234567890123456789012345678901234567890",
+                recipient=Address("0x1234567890123456789012345678901234567890"),
                 zero_for_one=True,
             )
         ]
@@ -462,24 +462,24 @@ class TestCalldataBuilders:
         hops = [
             SwapHop(
                 protocol=SwapProtocol.UNISWAP_V3,
-                pool=HexBytes("0x1111111111111111111111111111111111111111"),
+                pool=Address("0x1111111111111111111111111111111111111111"),
                 token_in=WETH_ADDR,
                 token_out=USDC_ADDR,
                 fee=500,
                 amount_in=10**18,
                 amount_out_min=0,
-                recipient=HexBytes("0x2222222222222222222222222222222222222222"),
+                recipient=Address("0x2222222222222222222222222222222222222222"),
                 zero_for_one=True,
             ),
             SwapHop(
                 protocol=SwapProtocol.UNISWAP_V2,
-                pool=HexBytes("0x3333333333333333333333333333333333333333"),
+                pool=Address("0x3333333333333333333333333333333333333333"),
                 token_in=USDC_ADDR,
                 token_out=DAI_ADDR,
                 fee=30,
                 amount_in=0,
                 amount_out_min=0,
-                recipient=HexBytes("0x4444444444444444444444444444444444444444"),
+                recipient=Address("0x4444444444444444444444444444444444444444"),
                 zero_for_one=True,
             ),
         ]
