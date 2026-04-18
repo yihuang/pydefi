@@ -135,8 +135,8 @@ class OpenOcean(BaseAggregator):
         if "gasPrice" not in kwargs:
             kwargs = {**kwargs, "gasPrice": await self._get_gas_price()}
         params: dict[str, Any] = {
-            "inTokenAddress": amount_in.token.address,
-            "outTokenAddress": token_out.address,
+            "inTokenAddress": amount_in.token.encoded_address,
+            "outTokenAddress": token_out.encoded_address,
             "amount": str(amount_in.human_amount),
             "slippage": str(self._slippage_to_percent(slippage_bps)),
             **kwargs,
@@ -190,11 +190,11 @@ class OpenOcean(BaseAggregator):
         if "gasPrice" not in kwargs:
             kwargs = {**kwargs, "gasPrice": await self._get_gas_price()}
         params: dict[str, Any] = {
-            "inTokenAddress": amount_in.token.address,
-            "outTokenAddress": token_out.address,
+            "inTokenAddress": amount_in.token.encoded_address,
+            "outTokenAddress": token_out.encoded_address,
             "amount": str(amount_in.human_amount),
             "slippage": str(self._slippage_to_percent(slippage_bps)),
-            "account": from_address,
+            "account": "0x" + from_address.hex() if isinstance(from_address, bytes) else from_address,
             **kwargs,
         }
         data = await self._get("swap", params)

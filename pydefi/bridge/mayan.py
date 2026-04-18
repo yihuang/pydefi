@@ -22,7 +22,7 @@ from pydefi._utils import address_to_bytes32, encode_address, token_to_bytes32
 from pydefi.abi.bridge import MAYAN_FORWARDER, MAYAN_SWIFT_V2, MayanSwiftOrderParams
 from pydefi.bridge.base import BaseBridge
 from pydefi.exceptions import BridgeError
-from pydefi.types import Address, BridgeQuote, Token, TokenAmount
+from pydefi.types import NATIVE_SENTINEL, Address, BridgeQuote, Token, TokenAmount
 
 _MAYAN_API_BASE = "https://price-api.mayan.finance/v3"
 
@@ -69,21 +69,18 @@ _MAYAN_SDK_VERSION = "13_2_0"
 _SWIFT_NORMALIZE_DECIMALS = 8
 
 # WETH ERC-20 addresses per chain (needed for native-ETH input with SWIFT V2)
-_CHAIN_WETH: dict[int, str] = {
-    1: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",  # Ethereum
-    42161: "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1",  # Arbitrum
-    10: "0x4200000000000000000000000000000000000006",  # Optimism
-    8453: "0x4200000000000000000000000000000000000006",  # Base
-    137: "0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619",  # Polygon
-    56: "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c",  # BSC (WBNB)
-    43114: "0x49D5c2BdFfac6CE2BFdB6640F4F80f226bc10bAB",  # Avalanche
-    59144: "0xe5D7C2a44FfDDf6b295A15c148167daaAf5Cf34f",  # Linea
+_CHAIN_WETH: dict[int, Address] = {
+    1: HexBytes("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),  # Ethereum
+    42161: HexBytes("0x82aF49447D8a07e3bd95BD0d56f35241523fBab1"),  # Arbitrum
+    10: HexBytes("0x4200000000000000000000000000000000000006"),  # Optimism
+    8453: HexBytes("0x4200000000000000000000000000000000000006"),  # Base
+    137: HexBytes("0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619"),  # Polygon
+    56: HexBytes("0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c"),  # BSC (WBNB)
+    43114: HexBytes("0x49D5c2BdFfac6CE2BFdB6640F4F80f226bc10bAB"),  # Avalanche
+    59144: HexBytes("0xe5D7C2a44FfDDf6b295A15c148167daaAf5Cf34f"),  # Linea
 }
 
 _ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
-
-
-_EEEEE_SENTINEL_BYTES = b"\xee" * 20
 
 
 def _mayan_token_address(address: Address, chain_id: int) -> str:
@@ -93,7 +90,7 @@ def _mayan_token_address(address: Address, chain_id: int) -> str:
     (ETH, BNB, etc.).  Any ``EeeE...`` sentinel is canonicalized here so
     that API requests always use the representation the server expects.
     """
-    if address == _EEEEE_SENTINEL_BYTES:
+    if address == NATIVE_SENTINEL:
         return _ZERO_ADDRESS
     return encode_address(address, chain_id)
 
@@ -264,8 +261,6 @@ class Mayan(BaseBridge):
         if not token_in.is_native():
             raise BridgeError("Mayan build_bridge_tx currently only supports native ETH input")
 
-        referrer_addr: Address | None = referrer
-
         from_chain = self._chain_name(self.src_chain_id)
         to_chain = self._chain_name(self.dst_chain_id)
 
@@ -349,8 +344,9 @@ class Mayan(BaseBridge):
         min_middle_amount = int(
             Decimal(str(swift_route.get("minMiddleAmount") or "0")) * Decimal(10**swift_input_decimals)
         )
-        # swiftInputContract is the ERC-20 that SWIFT V2 will receive (typically WETH)
-        swift_input_contract = swift_route.get("swiftInputContract") or weth_address
+        # swiftInputContract is the ERC-20 that SWIFT V2 will receive (typically WETH).
+        _raw_swift_input = swift_route.get("swiftInputContract")
+        swift_input_contract: Address = HexBytes(_raw_swift_input) if _raw_swift_input else weth_address
 
         # Use os.urandom for the order's random field to ensure uniqueness
         random_b32 = os.urandom(32)
@@ -358,7 +354,7 @@ class Mayan(BaseBridge):
         trader_b32 = address_to_bytes32(recipient)
         token_out_b32 = token_to_bytes32(token_out.address)
         dest_addr_b32 = address_to_bytes32(recipient)
-        referrer_b32 = address_to_bytes32(referrer_addr) if referrer_addr else bytes(32)
+        referrer_b32 = address_to_bytes32(referrer) if referrer else bytes(32)
 
         # SWIFT V2 OrderParams (field order differs from V1)
         order_params = MayanSwiftOrderParams(
@@ -384,7 +380,7 @@ class Mayan(BaseBridge):
             "forwarderAddress": _MAYAN_FORWARDER,
             "slippageBps": slippage_bps,
             "fromToken": _mayan_token_address(token_in.address, token_in.chain_id),
-            "middleToken": swift_input_contract,  # WETH (or other swift input)
+            "middleToken": encode_address(swift_input_contract, self.src_chain_id),  # WETH (or other swift input)
             "chainName": from_chain,
             "amountIn64": str(amount_in.amount),
             "sdkVersion": _MAYAN_SDK_VERSION,

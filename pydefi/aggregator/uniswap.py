@@ -172,16 +172,16 @@ class UniswapAPI(BaseAggregator):
             :class:`~pydefi.exceptions.AggregatorError`: On API errors.
         """
         body: dict[str, Any] = {
-            "tokenIn": amount_in.token.address,
+            "tokenIn": amount_in.token.encoded_address,
             "tokenInChainId": self.chain_id,
-            "tokenOut": token_out.address,
+            "tokenOut": token_out.encoded_address,
             "tokenOutChainId": self.chain_id,
             "amount": str(amount_in.amount),
             "type": "EXACT_INPUT",
             "slippageTolerance": self._slippage_to_percent(slippage_bps),
         }
         if swapper is not None:
-            body["swapper"] = swapper
+            body["swapper"] = "0x" + swapper.hex() if isinstance(swapper, bytes) else swapper
         body.update(kwargs)
 
         data = await self._post("v1/quote", body)
@@ -243,13 +243,13 @@ class UniswapAPI(BaseAggregator):
         signature: str | None = kwargs.pop("signature", None)
         # Step 1: POST /v1/quote
         quote_body: dict[str, Any] = {
-            "tokenIn": amount_in.token.address,
+            "tokenIn": amount_in.token.encoded_address,
             "tokenInChainId": self.chain_id,
-            "tokenOut": token_out.address,
+            "tokenOut": token_out.encoded_address,
             "tokenOutChainId": self.chain_id,
             "amount": str(amount_in.amount),
             "type": "EXACT_INPUT",
-            "swapper": wallet_address,
+            "swapper": "0x" + wallet_address.hex() if isinstance(wallet_address, bytes) else wallet_address,
             "slippageTolerance": self._slippage_to_percent(slippage_bps),
         }
         quote_body.update(kwargs)

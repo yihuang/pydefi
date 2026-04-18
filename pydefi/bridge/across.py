@@ -79,7 +79,6 @@ class Across(BaseBridge):
             :class:`~pydefi.exceptions.BridgeError`: On API error.
         """
         params: dict[str, Any] = {
-            # Encode address to string for the API (periphery boundary)
             "token": token.encoded_address,
             "inputChainId": self.src_chain_id,
             "outputChainId": self.dst_chain_id,

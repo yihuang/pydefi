@@ -37,8 +37,7 @@ def address_to_bytes32(address: Address) -> Hash:
     Returns:
         32 bytes with the address right-aligned (left zero-padded).
     """
-    address_bytes = bytes(address)
-    return Hash(b"\x00" * (32 - len(address_bytes)) + address_bytes)
+    return Hash(b"\x00" * (32 - len(address)) + address)
 
 
 def token_to_bytes32(address: Address) -> Hash:
@@ -78,6 +77,8 @@ def encode_address(address: Address, chain_id: int) -> str:
         Human-readable string representation suitable for the target chain.
     """
     if chain_id == ChainId.SOLANA:
+        if isinstance(address, str):
+            return address
         return base58.b58encode(bytes(address)).decode()
     return "0x" + address.hex()
 

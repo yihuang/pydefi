@@ -12,6 +12,7 @@ Run with::
 """
 
 import pytest
+from hexbytes import HexBytes
 from web3 import Web3
 
 from pydefi.bridge.gaszip import GasZip
@@ -372,7 +373,7 @@ class TestLayerZeroOFTFork:
         transaction does not revert when submitted via eth_call.
         """
         # Known ZRO whale on Ethereum mainnet with a large ZRO balance.
-        whale = Web3.to_checksum_address("0x1f903473376fbe98cc763f1bc459c8fdb6ac3909")
+        whale = HexBytes("0x1f903473376fbe98cc763f1bc459c8fdb6ac3909")
 
         # Give the whale enough ETH to cover the LayerZero messaging fee
         await fork_w3.provider.make_request("anvil_setBalance", [whale, hex(10 * 10**18)])

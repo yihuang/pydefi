@@ -110,10 +110,11 @@ class HyperliquidClient:
         Raises:
             :exc:`aiohttp.ClientResponseError`: On non-2xx HTTP responses.
         """
+        serializable = {k: ("0x" + v.hex() if isinstance(v, bytes) else v) for k, v in payload.items()}
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 f"{self._api_base}/info",
-                json=payload,
+                json=serializable,
                 headers={"Content-Type": "application/json"},
             ) as resp:
                 resp.raise_for_status()
