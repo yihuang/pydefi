@@ -641,9 +641,8 @@ class TestOFTComposerFork:
         # PATCH_ADDR(80) does MSTORE(buf+68, _from): writes 12 leading zeros then
         # the 20-byte address into data[0..31].
         last_data = await target.functions.lastData().call()
-        expected_addr_bytes = bytes(oft_address)
         assert last_data[:12] == b"\x00" * 12
-        assert last_data[12:32] == expected_addr_bytes
+        assert last_data[12:32] == oft_address
 
     # ------------------------------------------------------------------
     # Security: unauthorized endpoint
