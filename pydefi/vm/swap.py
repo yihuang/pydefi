@@ -72,7 +72,6 @@ from enum import Enum
 
 from eth_abi import encode
 from eth_contract.contract import ContractFunction
-from hexbytes import HexBytes
 
 from pydefi.types import Address
 from pydefi.vm.builder import Patch, Program
@@ -323,7 +322,7 @@ def _build_v3_pool_swap_segment(hop: SwapHop, *, amount_reg: int) -> Program:
     # offset automatically — no hardcoded byte offset.
     prog.load_reg(amount_reg)  # amountSpecified — patched at runtime
     prog.call_contract_abi(
-        HexBytes(hop.pool),
+        hop.pool,
         "function swap(address recipient, bool zeroForOne,"
         " int256 amountSpecified, uint160 sqrtPriceLimitX96, bytes data)",
         hop.recipient,
@@ -383,7 +382,7 @@ def _build_v2_direct_swap_segment(hop: SwapHop, *, amount_reg: int, amount_out_r
     prog = Program()
 
     # --- Step 1: Get reserves --------------------------------------------------
-    prog.call_contract_abi(HexBytes(hop.pool), "getReserves()").pop()
+    prog.call_contract_abi(hop.pool, "getReserves()").pop()
 
     # --- Step 2: Compute amountOut on the EVM stack (no reserve registers) ----
     # Push reserveIn and reserveOut from returndata.
@@ -421,7 +420,7 @@ def _build_v2_direct_swap_segment(hop: SwapHop, *, amount_reg: int, amount_out_r
     # --- Step 3: Transfer amountIn to pair ------------------------------------
     prog.load_reg(amount_reg)
     prog.call_contract_abi(
-        HexBytes(hop.token_in),
+        hop.token_in,
         "function transfer(address to, uint256 amount)",
         hop.pool,
         Patch(),
@@ -434,7 +433,7 @@ def _build_v2_direct_swap_segment(hop: SwapHop, *, amount_reg: int, amount_out_r
     prog.load_reg(amount_out_reg)
     if hop.zero_for_one:
         prog.call_contract_abi(
-            HexBytes(hop.pool),
+            hop.pool,
             "function swap(uint256 amount0Out, uint256 amount1Out, address to, bytes data)",
             0,
             Patch(),
@@ -443,7 +442,7 @@ def _build_v2_direct_swap_segment(hop: SwapHop, *, amount_reg: int, amount_out_r
         ).pop()
     else:
         prog.call_contract_abi(
-            HexBytes(hop.pool),
+            hop.pool,
             "function swap(uint256 amount0Out, uint256 amount1Out, address to, bytes data)",
             Patch(),
             0,

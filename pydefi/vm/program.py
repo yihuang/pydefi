@@ -147,11 +147,6 @@ def push_bytes(data: bytes) -> bytes:
     source offset and always reads from ``calldatasize`` (past the end of the
     program calldata), copying zeros instead of the intended bytes.
     """
-    # Normalise: accept hex strings (e.g. "0x...") and HexBytes in addition to bytes.
-    if isinstance(data, str):
-        data = bytes.fromhex(data.removeprefix("0x"))
-    else:
-        data = bytes(data)
     if len(data) > 0xFFFF:
         raise ValueError(f"push_bytes: data too large ({len(data)} bytes, max 65535)")
     blen = len(data)

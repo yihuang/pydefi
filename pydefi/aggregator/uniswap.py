@@ -11,9 +11,10 @@ from typing import Any, Optional
 
 import aiohttp
 
+from pydefi._utils import encode_address
 from pydefi.aggregator.base import AggregatorQuote, BaseAggregator
 from pydefi.exceptions import AggregatorError
-from pydefi.types import SwapRoute, SwapStep, Token, TokenAmount
+from pydefi.types import Address, SwapRoute, SwapStep, Token, TokenAmount
 
 # Routing types returned by /v1/quote that are compatible with POST /v1/swap.
 # UniswapX types (DUTCH_V2, DUTCH_V3, PRIORITY) must use POST /v1/order instead.
@@ -146,7 +147,7 @@ class UniswapAPI(BaseAggregator):
         amount_in: TokenAmount,
         token_out: Token,
         slippage_bps: int = 50,
-        swapper: Optional[str] = None,
+        swapper: Optional[Address] = None,
         **kwargs: Any,
     ) -> AggregatorQuote:
         """Fetch a price quote from ``POST /v1/quote``.
@@ -181,7 +182,7 @@ class UniswapAPI(BaseAggregator):
             "slippageTolerance": self._slippage_to_percent(slippage_bps),
         }
         if swapper is not None:
-            body["swapper"] = "0x" + swapper.hex() if isinstance(swapper, bytes) else swapper
+            body["swapper"] = encode_address(swapper, self.chain_id)
         body.update(kwargs)
 
         data = await self._post("v1/quote", body)

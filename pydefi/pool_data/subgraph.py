@@ -13,7 +13,6 @@ from typing import Any, Optional
 
 import aiohttp
 
-from pydefi._utils import decode_address
 from pydefi.exceptions import PoolDataError
 from pydefi.pool_data.base import BasePoolDataProvider, PoolData
 from pydefi.types import Address, ChainId, Token
@@ -133,14 +132,14 @@ class UniswapV2Subgraph(Subgraph):
 
         token0 = Token(
             chain_id=self.chain_id,
-            address=decode_address(t0["id"], self.chain_id),
+            address=Address(t0["id"]),
             symbol=t0["symbol"],
             decimals=int(t0["decimals"]),
             name=t0.get("name") or None,
         )
         token1 = Token(
             chain_id=self.chain_id,
-            address=decode_address(t1["id"], self.chain_id),
+            address=Address(t1["id"]),
             symbol=t1["symbol"],
             decimals=int(t1["decimals"]),
             name=t1.get("name") or None,
@@ -305,14 +304,14 @@ class UniswapV3Subgraph(Subgraph):
 
         token0 = Token(
             chain_id=self.chain_id,
-            address=decode_address(t0["id"], self.chain_id),
+            address=Address(t0["id"]),
             symbol=t0["symbol"],
             decimals=int(t0["decimals"]),
             name=t0.get("name") or None,
         )
         token1 = Token(
             chain_id=self.chain_id,
-            address=decode_address(t1["id"], self.chain_id),
+            address=Address(t1["id"]),
             symbol=t1["symbol"],
             decimals=int(t1["decimals"]),
             name=t1.get("name") or None,

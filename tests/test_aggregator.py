@@ -13,7 +13,7 @@ from pydefi.aggregator.paraswap import ParaSwap
 from pydefi.aggregator.uniswap import UniswapAPI
 from pydefi.aggregator.zerox import ZeroX
 from pydefi.exceptions import AggregatorError
-from pydefi.types import TokenAmount
+from pydefi.types import Address, TokenAmount
 from tests.addrs import USDC, WETH
 
 # ---------------------------------------------------------------------------
@@ -671,7 +671,7 @@ class TestOpenOcean:
         with patch.object(client, "_get", new=AsyncMock(return_value=mock_response_data)):
             with patch.object(client, "_get_gas_price", new=AsyncMock(return_value="20000000000")):
                 amount_in = TokenAmount.from_human(WETH, "1")
-                quote = await client.get_swap(amount_in, USDC, from_address="0x" + "AA" * 20)
+                quote = await client.get_swap(amount_in, USDC, from_address=Address("0x" + "AA" * 20))
 
         assert quote.amount_out.amount == 2_003_000_000
         assert quote.tx_data["to"] == "0x" + "CD" * 20

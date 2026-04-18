@@ -1353,15 +1353,15 @@ class TestEvmNativeOpcodes:
 class TestBuildSplitProgram:
     """Unit tests for :func:`~pydefi.vm.swap.build_split_program` and :class:`~pydefi.vm.swap.SplitLeg`."""
 
-    POOL1 = "0x" + "11" * 20
-    POOL2 = "0x" + "22" * 20
-    POOL3 = "0x" + "33" * 20
-    TOKEN_A = "0x" + "aa" * 20
-    TOKEN_B = "0x" + "bb" * 20
-    TOKEN_C = "0x" + "cc" * 20
-    RECIPIENT = "0x" + "dd" * 20
+    POOL1 = Address("0x" + "11" * 20)
+    POOL2 = Address("0x" + "22" * 20)
+    POOL3 = Address("0x" + "33" * 20)
+    TOKEN_A = Address("0x" + "aa" * 20)
+    TOKEN_B = Address("0x" + "bb" * 20)
+    TOKEN_C = Address("0x" + "cc" * 20)
+    RECIPIENT = Address("0x" + "dd" * 20)
 
-    def _v3_hop(self, pool: str, token_in: str, token_out: str) -> SwapHop:
+    def _v3_hop(self, pool: Address, token_in: Address, token_out: Address) -> SwapHop:
         return SwapHop(
             protocol=SwapProtocol.UNISWAP_V3,
             pool=pool,
@@ -1374,7 +1374,7 @@ class TestBuildSplitProgram:
             zero_for_one=True,
         )
 
-    def _v2_hop(self, pool: str, token_in: str, token_out: str) -> SwapHop:
+    def _v2_hop(self, pool: Address, token_in: Address, token_out: Address) -> SwapHop:
         return SwapHop(
             protocol=SwapProtocol.UNISWAP_V2,
             pool=pool,

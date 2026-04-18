@@ -12,7 +12,7 @@ from typing import Any, Optional
 
 import aiohttp
 
-from pydefi._utils import decode_address
+from pydefi._utils import decode_address, encode_address
 from pydefi.exceptions import PoolDataError
 from pydefi.pool_data.base import BasePoolDataProvider, PoolData
 from pydefi.types import Address, ChainId, Token
@@ -335,7 +335,7 @@ class GeckoTerminal(BasePoolDataProvider):
         seen_input: set[str] = set()
         unique_addresses: list[str] = []
         for addr in token_addresses:
-            key = "0x" + addr.hex()
+            key = encode_address(addr, self.chain_id)
             if key not in seen_input:
                 seen_input.add(key)
                 unique_addresses.append(key)
