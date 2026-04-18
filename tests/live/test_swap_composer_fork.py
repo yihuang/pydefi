@@ -32,8 +32,6 @@ from pydefi.abi import DeFiVM
 from pydefi.abi.codec import codec
 from pydefi.pathfinder.graph import PoolEdge, V3PoolEdge
 from pydefi.types import Address, ChainId, RouteDAG, Token
-from pydefi.pathfinder.graph import PoolEdge, V3PoolEdge
-from pydefi.types import ChainId, RouteDAG, Token
 from pydefi.vm import build_execution_program_for_dag
 from pydefi.vm.swap import (
     SplitLeg,

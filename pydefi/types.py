@@ -11,7 +11,6 @@ from enum import IntEnum
 from typing import Any, TypeAlias
 
 from hexbytes import HexBytes
-from typing import Any, ClassVar, TypeAlias
 
 from pydefi.pools import BasePool
 

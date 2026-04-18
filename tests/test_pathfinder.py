@@ -9,7 +9,6 @@ from pydefi.exceptions import NoRouteFoundError
 from pydefi.pathfinder.graph import PoolEdge, PoolGraph, V3PoolEdge
 from pydefi.pathfinder.router import Router
 from pydefi.types import Address, ChainId, RouteDAG, RouteSwap, Token, TokenAmount
-from pydefi.types import ChainId, RouteDAG, RouteSwap, Token, TokenAmount
 from tests.addrs import DAI, USDC, WETH
 
 # ---------------------------------------------------------------------------

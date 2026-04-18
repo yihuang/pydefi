@@ -19,7 +19,6 @@ from decimal import Decimal
 from pydefi.exceptions import NoRouteFoundError
 from pydefi.pathfinder.graph import PoolEdge, PoolGraph
 from pydefi.types import Address, RouteDAG, SwapRoute, SwapStep, Token, TokenAmount
-from pydefi.types import RouteDAG, SwapRoute, SwapStep, Token, TokenAmount
 
 
 class Router:
