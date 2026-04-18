@@ -12,7 +12,8 @@ from eth_contract import Contract
 from pydefi.exceptions import NoRouteFoundError
 from pydefi.pathfinder.graph import PoolGraph, V3PoolEdge
 from pydefi.pathfinder.router import Router
-from pydefi.types import TokenAmount
+from pydefi.types import RouteDAG, RouteSplit, TokenAmount
+from pydefi.vm import build_quote_program_for_dag
 from tests.addrs import (
     DAI,
     PAIR_USDC_DAI,
@@ -234,6 +235,34 @@ class TestRouterLive:
         # V2 fee_bps=30 (0.3%)
         for step in route.steps:
             assert step.fee == 30, f"Expected V2 fee=30 (0.3% in bps), got fee={step.fee}"
+
+    async def test_dag_nested_split_on_empty_leg_live(self, eth_w3):
+        """Nested split from an empty active leg should compile with live pool edges."""
+        g = await self._build_v2_graph(eth_w3)
+        edge_weth_usdc = next(edge for edge in g.edges_from(WETH) if edge.token_out == USDC)
+        edge_weth_dai = next(edge for edge in g.edges_from(WETH) if edge.token_out == DAI)
+        edge_dai_usdc = next(edge for edge in g.edges_from(DAI) if edge.token_out == USDC)
+
+        dag = (
+            RouteDAG()
+            .from_token(WETH)
+            .split()
+            .leg(5000)
+            .split()
+            .leg(5000)
+            .swap(USDC, edge_weth_usdc)
+            .leg(5000)
+            .swap(DAI, edge_weth_dai)
+            .swap(USDC, edge_dai_usdc)
+            .merge()
+            .leg(5000)
+            .swap(USDC, edge_weth_usdc)
+            .merge()
+        )
+        payload = dag.to_dict()
+        assert isinstance(payload["actions"][0], RouteSplit)
+        bc = build_quote_program_for_dag(dag, amount_in=10**18, vm_address="0x" + "00" * 20).build()
+        assert len(bc) > 0
 
 
 @pytest.mark.live

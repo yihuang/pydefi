@@ -36,6 +36,7 @@ import aiohttp
 import pytest
 from web3 import AsyncWeb3
 
+from pydefi.abi.codec import codec
 from pydefi.rpc import get_w3
 from pydefi.types import Address, ChainId
 from tests.addrs import INTERPRETER_ADDR
@@ -174,6 +175,7 @@ async def fork_w3(request: pytest.FixtureRequest):
                 pass
         pytest.fail("Anvil did not start within 30 seconds")
 
+    w3.codec = codec
     yield w3
 
     proc.terminate()
@@ -232,6 +234,7 @@ async def fork_w3_module():
                 pass
         pytest.fail("Anvil did not start within 60 seconds")
 
+    w3.codec = codec
     yield w3
 
     proc.terminate()
