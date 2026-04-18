@@ -74,6 +74,7 @@ from eth_abi import encode
 from eth_contract.contract import ContractFunction
 
 from pydefi.types import Address, RouteDAG
+from pydefi.types import RouteDAG
 from pydefi.vm.builder import Patch, Program
 from pydefi.vm.program import (
     _SWAP2,

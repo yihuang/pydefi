@@ -16,6 +16,7 @@ from typing import Callable, ClassVar, Iterator
 
 from pydefi.pools import BasePool
 from pydefi.types import Address, Token
+from pydefi.types import Token
 
 
 @dataclass
