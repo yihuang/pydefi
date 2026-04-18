@@ -30,12 +30,15 @@ from collections.abc import Sequence
 from pydefi.pathfinder.graph import V3PoolEdge
 from pydefi.types import RouteAction, RouteDAG, RouteSplit, RouteSwap
 from pydefi.vm.builder import Program
-from pydefi.vm.program import add, assert_ge, assert_le, div, dup, dup2, mul, pop, push_u256, swap
+from pydefi.vm.program import add, assert_ge, assert_le, div, dup, dup2, load_reg, mul, pop, push_u256, store_reg, swap
 from pydefi.vm.swap import (
+    _AMOUNT_OUT_REG,
+    _AMOUNT_REG,
     SwapHop,
     SwapProtocol,
-    _build_v2_direct_swap_segment_on_stack,
+    _build_v2_direct_swap_segment,
     _build_v3_pool_swap_segment_on_stack,
+    _pool_to_swap_protocol,
 )
 
 _BPS_DENOMINATOR = 10_000
@@ -201,7 +204,14 @@ def _build_route_swap_segment_on_stack(
     hop = _swap_hop_from_route_swap(swap_action, recipient=recipient)
     if hop.protocol == SwapProtocol.UNISWAP_V3:
         return _build_v3_pool_swap_segment_on_stack(hop)
-    return _build_v2_direct_swap_segment_on_stack(hop)
+    # Bridge stack → register convention: store TOS (amount_in) into _AMOUNT_REG,
+    # run segment (which overwrites _AMOUNT_REG with amount_out), then push result.
+    return (
+        Program()
+        ._emit(store_reg(_AMOUNT_REG))
+        .extend(_build_v2_direct_swap_segment(hop, amount_reg=_AMOUNT_REG, amount_out_reg=_AMOUNT_OUT_REG))
+        ._emit(load_reg(_AMOUNT_REG))
+    )
 
 
 def _swap_hop_from_route_swap(swap_action: RouteSwap, *, recipient: str) -> SwapHop:
@@ -225,12 +235,3 @@ def _swap_hop_from_route_swap(swap_action: RouteSwap, *, recipient: str) -> Swap
         recipient=recipient,
         zero_for_one=zero_for_one,
     )
-
-
-def _pool_to_swap_protocol(protocol_name: str) -> SwapProtocol:
-    name = protocol_name.lower()
-    if "v3" in name:
-        return SwapProtocol.UNISWAP_V3
-    if "v2" in name:
-        return SwapProtocol.UNISWAP_V2
-    raise ValueError(f"build_program_for_dag: unsupported pool protocol {protocol_name!r}")

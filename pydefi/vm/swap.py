@@ -69,11 +69,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import TYPE_CHECKING
 
 from eth_abi import encode
 from eth_contract.contract import ContractFunction
+from eth_utils import keccak
 
-from pydefi.types import RouteDAG
+from pydefi.types import RouteDAG, SwapRoute, SwapTransaction, TokenAmount
+
+if TYPE_CHECKING:
+    from web3 import AsyncWeb3
 from pydefi.vm.builder import Patch, Program
 from pydefi.vm.program import (
     _SWAP2,
@@ -85,9 +90,11 @@ from pydefi.vm.program import (
     dup,
     load_reg,
     mul,
+    pop,
     push_addr,
     push_u256,
     ret_u256,
+    return_reg,
     store_reg,
     swap,
 )
@@ -315,13 +322,14 @@ def _build_v3_pool_swap_segment_on_stack(hop: SwapHop) -> Program:
     callback_data = encode_v3_callback_data(hop.token_in)
 
     prog = Program()
+    prog._emit(dup())  # pre-push amount_in copy for Patch to consume
     prog.call_contract_abi(
         hop.pool,
         "function swap(address recipient, bool zeroForOne,"
         " int256 amountSpecified, uint160 sqrtPriceLimitX96, bytes data)",
         hop.recipient,
         hop.zero_for_one,
-        Patch(),
+        Patch(),  # amountSpecified: consumes pre-pushed amount_in copy from stack
         sqrt_price_limit_x96,
         callback_data,
     ).pop()
@@ -333,6 +341,11 @@ def _build_v3_pool_swap_segment_on_stack(hop: SwapHop) -> Program:
     prog._emit(bitwise_not())
     prog._emit(push_u256(1))
     prog._emit(add())
+    # Stack is now [amount_out, amount_in, ...].  Drop the stale amount_in that
+    # survived call_with_patches (dup() created a copy for Patch to consume, but
+    # the original was never popped by the CALL machinery).
+    prog._emit(swap())
+    prog._emit(pop())
     return prog
 
 
@@ -354,100 +367,148 @@ def _build_v3_pool_swap_segment(hop: SwapHop, *, amount_reg: int) -> Program:
     )
 
 
-def _build_v2_direct_swap_segment_on_stack(hop: SwapHop, *, intermediate_reg: int = _AMOUNT_OUT_REG) -> Program:
-    """V2 pair direct swap (stack ABI).
+def _build_v2_quote_segment(hop: SwapHop, *, amount_reg: int, result_reg: int) -> Program:
+    """V2 pair quote: compute ``amountOut`` from reserves on-chain (no transfer).
 
-    Stack contract:
-    - input:  ``[... , amount_in]``
-    - output: ``[... , amount_out]``
+    Shared core used by :func:`_build_v2_direct_swap_segment` and
+    :func:`build_quote_swap_calldata`.  Calls ``getReserves`` + constant-product
+    formula but **omits** the ``tokenIn.transfer`` and ``pair.swap`` calls.
+    Safe to run inside an ``eth_call``.
+
+    Args:
+        hop: V2 hop descriptor.  ``hop.fee`` must be in **basis points**
+            (e.g. ``30`` for 0.30 %).
+        amount_reg: Register holding ``amountIn`` on entry (read-only).
+        result_reg: Register that receives the computed ``amountOut``.
     """
     if not 0 <= hop.fee < 10000:
         raise ValueError(f"hop.fee must be in basis points within [0, 10000), got {hop.fee}")
     fee_num = 10000 - hop.fee
 
     prog = Program()
+
     prog.call_contract_abi(hop.pool, "getReserves()").pop()
     if hop.zero_for_one:
-        prog._emit(ret_u256(0))
-        prog._emit(ret_u256(32))
+        prog._emit(ret_u256(0))  # [rIn]
+        prog._emit(ret_u256(32))  # [rIn, rOut]
     else:
-        prog._emit(ret_u256(32))
-        prog._emit(ret_u256(0))
+        prog._emit(ret_u256(32))  # [rIn]
+        prog._emit(ret_u256(0))  # [rIn, rOut]
 
-    # [amount_in, rIn, rOut] -> compute amount_out while keeping amount_in.
-    prog._emit(bytes([0x82]))  # DUP3: amount_in
-    prog._emit(push_u256(fee_num))
-    prog._emit(mul())
-    prog._emit(dup())
-    prog._emit(bytes([_SWAP2]))
-    prog._emit(mul())
-    prog._emit(bytes([_SWAP2]))
-    prog._emit(push_u256(10000))
-    prog._emit(mul())
-    prog._emit(add())
-    prog._emit(swap())
-    prog._emit(div())  # [amount_in, amount_out]
-    prog._emit(store_reg(intermediate_reg))  # consume amount_out; keep amount_in on stack
+    # [rIn, rOut] — compute amountOut = amountIn*fee_num*rOut / (rIn*10000 + amountIn*fee_num)
+    prog._emit(load_reg(amount_reg))  # [rIn, rOut, amountIn]
+    prog._emit(push_u256(fee_num))  # [rIn, rOut, amountIn, fee_num]
+    prog._emit(mul())  # [rIn, rOut, aif=amountIn*fee_num]
+    prog._emit(dup())  # [rIn, rOut, aif, aif_dup]
+    prog._emit(bytes([_SWAP2]))  # [rIn, aif_dup, aif, rOut]
+    prog._emit(mul())  # [rIn, aif_dup, numerator=aif*rOut]
+    prog._emit(bytes([_SWAP2]))  # [numerator, aif_dup, rIn]
+    prog._emit(push_u256(10000))  # [numerator, aif_dup, rIn, 10000]
+    prog._emit(mul())  # [numerator, aif_dup, rIn*10000]
+    prog._emit(add())  # [numerator, denominator]
+    prog._emit(swap())  # [denominator, numerator]
+    prog._emit(div())  # [amountOut]
+    prog._emit(store_reg(result_reg))  # result_reg = amountOut
 
+    return prog
+
+
+def _build_v3_quote_segment(
+    hop: SwapHop,
+    quoter_address: str,
+    *,
+    amount_reg: int,
+) -> Program:
+    """V3 pool quote: call ``quoter.quoteExactInput`` (safe for ``eth_call``).
+
+    Calls ``QuoterV2.quoteExactInput(bytes path, uint256 amountIn)`` with a
+    single-hop ABI-packed path ``tokenIn + fee24 + tokenOut``.  The quoter
+    simulates the swap and returns ``amountOut`` as the first uint256.  No
+    tokens are transferred.  Compatible with both QuoterV1 and QuoterV2.
+
+    Args:
+        hop: V3 hop descriptor.  ``hop.fee`` is in **basis points** (e.g.
+            ``5`` for 0.05 %); converted to V3 fee tier (``fee_bps * 100``).
+        quoter_address: On-chain address of a Uniswap V3-compatible quoter.
+        amount_reg: Register holding ``amountIn`` on entry; updated with
+            ``amountOut`` on exit.
+    """
+    v3_fee_tier = hop.fee * 100  # basis points → V3 fee tier (e.g. 5 → 500)
+    packed_path = encode_v3_path([hop.token_in, hop.token_out], [v3_fee_tier])
+
+    prog = Program()
+    prog._emit(load_reg(amount_reg))  # push amountIn for Patch to consume
     prog.call_contract_abi(
-        hop.token_in,
-        "function transfer(address to, uint256 amount)",
-        hop.pool,
-        Patch(),
+        quoter_address,
+        "function quoteExactInput(bytes path, uint256 amountIn) returns (uint256 amountOut)",
+        packed_path,
+        Patch(),  # consumes load_reg(amount_reg) from TOS
     ).pop()
 
-    prog._emit(load_reg(intermediate_reg))
-    if hop.zero_for_one:
-        prog.call_contract_abi(
-            hop.pool,
-            "function swap(uint256 amount0Out, uint256 amount1Out, address to, bytes data)",
-            0,
-            Patch(),
-            hop.recipient,
-            b"",
-        ).pop()
-    else:
-        prog.call_contract_abi(
-            hop.pool,
-            "function swap(uint256 amount0Out, uint256 amount1Out, address to, bytes data)",
-            Patch(),
-            0,
-            hop.recipient,
-            b"",
-        ).pop()
+    # amountOut is the first uint256 in returndata for both QuoterV1 and V2
+    prog._emit(ret_u256(0))
+    prog._emit(store_reg(amount_reg))
 
-    prog._emit(load_reg(intermediate_reg))
     return prog
+
+
+# ---------------------------------------------------------------------------
+# V2 direct swap (execution — includes transfer + pair.swap)
+# ---------------------------------------------------------------------------
 
 
 def _build_v2_direct_swap_segment(hop: SwapHop, *, amount_reg: int, amount_out_reg: int) -> Program:
     """V2 pair direct swap: compute amountOut from reserves on-chain.
 
     Sequence:
-    1. ``pair.getReserves()`` — determine reserveIn / reserveOut.
-    2. Compute ``amountOut`` using the constant-product formula on the EVM
-       stack (no temporary registers for reserves):
-       ``amountIn * fee_num * reserveOut / (reserveIn * 10000 + amountIn * fee_num)``
-    3. Store computed ``amountOut`` in *amount_out_reg* for calldata patching.
-    4. ``tokenIn.transfer(pair, amountIn)`` — transfer input from VM.
-    5. ``pair.swap(amount0Out, amount1Out, recipient, "")`` — amountOut patched
-       from *amount_out_reg* via :class:`~pydefi.vm.builder.Patch`.
-    6. Copy ``amountOut`` from *amount_out_reg* back to *amount_reg*.
+    1. ``pair.getReserves()`` + constant-product formula via
+       :func:`_build_v2_quote_segment` — stores ``amountOut`` in *amount_out_reg*.
+    2. ``tokenIn.transfer(pair, amountIn)`` — transfer input from VM.
+    3. ``pair.swap(amount0Out, amount1Out, recipient, "")`` — amounts patched
+       from registers at runtime.
+    4. Copy ``amountOut`` from *amount_out_reg* back to *amount_reg*.
 
     Args:
         hop: The V2 swap hop descriptor.
         amount_reg: Register holding ``amountIn`` on entry; updated with
             ``amountOut`` on exit.
-        amount_out_reg: Scratch register for the intermediate ``amountOut``
-            value (must differ from *amount_reg*).
+        amount_out_reg: Scratch register for the computed ``amountOut``
+            (must differ from *amount_reg*).
     """
+    prog = _build_v2_quote_segment(hop, amount_reg=amount_reg, result_reg=amount_out_reg)
 
-    return (
-        Program()
-        ._emit(load_reg(amount_reg))
-        .extend(_build_v2_direct_swap_segment_on_stack(hop, intermediate_reg=amount_out_reg))
-        ._emit(store_reg(amount_reg))
-    )
+    prog._emit(load_reg(amount_reg))  # push amountIn for Patch
+    prog.call_contract_abi(
+        hop.token_in,
+        "function transfer(address to, uint256 amount)",
+        hop.pool,
+        Patch(),  # consumes load_reg(amount_reg) from TOS
+    ).pop()
+
+    prog._emit(load_reg(amount_out_reg))  # push amountOut for Patch
+    if hop.zero_for_one:
+        prog.call_contract_abi(
+            hop.pool,
+            "function swap(uint256 amount0Out, uint256 amount1Out, address to, bytes data)",
+            0,
+            Patch(),  # amount1Out — consumes load_reg(amount_out_reg) from TOS
+            hop.recipient,
+            b"",
+        ).pop()
+    else:
+        prog.call_contract_abi(
+            hop.pool,
+            "function swap(uint256 amount0Out, uint256 amount1Out, address to, bytes data)",
+            Patch(),  # amount0Out — consumes load_reg(amount_out_reg) from TOS
+            0,
+            hop.recipient,
+            b"",
+        ).pop()
+
+    prog._emit(load_reg(amount_out_reg))
+    prog._emit(store_reg(amount_reg))
+
+    return prog
 
 
 # ---------------------------------------------------------------------------
@@ -821,3 +882,194 @@ def build_quote_program_for_dag(
         vm_address=vm_address,
         min_final_out=min_final_out,
     )
+
+
+# ---------------------------------------------------------------------------
+# High-level transaction builders
+# ---------------------------------------------------------------------------
+
+_EXECUTE_SELECTOR: bytes = keccak(text="execute(bytes)")[:4]
+
+
+def build_swap_transaction(
+    dag: RouteDAG,
+    amount_in: int,
+    vm_address: str,
+    recipient: str,
+    *,
+    min_final_out: int = 0,
+) -> SwapTransaction:
+    """Compile a :class:`~pydefi.types.RouteDAG` into a DeFiVM ``execute(bytes)`` transaction.
+
+    Args:
+        dag: The route DAG to compile.
+        amount_in: Exact input amount in raw token units.
+        vm_address: Address of the deployed DeFiVM contract.
+        recipient: Address that receives the output tokens.
+        min_final_out: Minimum acceptable output (enforced on-chain; 0 = no check).
+
+    Returns:
+        A :class:`~pydefi.types.SwapTransaction` ready to broadcast.
+    """
+    program = build_execution_program_for_dag(
+        dag,
+        amount_in=amount_in,
+        vm_address=vm_address,
+        recipient=recipient,
+        min_final_out=min_final_out,
+    )
+    calldata = _EXECUTE_SELECTOR + encode(["bytes"], [bytes(program)])
+    return SwapTransaction(to=vm_address, data=calldata)
+
+
+def _pool_to_swap_protocol(protocol_name: str) -> SwapProtocol:
+    name = protocol_name.lower()
+    if "v3" in name:
+        return SwapProtocol.UNISWAP_V3
+    if "v2" in name:
+        return SwapProtocol.UNISWAP_V2
+    raise ValueError(f"unsupported pool protocol {protocol_name!r}")
+
+
+def swap_route_to_hops(
+    route: SwapRoute,
+    vm_address: str,
+    recipient: str,
+) -> list[SwapHop]:
+    """Convert a :class:`~pydefi.types.SwapRoute` into :class:`SwapHop` descriptors.
+
+    Protocol detection: ``"v2"`` in the lower-cased protocol string maps to
+    :attr:`SwapProtocol.UNISWAP_V2`; ``"v3"`` maps to
+    :attr:`SwapProtocol.UNISWAP_V3`.
+
+    ``zero_for_one`` is derived from EVM token-ordering convention: token0 is
+    the numerically smaller address.
+
+    All intermediate hops send output to *vm_address*; only the final hop
+    sends to *recipient*.
+
+    Args:
+        route: As returned by :meth:`~pydefi.pathfinder.Router.find_best_route`.
+        vm_address: DeFiVM contract address (intermediate recipient).
+        recipient: Final output recipient.
+
+    Returns:
+        Ordered :class:`SwapHop` list ready for :func:`build_multi_hop_program`.
+
+    Raises:
+        :class:`ValueError`: If any step has an unrecognised protocol.
+    """
+    hops: list[SwapHop] = []
+    steps = route.steps
+    n = len(steps)
+
+    for i, step in enumerate(steps):
+        try:
+            protocol = _pool_to_swap_protocol(step.protocol)
+        except ValueError:
+            raise ValueError(
+                f"swap_route_to_hops: unrecognised protocol {step.protocol!r} on step {i}. "
+                "Expected a protocol name containing 'v2' or 'v3'."
+            ) from None
+
+        zero_for_one = step.token_in.address.lower() < step.token_out.address.lower()
+        hop_recipient = recipient if i == n - 1 else vm_address
+
+        hops.append(
+            SwapHop(
+                protocol=protocol,
+                pool=step.pool_address,
+                token_in=step.token_in.address,
+                token_out=step.token_out.address,
+                fee=step.fee,
+                amount_in=route.amount_in.amount if i == 0 else 0,
+                amount_out_min=0,
+                recipient=hop_recipient,
+                zero_for_one=zero_for_one,
+            )
+        )
+
+    return hops
+
+
+def build_quote_swap_calldata(
+    route: SwapRoute,
+    vm_address: str,
+    recipient: str,
+    quoter_address: str,
+) -> bytes:
+    """Build ``execute(bytes)`` calldata for a view-only swap quote.
+
+    Composes a DeFiVM program that simulates every hop on-chain without
+    transferring any tokens:
+
+    * **V2 hops** — call ``pair.getReserves()`` and compute ``amountOut``
+      with the constant-product formula.
+    * **V3 hops** — call ``quoter.quoteExactInput`` (QuoterV1 or QuoterV2)
+      for each hop individually.
+
+    The program ends with ``return_reg``, so the caller receives the final
+    ``amountOut`` as 32 bytes of returndata.  Safe to use with ``eth_call``.
+
+    Args:
+        route: Route to simulate.
+        vm_address: DeFiVM contract address (used as ``eth_call`` target).
+        recipient: Final recipient (informational; does not affect quote).
+        quoter_address: Uniswap V3 QuoterV1/V2 address (consulted for V3 hops).
+
+    Returns:
+        ABI-encoded ``execute(bytes program)`` calldata.
+
+    Raises:
+        :class:`ValueError`: If the route contains no hops or an unsupported protocol.
+    """
+    hops = swap_route_to_hops(route, vm_address, recipient)
+    if not hops:
+        raise ValueError("build_quote_swap_calldata: hops list must not be empty")
+
+    amount_reg = _AMOUNT_REG
+    segments: list[Program] = [Program()._emit(push_u256(hops[0].amount_in))._emit(store_reg(amount_reg))]
+
+    for hop in hops:
+        if hop.protocol == SwapProtocol.UNISWAP_V2:
+            segments.append(_build_v2_quote_segment(hop, amount_reg=amount_reg, result_reg=amount_reg))
+        elif hop.protocol == SwapProtocol.UNISWAP_V3:
+            segments.append(_build_v3_quote_segment(hop, quoter_address, amount_reg=amount_reg))
+        else:
+            raise ValueError(f"build_quote_swap_calldata: unsupported protocol {hop.protocol!r}")
+
+    segments.append(Program()._emit(return_reg(amount_reg)))
+    program = Program.compose(segments)
+    return _EXECUTE_SELECTOR + encode(["bytes"], [bytes(program)])
+
+
+async def quote_swap_transaction(
+    route: SwapRoute,
+    vm_address: str,
+    recipient: str,
+    w3: "AsyncWeb3",
+    quoter_address: str,
+) -> TokenAmount:
+    """Simulate a swap via ``eth_call`` on the DeFiVM contract — supports V2 and V3.
+
+    Executes the calldata built by :func:`build_quote_swap_calldata` against
+    *vm_address*.  No tokens are transferred; the program reads pool state
+    on-chain and returns the estimated output amount.
+
+    * **V2 hops** — ``pair.getReserves()`` + constant-product formula (live
+      reserves; no off-chain estimate).
+    * **V3 hops** — ``quoter.quoteExactInput`` called per hop inside the program.
+
+    Args:
+        route: Route to quote.
+        vm_address: On-chain address of the DeFiVM contract.
+        recipient: Final recipient (does not affect quote result).
+        w3: Connected :class:`~web3.AsyncWeb3` instance.
+        quoter_address: Uniswap V3 QuoterV1/V2 address (for V3 hops).
+
+    Returns:
+        :class:`~pydefi.types.TokenAmount` with the on-chain estimated output.
+    """
+    calldata = build_quote_swap_calldata(route, vm_address, recipient, quoter_address)
+    result = await w3.eth.call({"to": vm_address, "data": calldata})
+    return TokenAmount(token=route.steps[-1].token_out, amount=int.from_bytes(result[:32], "big"))
