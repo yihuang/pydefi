@@ -823,14 +823,13 @@ class TestCCTPComposerAdmin:
         accounts = ctx["accounts"]
 
         new_owner = accounts[1]
-        tx = await composer.fns.transferOwnership(new_owner).transact(w3, deployer)
-        receipt = tx
+        receipt = await composer.fns.transferOwnership(new_owner).transact(w3, deployer)
         assert receipt["status"] == 1
-        assert await composer.fns.owner().call(w3) == Address(new_owner)
-
-        # Transfer back so other tests remain unaffected.
+        owner_after = Web3.to_checksum_address(await composer.fns.owner().call(w3))
         await composer.fns.transferOwnership(deployer).transact(w3, new_owner)
-        assert await composer.fns.owner().call(w3) == Address(deployer)
+
+        assert owner_after == new_owner
+        assert Web3.to_checksum_address(await composer.fns.owner().call(w3)) == deployer
 
     async def test_non_owner_cannot_transfer_ownership(self, ctx):
         """transferOwnership reverts when called by a non-owner."""
