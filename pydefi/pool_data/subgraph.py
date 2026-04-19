@@ -15,7 +15,7 @@ import aiohttp
 
 from pydefi.exceptions import PoolDataError
 from pydefi.pool_data.base import BasePoolDataProvider, PoolData
-from pydefi.types import ChainId, Token
+from pydefi.types import Address, ChainId, Token
 
 # Well-known Uniswap V2 subgraph URLs keyed by chain ID
 _UNISWAP_V2_SUBGRAPHS: dict[int, str] = {
@@ -132,14 +132,14 @@ class UniswapV2Subgraph(Subgraph):
 
         token0 = Token(
             chain_id=self.chain_id,
-            address=t0["id"],
+            address=Address(t0["id"]),
             symbol=t0["symbol"],
             decimals=int(t0["decimals"]),
             name=t0.get("name") or None,
         )
         token1 = Token(
             chain_id=self.chain_id,
-            address=t1["id"],
+            address=Address(t1["id"]),
             symbol=t1["symbol"],
             decimals=int(t1["decimals"]),
             name=t1.get("name") or None,
@@ -228,16 +228,17 @@ class UniswapV2Subgraph(Subgraph):
                 continue
         return result
 
-    async def get_pools_for_token(self, token_address: str, limit: int = 100) -> list[PoolData]:
+    async def get_pools_for_token(self, token_address: Address, limit: int = 100) -> list[PoolData]:
         """Fetch Uniswap V2 pairs that contain a specific token.
 
         Args:
-            token_address: ERC-20 token address.
+            token_address: ERC-20 token address (str or bytes ``Address``).
             limit: Maximum number of pairs to return.
 
         Returns:
             A list of :class:`PoolData` objects.
         """
+        addr_str = "0x" + token_address.hex()
         query = """
         query PairsForToken($token: String!, $limit: Int!) {
             pairs(
@@ -254,7 +255,7 @@ class UniswapV2Subgraph(Subgraph):
             }
         }
         """
-        data = await self._query(query, {"token": token_address.lower(), "limit": limit})
+        data = await self._query(query, {"token": addr_str.lower(), "limit": limit})
         result: list[PoolData] = []
         for pair in data.get("pairs", []):
             try:
@@ -303,14 +304,14 @@ class UniswapV3Subgraph(Subgraph):
 
         token0 = Token(
             chain_id=self.chain_id,
-            address=t0["id"],
+            address=Address(t0["id"]),
             symbol=t0["symbol"],
             decimals=int(t0["decimals"]),
             name=t0.get("name") or None,
         )
         token1 = Token(
             chain_id=self.chain_id,
-            address=t1["id"],
+            address=Address(t1["id"]),
             symbol=t1["symbol"],
             decimals=int(t1["decimals"]),
             name=t1.get("name") or None,
@@ -400,16 +401,17 @@ class UniswapV3Subgraph(Subgraph):
                 continue
         return result
 
-    async def get_pools_for_token(self, token_address: str, limit: int = 100) -> list[PoolData]:
+    async def get_pools_for_token(self, token_address: Address, limit: int = 100) -> list[PoolData]:
         """Fetch Uniswap V3 pools that contain a specific token.
 
         Args:
-            token_address: ERC-20 token address.
+            token_address: ERC-20 token address (``Address``).
             limit: Maximum number of pools to return.
 
         Returns:
             A list of :class:`PoolData` objects.
         """
+        addr_str = "0x" + token_address.hex()
         query = """
         query PoolsForToken($token: String!, $limit: Int!) {
             pools(
@@ -427,7 +429,7 @@ class UniswapV3Subgraph(Subgraph):
             }
         }
         """
-        data = await self._query(query, {"token": token_address.lower(), "limit": limit})
+        data = await self._query(query, {"token": addr_str.lower(), "limit": limit})
         result: list[PoolData] = []
         for pool in data.get("pools", []):
             try:

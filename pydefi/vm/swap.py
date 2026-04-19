@@ -75,7 +75,7 @@ from eth_abi import encode
 from eth_contract.contract import ContractFunction
 from eth_utils import keccak
 
-from pydefi.types import RouteDAG, SwapRoute, SwapTransaction, TokenAmount
+from pydefi.types import Address, RouteDAG, SwapRoute, SwapTransaction, TokenAmount
 
 if TYPE_CHECKING:
     from web3 import AsyncWeb3
@@ -133,7 +133,7 @@ V2_AMOUNT_OUT_OFFSET: int = 96
 # ---------------------------------------------------------------------------
 
 
-def encode_v3_callback_data(token_in: str) -> bytes:
+def encode_v3_callback_data(token_in: Address) -> bytes:
     """Encode the ``data`` field for a V3-style flash-swap callback.
 
     The DeFiVM fallback handler expects ``abi.encode(address tokenIn)`` in the
@@ -149,7 +149,7 @@ def encode_v3_callback_data(token_in: str) -> bytes:
     return encode(["address"], [token_in])
 
 
-def encode_v2_callback_data(token_in: str, amount_owed: int) -> bytes:
+def encode_v2_callback_data(token_in: Address, amount_owed: int) -> bytes:
     """Encode the ``data`` field for a V2-style flash-swap callback.
 
     The DeFiVM fallback handler expects ``abi.encode(address tokenIn,
@@ -172,11 +172,11 @@ def encode_v2_callback_data(token_in: str, amount_owed: int) -> bytes:
 
 
 def v3_pool_swap_calldata(
-    recipient: str,
+    recipient: Address,
     zero_for_one: bool,
     amount_in: int,
     sqrt_price_limit_x96: int,
-    token_in: str,
+    token_in: Address,
 ) -> bytes:
     """Build calldata for a direct ``pool.swap()`` call (Uniswap V3 pool).
 
@@ -202,7 +202,7 @@ def v3_pool_swap_calldata(
     return _V3_POOL_SWAP_FN(recipient, zero_for_one, amount_in, sqrt_price_limit_x96, callback_data).data
 
 
-def encode_v3_path(tokens: list[str], fees: list[int]) -> bytes:
+def encode_v3_path(tokens: list[Address], fees: list[int]) -> bytes:
     """Encode a V3 multi-hop path as ABI-packed bytes.
 
     Args:
@@ -217,10 +217,10 @@ def encode_v3_path(tokens: list[str], fees: list[int]) -> bytes:
     """
     if len(fees) != len(tokens) - 1:
         raise ValueError(f"encode_v3_path: len(fees) ({len(fees)}) must equal len(tokens)-1 ({len(tokens) - 1})")
-    result = bytes.fromhex(tokens[0].removeprefix("0x").zfill(40))
+    result = tokens[0]
     for fee, token in zip(fees, tokens[1:]):
         result += fee.to_bytes(3, "big")
-        result += bytes.fromhex(token.removeprefix("0x").zfill(40))
+        result += token
     return result
 
 
@@ -285,13 +285,13 @@ class SwapHop:
     """
 
     protocol: SwapProtocol
-    pool: str
-    token_in: str
-    token_out: str
+    pool: Address
+    token_in: Address
+    token_out: Address
     fee: int
     amount_in: int
     amount_out_min: int
-    recipient: str
+    recipient: Address
     zero_for_one: bool
     sqrt_price_limit_x96: int = field(default=0)
 
@@ -415,7 +415,7 @@ def _build_v2_quote_segment(hop: SwapHop, *, amount_reg: int, result_reg: int) -
 
 def _build_v3_quote_segment(
     hop: SwapHop,
-    quoter_address: str,
+    quoter_address: Address,
     *,
     amount_reg: int,
 ) -> Program:
@@ -815,15 +815,16 @@ def build_split_program(
 # ---------------------------------------------------------------------------
 
 
-def check_min_balance(token: str, account: str, min_amount: int) -> Program:
+def check_min_balance(token: Address, account: Address, min_amount: int) -> Program:
     """Return a Program snippet that reverts if ``balanceOf(token, account) < min_amount``.
 
     Useful as a post-swap safety guard to verify the output landed in the
     expected account.
 
     Args:
-        token: ERC-20 token address.
-        account: Account whose balance to check.
+        token: ERC-20 token address as :class:`~hexbytes.HexBytes` (``Address``).
+        account: Account whose balance to check as :class:`~hexbytes.HexBytes`
+            (``Address``).
         min_amount: Minimum required balance.
 
     Returns:
@@ -959,6 +960,10 @@ def swap_route_to_hops(
     Raises:
         :class:`ValueError`: If any step has an unrecognised protocol.
     """
+
+    def _to_addr(addr: object) -> Address:
+        return Address(addr) if isinstance(addr, (bytes, bytearray)) else Address(str(addr))
+
     hops: list[SwapHop] = []
     steps = route.steps
     n = len(steps)
@@ -972,15 +977,17 @@ def swap_route_to_hops(
                 "Expected a protocol name containing 'v2' or 'v3'."
             ) from None
 
-        zero_for_one = step.token_in.address.lower() < step.token_out.address.lower()
+        token_in_bytes = _to_addr(step.token_in.address)
+        token_out_bytes = _to_addr(step.token_out.address)
+        zero_for_one = token_in_bytes < token_out_bytes
         hop_recipient = recipient if i == n - 1 else vm_address
 
         hops.append(
             SwapHop(
                 protocol=protocol,
-                pool=step.pool_address,
-                token_in=step.token_in.address,
-                token_out=step.token_out.address,
+                pool=_to_addr(step.pool_address),
+                token_in=token_in_bytes,
+                token_out=token_out_bytes,
                 fee=step.fee,
                 amount_in=route.amount_in.amount if i == 0 else 0,
                 amount_out_min=0,
@@ -1027,6 +1034,7 @@ def build_quote_swap_calldata(
     if not hops:
         raise ValueError("build_quote_swap_calldata: hops list must not be empty")
 
+    quoter_addr = Address(quoter_address)
     amount_reg = _AMOUNT_REG
     segments: list[Program] = [Program()._emit(push_u256(hops[0].amount_in))._emit(store_reg(amount_reg))]
 
@@ -1034,7 +1042,7 @@ def build_quote_swap_calldata(
         if hop.protocol == SwapProtocol.UNISWAP_V2:
             segments.append(_build_v2_quote_segment(hop, amount_reg=amount_reg, result_reg=amount_reg))
         elif hop.protocol == SwapProtocol.UNISWAP_V3:
-            segments.append(_build_v3_quote_segment(hop, quoter_address, amount_reg=amount_reg))
+            segments.append(_build_v3_quote_segment(hop, quoter_addr, amount_reg=amount_reg))
         else:
             raise ValueError(f"build_quote_swap_calldata: unsupported protocol {hop.protocol!r}")
 

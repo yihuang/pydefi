@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from pydefi._utils import decode_address
 from pydefi.aggregator.base import AggregatorQuote
 from pydefi.aggregator.jupiter import _JUPITER_API_BASE, _JUPITER_SWAP_V2_BASE, Jupiter, JupiterSwapV2
 from pydefi.amm.base import BaseSolanaAMM
@@ -20,9 +21,9 @@ SOL_MINT = "So11111111111111111111111111111111111111112"
 USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 USDT_MINT = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
 
-SOL = Token(chain_id=ChainId.SOLANA, address=SOL_MINT, symbol="SOL", decimals=9)
-USDC = Token(chain_id=ChainId.SOLANA, address=USDC_MINT, symbol="USDC", decimals=6)
-USDT = Token(chain_id=ChainId.SOLANA, address=USDT_MINT, symbol="USDT", decimals=6)
+SOL = Token(chain_id=ChainId.SOLANA, address=decode_address(SOL_MINT, ChainId.SOLANA), symbol="SOL", decimals=9)
+USDC = Token(chain_id=ChainId.SOLANA, address=decode_address(USDC_MINT, ChainId.SOLANA), symbol="USDC", decimals=6)
+USDT = Token(chain_id=ChainId.SOLANA, address=decode_address(USDT_MINT, ChainId.SOLANA), symbol="USDT", decimals=6)
 
 
 # ---------------------------------------------------------------------------

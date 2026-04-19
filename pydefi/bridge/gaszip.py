@@ -17,7 +17,7 @@ import aiohttp
 from pydefi.abi.bridge import GASZIP
 from pydefi.bridge.base import BaseBridge
 from pydefi.exceptions import BridgeError
-from pydefi.types import BridgeQuote, Token, TokenAmount
+from pydefi.types import Address, BridgeQuote, Token, TokenAmount
 
 _GASZIP_API_BASE = "https://backend.gas.zip/v2"
 
@@ -138,7 +138,7 @@ class GasZip(BaseBridge):
         token_in: Token,
         token_out: Token,
         amount_in: TokenAmount,
-        recipient: str,
+        recipient: Address,
         slippage_bps: int = 50,
         **kwargs: Any,
     ) -> dict[str, Any]:
@@ -166,14 +166,7 @@ class GasZip(BaseBridge):
             raise BridgeError("GasZip only supports native gas tokens for bridging")
 
         # Validate and encode recipient address as uint256
-        try:
-            normalized = recipient[2:] if recipient.startswith(("0x", "0X")) else recipient
-            if len(normalized) != 40:
-                raise ValueError("recipient must be 20 bytes (40 hex characters)")
-            to_uint256 = int(normalized, 16)
-        except ValueError as exc:
-            raise BridgeError(f"Invalid recipient address '{recipient}': {exc}") from exc
-
+        to_uint256 = int.from_bytes(recipient, "big")
         call_data: bytes = GASZIP.fns.deposit(
             to_uint256,
             [self.dst_chain_id],

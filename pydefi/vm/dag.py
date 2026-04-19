@@ -28,7 +28,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from pydefi.pathfinder.graph import V3PoolEdge
-from pydefi.types import RouteAction, RouteDAG, RouteSplit, RouteSwap
+from pydefi.types import Address, RouteAction, RouteDAG, RouteSplit, RouteSwap
 from pydefi.vm.builder import Program
 from pydefi.vm.program import add, assert_ge, assert_le, div, dup, dup2, load_reg, mul, pop, push_u256, store_reg, swap
 from pydefi.vm.swap import (
@@ -226,12 +226,12 @@ def _swap_hop_from_route_swap(swap_action: RouteSwap, *, recipient: str) -> Swap
         zero_for_one = bool(is_token0_in)
     return SwapHop(
         protocol=protocol,
-        pool=pool.pool_address,
+        pool=Address(pool.pool_address),
         token_in=pool.token_in.address,
         token_out=pool.token_out.address,
         fee=pool.fee_bps,
         amount_in=0,
         amount_out_min=0,
-        recipient=recipient,
+        recipient=Address(recipient),
         zero_for_one=zero_for_one,
     )

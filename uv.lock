@@ -159,6 +159,15 @@ wheels = [
 ]
 
 [[package]]
+name = "base58"
+version = "2.1.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/7f/45/8ae61209bb9015f516102fa559a2914178da1d5868428bd86a1b4421141d/base58-2.1.1.tar.gz", hash = "sha256:c5d0cb3f5b6e81e8e35da5754388ddcc6d0d14b6c6a132cb93d69ed580a7278c", size = 6528, upload-time = "2021-10-30T22:12:17.858Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4a/45/ec96b29162a402fc4c1c5512d114d7b3787b9d1c2ec241d9568b4816ee23/base58-2.1.1-py3-none-any.whl", hash = "sha256:11a36f4d3ce51dfc1043f3218591ac4eb1ceb172919cebe05b52a5bcc8d245c2", size = 5621, upload-time = "2021-10-30T22:12:16.658Z" },
+]
+
+[[package]]
 name = "bitarray"
 version = "3.8.1"
 source = { registry = "https://pypi.org/simple" }
@@ -705,8 +714,8 @@ wheels = [
 
 [[package]]
 name = "eth-contract"
-version = "0.3.0"
-source = { git = "https://github.com/yihuang/eth-contract.git?rev=main#380f7b503f53838bf95b3dd6f2c108cc85f0bcd1" }
+version = "0.4.0"
+source = { git = "https://github.com/mmsqe/eth-contract.git?rev=encode_abi#08ac3a3e65d10e109c819cc37cb4b329650056ef" }
 dependencies = [
     { name = "eth-abi" },
     { name = "web3" },
@@ -1523,6 +1532,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
+    { name = "base58" },
     { name = "eth-abi" },
     { name = "eth-contract" },
     { name = "msgpack" },
@@ -1544,8 +1554,9 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.9.0" },
+    { name = "base58", specifier = ">=2.1.0" },
     { name = "eth-abi", git = "https://github.com/yihuang/eth-abi.git?rev=copilot%2Fsupport-hooks-for-offset-detection" },
-    { name = "eth-contract", git = "https://github.com/yihuang/eth-contract.git?rev=main" },
+    { name = "eth-contract", git = "https://github.com/mmsqe/eth-contract.git?rev=encode_abi" },
     { name = "ethereum-execution", marker = "extra == 'dev'", specifier = ">=2.19.0" },
     { name = "msgpack", specifier = ">=1.0.0" },
     { name = "py-solc-x", marker = "extra == 'dev'", specifier = ">=2.0.0" },

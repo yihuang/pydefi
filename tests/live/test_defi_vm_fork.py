@@ -25,6 +25,7 @@ import solcx
 from eth_contract.contract import ContractFunction
 from eth_contract.erc20 import ERC20
 from eth_contract.utils import send_transaction as eth_send_transaction
+from hexbytes import HexBytes
 from web3 import Web3
 from web3.exceptions import ContractLogicError, Web3RPCError
 from web3.types import Wei
@@ -32,7 +33,7 @@ from web3.types import Wei
 from pydefi.abi.amm import UNISWAP_V2_PAIR, UNISWAP_V3_FACTORY, UNISWAP_V3_POOL
 from pydefi.pathfinder.graph import PoolEdge, PoolGraph, V3PoolEdge
 from pydefi.pathfinder.router import Router
-from pydefi.types import ChainId, RouteSplit, RouteSplitLeg, SwapRoute, Token, TokenAmount
+from pydefi.types import Address, ChainId, RouteSplit, RouteSplitLeg, SwapRoute, Token, TokenAmount
 from pydefi.vm import Patch, Program
 from pydefi.vm.program import (
     assert_ge,
@@ -68,7 +69,7 @@ SOL_FILE = REPO_ROOT / "pydefi" / "vm" / "DeFiVM.sol"
 APPROVE_PROXY_SOL_FILE = REPO_ROOT / "pydefi" / "vm" / "ApproveProxy.sol"
 
 # Coinbase 8 — a well-funded address on mainnet (used for introspection only)
-WHALE = "0x77134cbC06cB00b66F4c7e623D5fdBF6777635EC"
+WHALE: Address = Address("0x77134cbC06cB00b66F4c7e623D5fdBF6777635EC")
 
 
 def _compile_defi_vm() -> dict:
@@ -520,7 +521,7 @@ class TestDeFiVMFork:
         called_topic = keccak(b"Called(address,uint256,bytes)")
         adapter_log = None
         for log in receipt["logs"]:
-            if log["address"].lower() == adapter.lower() and log["topics"][0] == called_topic:
+            if HexBytes(log["address"]) == adapter and log["topics"][0] == called_topic:
                 adapter_log = log
                 break
         assert adapter_log is not None, "Expected Called event from adapter"
@@ -569,7 +570,7 @@ class TestDeFiVMFork:
         called_topic = keccak(b"Called(address,uint256,bytes)")
         adapter_log = None
         for log in receipt["logs"]:
-            if log["address"].lower() == adapter.lower() and log["topics"][0] == called_topic:
+            if HexBytes(log["address"]) == adapter and log["topics"][0] == called_topic:
                 adapter_log = log
                 break
         assert adapter_log is not None, "Expected Called event from adapter"
@@ -577,8 +578,7 @@ class TestDeFiVMFork:
         calldata_len = int.from_bytes(encoded[96:128], "big")
         received_calldata = encoded[128 : 128 + calldata_len]
         # Expected: selector + 12 zero bytes + 20-byte address (raw byte-for-byte patch)
-        addr_bytes = bytes.fromhex(adapter.removeprefix("0x"))
-        expected_calldata = selector + b"\x00" * 12 + addr_bytes
+        expected_calldata = selector + b"\x00" * 12 + adapter
         assert received_calldata == expected_calldata
 
     # ------------------------------------------------------------------
@@ -1058,7 +1058,7 @@ class TestApproveProxyFork:
         vm_address = proxy_ctx["vm_address"]
 
         stored_vm = await proxy.functions.vm().call()
-        assert stored_vm.lower() == vm_address.lower()
+        assert HexBytes(stored_vm) == vm_address
 
     async def test_eth_forwarding(self, proxy_ctx):
         """ETH sent to proxy.execute() is forwarded to DeFiVM."""
@@ -1338,7 +1338,7 @@ class TestBuildSwapTransactionFork:
         w3 = ctx["w3"]
         vm_address = ctx["vm_address"]
         deployer = ctx["deployer"]
-        amount_in = 10**16  # 0.01 WETH
+        amount_in = 10**18  # 1 WETH — large enough for split to improve on single-pool route
 
         # Fee-equalized synthetic liquidity forces the optimizer to split across
         # both pools regardless of their actual mainnet depths.

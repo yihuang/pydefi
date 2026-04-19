@@ -3,6 +3,7 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from hexbytes import HexBytes
 
 from pydefi.bridge.across import Across
 from pydefi.bridge.base import BaseBridge
@@ -17,7 +18,7 @@ from pydefi.bridge.mayan import _CHAIN_NAMES, _MAYAN_FORWARDER, Mayan
 from pydefi.bridge.relay import Relay
 from pydefi.bridge.stargate import _LZ_CHAIN_ID, _POOL_IDS, Stargate
 from pydefi.exceptions import BridgeError
-from pydefi.types import ChainId, Token, TokenAmount
+from pydefi.types import Address, ChainId, Token, TokenAmount
 from tests.addrs import ETH_WHALE, USDC, WETH
 
 
@@ -60,13 +61,13 @@ USDC_ETH = Token(
 )
 USDC_ARB = Token(
     chain_id=ChainId.ARBITRUM,
-    address="0xFF970A61A04b1cA14834A43f5dE4533eBDDB5CC8",
+    address=Address("0xFF970A61A04b1cA14834A43f5dE4533eBDDB5CC8"),
     symbol="USDC",
     decimals=6,
 )
 
-STARGATE_ROUTER_ETH = "0x8731d54E9D02c286767d56ac03e8037C07e01e98"
-SPOKE_POOL_ETH = "0x5c7BCd6E7De5423a257D81B442095A1a6ced35C5"
+STARGATE_ROUTER_ETH: Address = Address("0x8731d54E9D02c286767d56ac03e8037C07e01e98")
+SPOKE_POOL_ETH: Address = Address("0x5c7BCd6E7De5423a257D81B442095A1a6ced35C5")
 
 
 # ---------------------------------------------------------------------------
@@ -124,7 +125,7 @@ class TestStargate:
         assert sg._pool_id(USDC_ETH) == _POOL_IDS["USDC"]
 
     def test_pool_id_unknown_raises(self):
-        unknown_token = Token(chain_id=1, address="0x" + "AB" * 20, symbol="UNKNOWN")
+        unknown_token = Token(chain_id=1, address=Address("0x" + "AB" * 20), symbol="UNKNOWN")
         sg = Stargate(
             w3=None,
             src_chain_id=1,
@@ -258,13 +259,13 @@ class TestBaseBridge:
 
 ETH_NATIVE = Token(
     chain_id=ChainId.ETHEREUM,
-    address="0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",
+    address=Address("0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"),
     symbol="ETH",
     decimals=18,
 )
 ETH_ARB = Token(
     chain_id=ChainId.ARBITRUM,
-    address="0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",
+    address=Address("0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"),
     symbol="ETH",
     decimals=18,
 )
@@ -361,10 +362,10 @@ class TestMayan:
         """
         m = Mayan(src_chain_id=1, dst_chain_id=42161)
         amount_in = TokenAmount(token=ETH_NATIVE, amount=10**18)  # 1 ETH
-        recipient = "0x" + "CC" * 20
-        weth = WETH.address
-        swift_contract = "0x" + "AA" * 20
-        swap_router = "0x" + "BB" * 20
+        recipient: Address = Address("0x" + "CC" * 20)
+        weth: Address = WETH.address
+        swift_contract: Address = Address("0x" + "AA" * 20)
+        swap_router: Address = Address("0x" + "BB" * 20)
 
         mock_quote_response = {
             "quotes": [
@@ -408,7 +409,7 @@ class TestMayan:
         m = Mayan(src_chain_id=1, dst_chain_id=42161)
         amount_in = TokenAmount.from_human(USDC_ETH, "1000")
         with pytest.raises(BridgeError):
-            await m.build_bridge_tx(USDC_ETH, USDC_ARB, amount_in, "0x" + "CC" * 20)
+            await m.build_bridge_tx(USDC_ETH, USDC_ARB, amount_in, Address("0x" + "CC" * 20))
 
     @pytest.mark.asyncio
     async def test_build_bridge_tx_no_swift_route_raises(self):
@@ -427,14 +428,14 @@ class TestMayan:
 
         with patch("aiohttp.ClientSession", return_value=_make_aiohttp_mock(200, mock_quote_response)):
             with pytest.raises(BridgeError):
-                await m.build_bridge_tx(ETH_NATIVE, USDC_ARB, amount_in, "0x" + "CC" * 20)
+                await m.build_bridge_tx(ETH_NATIVE, USDC_ARB, amount_in, Address("0x" + "CC" * 20))
 
 
 # ---------------------------------------------------------------------------
 # GasZip tests
 # ---------------------------------------------------------------------------
 
-GASZIP_CONTRACT = "0x" + "AA" * 20
+GASZIP_CONTRACT: Address = Address("0x" + "AA" * 20)
 
 
 class TestGasZip:
@@ -572,7 +573,7 @@ class TestRelay:
     async def test_build_bridge_tx(self):
         r = Relay(src_chain_id=1, dst_chain_id=42161)
         amount_in = TokenAmount.from_human(USDC_ETH, "1000")
-        recipient = "0x" + "CC" * 20
+        recipient: Address = Address("0x" + "CC" * 20)
 
         mock_api_response = {
             "details": {
@@ -606,7 +607,7 @@ class TestRelay:
     async def test_build_bridge_tx_no_steps_raises(self):
         r = Relay(src_chain_id=1, dst_chain_id=42161)
         amount_in = TokenAmount.from_human(USDC_ETH, "1000")
-        recipient = "0x" + "CC" * 20
+        recipient: Address = Address("0x" + "CC" * 20)
 
         mock_api_response = {"details": {}, "steps": []}
 
@@ -618,7 +619,7 @@ class TestRelay:
     async def test_build_bridge_tx_no_items_raises(self):
         r = Relay(src_chain_id=1, dst_chain_id=42161)
         amount_in = TokenAmount.from_human(USDC_ETH, "1000")
-        recipient = "0x" + "CC" * 20
+        recipient: Address = Address("0x" + "CC" * 20)
 
         mock_api_response = {"details": {}, "steps": [{"items": []}]}
 
@@ -631,27 +632,27 @@ class TestRelay:
 # LayerZeroOFT tests
 # ---------------------------------------------------------------------------
 
-OFT_ADDRESS = "0x" + "DD" * 20
-OFT_DST_ADDRESS = "0x" + "EE" * 20
+OFT_ADDRESS: Address = Address("0x" + "DD" * 20)
+OFT_DST_ADDRESS: Address = Address("0x" + "EE" * 20)
 
 # Tokens for unified-address OFTs (same contract address on every chain,
 # e.g. USDT0 at 0x1E4a5963aBFD975d8c9021ce480b42188849D41d).
 OFT_TOKEN_ETH = Token(
     chain_id=ChainId.ETHEREUM,
-    address=OFT_ADDRESS,
+    address=Address(OFT_ADDRESS),
     symbol="OFT",
     decimals=18,
 )
 OFT_TOKEN_ARB = Token(
     chain_id=ChainId.ARBITRUM,
-    address=OFT_ADDRESS,
+    address=Address(OFT_ADDRESS),
     symbol="OFT",
     decimals=18,
 )
 # Token for a non-unified OFT (different address on the destination chain).
 OFT_TOKEN_ARB_ALT = Token(
     chain_id=ChainId.ARBITRUM,
-    address=OFT_DST_ADDRESS,
+    address=Address(OFT_DST_ADDRESS),
     symbol="OFT",
     decimals=18,
 )
@@ -719,12 +720,14 @@ class TestLayerZeroOFT:
             oft._lz_eid(999999)
 
     def test_address_to_bytes32(self):
-        addr = ETH_WHALE
-        result = LayerZeroOFT._address_to_bytes32(addr)
+        from pydefi._utils import address_to_bytes32
+
+        addr = HexBytes(ETH_WHALE)
+        result = address_to_bytes32(addr)
         assert len(result) == 32
         # Address bytes should appear in the last 20 bytes
         assert result[:12] == b"\x00" * 12
-        assert result[12:].hex() == addr[2:].lower()
+        assert result[12:] == bytes(addr)
 
     def test_apply_slippage(self):
         oft = LayerZeroOFT(
@@ -764,7 +767,7 @@ class TestLayerZeroOFT:
         )
         wrong_token = Token(
             chain_id=ChainId.ETHEREUM,
-            address="0x" + "FF" * 20,
+            address=Address("0x" + "FF" * 20),
             symbol="WRONG",
             decimals=18,
         )
@@ -783,7 +786,7 @@ class TestLayerZeroOFT:
         )
         wrong_token = Token(
             chain_id=ChainId.ARBITRUM,
-            address="0x" + "FF" * 20,
+            address=Address("0x" + "FF" * 20),
             symbol="WRONG",
             decimals=18,
         )
@@ -823,7 +826,7 @@ class TestLayerZeroOFT:
         mock_contract.fns.quoteSend = mock_quote_send
 
         with patch("pydefi.bridge.layerzero_oft.LAYERZERO_OFT", mock_contract):
-            fee = await oft.quote_send_fee(1_000_000, "0x" + "AA" * 20)
+            fee = await oft.quote_send_fee(1_000_000, Address("0x" + "AA" * 20))
 
         assert fee == 5 * 10**15
         mock_quote_send.assert_called_once()
@@ -837,7 +840,7 @@ class TestLayerZeroOFT:
             oft_address=OFT_ADDRESS,
         )
         amount_in = TokenAmount.from_human(OFT_TOKEN_ETH, "1000")
-        recipient = "0x" + "AA" * 20
+        recipient: Address = Address("0x" + "AA" * 20)
 
         with patch.object(oft, "quote_send_fee", new=AsyncMock(return_value=5 * 10**15)):
             tx = await oft.build_bridge_tx(OFT_TOKEN_ETH, OFT_TOKEN_ARB, amount_in, recipient)
@@ -856,15 +859,15 @@ class TestLayerZeroOFT:
             oft_address=OFT_ADDRESS,
         )
         amount_in = TokenAmount.from_human(OFT_TOKEN_ETH, "100")
-        recipient = "0x" + "AA" * 20
-        refund = "0x" + "BB" * 20
+        recipient: Address = Address("0x" + "AA" * 20)
+        refund: Address = Address("0x" + "BB" * 20)
 
         with patch.object(oft, "quote_send_fee", new=AsyncMock(return_value=10**15)):
             tx = await oft.build_bridge_tx(OFT_TOKEN_ETH, OFT_TOKEN_ARB, amount_in, recipient, refund_address=refund)
 
         assert tx["to"] == OFT_ADDRESS
         # The refund address must be encoded into the calldata
-        assert refund[2:].lower() in tx["data"].lower()
+        assert refund.hex() in tx["data"].lower()
 
     @pytest.mark.asyncio
     async def test_build_bridge_tx_validates_token_in(self):
@@ -877,14 +880,14 @@ class TestLayerZeroOFT:
         )
         wrong_token = Token(
             chain_id=ChainId.ETHEREUM,
-            address="0x" + "FF" * 20,
+            address=Address("0x" + "FF" * 20),
             symbol="WRONG",
             decimals=18,
         )
         amount_in = TokenAmount.from_human(wrong_token, "10")
         with pytest.raises(BridgeError, match="token_in"):
             with patch.object(oft, "quote_send_fee", new=AsyncMock(return_value=10**15)):
-                await oft.build_bridge_tx(wrong_token, OFT_TOKEN_ARB, amount_in, "0x" + "AA" * 20)
+                await oft.build_bridge_tx(wrong_token, OFT_TOKEN_ARB, amount_in, Address("0x" + "AA" * 20))
 
     def test_lz_eid_constants(self):
         assert _LZ_EID[1] == 30101  # Ethereum
@@ -957,7 +960,7 @@ class TestEncodeCctpForwardHookData:
     def test_with_recipient_address_embedded(self):
         """Address bytes occupy bytes 32-51 of the hookData."""
         data = encode_cctp_forward_hook_data(recipient=_MOCK_RECIPIENT)
-        expected_addr = bytes.fromhex(_MOCK_RECIPIENT[2:])
+        expected_addr = bytes(_MOCK_RECIPIENT)
         assert data[32:52] == expected_addr
 
     def test_perp_dex_default(self):
@@ -976,13 +979,13 @@ class TestEncodeCctpForwardHookData:
         assert data[52:56] == b"\xff\xff\xff\xff"
 
     def test_invalid_recipient_raises(self):
-        """A non-20-byte hex string raises ValueError."""
+        """A non-20-byte address raises ValueError."""
         with pytest.raises(ValueError):
-            encode_cctp_forward_hook_data(recipient="0x1234abcd")
+            encode_cctp_forward_hook_data(recipient=HexBytes("0x1234abcd"))
 
     def test_address_without_0x_prefix(self):
-        """Address without '0x' prefix is accepted and correctly embedded."""
-        addr_no_prefix = _MOCK_RECIPIENT[2:]  # strip '0x'
-        data = encode_cctp_forward_hook_data(recipient=addr_no_prefix)
+        """Address passed as bare hex bytes is accepted and correctly embedded."""
+        addr_no_prefix = bytes(_MOCK_RECIPIENT).hex()  # bare hex (no 0x) from Address
+        data = encode_cctp_forward_hook_data(recipient=HexBytes(addr_no_prefix))
         expected_addr = bytes.fromhex(addr_no_prefix)
         assert data[32:52] == expected_addr

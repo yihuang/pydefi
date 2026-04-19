@@ -32,6 +32,7 @@ import msgpack
 from eth_account import Account
 from eth_account.messages import encode_typed_data
 from eth_utils import keccak, to_hex
+from hexbytes import HexBytes
 
 # ---------------------------------------------------------------------------
 # EIP-712 type definitions for user-signed actions
@@ -157,8 +158,7 @@ def action_hash(
         data += b"\x00"
     else:
         data += b"\x01"
-        addr = vault_address[2:] if vault_address.startswith("0x") else vault_address
-        data += bytes.fromhex(addr)
+        data += HexBytes(vault_address)
     if expires_after is not None:
         data += b"\x00"
         data += expires_after.to_bytes(8, "big")

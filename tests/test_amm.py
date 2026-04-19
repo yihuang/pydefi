@@ -20,7 +20,7 @@ from pydefi.amm.universal_router import (
     V4Hop,
 )
 from pydefi.exceptions import InsufficientLiquidityError
-from pydefi.types import SwapTransaction, TokenAmount
+from pydefi.types import Address, SwapTransaction, TokenAmount
 from tests.addrs import (
     DAI,
     ETH_WHALE,
@@ -37,9 +37,9 @@ from tests.addrs import (
 # Fixtures
 # ---------------------------------------------------------------------------
 
-ROUTER_V2 = UNISWAP_V2_ROUTER
-ROUTER_V3 = UNISWAP_V3_ROUTER
-QUOTER_V3 = UNISWAP_V3_QUOTER
+ROUTER_V2: Address = UNISWAP_V2_ROUTER
+ROUTER_V3: Address = UNISWAP_V3_ROUTER
+QUOTER_V3: Address = UNISWAP_V3_QUOTER
 
 
 # ---------------------------------------------------------------------------
@@ -164,8 +164,8 @@ class TestUniswapV3Math:
 
     def test_encode_path_contains_token_addresses(self):
         path = UniswapV3._encode_path([WETH, USDC], [3000])
-        weth_bytes = bytes.fromhex(WETH.address[2:].lower())
-        usdc_bytes = bytes.fromhex(USDC.address[2:].lower())
+        weth_bytes = bytes(WETH.address)
+        usdc_bytes = bytes(USDC.address)
         assert weth_bytes in path
         assert usdc_bytes in path
 
@@ -190,7 +190,7 @@ class TestUniswapV2Instance:
 
     def test_get_pair_contract(self):
         uniswap = UniswapV2(w3=None, router_address=ROUTER_V2)
-        pair = uniswap.get_pair_contract("0x" + "AB" * 20)
+        pair = uniswap.get_pair_contract(Address("0x" + "AB" * 20))
         assert pair is not None
 
 
@@ -264,7 +264,7 @@ class TestUniversalRouterConstants:
     def test_known_addresses_contains_ethereum(self):
         assert 1 in UNIVERSAL_ROUTER_ADDRESSES
         # UniversalRouterV2 (supports Uniswap V4)
-        assert UNIVERSAL_ROUTER_ADDRESSES[1] == UNIVERSAL_ROUTER
+        assert UNIVERSAL_ROUTER_ADDRESSES[1].lower() == UNIVERSAL_ROUTER.to_0x_hex().lower()
 
     def test_known_addresses_contains_arbitrum(self):
         assert 42161 in UNIVERSAL_ROUTER_ADDRESSES
@@ -770,7 +770,7 @@ class TestHopDataclasses:
 
     def test_v4_hop_defaults(self):
         hop = V4Hop(token_in=WETH, token_out=USDC, fee=500, tick_spacing=10)
-        assert hop.hooks == ZERO_ADDR
+        assert hop.hooks == ZERO_ADDR.to_0x_hex()
         assert hop.hook_data == b""
 
     def test_v4_hop_custom_hooks(self):

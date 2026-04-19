@@ -16,11 +16,13 @@ from decimal import Decimal
 from typing import Any, Optional
 
 import aiohttp
+from hexbytes import HexBytes
 
+from pydefi._utils import address_to_bytes32, encode_address, token_to_bytes32
 from pydefi.abi.bridge import MAYAN_FORWARDER, MAYAN_SWIFT_V2, MayanSwiftOrderParams
 from pydefi.bridge.base import BaseBridge
 from pydefi.exceptions import BridgeError
-from pydefi.types import BridgeQuote, Token, TokenAmount
+from pydefi.types import NATIVE_SENTINEL, Address, BridgeQuote, Token, TokenAmount
 
 _MAYAN_API_BASE = "https://price-api.mayan.finance/v3"
 
@@ -66,59 +68,31 @@ _MAYAN_SDK_VERSION = "13_2_0"
 # SWIFT normalize factor: SWIFT amounts are capped at 8 decimals.
 _SWIFT_NORMALIZE_DECIMALS = 8
 
-# Native ETH sentinel addresses (both the burn address and EeeE... form)
-_NATIVE_SENTINELS = frozenset(
-    {
-        "0x0000000000000000000000000000000000000000",
-        "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-    }
-)
-
 # WETH ERC-20 addresses per chain (needed for native-ETH input with SWIFT V2)
-_CHAIN_WETH: dict[int, str] = {
-    1: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",  # Ethereum
-    42161: "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1",  # Arbitrum
-    10: "0x4200000000000000000000000000000000000006",  # Optimism
-    8453: "0x4200000000000000000000000000000000000006",  # Base
-    137: "0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619",  # Polygon
-    56: "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c",  # BSC (WBNB)
-    43114: "0x49D5c2BdFfac6CE2BFdB6640F4F80f226bc10bAB",  # Avalanche
-    59144: "0xe5D7C2a44FfDDf6b295A15c148167daaAf5Cf34f",  # Linea
+_CHAIN_WETH: dict[int, Address] = {
+    1: HexBytes("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),  # Ethereum
+    42161: HexBytes("0x82aF49447D8a07e3bd95BD0d56f35241523fBab1"),  # Arbitrum
+    10: HexBytes("0x4200000000000000000000000000000000000006"),  # Optimism
+    8453: HexBytes("0x4200000000000000000000000000000000000006"),  # Base
+    137: HexBytes("0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619"),  # Polygon
+    56: HexBytes("0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c"),  # BSC (WBNB)
+    43114: HexBytes("0x49D5c2BdFfac6CE2BFdB6640F4F80f226bc10bAB"),  # Avalanche
+    59144: HexBytes("0xe5D7C2a44FfDDf6b295A15c148167daaAf5Cf34f"),  # Linea
 }
-
-
-def _addr_to_bytes32(addr: str) -> bytes:
-    """Left-pad an EVM address into a 32-byte Wormhole representation."""
-    hex_addr = addr[2:] if addr.startswith("0x") else addr
-    # EVM addresses are 40 hex chars; zero-pad to 64 chars (32 bytes)
-    return bytes.fromhex(hex_addr.lower().zfill(64))
-
-
-def _token_to_bytes32(token_address: str) -> bytes:
-    """Convert a token address to its SWIFT bytes32 tokenOut representation.
-
-    Native ETH (both zero-address and EeeE... sentinel) maps to 32 zero bytes
-    (the Solana system program ID in the Wormhole encoding used by SWIFT).
-    ERC-20 tokens are left-padded as a normal Wormhole EVM address.
-    """
-    if token_address.lower() in _NATIVE_SENTINELS:
-        return bytes(32)
-    return _addr_to_bytes32(token_address)
-
 
 _ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
 
 
-def _mayan_token_address(address: str) -> str:
+def _mayan_token_address(address: Address, chain_id: int) -> str:
     """Normalize a token address for the Mayan Price API.
 
     The Mayan API uses the zero address to represent the native gas token
     (ETH, BNB, etc.).  Any ``EeeE...`` sentinel is canonicalized here so
     that API requests always use the representation the server expects.
     """
-    if address.lower() == "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee":
+    if address == NATIVE_SENTINEL:
         return _ZERO_ADDRESS
-    return address
+    return encode_address(address, chain_id)
 
 
 class Mayan(BaseBridge):
@@ -178,8 +152,8 @@ class Mayan(BaseBridge):
 
         params: dict[str, Any] = {
             "amountIn": human_amount,
-            "fromToken": _mayan_token_address(token_in.address),
-            "toToken": _mayan_token_address(token_out.address),
+            "fromToken": _mayan_token_address(token_in.address, token_in.chain_id),
+            "toToken": _mayan_token_address(token_out.address, token_out.chain_id),
             "fromChain": from_chain,
             "toChain": to_chain,
             "slippageBps": "auto",
@@ -250,9 +224,9 @@ class Mayan(BaseBridge):
         token_in: Token,
         token_out: Token,
         amount_in: TokenAmount,
-        recipient: str,
+        recipient: Address,
         slippage_bps: int = 50,
-        referrer: Optional[str] = None,
+        referrer: Optional[Address] = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
         """Build a Mayan SWIFT bridge transaction via the Mayan Forwarder contract.
@@ -301,8 +275,8 @@ class Mayan(BaseBridge):
         # native gas tokens; the EeeE... sentinel is not recognised.
         params: dict[str, Any] = {
             "amountIn64": str(amount_in.amount),
-            "fromToken": _mayan_token_address(token_in.address),
-            "toToken": _mayan_token_address(token_out.address),
+            "fromToken": _mayan_token_address(token_in.address, token_in.chain_id),
+            "toToken": _mayan_token_address(token_out.address, token_out.chain_id),
             "fromChain": from_chain,
             "toChain": to_chain,
             "slippageBps": slippage_bps,
@@ -370,16 +344,17 @@ class Mayan(BaseBridge):
         min_middle_amount = int(
             Decimal(str(swift_route.get("minMiddleAmount") or "0")) * Decimal(10**swift_input_decimals)
         )
-        # swiftInputContract is the ERC-20 that SWIFT V2 will receive (typically WETH)
-        swift_input_contract = swift_route.get("swiftInputContract") or weth_address
+        # swiftInputContract is the ERC-20 that SWIFT V2 will receive (typically WETH).
+        _raw_swift_input = swift_route.get("swiftInputContract")
+        swift_input_contract: Address = HexBytes(_raw_swift_input) if _raw_swift_input else weth_address
 
         # Use os.urandom for the order's random field to ensure uniqueness
         random_b32 = os.urandom(32)
 
-        trader_b32 = _addr_to_bytes32(recipient)
-        token_out_b32 = _token_to_bytes32(token_out.address)
-        dest_addr_b32 = _addr_to_bytes32(recipient)
-        referrer_b32 = _addr_to_bytes32(referrer) if referrer else bytes(32)
+        trader_b32 = address_to_bytes32(recipient)
+        token_out_b32 = token_to_bytes32(token_out.address)
+        dest_addr_b32 = address_to_bytes32(recipient)
+        referrer_b32 = address_to_bytes32(referrer) if referrer else bytes(32)
 
         # SWIFT V2 OrderParams (field order differs from V1)
         order_params = MayanSwiftOrderParams(
@@ -404,8 +379,8 @@ class Mayan(BaseBridge):
         swap_params = {
             "forwarderAddress": _MAYAN_FORWARDER,
             "slippageBps": slippage_bps,
-            "fromToken": _mayan_token_address(token_in.address),
-            "middleToken": swift_input_contract,  # WETH (or other swift input)
+            "fromToken": _mayan_token_address(token_in.address, token_in.chain_id),
+            "middleToken": encode_address(swift_input_contract, self.src_chain_id),  # WETH (or other swift input)
             "chainName": from_chain,
             "amountIn64": str(amount_in.amount),
             "sdkVersion": _MAYAN_SDK_VERSION,
@@ -438,7 +413,7 @@ class Mayan(BaseBridge):
         forward_calldata: bytes = MAYAN_FORWARDER.fns.swapAndForwardEth(
             amount_in.amount,  # uint256 amountIn (ETH to swap)
             swap_router_address,  # address swapProtocol (DEX router)
-            bytes.fromhex(swap_router_calldata.removeprefix("0x")),  # bytes swapData
+            HexBytes(swap_router_calldata),  # bytes swapData
             swift_input_contract,  # address middleToken (WETH)
             min_middle_amount,  # uint256 minMiddleAmount
             swift_contract,  # address mayanProtocol (SWIFT V2 contract)

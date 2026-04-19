@@ -76,7 +76,7 @@ def _compute_v4_pool_id(
     currency1: str,
     fee: int,
     tick_spacing: int,
-    hooks: str = ZERO_ADDR,
+    hooks: str = ZERO_ADDR.to_0x_hex(),
 ) -> bytes:
     return Web3.keccak(
         abi_encode(

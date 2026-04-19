@@ -8,11 +8,34 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from decimal import ROUND_DOWN, Decimal
 from enum import IntEnum
-from typing import Any, ClassVar, TypeAlias
+from typing import Any, TypeAlias
+
+from hexbytes import HexBytes
 
 from pydefi.pools import BasePool
 
 MAX_BPS = 10_000
+
+# ---------------------------------------------------------------------------
+# Type aliases
+# ---------------------------------------------------------------------------
+
+#: Address as raw bytes (canonical intermediate representation), 20 bytes for EVM, 32 bytes for Solana.
+#: Use ``decode_address(addr_str, chain_id)`` to convert from a human-readable string at the periphery.
+Address = HexBytes
+ZERO_ADDRESS = Address(b"\x00" * 20)
+NATIVE_SENTINEL = Address(b"\xee" * 20)  # "0xEeee…", used by some protocols to represent native token
+
+NATIVE_ADDRESSES: frozenset[Address] = frozenset(
+    {
+        ZERO_ADDRESS,
+        NATIVE_SENTINEL,
+    }
+)
+#: 32-byte hash or log topic as raw bytes (canonical intermediate representation).
+#: Use ``HexBytes(hash_str)`` to convert a 0x-prefixed hex string to Hash.
+Hash = HexBytes
+ZERO_HASH = Hash(b"\x00" * 32)
 
 
 class ChainId(IntEnum):
@@ -45,29 +68,37 @@ class Token:
 
     Attributes:
         chain_id: The chain this token lives on.
-        address: Checksum address of the ERC-20 contract.  Use the sentinel
-            value ``"0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"`` for the
-            native gas token (ETH, MATIC, BNB …).
+        address: Token contract address as raw bytes (:class:`~hexbytes.HexBytes`,
+            i.e. ``Address``).  For EVM chains this is 20 bytes; for Solana it is
+            32 bytes (public key).  Use
+            :func:`~pydefi._utils.decode_address` to convert a human-readable
+            string to ``Address`` at the periphery before constructing a
+            :class:`Token`.  Use
+            :func:`~pydefi._utils.encode_address` to format for external APIs.
         symbol: Human-readable ticker symbol (e.g. ``"USDC"``).
         decimals: Token precision (default 18).
         name: Optional long-form name.
     """
 
     chain_id: int
-    address: str
+    address: Address
     symbol: str
     decimals: int = 18
     name: str | None = None
 
-    # Sentinel for native currency (class variable, not an instance field)
-    NATIVE_ADDRESS: ClassVar[str] = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"
-
     def is_native(self) -> bool:
         """Return ``True`` if this token represents the native gas currency."""
-        return self.address.lower() == self.NATIVE_ADDRESS.lower()
+        return self.address in NATIVE_ADDRESSES
 
     def __str__(self) -> str:
         return f"{self.symbol}({self.chain_id})"
+
+    @property
+    def encoded_address(self) -> str:
+        """Return the chain-specific string representation of the token's address."""
+        from pydefi._utils import encode_address  # lazy import to avoid circular dependency
+
+        return encode_address(self.address, self.chain_id)
 
 
 @dataclass

@@ -13,13 +13,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from hexbytes import HexBytes
 from web3 import AsyncWeb3, Web3
 
+from pydefi._utils import address_to_bytes32
 from pydefi.abi.bridge import LAYERZERO_OFT, MessagingFee, OFTSendParam
 from pydefi.bridge.base import BaseBridge
 from pydefi.exceptions import BridgeError
-from pydefi.types import BridgeQuote, Token, TokenAmount
+from pydefi.types import Address, BridgeQuote, Token, TokenAmount
 
 # LayerZero v2 endpoint IDs (EIDs) mapped from EVM chain IDs.
 # See: https://docs.layerzero.network/v2/developers/evm/technical-reference/deployed-contracts
@@ -92,11 +92,6 @@ class LayerZeroOFT(BaseBridge):
             raise BridgeError(f"LayerZeroOFT: unsupported chain ID {evm_chain_id}")
         return eid
 
-    @staticmethod
-    def _address_to_bytes32(address: str) -> bytes:
-        """Convert an EVM address to a zero-padded 32-byte value."""
-        return HexBytes(address).rjust(32, b"\x00")
-
     def _validate_tokens(self, token_in: Token, token_out: Token) -> None:
         """Validate that token addresses match the configured OFT contracts.
 
@@ -120,7 +115,7 @@ class LayerZeroOFT(BaseBridge):
     async def quote_send_fee(
         self,
         amount: int,
-        recipient: str,
+        recipient: Address,
         slippage_bps: int = 50,
     ) -> int:
         """Estimate the native LayerZero messaging fee for a ``send`` call.
@@ -141,7 +136,7 @@ class LayerZeroOFT(BaseBridge):
             :class:`~pydefi.exceptions.BridgeError`: On contract call failure.
         """
         dst_eid = self._lz_eid(self.dst_chain_id)
-        to_bytes32 = self._address_to_bytes32(recipient)
+        to_bytes32 = address_to_bytes32(recipient)
         min_amount = self._apply_slippage(amount, slippage_bps)
 
         send_param = OFTSendParam(
@@ -204,9 +199,9 @@ class LayerZeroOFT(BaseBridge):
         token_in: Token,
         token_out: Token,
         amount_in: TokenAmount,
-        recipient: str,
+        recipient: Address,
         slippage_bps: int = 50,
-        refund_address: str | None = None,
+        refund_address: Address | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
         """Build a LayerZero OFT ``send`` transaction.
@@ -234,7 +229,7 @@ class LayerZeroOFT(BaseBridge):
         self._validate_tokens(token_in, token_out)
         _refund = refund_address or recipient
         dst_eid = self._lz_eid(self.dst_chain_id)
-        to_bytes32 = self._address_to_bytes32(recipient)
+        to_bytes32 = address_to_bytes32(recipient)
         min_amount = self._apply_slippage(amount_in.amount, slippage_bps)
 
         send_param = OFTSendParam(
@@ -254,7 +249,7 @@ class LayerZeroOFT(BaseBridge):
 
         return {
             "to": self.oft_address,
-            "data": "0x" + call_data.hex() if isinstance(call_data, bytes) else call_data,
+            "data": "0x" + call_data.hex(),
             "value": str(native_fee),
             "gas": str(300_000),
         }

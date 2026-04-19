@@ -11,9 +11,10 @@ from typing import Any, Optional
 
 import aiohttp
 
+from pydefi._utils import encode_address
 from pydefi.aggregator.base import AggregatorQuote, BaseAggregator
 from pydefi.exceptions import AggregatorError
-from pydefi.types import SwapRoute, SwapStep, Token, TokenAmount
+from pydefi.types import Address, SwapRoute, SwapStep, Token, TokenAmount
 
 # Routing types returned by /v1/quote that are compatible with POST /v1/swap.
 # UniswapX types (DUTCH_V2, DUTCH_V3, PRIORITY) must use POST /v1/order instead.
@@ -146,7 +147,7 @@ class UniswapAPI(BaseAggregator):
         amount_in: TokenAmount,
         token_out: Token,
         slippage_bps: int = 50,
-        swapper: Optional[str] = None,
+        swapper: Optional[Address] = None,
         **kwargs: Any,
     ) -> AggregatorQuote:
         """Fetch a price quote from ``POST /v1/quote``.
@@ -172,16 +173,16 @@ class UniswapAPI(BaseAggregator):
             :class:`~pydefi.exceptions.AggregatorError`: On API errors.
         """
         body: dict[str, Any] = {
-            "tokenIn": amount_in.token.address,
+            "tokenIn": amount_in.token.encoded_address,
             "tokenInChainId": self.chain_id,
-            "tokenOut": token_out.address,
+            "tokenOut": token_out.encoded_address,
             "tokenOutChainId": self.chain_id,
             "amount": str(amount_in.amount),
             "type": "EXACT_INPUT",
             "slippageTolerance": self._slippage_to_percent(slippage_bps),
         }
         if swapper is not None:
-            body["swapper"] = swapper
+            body["swapper"] = encode_address(swapper, self.chain_id)
         body.update(kwargs)
 
         data = await self._post("v1/quote", body)
@@ -207,7 +208,7 @@ class UniswapAPI(BaseAggregator):
         self,
         amount_in: TokenAmount,
         token_out: Token,
-        wallet_address: str,
+        wallet_address: Address,
         slippage_bps: int = 50,
         deadline: Optional[int] = None,
         **kwargs: Any,
@@ -243,13 +244,13 @@ class UniswapAPI(BaseAggregator):
         signature: str | None = kwargs.pop("signature", None)
         # Step 1: POST /v1/quote
         quote_body: dict[str, Any] = {
-            "tokenIn": amount_in.token.address,
+            "tokenIn": amount_in.token.encoded_address,
             "tokenInChainId": self.chain_id,
-            "tokenOut": token_out.address,
+            "tokenOut": token_out.encoded_address,
             "tokenOutChainId": self.chain_id,
             "amount": str(amount_in.amount),
             "type": "EXACT_INPUT",
-            "swapper": wallet_address,
+            "swapper": encode_address(wallet_address, self.chain_id),
             "slippageTolerance": self._slippage_to_percent(slippage_bps),
         }
         quote_body.update(kwargs)

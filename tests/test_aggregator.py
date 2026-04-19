@@ -13,7 +13,7 @@ from pydefi.aggregator.paraswap import ParaSwap
 from pydefi.aggregator.uniswap import UniswapAPI
 from pydefi.aggregator.zerox import ZeroX
 from pydefi.exceptions import AggregatorError
-from pydefi.types import TokenAmount
+from pydefi.types import Address, TokenAmount
 from tests.addrs import USDC, WETH
 
 # ---------------------------------------------------------------------------
@@ -367,7 +367,7 @@ class TestUniswapAPI:
             new=AsyncMock(side_effect=[mock_quote_response, mock_swap_response]),
         ):
             amount_in = TokenAmount.from_human(WETH, "1")
-            quote = await client.get_swap(amount_in, USDC, wallet_address="0x" + "AA" * 20, slippage_bps=50)
+            quote = await client.get_swap(amount_in, USDC, wallet_address=Address("0x" + "AA" * 20), slippage_bps=50)
 
         assert quote.amount_out.amount == 1_998_000_000
         assert quote.protocol == "Uniswap"
@@ -405,7 +405,7 @@ class TestUniswapAPI:
             await client.get_swap(
                 amount_in,
                 USDC,
-                wallet_address="0x" + "AA" * 20,
+                wallet_address=Address("0x" + "AA" * 20),
                 slippage_bps=50,
                 deadline=9999999999,
             )
@@ -456,7 +456,7 @@ class TestUniswapAPI:
         ):
             amount_in = TokenAmount.from_human(WETH, "1")
             with pytest.raises(AggregatorError, match=r"routing type 'DUTCH_V2' cannot be submitted via /v1/swap"):
-                await client.get_swap(amount_in, USDC, wallet_address="0x" + "AA" * 20, slippage_bps=50)
+                await client.get_swap(amount_in, USDC, wallet_address=Address("0x" + "AA" * 20), slippage_bps=50)
 
 
 # ---------------------------------------------------------------------------
@@ -547,7 +547,7 @@ class TestOKX:
         }
         with patch.object(client, "_get", new=AsyncMock(return_value=mock_response_data)):
             amount_in = TokenAmount.from_human(WETH, "1")
-            quote = await client.get_swap(amount_in, USDC, from_address="0x" + "AA" * 20)
+            quote = await client.get_swap(amount_in, USDC, from_address=Address("0x" + "AA" * 20))
 
         assert quote.amount_out.amount == 1_998_000_000
         assert quote.tx_data["to"] == "0x" + "AB" * 20
@@ -671,7 +671,7 @@ class TestOpenOcean:
         with patch.object(client, "_get", new=AsyncMock(return_value=mock_response_data)):
             with patch.object(client, "_get_gas_price", new=AsyncMock(return_value="20000000000")):
                 amount_in = TokenAmount.from_human(WETH, "1")
-                quote = await client.get_swap(amount_in, USDC, from_address="0x" + "AA" * 20)
+                quote = await client.get_swap(amount_in, USDC, from_address=Address("0x" + "AA" * 20))
 
         assert quote.amount_out.amount == 2_003_000_000
         assert quote.tx_data["to"] == "0x" + "CD" * 20

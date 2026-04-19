@@ -39,7 +39,7 @@ class TestSignInner:
                 "name": "HyperliquidSignTransaction",
                 "version": "1",
                 "chainId": chain_id,
-                "verifyingContract": ZERO_ADDR,
+                "verifyingContract": ZERO_ADDR.to_0x_hex(),
             },
             "types": {
                 "HyperliquidTransaction:UsdSend": USD_SEND_SIGN_TYPES,
@@ -53,7 +53,7 @@ class TestSignInner:
             "primaryType": "HyperliquidTransaction:UsdSend",
             "message": {
                 "hyperliquidChain": "Mainnet",
-                "destination": ETH_WHALE,
+                "destination": ETH_WHALE.to_0x_hex(),
                 "amount": "10.0",
                 "time": 1_700_000_000_000,
             },
@@ -158,7 +158,7 @@ class TestSignUsdTransferAction:
         """sign_usd_transfer_action() produces a valid r/s/v signature dict."""
         action = {
             "type": "usdSend",
-            "destination": ETH_WHALE,
+            "destination": ETH_WHALE.to_0x_hex(),
             "amount": "10.0",
             "time": 1_700_000_000_000,
         }
@@ -173,7 +173,7 @@ class TestSignUsdTransferAction:
         """sign_usd_transfer_action() sets signatureChainId to the standard Arb Sepolia ID."""
         action = {
             "type": "usdSend",
-            "destination": ETH_WHALE,
+            "destination": ETH_WHALE.to_0x_hex(),
             "amount": "10.0",
             "time": 1_700_000_000_000,
         }
@@ -201,7 +201,7 @@ class TestSignSendToEvmWithDataAction:
             "token": "USDC",
             "amount": "10",
             "sourceDex": "",
-            "destinationRecipient": ETH_WHALE,
+            "destinationRecipient": ETH_WHALE.to_0x_hex(),
             "addressEncoding": "hex",
             "destinationChainId": 3,
             "gasLimit": 200_000,
@@ -261,7 +261,7 @@ class TestSignSendToEvmWithDataAction:
         """
         usd_action = {
             "type": "usdSend",
-            "destination": ETH_WHALE,
+            "destination": ETH_WHALE.to_0x_hex(),
             "amount": "10.0",
             "time": 1_700_000_000_000,
         }
@@ -275,7 +275,7 @@ class TestSignSendToEvmWithDataAction:
         alt_action = {
             "signatureChainId": "0xa4b1",  # Arbitrum mainnet (42161), not 421614
             "hyperliquidChain": "Mainnet",
-            "destination": ETH_WHALE,
+            "destination": ETH_WHALE.to_0x_hex(),
             "amount": "10.0",
             "time": 1_700_000_000_000,
         }

@@ -180,7 +180,9 @@ if TYPE_CHECKING:
     from eth_abi.hooks import EncodingContext
 
 from eth_contract.contract import ContractFunction
+from hexbytes import HexBytes
 
+from pydefi.types import Address
 from pydefi.vm.abi import emit_abi_encode, emit_abi_encode_packed
 from pydefi.vm.program import (
     OP_JUMPDEST,
@@ -362,7 +364,7 @@ class Program:
         """Emit PUSH_U256."""
         return self._emit(push_u256(n))
 
-    def push_addr(self, a: str) -> "Program":
+    def push_addr(self, a: Address) -> "Program":
         """Emit PUSH_ADDR."""
         return self._emit(push_addr(a))
 
@@ -674,7 +676,7 @@ class Program:
 
     def call_contract(
         self,
-        to: str,
+        to: Address,
         calldata: bytes,
         *,
         value: int = 0,
@@ -695,7 +697,7 @@ class Program:
             CALL
 
         Args:
-            to: Target contract address (checksummed or lowercase hex).
+            to: Target contract address as :class:`~hexbytes.HexBytes` (``Address``).
             calldata: Pre-encoded ABI calldata.
             value: ETH value to forward with the call (wei), default 0.
             gas: Gas limit for the sub-call (0 = forward all remaining gas).
@@ -716,7 +718,7 @@ class Program:
 
     def call_contract_abi(
         self,
-        to: str,
+        to: Address,
         abi_sig: str,
         *args: object,
         value: int = 0,
@@ -759,7 +761,7 @@ class Program:
         accept ``0`` as a placeholder).
 
         Args:
-            to: Target contract address (hex string with ``0x`` prefix).
+            to: Target contract address as :class:`~hexbytes.HexBytes` (``Address``).
             abi_sig: Human-readable function signature, e.g.
                 ``"transfer(address,uint256)"`` or
                 ``"function exactInputSingle((address,address,uint24,...) params)"``.
@@ -822,7 +824,9 @@ class Program:
 
         # Fast path: no Patch objects anywhere in the argument tree.
         if not patch_list:
-            return self.call_contract(to, fn(*args).data, value=value, gas=gas, require_success=require_success)
+            return self.call_contract(
+                to, HexBytes(fn(*args).data), value=value, gas=gas, require_success=require_success
+            )
 
         # Slow path: Patch objects are callable hooks; encode_with_hooks calls
         # each one with the EncodingContext so each Patch stores its offset/size.
@@ -843,7 +847,7 @@ class Program:
 
     def call_with_patches(
         self,
-        to: str,
+        to: Address,
         calldata: bytes,
         patches: list[PatchSpec],
         *,
