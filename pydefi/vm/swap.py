@@ -69,16 +69,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING
 
 from eth_abi import encode
 from eth_contract.contract import ContractFunction
 from eth_utils import keccak
 
-from pydefi.types import Address, RouteDAG, SwapRoute, SwapTransaction, TokenAmount
-
-if TYPE_CHECKING:
-    from web3 import AsyncWeb3
+from pydefi.types import Address, RouteDAG, SwapTransaction
 from pydefi.vm.builder import Patch, Program
 from pydefi.vm.program import (
     _SWAP2,
@@ -94,7 +90,6 @@ from pydefi.vm.program import (
     push_addr,
     push_u256,
     ret_u256,
-    return_reg,
     store_reg,
     swap,
 )
@@ -409,45 +404,6 @@ def _build_v2_quote_segment(hop: SwapHop, *, amount_reg: int, result_reg: int) -
     prog._emit(swap())  # [denominator, numerator]
     prog._emit(div())  # [amountOut]
     prog._emit(store_reg(result_reg))  # result_reg = amountOut
-
-    return prog
-
-
-def _build_v3_quote_segment(
-    hop: SwapHop,
-    quoter_address: Address,
-    *,
-    amount_reg: int,
-) -> Program:
-    """V3 pool quote: call ``quoter.quoteExactInput`` (safe for ``eth_call``).
-
-    Calls ``QuoterV2.quoteExactInput(bytes path, uint256 amountIn)`` with a
-    single-hop ABI-packed path ``tokenIn + fee24 + tokenOut``.  The quoter
-    simulates the swap and returns ``amountOut`` as the first uint256.  No
-    tokens are transferred.  Compatible with both QuoterV1 and QuoterV2.
-
-    Args:
-        hop: V3 hop descriptor.  ``hop.fee`` is in **basis points** (e.g.
-            ``5`` for 0.05 %); converted to V3 fee tier (``fee_bps * 100``).
-        quoter_address: On-chain address of a Uniswap V3-compatible quoter.
-        amount_reg: Register holding ``amountIn`` on entry; updated with
-            ``amountOut`` on exit.
-    """
-    v3_fee_tier = hop.fee * 100  # basis points → V3 fee tier (e.g. 5 → 500)
-    packed_path = encode_v3_path([hop.token_in, hop.token_out], [v3_fee_tier])
-
-    prog = Program()
-    prog._emit(load_reg(amount_reg))  # push amountIn for Patch to consume
-    prog.call_contract_abi(
-        quoter_address,
-        "function quoteExactInput(bytes path, uint256 amountIn) returns (uint256 amountOut)",
-        packed_path,
-        Patch(),  # consumes load_reg(amount_reg) from TOS
-    ).pop()
-
-    # amountOut is the first uint256 in returndata for both QuoterV1 and V2
-    prog._emit(ret_u256(0))
-    prog._emit(store_reg(amount_reg))
 
     return prog
 
@@ -930,154 +886,3 @@ def _pool_to_swap_protocol(protocol_name: str) -> SwapProtocol:
     if "v2" in name:
         return SwapProtocol.UNISWAP_V2
     raise ValueError(f"unsupported pool protocol {protocol_name!r}")
-
-
-def swap_route_to_hops(
-    route: SwapRoute,
-    vm_address: str,
-    recipient: str,
-) -> list[SwapHop]:
-    """Convert a :class:`~pydefi.types.SwapRoute` into :class:`SwapHop` descriptors.
-
-    Protocol detection: ``"v2"`` in the lower-cased protocol string maps to
-    :attr:`SwapProtocol.UNISWAP_V2`; ``"v3"`` maps to
-    :attr:`SwapProtocol.UNISWAP_V3`.
-
-    ``zero_for_one`` is derived from EVM token-ordering convention: token0 is
-    the numerically smaller address.
-
-    All intermediate hops send output to *vm_address*; only the final hop
-    sends to *recipient*.
-
-    Args:
-        route: As returned by :meth:`~pydefi.pathfinder.Router.find_best_route`.
-        vm_address: DeFiVM contract address (intermediate recipient).
-        recipient: Final output recipient.
-
-    Returns:
-        Ordered :class:`SwapHop` list ready for :func:`build_multi_hop_program`.
-
-    Raises:
-        :class:`ValueError`: If any step has an unrecognised protocol.
-    """
-
-    def _to_addr(addr: object) -> Address:
-        return Address(addr) if isinstance(addr, (bytes, bytearray)) else Address(str(addr))
-
-    hops: list[SwapHop] = []
-    steps = route.steps
-    n = len(steps)
-
-    for i, step in enumerate(steps):
-        try:
-            protocol = _pool_to_swap_protocol(step.protocol)
-        except ValueError:
-            raise ValueError(
-                f"swap_route_to_hops: unrecognised protocol {step.protocol!r} on step {i}. "
-                "Expected a protocol name containing 'v2' or 'v3'."
-            ) from None
-
-        token_in_bytes = _to_addr(step.token_in.address)
-        token_out_bytes = _to_addr(step.token_out.address)
-        zero_for_one = token_in_bytes < token_out_bytes
-        hop_recipient = recipient if i == n - 1 else vm_address
-
-        hops.append(
-            SwapHop(
-                protocol=protocol,
-                pool=_to_addr(step.pool_address),
-                token_in=token_in_bytes,
-                token_out=token_out_bytes,
-                fee=step.fee,
-                amount_in=route.amount_in.amount if i == 0 else 0,
-                amount_out_min=0,
-                recipient=hop_recipient,
-                zero_for_one=zero_for_one,
-            )
-        )
-
-    return hops
-
-
-def build_quote_swap_calldata(
-    route: SwapRoute,
-    vm_address: str,
-    recipient: str,
-    quoter_address: str,
-) -> bytes:
-    """Build ``execute(bytes)`` calldata for a view-only swap quote.
-
-    Composes a DeFiVM program that simulates every hop on-chain without
-    transferring any tokens:
-
-    * **V2 hops** — call ``pair.getReserves()`` and compute ``amountOut``
-      with the constant-product formula.
-    * **V3 hops** — call ``quoter.quoteExactInput`` (QuoterV1 or QuoterV2)
-      for each hop individually.
-
-    The program ends with ``return_reg``, so the caller receives the final
-    ``amountOut`` as 32 bytes of returndata.  Safe to use with ``eth_call``.
-
-    Args:
-        route: Route to simulate.
-        vm_address: DeFiVM contract address (used as ``eth_call`` target).
-        recipient: Final recipient (informational; does not affect quote).
-        quoter_address: Uniswap V3 QuoterV1/V2 address (consulted for V3 hops).
-
-    Returns:
-        ABI-encoded ``execute(bytes program)`` calldata.
-
-    Raises:
-        :class:`ValueError`: If the route contains no hops or an unsupported protocol.
-    """
-    hops = swap_route_to_hops(route, vm_address, recipient)
-    if not hops:
-        raise ValueError("build_quote_swap_calldata: hops list must not be empty")
-
-    quoter_addr = Address(quoter_address)
-    amount_reg = _AMOUNT_REG
-    segments: list[Program] = [Program()._emit(push_u256(hops[0].amount_in))._emit(store_reg(amount_reg))]
-
-    for hop in hops:
-        if hop.protocol == SwapProtocol.UNISWAP_V2:
-            segments.append(_build_v2_quote_segment(hop, amount_reg=amount_reg, result_reg=amount_reg))
-        elif hop.protocol == SwapProtocol.UNISWAP_V3:
-            segments.append(_build_v3_quote_segment(hop, quoter_addr, amount_reg=amount_reg))
-        else:
-            raise ValueError(f"build_quote_swap_calldata: unsupported protocol {hop.protocol!r}")
-
-    segments.append(Program()._emit(return_reg(amount_reg)))
-    program = Program.compose(segments)
-    return _EXECUTE_SELECTOR + encode(["bytes"], [bytes(program)])
-
-
-async def quote_swap_transaction(
-    route: SwapRoute,
-    vm_address: str,
-    recipient: str,
-    w3: "AsyncWeb3",
-    quoter_address: str,
-) -> TokenAmount:
-    """Simulate a swap via ``eth_call`` on the DeFiVM contract — supports V2 and V3.
-
-    Executes the calldata built by :func:`build_quote_swap_calldata` against
-    *vm_address*.  No tokens are transferred; the program reads pool state
-    on-chain and returns the estimated output amount.
-
-    * **V2 hops** — ``pair.getReserves()`` + constant-product formula (live
-      reserves; no off-chain estimate).
-    * **V3 hops** — ``quoter.quoteExactInput`` called per hop inside the program.
-
-    Args:
-        route: Route to quote.
-        vm_address: On-chain address of the DeFiVM contract.
-        recipient: Final recipient (does not affect quote result).
-        w3: Connected :class:`~web3.AsyncWeb3` instance.
-        quoter_address: Uniswap V3 QuoterV1/V2 address (for V3 hops).
-
-    Returns:
-        :class:`~pydefi.types.TokenAmount` with the on-chain estimated output.
-    """
-    calldata = build_quote_swap_calldata(route, vm_address, recipient, quoter_address)
-    result = await w3.eth.call({"to": vm_address, "data": calldata})
-    return TokenAmount(token=route.steps[-1].token_out, amount=int.from_bytes(result[:32], "big"))

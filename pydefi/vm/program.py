@@ -84,7 +84,6 @@ _DUP4: int = 0x83  # DUP4
 _DUP6: int = 0x85  # DUP6
 _SWAP2: int = 0x91  # SWAP2
 _SWAP3: int = 0x92  # SWAP3
-_OP_RETURN: int = 0xF3  # RETURN — end execution and return data from memory
 
 # ---------------------------------------------------------------------------
 # Stack instructions
@@ -630,31 +629,6 @@ def ret_u256(offset: int) -> bytes:
             OP_RETURNDATACOPY,  # RETURNDATACOPY → [fp]
             OP_MLOAD,  # MLOAD         → [value]
         ]
-    )
-
-
-def return_reg(i: int) -> bytes:
-    """Load register *i*, store it at ``memory[0x00]``, and RETURN 32 bytes.
-
-    Encodes the 32-byte register value as the return data of the DeFiVM program
-    so that callers of ``DeFiVM.execute()`` can read it via ``eth_call``.
-    This is a **terminal** instruction — no instructions may follow ``RETURN``.
-
-    Typical use: view-only quotes via :func:`~pydefi.vm.swap.quote_swap_transaction`.
-
-    Args:
-        i: Register index (0–15).
-
-    Returns:
-        12-byte sequence: ``load_reg(i)`` + ``PUSH1 0x00 MSTORE``
-        + ``PUSH1 0x20 PUSH1 0x00 RETURN``.
-    """
-    if not 0 <= i <= 15:
-        raise ValueError(f"return_reg: register index must be 0..15, got {i}")
-    return (
-        load_reg(i)
-        + bytes([_PUSH1, 0x00, OP_MSTORE])  # store reg_val at mem[0x00]
-        + bytes([_PUSH1, 0x20, _PUSH1, 0x00, _OP_RETURN])  # RETURN(0, 32)
     )
 
 

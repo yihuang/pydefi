@@ -18,7 +18,7 @@ from decimal import Decimal
 
 from pydefi.exceptions import NoRouteFoundError
 from pydefi.pathfinder.graph import PoolEdge, PoolGraph
-from pydefi.types import MAX_BPS, Address, RouteDAG, RouteSplit, RouteSwap, SwapRoute, SwapStep, Token, TokenAmount
+from pydefi.types import MAX_BPS, Address, RouteDAG, RouteSplit, SwapRoute, SwapStep, Token, TokenAmount
 
 
 class Router:
@@ -396,7 +396,7 @@ class Router:
         2. Enumerate every weight vector ``(w_0, …, w_{n-1})`` where each
            ``w_i`` is a non-negative multiple of *step_bps* and
            ``sum(w_i) == 10 000``.
-        3. Evaluate each allocation off-chain via :meth:`_follow_route`.
+        3. Evaluate each allocation off-chain using edge reserve math.
         4. Return the best allocation as a :class:`~pydefi.types.RouteDAG`.
 
         A single-leg result (no split improves on the best route) is returned
@@ -550,24 +550,6 @@ class Router:
             )
         return routes
 
-    def _follow_route(
-        self,
-        route: SwapRoute,
-        raw_amount: int,
-        edge_index: dict[tuple[str, str], PoolEdge],
-    ) -> int:
-        """Walk each step of *route* at *raw_amount* and return the output amount."""
-        current = raw_amount
-        for step in route.steps:
-            key = (step.pool_address.lower(), step.token_in.address.lower())
-            edge = edge_index.get(key)
-            if edge is None:
-                return 0
-            current = edge.amount_out(current)
-            if current <= 0:
-                return 0
-        return current
-
     def _best_n_way_split(
         self,
         routes: list[SwapRoute],
@@ -629,32 +611,6 @@ class Router:
 
         _enumerate(0, MAX_BPS, [])
         return best_legs
-
-    def simulate(self, dag: RouteDAG, amount_in: int) -> int:
-        """Simulate the output amount for *dag* at *amount_in* using off-chain edge math.
-
-        Handles both linear DAGs and split/merge DAGs recursively.
-
-        Args:
-            dag: The route DAG to simulate.
-            amount_in: Input amount in raw token units.
-
-        Returns:
-            Simulated output amount in raw token units.
-        """
-        return self._simulate_actions(dag.actions, amount_in)
-
-    def _simulate_actions(self, actions: list | tuple, amount: int) -> int:
-        for action in actions:
-            if isinstance(action, RouteSwap):
-                amount = action.pool.amount_out(amount)
-            elif isinstance(action, RouteSplit):
-                total = 0
-                for leg in action.legs:
-                    leg_amount = amount * leg.fraction_bps // MAX_BPS
-                    total += self._simulate_actions(leg.actions, leg_amount)
-                amount = total
-        return amount
 
     @staticmethod
     def dag_leg_weights(dag: RouteDAG) -> list[int]:
