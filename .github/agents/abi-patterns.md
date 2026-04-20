@@ -9,7 +9,7 @@ support for a new protocol or modify an existing one.
 ## 1. Where ABIs Live
 
 All contract ABI definitions are centralised in `pydefi/abi/`,
-with differnt files for different protocol categories.
+with different files for different protocol categories.
 
 Always define new ABIs here instead of scattering around.
 
