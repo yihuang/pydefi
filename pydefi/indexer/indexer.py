@@ -76,9 +76,9 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _V2_SYNC_TOPIC = UNISWAP_V2_PAIR.events.Sync.topic
-_V3_SWAP_TOPIC = "0x" + UNISWAP_V3_POOL.events.Swap.topic
-_V2_PAIR_CREATED_TOPIC = "0x" + UNISWAP_V2_FACTORY.events.PairCreated.topic
-_V3_POOL_CREATED_TOPIC = "0x" + UNISWAP_V3_FACTORY.events.PoolCreated.topic
+_V3_SWAP_TOPIC = UNISWAP_V3_POOL.events.Swap.topic
+_V2_PAIR_CREATED_TOPIC = UNISWAP_V2_FACTORY.events.PairCreated.topic
+_V3_POOL_CREATED_TOPIC = UNISWAP_V3_FACTORY.events.PoolCreated.topic
 
 # How many blocks to request per getLogs call during back-fill
 _DEFAULT_BATCH_SIZE = 2_000
