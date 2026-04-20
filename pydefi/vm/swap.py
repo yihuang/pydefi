@@ -288,6 +288,7 @@ class SwapHop:
 # Internal program-segment builders
 # ---------------------------------------------------------------------------
 
+
 def _build_v3_pool_swap_segment(hop: SwapHop) -> Program:
     """V3 pool direct swap (stack ABI).
 
@@ -387,11 +388,9 @@ def _build_v2_direct_swap_segment(hop: SwapHop) -> Program:
     return prog
 
 
-
 # ---------------------------------------------------------------------------
 # Balance-check helper
 # ---------------------------------------------------------------------------
-
 
 
 def build_execution_program_for_dag(
