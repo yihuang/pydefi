@@ -84,6 +84,7 @@ _DUP4: int = 0x83  # DUP4
 _DUP6: int = 0x85  # DUP6
 _SWAP2: int = 0x91  # SWAP2
 _SWAP3: int = 0x92  # SWAP3
+_OP_RETURN: int = 0xF3  # RETURN — end execution and return data from memory
 
 # ---------------------------------------------------------------------------
 # Stack instructions
@@ -665,3 +666,16 @@ def ret_slice(offset: int, length: int) -> bytes:
             OP_SWAP,  # SWAP1              → [fp=argsOffset, length=argsLen]
         ]
     )
+
+
+def return_tos() -> bytes:
+    """Store TOS at ``memory[0x00]`` and RETURN 32 bytes.
+
+    Terminal instruction for quote programs: pops TOS, writes it to
+    ``mem[0x00]``, and returns 32 bytes so ``eth_call`` returndata holds the
+    computed value.
+
+    Returns:
+        8-byte sequence: ``PUSH1 0x00 MSTORE PUSH1 0x20 PUSH1 0x00 RETURN``.
+    """
+    return bytes([_PUSH1, 0x00, OP_MSTORE, _PUSH1, 0x20, _PUSH1, 0x00, _OP_RETURN])

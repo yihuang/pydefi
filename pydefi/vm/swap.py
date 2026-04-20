@@ -49,6 +49,7 @@ from pydefi.vm.program import (
     dup,
     dup_n,
     mul,
+    pop,
     push_u256,
     ret_u256,
     swap,
@@ -196,7 +197,7 @@ class SwapHop:
         pool: Pool or pair contract address (not a router).
         token_in: Input token address.
         token_out: Output token address.
-        fee: Pool fee in **basis points** (e.g. ``30`` for 0.30 %).  For V3
+        fee_bps: Pool fee in **basis points** (e.g. ``30`` for 0.30 %).  For V3
             pools the fee is encoded in the pool itself and is not passed to
             ``pool.swap()``; it is kept here for documentation only.  For V2
             pairs it is used to compute ``amountOut`` from reserves on-chain.
@@ -260,17 +261,17 @@ def _build_v3_pool_swap_segment(hop: SwapHop) -> Program:
     return prog
 
 
-def _build_v2_direct_swap_segment(hop: SwapHop) -> Program:
-    """V2 pair direct swap (stack ABI).
+def _build_v2_compute_out_segment(hop: SwapHop, fee_num: int) -> Program:
+    """Compute V2 ``amountOut`` from reserves (no token transfer).
 
     Stack contract:
     - input:  ``[... , amount_in]``
-    - output: ``[... , amount_out]``
-    """
-    if not 0 <= hop.fee_bps < 10000:
-        raise ValueError(f"hop.fee must be in basis points within [0, 10000), got {hop.fee_bps}")
-    fee_num = 10000 - hop.fee_bps
+    - output: ``[... , amount_out, amount_in]``
 
+    Calls ``pair.getReserves()`` and computes the constant-product formula
+    entirely on-stack.  The original ``amount_in`` is preserved at TOS+1 so
+    callers can consume it (execution) or discard it (quote).
+    """
     prog = Program()
     prog.call_contract_abi(hop.pool, "getReserves()").pop()
     if hop.zero_for_one:
@@ -294,6 +295,55 @@ def _build_v2_direct_swap_segment(hop: SwapHop) -> Program:
     prog._emit(swap())
     prog._emit(div())  # [amount_in, amount_out]
     prog._emit(swap())  # [amount_out, amount_in]
+    return prog
+
+
+def _build_v2_quote_segment(hop: SwapHop) -> Program:
+    """V2 pair quote: compute ``amountOut`` from reserves (view-only, no transfer).
+
+    Stack contract:
+    - input:  ``[... , amount_in]``
+    - output: ``[... , amount_out]``
+    """
+    if not 0 <= hop.fee_bps < 10000:
+        raise ValueError(f"hop.fee_bps must be in basis points within [0, 10000), got {hop.fee_bps}")
+    return Program().extend(_build_v2_compute_out_segment(hop, 10000 - hop.fee_bps))._emit(pop())
+
+
+def _build_v3_quote_segment(hop: SwapHop, quoter_address: str) -> Program:
+    """V3 pool quote: call ``quoter.quoteExactInput`` (view-only).
+
+    Stack contract:
+    - input:  ``[... , amount_in]``
+    - output: ``[... , amount_out]``
+
+    Compatible with both QuoterV1 and QuoterV2.  ``hop.fee_bps`` is in basis points
+    (e.g. ``5`` for 0.05 %); converted to V3 fee tier (``fee_bps * 100``).
+    """
+    packed_path = encode_v3_path([hop.token_in, hop.token_out], [hop.fee_bps * 100])
+    prog = Program()
+    prog.call_contract_abi(
+        Address(quoter_address),
+        "function quoteExactInput(bytes path, uint256 amountIn) returns (uint256 amountOut)",
+        packed_path,
+        Patch(),  # consumes amount_in from TOS
+    ).pop()
+    prog._emit(ret_u256(0))  # amountOut is first uint256 in returndata
+    return prog
+
+
+def _build_v2_direct_swap_segment(hop: SwapHop) -> Program:
+    """V2 pair direct swap (stack ABI).
+
+    Stack contract:
+    - input:  ``[... , amount_in]``
+    - output: ``[... , amount_out]``
+    """
+    if not 0 <= hop.fee_bps < 10000:
+        raise ValueError(f"hop.fee_bps must be in basis points within [0, 10000), got {hop.fee_bps}")
+
+    prog = Program().extend(_build_v2_compute_out_segment(hop, 10000 - hop.fee_bps))
+    # stack: [amount_out, amount_in]
 
     prog.call_contract_abi(
         hop.token_in,
