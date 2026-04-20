@@ -899,7 +899,6 @@ async def split_ctx(ctx, compiled_pools):
     }
 
 
-
 @pytest.mark.fork
 class TestDAGProgramFork:
     async def test_execution_program_for_dag_runs_on_vm(self, ctx):
