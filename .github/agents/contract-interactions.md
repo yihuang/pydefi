@@ -53,6 +53,6 @@ Always check if there's an existing ABI you can reuse before defining a new one.
 # Reuse ERC20 ABI from eth-contract
 from eth_contract.erc20 import ERC20
 
-# Reuse Uniswap V2 Router ABI from pydefi.abiamm
+# Reuse Uniswap V2 Router ABI from pydefi.abi.amm
 from pydefi.abi.amm import UNISWAP_V2_ROUTER
 ```
