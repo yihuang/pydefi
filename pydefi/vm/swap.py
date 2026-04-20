@@ -324,7 +324,7 @@ def _build_v2_direct_swap_segment(hop: SwapHop) -> Program:
     return prog
 
 
-def _swap_hop_from_route_swap(swap_action: RouteSwap, *, recipient: str) -> SwapHop:
+def _swap_hop_from_route_swap(swap_action: RouteSwap, *, recipient: Address) -> SwapHop:
     pool = swap_action.pool
     return SwapHop(
         protocol=pool.protocol,
@@ -338,10 +338,11 @@ def _swap_hop_from_route_swap(swap_action: RouteSwap, *, recipient: str) -> Swap
 
 
 def _build_route_swap_segment(
-    hop: RouteSwap,
+    action: RouteSwap,
     *,
-    recipient: str,
+    recipient: Address,
 ) -> Program:
+    hop = _swap_hop_from_route_swap(action, recipient=recipient)
     if hop.protocol == SwapProtocol.UNISWAP_V3:
         return _build_v3_pool_swap_segment(hop)
     return _build_v2_direct_swap_segment(hop)
