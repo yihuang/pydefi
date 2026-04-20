@@ -266,11 +266,11 @@ def _build_v2_compute_out_segment(hop: SwapHop, fee_num: int) -> Program:
 
     Stack contract:
     - input:  ``[... , amount_in]``
-    - output: ``[... , amount_out, amount_in]``
+    - output: ``[... , amount_out]``
 
     Calls ``pair.getReserves()`` and computes the constant-product formula
-    entirely on-stack.  The original ``amount_in`` is preserved at TOS+1 so
-    callers can consume it (execution) or discard it (quote).
+    entirely on-stack.  Callers that need to preserve ``amount_in`` should
+    ``dup()`` it before calling this segment.
     """
     prog = Program()
     prog.call_contract_abi(hop.pool, "getReserves()").pop()
@@ -281,7 +281,7 @@ def _build_v2_compute_out_segment(hop: SwapHop, fee_num: int) -> Program:
         prog._emit(ret_u256(32))
         prog._emit(ret_u256(0))
 
-    # [amount_in, rIn, rOut] -> compute amount_out while keeping amount_in.
+    # [amount_in, rIn, rOut] -> amount_out
     prog._emit(dup_n(3))  # DUP3: amount_in
     prog._emit(push_u256(fee_num))
     prog._emit(mul())
@@ -295,6 +295,7 @@ def _build_v2_compute_out_segment(hop: SwapHop, fee_num: int) -> Program:
     prog._emit(swap())
     prog._emit(div())  # [amount_in, amount_out]
     prog._emit(swap())  # [amount_out, amount_in]
+    prog._emit(pop())  # [amount_out]
     return prog
 
 
@@ -307,7 +308,7 @@ def _build_v2_quote_segment(hop: SwapHop) -> Program:
     """
     if not 0 <= hop.fee_bps < 10000:
         raise ValueError(f"hop.fee_bps must be in basis points within [0, 10000), got {hop.fee_bps}")
-    return Program().extend(_build_v2_compute_out_segment(hop, 10000 - hop.fee_bps))._emit(pop())
+    return _build_v2_compute_out_segment(hop, 10000 - hop.fee_bps)
 
 
 def _build_v3_quote_segment(hop: SwapHop, quoter_address: str) -> Program:
@@ -342,8 +343,11 @@ def _build_v2_direct_swap_segment(hop: SwapHop) -> Program:
     if not 0 <= hop.fee_bps < 10000:
         raise ValueError(f"hop.fee_bps must be in basis points within [0, 10000), got {hop.fee_bps}")
 
-    prog = Program().extend(_build_v2_compute_out_segment(hop, 10000 - hop.fee_bps))
-    # stack: [amount_out, amount_in]
+    prog = Program()
+    prog._emit(dup())  # preserve amount_in for transfer: [amount_in, amount_in]
+    prog.extend(_build_v2_compute_out_segment(hop, 10000 - hop.fee_bps))
+    # stack: [amount_in, amount_out]
+    prog._emit(swap())  # [amount_out, amount_in]
 
     prog.call_contract_abi(
         hop.token_in,
@@ -351,6 +355,7 @@ def _build_v2_direct_swap_segment(hop: SwapHop) -> Program:
         hop.pool,
         Patch(),
     ).pop()
+    # stack: [amount_out]
 
     prog._emit(dup())  # [amount_out, amount_out]
     if hop.zero_for_one:
