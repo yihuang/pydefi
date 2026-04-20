@@ -354,7 +354,7 @@ def _build_v3_pool_swap_segment(hop: SwapHop, *, amount_reg: int) -> Program:
     )
 
 
-def _build_v2_direct_swap_segment_on_stack(hop: SwapHop, *, intermediate_reg: int = _AMOUNT_OUT_REG) -> Program:
+def _build_v2_direct_swap_segment_on_stack(hop: SwapHop) -> Program:
     """V2 pair direct swap (stack ABI).
 
     Stack contract:
@@ -387,7 +387,7 @@ def _build_v2_direct_swap_segment_on_stack(hop: SwapHop, *, intermediate_reg: in
     prog._emit(add())
     prog._emit(swap())
     prog._emit(div())  # [amount_in, amount_out]
-    prog._emit(store_reg(intermediate_reg))  # consume amount_out; keep amount_in on stack
+    prog._emit(swap())  # [amount_out, amount_in]
 
     prog.call_contract_abi(
         hop.token_in,
@@ -396,7 +396,7 @@ def _build_v2_direct_swap_segment_on_stack(hop: SwapHop, *, intermediate_reg: in
         Patch(),
     ).pop()
 
-    prog._emit(load_reg(intermediate_reg))
+    prog._emit(dup())  # [amount_out, amount_out]
     if hop.zero_for_one:
         prog.call_contract_abi(
             hop.pool,
@@ -416,36 +416,19 @@ def _build_v2_direct_swap_segment_on_stack(hop: SwapHop, *, intermediate_reg: in
             b"",
         ).pop()
 
-    prog._emit(load_reg(intermediate_reg))
     return prog
 
 
-def _build_v2_direct_swap_segment(hop: SwapHop, *, amount_reg: int, amount_out_reg: int) -> Program:
+def _build_v2_direct_swap_segment(hop: SwapHop, *, amount_reg: int) -> Program:
     """V2 pair direct swap: compute amountOut from reserves on-chain.
 
-    Sequence:
-    1. ``pair.getReserves()`` — determine reserveIn / reserveOut.
-    2. Compute ``amountOut`` using the constant-product formula on the EVM
-       stack (no temporary registers for reserves):
-       ``amountIn * fee_num * reserveOut / (reserveIn * 10000 + amountIn * fee_num)``
-    3. Store computed ``amountOut`` in *amount_out_reg* for calldata patching.
-    4. ``tokenIn.transfer(pair, amountIn)`` — transfer input from VM.
-    5. ``pair.swap(amount0Out, amount1Out, recipient, "")`` — amountOut patched
-       from *amount_out_reg* via :class:`~pydefi.vm.builder.Patch`.
-    6. Copy ``amountOut`` from *amount_out_reg* back to *amount_reg*.
-
-    Args:
-        hop: The V2 swap hop descriptor.
-        amount_reg: Register holding ``amountIn`` on entry; updated with
-            ``amountOut`` on exit.
-        amount_out_reg: Scratch register for the intermediate ``amountOut``
-            value (must differ from *amount_reg*).
+    Wraps ``_build_v2_direct_swap_segment_on_stack`` to use register to communicate amountIn and amountOut.
     """
 
     return (
         Program()
         ._emit(load_reg(amount_reg))
-        .extend(_build_v2_direct_swap_segment_on_stack(hop, intermediate_reg=amount_out_reg))
+        .extend(_build_v2_direct_swap_segment_on_stack(hop))
         ._emit(store_reg(amount_reg))
     )
 
@@ -519,7 +502,7 @@ def build_multi_hop_program(
         if hop.protocol == SwapProtocol.UNISWAP_V3:
             swap_seg = _build_v3_pool_swap_segment(hop, amount_reg=amount_reg)
         elif hop.protocol == SwapProtocol.UNISWAP_V2:
-            swap_seg = _build_v2_direct_swap_segment(hop, amount_reg=amount_reg, amount_out_reg=amount_out_reg)
+            swap_seg = _build_v2_direct_swap_segment(hop, amount_reg=amount_reg)
         else:
             raise ValueError(f"build_multi_hop_program: unsupported protocol {hop.protocol!r}")
 
@@ -534,217 +517,6 @@ def build_multi_hop_program(
             ._emit(assert_ge("slippage: out too low"))
         )
         segments.append(final_check)
-
-    return Program.compose(segments)
-
-
-# ---------------------------------------------------------------------------
-# Split-trading composer
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class SplitLeg:
-    """One leg in a split swap.
-
-    Attributes:
-        fraction_bps: Fraction of the total input to route through this leg,
-            expressed in basis points (e.g., ``3000`` = 30 %, ``10000`` = 100 %).
-            All legs in a :func:`build_split_program` call should sum to
-            **10000** so that the full input is distributed without dust.
-        hops: Ordered sequence of :class:`SwapHop` descriptors to execute
-            with the fractional input amount.  Must contain at least one hop.
-    """
-
-    fraction_bps: int
-    hops: list[SwapHop]
-
-
-#: Default register for accumulating outputs across split legs.
-_ACCUM_REG: int = 2
-
-#: Default register for storing the total input so each leg can compute its fraction.
-_TOTAL_IN_REG: int = 3
-
-
-def build_split_program(
-    amount_in: int,
-    legs: list[SplitLeg],
-    min_final_out: int = 0,
-    amount_reg: int = _AMOUNT_REG,
-    amount_out_reg: int = _AMOUNT_OUT_REG,
-    accum_reg: int = _ACCUM_REG,
-    total_in_reg: int = _TOTAL_IN_REG,
-) -> Program:
-    """Build a split-trading program that routes the input across multiple legs.
-
-    The total input amount is divided proportionally across all legs based on
-    their ``fraction_bps`` values.  Each leg executes its own sequence of
-    :class:`SwapHop`\\s independently, receiving its fractional share of the
-    input from *amount_reg*.  The output of each leg is accumulated in
-    *accum_reg* and, on completion, copied to *amount_reg* for downstream
-    chaining.  An optional slippage guard reverts the transaction when the
-    accumulated output is below *min_final_out*.
-
-    Example — single hop T1 → T2, then split 30/30/40 % of T2 to T3::
-
-        from pydefi.vm.swap import (
-            SwapHop, SwapProtocol, SplitLeg,
-            build_multi_hop_program, build_split_program,
-        )
-
-        first_hop = build_multi_hop_program(
-            [SwapHop(protocol=SwapProtocol.UNISWAP_V3, pool=T1_T2_POOL,
-                     token_in=T1, token_out=T2, fee=500, amount_in=10**18,
-                     amount_out_min=0, recipient=VM_ADDRESS, zero_for_one=True)],
-        )
-        split = build_split_program(
-            amount_in=0,   # 0 = use output of previous step (already in amount_reg)
-            legs=[
-                SplitLeg(3000, [SwapHop(protocol=SwapProtocol.UNISWAP_V3,
-                                        pool=pool1, token_in=T2, token_out=T3,
-                                        fee=3000, amount_in=0, amount_out_min=0,
-                                        recipient=USER, zero_for_one=True)]),
-                SplitLeg(3000, [SwapHop(protocol=SwapProtocol.UNISWAP_V3,
-                                        pool=pool2, token_in=T2, token_out=T3,
-                                        fee=3000, amount_in=0, amount_out_min=0,
-                                        recipient=USER, zero_for_one=True)]),
-                SplitLeg(4000, [SwapHop(protocol=SwapProtocol.UNISWAP_V3,
-                                        pool=pool3, token_in=T2, token_out=T3,
-                                        fee=3000, amount_in=0, amount_out_min=0,
-                                        recipient=USER, zero_for_one=True)]),
-            ],
-            min_final_out=900 * 10**18,
-        )
-        program = (first_hop + split).build()
-
-    Args:
-        amount_in: Static total input amount.  Pass ``0`` to use the value
-            already stored in *amount_reg* (e.g. the output of a preceding
-            :func:`build_multi_hop_program` step).  When non-zero, must not
-            exceed ``(2**256 - 1) // 10000`` to avoid on-chain overflow during
-            the ``total_in * fraction_bps`` multiplication.
-        legs: List of :class:`SplitLeg` descriptors (at least one required).
-            All ``fraction_bps`` values **must** sum to exactly **10000** so
-            that the entire input is distributed without dust or over-spend.
-            The same constraint applies to dynamic inputs (``amount_in=0``):
-            the value in *amount_reg* should not exceed
-            ``(2**256 - 1) // 10000`` to prevent overflow.
-        min_final_out: If ``> 0``, revert when the total accumulated output is
-            below this value (slippage guard).  Pass ``0`` to skip.
-        amount_reg: Register index (0–15) used to carry per-leg amounts into
-            each hop segment and receive per-leg outputs.  On exit this
-            register holds the total accumulated output.
-        amount_out_reg: Scratch register for V2 hops (must differ from the
-            other three registers).
-        accum_reg: Register index for accumulating outputs across all legs.
-            Must differ from the other three registers.
-        total_in_reg: Register index for storing the total input amount so
-            each leg can compute its fractional share.  Must differ from the
-            other three registers.
-
-    Returns:
-        A :class:`~pydefi.vm.builder.Program` ready for ``.build()``.
-
-    Raises:
-        ValueError: If *legs* is empty, ``sum(fraction_bps)`` across all legs
-            is not exactly **10000**, any ``fraction_bps`` is out of range
-            ``(0, 10000]``, any leg's ``hops`` list is empty, any leg contains
-            an unsupported protocol, the four register indices are not all
-            distinct, or a static *amount_in* exceeds the safe multiplication
-            range (``(2**256 - 1) // 10000``).
-    """
-    if not legs:
-        raise ValueError("build_split_program: legs list must not be empty")
-
-    regs = {amount_reg, amount_out_reg, accum_reg, total_in_reg}
-    if len(regs) != 4:
-        raise ValueError(
-            f"build_split_program: amount_reg ({amount_reg}), amount_out_reg "
-            f"({amount_out_reg}), accum_reg ({accum_reg}), and total_in_reg "
-            f"({total_in_reg}) must all be distinct"
-        )
-
-    for i, leg in enumerate(legs):
-        if not (0 < leg.fraction_bps <= 10000):
-            raise ValueError(f"build_split_program: leg {i} fraction_bps ({leg.fraction_bps}) must be in (0, 10000]")
-        if not leg.hops:
-            raise ValueError(f"build_split_program: leg {i} hops list must not be empty")
-
-    total_bps = sum(leg.fraction_bps for leg in legs)
-    if total_bps != 10000:
-        raise ValueError(f"build_split_program: sum of fraction_bps across all legs must be 10000, got {total_bps}")
-
-    _MAX_SAFE_AMOUNT_IN = (2**256 - 1) // 10000
-    if amount_in > _MAX_SAFE_AMOUNT_IN:
-        raise ValueError(
-            f"build_split_program: amount_in {amount_in} exceeds safe multiplication "
-            f"range (max {_MAX_SAFE_AMOUNT_IN}); on-chain MUL would overflow"
-        )
-
-    segments: list[Program] = []
-
-    # ── Step 1: Initialise total_in_reg and accum_reg ────────────────────────
-    init = Program()
-    if amount_in > 0:
-        init._emit(push_u256(amount_in))
-        init._emit(store_reg(amount_reg))
-    # Save total input (from amount_reg, whether set above or by the caller)
-    init._emit(load_reg(amount_reg))
-    init._emit(store_reg(total_in_reg))
-    # Initialise accumulator to zero
-    init._emit(push_u256(0))
-    init._emit(store_reg(accum_reg))
-    segments.append(init)
-
-    # ── Step 2: One segment per leg ───────────────────────────────────────────
-    for leg in legs:
-        # Compute leg_amount = total_in * fraction_bps / 10000.
-        # EVM DIV pops TOS as numerator and 2nd-from-TOS as denominator, so we
-        # must swap after pushing 10000 to keep the product (numerator) at TOS.
-        leg_init = Program()
-        leg_init._emit(load_reg(total_in_reg))
-        leg_init._emit(push_u256(leg.fraction_bps))
-        leg_init._emit(mul())  # stack: [total_in * fraction_bps]
-        leg_init._emit(push_u256(10000))  # stack: [10000, product]
-        leg_init._emit(swap())  # SWAP1 → [product, 10000]
-        leg_init._emit(div())  # product / 10000 = leg_amount
-        leg_init._emit(store_reg(amount_reg))
-        segments.append(leg_init)
-
-        # Execute every hop in this leg (each hop reads/writes amount_reg)
-        for hop in leg.hops:
-            if hop.protocol == SwapProtocol.UNISWAP_V3:
-                hop_seg = _build_v3_pool_swap_segment(hop, amount_reg=amount_reg)
-            elif hop.protocol == SwapProtocol.UNISWAP_V2:
-                hop_seg = _build_v2_direct_swap_segment(hop, amount_reg=amount_reg, amount_out_reg=amount_out_reg)
-            else:
-                raise ValueError(f"build_split_program: unsupported protocol {hop.protocol!r}")
-            segments.append(hop_seg)
-
-        # Accumulate this leg's output: accum_reg += amount_reg
-        accum_update = Program()
-        accum_update._emit(load_reg(amount_reg))
-        accum_update._emit(load_reg(accum_reg))
-        accum_update._emit(add())
-        accum_update._emit(store_reg(accum_reg))
-        segments.append(accum_update)
-
-    # ── Step 3: Move accumulated total to amount_reg for downstream chaining ──
-    finalise = Program()
-    finalise._emit(load_reg(accum_reg))
-    finalise._emit(store_reg(amount_reg))
-    segments.append(finalise)
-
-    # ── Step 4: Optional slippage guard ──────────────────────────────────────
-    if min_final_out > 0:
-        slippage_check = (
-            Program()
-            ._emit(push_u256(min_final_out))
-            ._emit(load_reg(amount_reg))
-            ._emit(assert_ge("slippage: out too low"))
-        )
-        segments.append(slippage_check)
 
     return Program.compose(segments)
 
