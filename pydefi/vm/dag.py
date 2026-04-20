@@ -34,7 +34,7 @@ from pydefi.vm.program import add, assert_ge, assert_le, div, dup, dup2, mul, po
 from pydefi.vm.swap import (
     SwapHop,
     SwapProtocol,
-    _build_v2_direct_swap_segment_on_stack,
+    _build_v2_direct_swap_segment,
     _build_v3_pool_swap_segment_on_stack,
 )
 
@@ -201,7 +201,7 @@ def _build_route_swap_segment_on_stack(
     hop = _swap_hop_from_route_swap(swap_action, recipient=recipient)
     if hop.protocol == SwapProtocol.UNISWAP_V3:
         return _build_v3_pool_swap_segment_on_stack(hop)
-    return _build_v2_direct_swap_segment_on_stack(hop)
+    return _build_v2_direct_swap_segment(hop)
 
 
 def _swap_hop_from_route_swap(swap_action: RouteSwap, *, recipient: str) -> SwapHop:

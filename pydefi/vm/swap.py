@@ -78,17 +78,12 @@ from pydefi.vm.builder import Patch, Program
 from pydefi.vm.program import (
     _SWAP2,
     add,
-    assert_ge,
-    balance_of,
     bitwise_not,
     div,
     dup,
-    load_reg,
     mul,
-    push_addr,
     push_u256,
     ret_u256,
-    store_reg,
     swap,
 )
 
@@ -293,16 +288,7 @@ class SwapHop:
 # Internal program-segment builders
 # ---------------------------------------------------------------------------
 
-_MAX_U256 = 2**256 - 1
-
-#: Default register index used to carry amounts between hops.
-_AMOUNT_REG: int = 0
-
-#: Default register index for V2 hops to store the computed amountOut temp.
-_AMOUNT_OUT_REG: int = 1
-
-
-def _build_v3_pool_swap_segment_on_stack(hop: SwapHop) -> Program:
+def _build_v3_pool_swap_segment(hop: SwapHop) -> Program:
     """V3 pool direct swap (stack ABI).
 
     Stack contract:
@@ -336,25 +322,7 @@ def _build_v3_pool_swap_segment_on_stack(hop: SwapHop) -> Program:
     return prog
 
 
-def _build_v3_pool_swap_segment(hop: SwapHop, *, amount_reg: int) -> Program:
-    """V3 pool direct swap.
-
-    Sequence:
-    1. ``pool.swap(recipient, zeroForOne, amountIn, sqrtPriceLimit,
-       abi.encode(tokenIn))`` — amountIn patched from *amount_reg* via
-       :class:`~pydefi.vm.builder.Patch` (offset detected automatically).
-    2. Extract ``amountOut`` from return values (negate the negative delta).
-    3. Store ``amountOut`` back in *amount_reg*.
-    """
-    return (
-        Program()
-        ._emit(load_reg(amount_reg))
-        .extend(_build_v3_pool_swap_segment_on_stack(hop))
-        ._emit(store_reg(amount_reg))
-    )
-
-
-def _build_v2_direct_swap_segment_on_stack(hop: SwapHop) -> Program:
+def _build_v2_direct_swap_segment(hop: SwapHop) -> Program:
     """V2 pair direct swap (stack ABI).
 
     Stack contract:
@@ -419,137 +387,11 @@ def _build_v2_direct_swap_segment_on_stack(hop: SwapHop) -> Program:
     return prog
 
 
-def _build_v2_direct_swap_segment(hop: SwapHop, *, amount_reg: int) -> Program:
-    """V2 pair direct swap: compute amountOut from reserves on-chain.
-
-    Wraps ``_build_v2_direct_swap_segment_on_stack`` to use register to communicate amountIn and amountOut.
-    """
-
-    return (
-        Program()
-        ._emit(load_reg(amount_reg))
-        .extend(_build_v2_direct_swap_segment_on_stack(hop))
-        ._emit(store_reg(amount_reg))
-    )
-
-
-# ---------------------------------------------------------------------------
-# High-level multi-hop composer
-# ---------------------------------------------------------------------------
-
-
-def build_multi_hop_program(
-    hops: list[SwapHop],
-    min_final_out: int = 0,
-    amount_reg: int = _AMOUNT_REG,
-    amount_out_reg: int = _AMOUNT_OUT_REG,
-) -> Program:
-    """Compose a list of swap hops into a single atomic DeFiVM program.
-
-    All hops call pool/pair contracts **directly** — no router is involved.
-
-    For each hop the generated program:
-
-    * **V3 (``UNISWAP_V3``)** — calls ``pool.swap()`` with the input amount
-      from *amount_reg*; the pool fires a flash-swap callback that
-      ``DeFiVM.fallback()`` handles automatically; then extracts and stores the
-      output amount via two's-complement negation of the return value.
-
-    * **V2 (``UNISWAP_V2``)** — reads reserves via ``pair.getReserves()``,
-      computes ``amountOut`` on-chain with the constant-product formula, calls
-      ``tokenIn.transfer(pair, amountIn)``, and finally calls
-      ``pair.swap(amount0Out, amount1Out, recipient, "")``.
-
-    The **first hop** uses ``hop.amount_in`` as the initial amount (pushed into
-    *amount_reg*).  Subsequent hops read their input amount directly from
-    *amount_reg*, which holds the previous hop's output.
-
-    Args:
-        hops: Ordered list of :class:`SwapHop` descriptors.  At least one is
-            required.
-        min_final_out: If ``> 0``, the program reverts when the last hop's
-            output is below this value (slippage guard).  Pass ``0`` to skip.
-        amount_reg: DeFiVM register index (0–15) used to pass amounts between
-            hops.  Holds ``amountIn`` on entry to each hop and ``amountOut``
-            on exit.
-        amount_out_reg: DeFiVM register index (0–15) used by V2 hops as a
-            scratch register for the intermediate ``amountOut`` value before
-            it is patched into the ``pair.swap()`` calldata.  Must differ from
-            *amount_reg*.
-
-    Returns:
-        A :class:`~pydefi.vm.builder.Program` ready for ``.build()``.
-
-    Raises:
-        ValueError: If *hops* is empty, a hop has an unsupported protocol, or
-            *amount_reg* equals *amount_out_reg*.
-    """
-    if not hops:
-        raise ValueError("build_multi_hop_program: hops list must not be empty")
-    if amount_reg == amount_out_reg:
-        raise ValueError(
-            f"build_multi_hop_program: amount_reg ({amount_reg}) and "
-            f"amount_out_reg ({amount_out_reg}) must be different registers"
-        )
-
-    segments: list[Program] = []
-
-    for i, hop in enumerate(hops):
-        # For the first hop, initialise amount_reg with the static input amount.
-        if i == 0:
-            segments.append(Program()._emit(push_u256(hop.amount_in))._emit(store_reg(amount_reg)))
-
-        if hop.protocol == SwapProtocol.UNISWAP_V3:
-            swap_seg = _build_v3_pool_swap_segment(hop, amount_reg=amount_reg)
-        elif hop.protocol == SwapProtocol.UNISWAP_V2:
-            swap_seg = _build_v2_direct_swap_segment(hop, amount_reg=amount_reg)
-        else:
-            raise ValueError(f"build_multi_hop_program: unsupported protocol {hop.protocol!r}")
-
-        segments.append(swap_seg)
-
-    # Optional final slippage guard
-    if min_final_out > 0:
-        final_check = (
-            Program()
-            ._emit(push_u256(min_final_out))
-            ._emit(load_reg(amount_reg))
-            ._emit(assert_ge("slippage: out too low"))
-        )
-        segments.append(final_check)
-
-    return Program.compose(segments)
-
 
 # ---------------------------------------------------------------------------
 # Balance-check helper
 # ---------------------------------------------------------------------------
 
-
-def check_min_balance(token: Address, account: Address, min_amount: int) -> Program:
-    """Return a Program snippet that reverts if ``balanceOf(token, account) < min_amount``.
-
-    Useful as a post-swap safety guard to verify the output landed in the
-    expected account.
-
-    Args:
-        token: ERC-20 token address as :class:`~hexbytes.HexBytes` (``Address``).
-        account: Account whose balance to check as :class:`~hexbytes.HexBytes`
-            (``Address``).
-        min_amount: Minimum required balance.
-
-    Returns:
-        A :class:`~pydefi.vm.builder.Program` snippet.
-    """
-    return (
-        Program()
-        ._emit(push_addr(account))
-        ._emit(push_addr(token))
-        ._emit(balance_of())
-        ._emit(push_u256(min_amount))
-        ._emit(swap())
-        ._emit(assert_ge("balance below minimum"))
-    )
 
 
 def build_execution_program_for_dag(
