@@ -30,39 +30,6 @@ that ``DeFiVM.fallback()`` knows which token to repay:
 
       data = encode_v2_callback_data(token_in, amount_owed)
       # = abi.encode(address tokenIn, uint256 amountOwed)
-
-Quick-start — two-hop swap (WETH → USDC → DAI) via pool contracts
------------------------------------------------------------------
-::
-
-    from pydefi.vm.swap import SwapHop, SwapProtocol, build_multi_hop_program
-
-    hops = [
-        SwapHop(
-            protocol=SwapProtocol.UNISWAP_V3,
-            pool=WETH_USDC_V3_POOL,   # pool address, NOT a router
-            token_in=WETH,
-            token_out=USDC,
-            fee=500,                  # informational; not used in call args
-            amount_in=10**18,         # 1 WETH
-            amount_out_min=0,
-            recipient=VM_ADDRESS,     # keep in VM for next hop
-            zero_for_one=True,        # WETH is token0 in this pool
-        ),
-        SwapHop(
-            protocol=SwapProtocol.UNISWAP_V2,
-            pool=USDC_DAI_V2_PAIR,    # pair address, NOT a router
-            token_in=USDC,
-            token_out=DAI,
-            fee=30,                   # 0.30 % fee in basis points
-            amount_in=0,              # 0 = use previous hop's output at runtime
-            amount_out_min=0,
-            recipient=USER_ADDRESS,
-            zero_for_one=True,        # USDC is token0 in this pair
-        ),
-    ]
-
-    bytecode = build_multi_hop_program(hops, min_final_out=900 * 10**18).build()
 """
 
 from __future__ import annotations
