@@ -22,7 +22,6 @@ from pydefi.exceptions import InsufficientLiquidityError
 from pydefi.types import SwapRoute, SwapStep, Token, TokenAmount
 
 _RAYDIUM_API_BASE = "https://transaction-v1.raydium.io"
-# Native SOL mint address (used to detect when wrapping/unwrapping is needed)
 _SOL_MINT = "So11111111111111111111111111111111111111112"
 
 
@@ -88,8 +87,8 @@ class Raydium(BaseSolanaAMM):
                 Raydium cannot find a route or returns an error.
         """
         params: dict[str, Any] = {
-            "inputMint": amount_in.token.address,
-            "outputMint": token_out.address,
+            "inputMint": amount_in.token.encoded_address,
+            "outputMint": token_out.encoded_address,
             "amount": str(amount_in.amount),
             "slippageBps": slippage_bps,
             "txVersion": kwargs.pop("txVersion", "V0"),
@@ -119,8 +118,8 @@ class Raydium(BaseSolanaAMM):
             :class:`~pydefi.types.SwapStep` describing the Raydium hop.
         """
         params: dict[str, Any] = {
-            "inputMint": amount_in.token.address,
-            "outputMint": token_out.address,
+            "inputMint": amount_in.token.encoded_address,
+            "outputMint": token_out.encoded_address,
             "amount": str(amount_in.amount),
             "slippageBps": slippage_bps,
             "txVersion": kwargs.pop("txVersion", "V0"),
@@ -186,8 +185,8 @@ class Raydium(BaseSolanaAMM):
         """
         # Step 1: get compute quote (includes the full route plan Raydium needs)
         compute_params: dict[str, Any] = {
-            "inputMint": amount_in.token.address,
-            "outputMint": token_out.address,
+            "inputMint": amount_in.token.encoded_address,
+            "outputMint": token_out.encoded_address,
             "amount": str(amount_in.amount),
             "slippageBps": slippage_bps,
             "txVersion": "V0",

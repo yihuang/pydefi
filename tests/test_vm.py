@@ -30,6 +30,7 @@ from eth_contract.contract import ContractFunction
 from eth_contract.erc20 import ERC20
 from eth_utils import keccak
 
+from pydefi.types import Address
 from pydefi.vm import Patch, Program, emit_abi_encode, emit_abi_encode_packed
 from pydefi.vm.program import (
     OP_ADD,
@@ -107,9 +108,9 @@ from tests.conftest import (
 # Helpers
 # ---------------------------------------------------------------------------
 
-ADDR_A = "0x" + "aA" * 20
-ADDR_B = "0x" + "bB" * 20
-ADDR_ZERO = "0x" + "00" * 20
+ADDR_A: Address = Address("0x" + "aA" * 20)
+ADDR_B: Address = Address("0x" + "bB" * 20)
+ADDR_ZERO: Address = Address("0x" + "00" * 20)
 
 
 # ---------------------------------------------------------------------------
@@ -342,7 +343,7 @@ class TestCallContractHelper:
     def test_call_contract_address_embedded(self):
         # The address should be present in the bytecode
         bytecode = Program().call_contract(ADDR_A, b"\x00").build()
-        assert bytes.fromhex(ADDR_A[2:]) in bytecode
+        assert bytes(ADDR_A) in bytecode
 
 
 # ---------------------------------------------------------------------------
@@ -364,7 +365,7 @@ class TestABIHelpers:
         # Address is right-aligned in a 32-byte word (bytes 4..35)
         addr_word = cd[4:36]
         assert addr_word[:12] == b"\x00" * 12
-        assert addr_word[12:] == bytes.fromhex(ADDR_A[2:])
+        assert addr_word[12:] == bytes(ADDR_A)
 
     def test_erc20_transfer_amount_encoding(self):
         amount = 1_000_000
@@ -393,8 +394,8 @@ class TestABIHelpers:
         cd = bytes(ERC20.fns.transferFrom(ADDR_A, ADDR_B, 0).data)
         from_word = cd[4:36]
         to_word = cd[36:68]
-        assert from_word[12:] == bytes.fromhex(ADDR_A[2:])
-        assert to_word[12:] == bytes.fromhex(ADDR_B[2:])
+        assert from_word[12:] == bytes(ADDR_A)
+        assert to_word[12:] == bytes(ADDR_B)
 
     def test_erc20_balance_of_selector(self):
         cd = bytes(ERC20.fns.balanceOf(ADDR_A).data)
@@ -1120,7 +1121,7 @@ class TestPatch:
         # ADDR_B must be baked into the calldata template in the bytecode.
         # push_bytes splits calldata into 32-byte chunks, so the 20-byte address
         # may span two chunks; check that both halves appear.
-        addr_bytes = bytes.fromhex(ADDR_B[2:])
+        addr_bytes = bytes(ADDR_B)
         assert addr_bytes[:16] in bytecode
         assert addr_bytes[16:] in bytecode
         # The patch opcodes must be present
@@ -1352,15 +1353,15 @@ class TestEvmNativeOpcodes:
 class TestBuildSplitProgram:
     """Unit tests for :func:`~pydefi.vm.swap.build_split_program` and :class:`~pydefi.vm.swap.SplitLeg`."""
 
-    POOL1 = "0x" + "11" * 20
-    POOL2 = "0x" + "22" * 20
-    POOL3 = "0x" + "33" * 20
-    TOKEN_A = "0x" + "aa" * 20
-    TOKEN_B = "0x" + "bb" * 20
-    TOKEN_C = "0x" + "cc" * 20
-    RECIPIENT = "0x" + "dd" * 20
+    POOL1 = Address("0x" + "11" * 20)
+    POOL2 = Address("0x" + "22" * 20)
+    POOL3 = Address("0x" + "33" * 20)
+    TOKEN_A = Address("0x" + "aa" * 20)
+    TOKEN_B = Address("0x" + "bb" * 20)
+    TOKEN_C = Address("0x" + "cc" * 20)
+    RECIPIENT = Address("0x" + "dd" * 20)
 
-    def _v3_hop(self, pool: str, token_in: str, token_out: str) -> SwapHop:
+    def _v3_hop(self, pool: Address, token_in: Address, token_out: Address) -> SwapHop:
         return SwapHop(
             protocol=SwapProtocol.UNISWAP_V3,
             pool=pool,
@@ -1373,7 +1374,7 @@ class TestBuildSplitProgram:
             zero_for_one=True,
         )
 
-    def _v2_hop(self, pool: str, token_in: str, token_out: str) -> SwapHop:
+    def _v2_hop(self, pool: Address, token_in: Address, token_out: Address) -> SwapHop:
         return SwapHop(
             protocol=SwapProtocol.UNISWAP_V2,
             pool=pool,
@@ -2365,7 +2366,7 @@ class TestMiniEVMContext:
         executor = evm_ctx.program_executor
         evm_ctx.mint_token(token, executor, 777 * 10**18)
 
-        program = self_addr() + push_addr(token.hex()) + balance_of() + RETURN_TOP
+        program = self_addr() + push_addr(token) + balance_of() + RETURN_TOP
         result = evm_ctx.run_program(program)
 
         assert not result.is_error
@@ -2376,7 +2377,7 @@ class TestMiniEVMContext:
         holder = b"\x55" * 20
         evm_ctx.mint_token(token, holder, 123 * 10**18)
 
-        program = push_addr(holder.hex()) + push_addr(token.hex()) + balance_of() + RETURN_TOP
+        program = push_addr(holder) + push_addr(token) + balance_of() + RETURN_TOP
         result = evm_ctx.run_program(program)
 
         assert not result.is_error
@@ -2386,7 +2387,7 @@ class TestMiniEVMContext:
         token = evm_ctx.deploy_mock_token()
         empty_addr = b"\xee" * 20
 
-        program = push_addr(empty_addr.hex()) + push_addr(token.hex()) + balance_of() + RETURN_TOP
+        program = push_addr(empty_addr) + push_addr(token) + balance_of() + RETURN_TOP
         result = evm_ctx.run_program(program)
 
         assert not result.is_error
@@ -2413,7 +2414,7 @@ class TestMiniEVMContext:
             + push_u256(0)  # retLen=0, retOffset=0
             + push_bytes(transfer_cd)  # argsOffset, argsLen
             + push_u256(0)  # value=0
-            + push_addr(token.hex())  # target
+            + push_addr(token)  # target
             + gas_opcode()
             + call()
             + pop()  # pop success flag
@@ -2503,7 +2504,7 @@ class TestMiniEVMContext:
             + push_u256(0)
             + push_bytes(cd)
             + push_u256(0)
-            + push_addr(token.hex())
+            + push_addr(token)
             + gas_opcode()
             + call()
             + pop()
@@ -2512,7 +2513,7 @@ class TestMiniEVMContext:
         assert not r1.is_error
 
         # Second run_program: check balance persisted
-        bal_prog = self_addr() + push_addr(token.hex()) + balance_of() + RETURN_TOP
+        bal_prog = self_addr() + push_addr(token) + balance_of() + RETURN_TOP
         r2 = evm_ctx.run_program(bal_prog)
         assert not r2.is_error
         assert int.from_bytes(r2.output, "big") == 600 * 10**18

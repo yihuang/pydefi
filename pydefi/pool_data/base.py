@@ -61,6 +61,8 @@ class PoolData:
             instances ``[edge_0_to_1, edge_1_to_0]``.
         """
         if self.sqrt_price_x96 > 0 and self.liquidity > 0:
+            extra_0_to_1 = dict(self.extra)
+            extra_0_to_1.setdefault("is_token0_in", True)
             edge_0_to_1: PoolEdge = V3PoolEdge(
                 token_in=self.token0,
                 token_out=self.token1,
@@ -70,8 +72,10 @@ class PoolData:
                 sqrt_price_x96=self.sqrt_price_x96,
                 liquidity=self.liquidity,
                 is_token0_in=True,
-                extra=dict(self.extra),
+                extra=extra_0_to_1,
             )
+            extra_1_to_0 = dict(self.extra)
+            extra_1_to_0.setdefault("is_token0_in", False)
             edge_1_to_0: PoolEdge = V3PoolEdge(
                 token_in=self.token1,
                 token_out=self.token0,
@@ -81,9 +85,11 @@ class PoolData:
                 sqrt_price_x96=self.sqrt_price_x96,
                 liquidity=self.liquidity,
                 is_token0_in=False,
-                extra=dict(self.extra),
+                extra=extra_1_to_0,
             )
         else:
+            extra_0_to_1 = dict(self.extra)
+            extra_0_to_1.setdefault("is_token0_in", True)
             edge_0_to_1 = PoolEdge(
                 token_in=self.token0,
                 token_out=self.token1,
@@ -92,8 +98,10 @@ class PoolData:
                 reserve_in=self.reserve0,
                 reserve_out=self.reserve1,
                 fee_bps=self.fee_bps,
-                extra=dict(self.extra),
+                extra=extra_0_to_1,
             )
+            extra_1_to_0 = dict(self.extra)
+            extra_1_to_0.setdefault("is_token0_in", False)
             edge_1_to_0 = PoolEdge(
                 token_in=self.token1,
                 token_out=self.token0,
@@ -102,7 +110,7 @@ class PoolData:
                 reserve_in=self.reserve1,
                 reserve_out=self.reserve0,
                 fee_bps=self.fee_bps,
-                extra=dict(self.extra),
+                extra=extra_1_to_0,
             )
         return [edge_0_to_1, edge_1_to_0]
 

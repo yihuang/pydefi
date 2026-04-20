@@ -90,9 +90,9 @@ class ParaSwap(BaseAggregator):
             Raw API response dict.
         """
         params: dict[str, Any] = {
-            "srcToken": amount_in.token.address,
+            "srcToken": amount_in.token.encoded_address,
             "srcDecimals": amount_in.token.decimals,
-            "destToken": token_out.address,
+            "destToken": token_out.encoded_address,
             "destDecimals": token_out.decimals,
             "amount": str(amount_in.amount),
             "network": self.chain_id,
@@ -168,9 +168,9 @@ class ParaSwap(BaseAggregator):
         min_amount_out_raw = dest_amount * slippage_fraction // 10_000
 
         body: dict[str, Any] = {
-            "srcToken": amount_in.token.address,
+            "srcToken": amount_in.token.encoded_address,
             "srcDecimals": amount_in.token.decimals,
-            "destToken": token_out.address,
+            "destToken": token_out.encoded_address,
             "destDecimals": token_out.decimals,
             "srcAmount": str(amount_in.amount),
             "destAmount": str(min_amount_out_raw),

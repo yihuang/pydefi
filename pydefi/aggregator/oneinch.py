@@ -84,8 +84,8 @@ class OneInch(BaseAggregator):
             An :class:`~pydefi.aggregator.base.AggregatorQuote`.
         """
         params: dict[str, Any] = {
-            "src": amount_in.token.address,
-            "dst": token_out.address,
+            "src": amount_in.token.encoded_address,
+            "dst": token_out.encoded_address,
             "amount": str(amount_in.amount),
             **kwargs,
         }
@@ -129,8 +129,8 @@ class OneInch(BaseAggregator):
             ``tx_data`` populated.
         """
         params: dict[str, Any] = {
-            "src": amount_in.token.address,
-            "dst": token_out.address,
+            "src": amount_in.token.encoded_address,
+            "dst": token_out.encoded_address,
             "amount": str(amount_in.amount),
             "from": from_address,
             "slippage": self._slippage_to_percent(slippage_bps),

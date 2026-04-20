@@ -11,9 +11,10 @@ from typing import Any
 
 import aiohttp
 
+from pydefi._utils import encode_address
 from pydefi.aggregator.base import AggregatorQuote, BaseAggregator
 from pydefi.exceptions import AggregatorError
-from pydefi.types import SwapRoute, SwapStep, Token, TokenAmount
+from pydefi.types import Address, SwapRoute, SwapStep, Token, TokenAmount
 
 # Mapping from EVM chain IDs to OpenOcean chain slugs
 _CHAIN_SLUGS: dict[int, str] = {
@@ -135,8 +136,8 @@ class OpenOcean(BaseAggregator):
         if "gasPrice" not in kwargs:
             kwargs = {**kwargs, "gasPrice": await self._get_gas_price()}
         params: dict[str, Any] = {
-            "inTokenAddress": amount_in.token.address,
-            "outTokenAddress": token_out.address,
+            "inTokenAddress": amount_in.token.encoded_address,
+            "outTokenAddress": token_out.encoded_address,
             "amount": str(amount_in.human_amount),
             "slippage": str(self._slippage_to_percent(slippage_bps)),
             **kwargs,
@@ -165,7 +166,7 @@ class OpenOcean(BaseAggregator):
         self,
         amount_in: TokenAmount,
         token_out: Token,
-        from_address: str,
+        from_address: Address,
         slippage_bps: int = 50,
         **kwargs: Any,
     ) -> AggregatorQuote:
@@ -190,11 +191,11 @@ class OpenOcean(BaseAggregator):
         if "gasPrice" not in kwargs:
             kwargs = {**kwargs, "gasPrice": await self._get_gas_price()}
         params: dict[str, Any] = {
-            "inTokenAddress": amount_in.token.address,
-            "outTokenAddress": token_out.address,
+            "inTokenAddress": amount_in.token.encoded_address,
+            "outTokenAddress": token_out.encoded_address,
             "amount": str(amount_in.human_amount),
             "slippage": str(self._slippage_to_percent(slippage_bps)),
-            "account": from_address,
+            "account": encode_address(from_address, self.chain_id),
             **kwargs,
         }
         data = await self._get("swap", params)

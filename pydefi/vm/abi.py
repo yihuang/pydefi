@@ -32,7 +32,7 @@ Usage with the fluent builder::
     bytecode = (
         Program()
         .load_reg(0)                           # arg 0: uint256 (deepest)
-        .push_addr("0x" + "ab" * 20)           # arg 1: address (TOS)
+        .push_addr(b"\xab" * 20)           # arg 1: address (TOS)
         .abi_encode(["uint256", "address"])
         # Stack: [argsOffset(TOS), argsLen(2nd)]  — ready for CALL args
         ...
@@ -55,7 +55,7 @@ Low-level functional style::
     from pydefi.vm.program import push_u256, push_addr
 
     opcodes = (
-        push_u256(42) + push_addr("0x" + "ab" * 20)
+        push_u256(42) + push_addr(b"\xab" * 20)
         + emit_abi_encode(["uint256", "address"])
     )
 """

@@ -6,7 +6,12 @@ support for a new protocol or modify an existing one.
 
 ---
 
-## 1. Where ABIs Live
+## 1. Use eth-contract
+
+Never use json abi and `w3.eth.contract` directly, always use eth-contract library with human readable abi,
+the details are described in following sections.
+
+## 2. Where ABIs Live
 
 All contract ABI definitions are centralised in `pydefi/abi/`:
 
@@ -22,7 +27,7 @@ appropriate `pydefi/abi/` module and import from there.
 
 ---
 
-## 2. Defining ABIs
+## 3. Defining ABIs
 
 ### Human-Readable ABI Strings
 
@@ -79,7 +84,7 @@ Rules:
 
 ---
 
-## 3. Using ABIs in Implementation Files
+## 4. Using ABIs in Implementation Files
 
 ### The Preferred Pattern: Pass `to=` at Call Time
 
@@ -144,7 +149,7 @@ result = await UNISWAP_V3_QUOTER_V2.fns.quoteExactInputSingle(params).call(
 
 ---
 
-## 4. Adding a New Protocol
+## 5. Adding a New Protocol
 
 1. Decide which `pydefi/abi/` file the new ABIs belong in (`amm.py` for DEX
    protocols, `bridge.py` for cross-chain protocols, or create a new file for
@@ -163,7 +168,7 @@ result = await UNISWAP_V3_QUOTER_V2.fns.quoteExactInputSingle(params).call(
 
 ---
 
-## 5. Naming Conventions
+## 6. Naming Conventions
 
 | Entity | Convention | Example |
 |--------|-----------|---------|
@@ -173,7 +178,7 @@ result = await UNISWAP_V3_QUOTER_V2.fns.quoteExactInputSingle(params).call(
 
 ---
 
-## 6. Example: Adding a New Lending Protocol
+## 7. Example: Adding a New Lending Protocol
 
 ```python
 # pydefi/abi/lending.py

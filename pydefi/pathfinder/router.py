@@ -18,7 +18,7 @@ from decimal import Decimal
 
 from pydefi.exceptions import NoRouteFoundError
 from pydefi.pathfinder.graph import PoolEdge, PoolGraph
-from pydefi.types import SwapRoute, SwapStep, Token, TokenAmount
+from pydefi.types import Address, RouteDAG, SwapRoute, SwapStep, Token, TokenAmount
 
 
 class Router:
@@ -111,14 +111,14 @@ class Router:
     ) -> SwapRoute:
         """Find the best route by output amount only (ignoring gas costs)."""
         src = amount_in.token
-        dst_addr = token_out.address.lower()
+        dst_addr = token_out.address
 
-        if src.address.lower() == dst_addr:
+        if src.address == dst_addr:
             raise ValueError("token_in and token_out must be different")
 
         # DP table: best[(token_addr, hops)] = (max_raw_output, path_of_edges)
         # Seed with the source state at hop depth 0.
-        best: dict[tuple[str, int], tuple[int, list[PoolEdge]]] = {(src.address.lower(), 0): (amount_in.amount, [])}
+        best: dict[tuple[Address, int], tuple[int, list[PoolEdge]]] = {(src.address, 0): (amount_in.amount, [])}
 
         for hop in range(max_hops):
             # Snapshot all states at the current depth to avoid processing
@@ -127,7 +127,7 @@ class Router:
 
             for (token_addr, _), (current_amount, path) in current_states:
                 # Tokens already on this path (cycle prevention).
-                visited_tokens: set[str] = {e.token_in.address.lower() for e in path}
+                visited_tokens: set[Address] = {e.token_in.address for e in path}
                 visited_tokens.add(token_addr)
 
                 # Retrieve the Token object: use the last edge's output token,
@@ -135,7 +135,7 @@ class Router:
                 token: Token = path[-1].token_out if path else src
 
                 for edge in self.graph.edges_from(token):
-                    next_addr = edge.token_out.address.lower()
+                    next_addr = edge.token_out.address
                     if next_addr in visited_tokens:
                         continue
 
@@ -177,6 +177,7 @@ class Router:
             amount_in=amount_in,
             amount_out=TokenAmount(token=token_out, amount=final_amount),
             price_impact=self._estimate_price_impact(final_path, amount_in.amount),
+            dag=self._edges_to_dag(src, final_path),
         )
 
     def _find_best_route_gas_aware(
@@ -226,6 +227,7 @@ class Router:
             amount_in=amount_in,
             amount_out=TokenAmount(token=token_out, amount=final_amount),
             price_impact=self._estimate_price_impact(path, amount_in.amount),
+            dag=self._edges_to_dag(amount_in.token, path),
         )
 
     def find_all_routes(
@@ -264,25 +266,25 @@ class Router:
             :class:`ValueError`: If ``token_in`` and ``token_out`` are the same.
         """
         src = amount_in.token
-        dst_addr = token_out.address.lower()
+        dst_addr = token_out.address
         routes: list[SwapRoute] = []
 
-        if src.address.lower() == dst_addr:
+        if src.address == dst_addr:
             raise ValueError("token_in and token_out must be different")
 
         # Dominance pruning: best raw output seen for each (token_addr, hop_depth).
         # A path is pruned when it arrives at a state with a lower amount than
         # one already explored — any onward route will be dominated.
-        best_at: dict[tuple[str, int], int] = {}
+        best_at: dict[tuple[Address, int], int] = {}
 
         def dfs(
             current_token: Token,
             current_amount: int,
             path: list[PoolEdge],
-            visited_tokens: set[str],
+            visited_tokens: set[Address],
         ) -> None:
             depth = len(path)
-            tok_addr = current_token.address.lower()
+            tok_addr = current_token.address
 
             # Prune dominated states.
             existing = best_at.get((tok_addr, depth))
@@ -307,6 +309,7 @@ class Router:
                         amount_in=amount_in,
                         amount_out=TokenAmount(token=token_out, amount=current_amount),
                         price_impact=self._estimate_price_impact(path, amount_in.amount),
+                        dag=self._edges_to_dag(src, path),
                     )
                 )
                 return
@@ -315,7 +318,7 @@ class Router:
                 return
 
             for edge in self.graph.edges_from(current_token):
-                next_addr = edge.token_out.address.lower()
+                next_addr = edge.token_out.address
                 if next_addr in visited_tokens:
                     continue
                 next_amount = edge.amount_out(current_amount)
@@ -328,13 +331,55 @@ class Router:
                     visited_tokens | {next_addr},
                 )
 
-        dfs(src, amount_in.amount, [], {src.address.lower()})
+        dfs(src, amount_in.amount, [], {src.address})
 
         if not routes:
             raise NoRouteFoundError(f"No route found from {amount_in.token.symbol} to {token_out.symbol}")
 
         routes.sort(key=lambda r: r.amount_out.amount, reverse=True)
         return routes[:top_k]
+
+    def find_best_route_dag(
+        self,
+        amount_in: TokenAmount,
+        token_out: Token,
+        *,
+        gas_price_gwei: float = 0.0,
+        native_token_price_usd: float = 0.0,
+        token_out_price_usd: float = 0.0,
+        max_hops: int | None = None,
+    ) -> RouteDAG:
+        """Find the best route and return it as :class:`~pydefi.types.RouteDAG`."""
+        route = self.find_best_route(
+            amount_in,
+            token_out,
+            gas_price_gwei=gas_price_gwei,
+            native_token_price_usd=native_token_price_usd,
+            token_out_price_usd=token_out_price_usd,
+            max_hops=max_hops,
+        )
+        if route.dag is None:
+            raise ValueError("internal Router error: missing DAG representation")
+        return route.dag
+
+    def find_all_routes_dag(
+        self,
+        amount_in: TokenAmount,
+        token_out: Token,
+        top_k: int = 5,
+    ) -> list[RouteDAG]:
+        """Find top-*k* routes and return them as :class:`~pydefi.types.RouteDAG` objects."""
+        routes = self.find_all_routes(amount_in, token_out, top_k=top_k)
+        if any(route.dag is None for route in routes):
+            raise ValueError("internal Router error: missing DAG representation in find_all_routes()")
+        return [route.dag for route in routes if route.dag is not None]
+
+    @staticmethod
+    def _edges_to_dag(token_in: Token, edges: list[PoolEdge]) -> RouteDAG:
+        dag = RouteDAG().from_token(token_in)
+        for edge in edges:
+            dag.swap(edge.token_out, edge)
+        return dag
 
     @staticmethod
     def _estimate_price_impact(edges: list[PoolEdge], amount_in: int) -> Decimal:

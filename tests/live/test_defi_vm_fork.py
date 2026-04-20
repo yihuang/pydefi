@@ -23,8 +23,10 @@ from pathlib import Path
 import pytest
 import solcx
 from eth_contract.erc20 import ERC20
+from hexbytes import HexBytes
 from web3.exceptions import ContractLogicError, Web3RPCError
 
+from pydefi.types import Address
 from pydefi.vm import Patch, Program
 from pydefi.vm.program import (
     assert_ge,
@@ -58,9 +60,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SOL_FILE = REPO_ROOT / "pydefi" / "vm" / "DeFiVM.sol"
 APPROVE_PROXY_SOL_FILE = REPO_ROOT / "pydefi" / "vm" / "ApproveProxy.sol"
 
-WETH_MAINNET = WETH.address
+WETH_MAINNET: Address = WETH.address
 # Coinbase 8 — a well-funded address on mainnet (used for introspection only)
-WHALE = "0x77134cbC06cB00b66F4c7e623D5fdBF6777635EC"
+WHALE: Address = Address("0x77134cbC06cB00b66F4c7e623D5fdBF6777635EC")
 
 
 def _compile_defi_vm() -> dict:
@@ -512,7 +514,7 @@ class TestDeFiVMFork:
         called_topic = keccak(b"Called(address,uint256,bytes)")
         adapter_log = None
         for log in receipt["logs"]:
-            if log["address"].lower() == adapter.lower() and log["topics"][0] == called_topic:
+            if HexBytes(log["address"]) == adapter and log["topics"][0] == called_topic:
                 adapter_log = log
                 break
         assert adapter_log is not None, "Expected Called event from adapter"
@@ -561,7 +563,7 @@ class TestDeFiVMFork:
         called_topic = keccak(b"Called(address,uint256,bytes)")
         adapter_log = None
         for log in receipt["logs"]:
-            if log["address"].lower() == adapter.lower() and log["topics"][0] == called_topic:
+            if HexBytes(log["address"]) == adapter and log["topics"][0] == called_topic:
                 adapter_log = log
                 break
         assert adapter_log is not None, "Expected Called event from adapter"
@@ -569,8 +571,7 @@ class TestDeFiVMFork:
         calldata_len = int.from_bytes(encoded[96:128], "big")
         received_calldata = encoded[128 : 128 + calldata_len]
         # Expected: selector + 12 zero bytes + 20-byte address (raw byte-for-byte patch)
-        addr_bytes = bytes.fromhex(adapter.removeprefix("0x"))
-        expected_calldata = selector + b"\x00" * 12 + addr_bytes
+        expected_calldata = selector + b"\x00" * 12 + adapter
         assert received_calldata == expected_calldata
 
     # ------------------------------------------------------------------
@@ -1050,7 +1051,7 @@ class TestApproveProxyFork:
         vm_address = proxy_ctx["vm_address"]
 
         stored_vm = await proxy.functions.vm().call()
-        assert stored_vm.lower() == vm_address.lower()
+        assert HexBytes(stored_vm) == vm_address
 
     async def test_eth_forwarding(self, proxy_ctx):
         """ETH sent to proxy.execute() is forwarded to DeFiVM."""
