@@ -331,7 +331,7 @@ def _swap_hop_from_route_swap(swap_action: RouteSwap, *, recipient: str) -> Swap
         pool=pool.pool_address,
         token_in=pool.token_in.address,
         token_out=pool.token_out.address,
-        fee=pool.fee_bps,
+        fee_bps=pool.fee_bps,
         recipient=recipient,
         zero_for_one=swap_action.zero_for_one(),
     )
