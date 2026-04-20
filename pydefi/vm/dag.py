@@ -29,7 +29,6 @@ from collections.abc import Sequence
 
 from pydefi.types import RouteAction, RouteDAG, RouteSplit, RouteSwap
 from pydefi.vm.builder import Program
-from pydefi.vm.program import add, assert_ge, assert_le, div, dup, dup2, mul, pop, push_u256, swap
 from pydefi.vm.swap import (
     _build_route_swap_segment,
 )
@@ -87,7 +86,7 @@ def _build_program_for_dag(
     if not actions:
         raise ValueError("build_program_for_dag: route DAG must contain at least one action")
 
-    segments: list[Program] = [Program()._emit(push_u256(amount_in))]
+    segments: list[Program] = [Program().push_u256(amount_in)]
     segments.extend(
         _build_dag_actions(
             actions,
@@ -99,10 +98,10 @@ def _build_program_for_dag(
     if min_final_out > 0:
         segments.append(
             Program()
-            ._emit(dup())
-            ._emit(push_u256(min_final_out))
-            ._emit(swap())
-            ._emit(assert_ge("slippage: out too low"))
+            .dup()
+            .push_u256(min_final_out)
+            .swap()
+            .assert_ge("slippage: out too low")
         )
 
     return Program.compose(segments)
@@ -160,21 +159,21 @@ def _build_route_split_segment(
     # Enforce `total_in <= floor((2**256-1)/10_000)` before any multiplication.
     segments: list[Program] = [
         Program()
-        ._emit(dup())
-        ._emit(push_u256(_MAX_TOTAL_IN_FOR_SPLIT))
-        ._emit(swap())
-        ._emit(assert_le("split: total_in overflow guard"))
-        ._emit(push_u256(0))
+        .dup()
+        .push_u256(_MAX_TOTAL_IN_FOR_SPLIT)
+        .swap()
+        .assert_le("split: total_in overflow guard")
+        .push_u256(0)
     ]
     for leg in split.legs:
         segments.append(
             Program()
-            ._emit(dup2())  # duplicate split frame total_in (2nd item in [.., total_in, accum])
-            ._emit(push_u256(leg.fraction_bps))
-            ._emit(mul())
-            ._emit(push_u256(_BPS_DENOMINATOR))
-            ._emit(swap())
-            ._emit(div())
+            .dup_n(2)  # duplicate split frame total_in (2nd item in [.., total_in, accum])
+            .push_u256(leg.fraction_bps)
+            .mul()
+            .push_u256(_BPS_DENOMINATOR)
+            .swap()
+            .div()
         )
         segments.extend(
             _build_dag_actions(
@@ -183,7 +182,7 @@ def _build_route_split_segment(
                 terminal_recipient=terminal_recipient,
             )
         )
-        segments.append(Program()._emit(add()))
+        segments.append(Program().add())
 
-    segments.append(Program()._emit(swap())._emit(pop()))
+    segments.append(Program().swap().pop())
     return segments

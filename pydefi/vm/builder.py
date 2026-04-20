@@ -197,6 +197,7 @@ from pydefi.vm.program import (
     call,
     div,
     dup,
+    dup2,
     dup_n,
     eq,
     gas_opcode,
@@ -222,6 +223,7 @@ from pydefi.vm.program import (
     store_reg,
     sub,
     swap,
+    swap_n,
 )
 
 # ---------------------------------------------------------------------------
@@ -384,9 +386,25 @@ class Program:
         """
         return self._emit(dup_n(n))
 
+    def dup2(self) -> "Program":
+        """Emit DUP2 — duplicate the second stack item."""
+        return self._emit(dup2())
+
     def swap(self) -> "Program":
-        """Emit SWAP."""
+        """Emit SWAP1 — exchange the top two stack items."""
         return self._emit(swap())
+
+    def swap_n(self, n: int) -> "Program":
+        """Emit SWAPn — exchange the top stack item with the item *n* positions from the top.
+
+        Args:
+            n: Swap depth (1 = SWAP1 / exchange top two, …, 16 = SWAP16).
+        """
+        return self._emit(swap_n(n))
+
+    def gas_opcode(self) -> "Program":
+        """Emit GAS — push the remaining gas onto the stack."""
+        return self._emit(gas_opcode())
 
     def pop(self) -> "Program":
         """Emit POP."""
@@ -930,6 +948,88 @@ class Program:
         self._emit(gas_opcode() if gas == 0 else push_u256(gas))
         self._emit(call(require_success))
         return self
+
+    # ------------------------------------------------------------------
+    # Common DeFi token snippets
+    # ------------------------------------------------------------------
+
+    def erc20_approve(self, token: Address, spender: Address, amount: object) -> "Program":
+        """Emit an ERC-20 ``approve(spender, amount)`` call and pop the result.
+
+        Equivalent to::
+
+            .call_contract_abi(token, "function approve(address,uint256)", spender, amount)
+            .pop()
+
+        Args:
+            token:   ERC-20 token contract address.
+            spender: Address to approve for spending.
+            amount:  Allowance amount (``int`` or :class:`Patch` for runtime value).
+
+        Returns:
+            ``self`` for chaining.
+        """
+        return self.call_contract_abi(
+            token,
+            "function approve(address,uint256)",
+            spender,
+            amount,
+        ).pop()
+
+    def erc20_transfer(self, token: Address, to: Address, amount: object) -> "Program":
+        """Emit an ERC-20 ``transfer(to, amount)`` call and pop the result.
+
+        Equivalent to::
+
+            .call_contract_abi(token, "function transfer(address,uint256)", to, amount)
+            .pop()
+
+        Args:
+            token:  ERC-20 token contract address.
+            to:     Recipient address.
+            amount: Transfer amount (``int`` or :class:`Patch` for runtime value).
+
+        Returns:
+            ``self`` for chaining.
+        """
+        return self.call_contract_abi(
+            token,
+            "function transfer(address,uint256)",
+            to,
+            amount,
+        ).pop()
+
+    def erc20_transfer_from(
+        self,
+        token: Address,
+        from_: Address,
+        to: Address,
+        amount: object,
+    ) -> "Program":
+        """Emit an ERC-20 ``transferFrom(from, to, amount)`` call and pop the result.
+
+        Equivalent to::
+
+            .call_contract_abi(token, "function transferFrom(address,address,uint256)",
+                               from_, to, amount)
+            .pop()
+
+        Args:
+            token:   ERC-20 token contract address.
+            from_:   Address to transfer tokens from (must have approved the caller).
+            to:      Recipient address.
+            amount:  Transfer amount (``int`` or :class:`Patch` for runtime value).
+
+        Returns:
+            ``self`` for chaining.
+        """
+        return self.call_contract_abi(
+            token,
+            "function transferFrom(address,address,uint256)",
+            from_,
+            to,
+            amount,
+        ).pop()
 
     # ------------------------------------------------------------------
     # Composition

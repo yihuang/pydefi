@@ -229,6 +229,20 @@ def swap() -> bytes:
     return bytes([OP_SWAP])
 
 
+def swap_n(n: int) -> bytes:
+    """Emit SWAPn — exchange the top stack item with the item *n* positions from the top.
+
+    Args:
+        n: Swap depth (1 = SWAP1 / exchange top two, …, 16 = SWAP16).
+
+    Raises:
+        ValueError: If *n* is not in the range 1..16.
+    """
+    if not 1 <= n <= 16:
+        raise ValueError(f"swap_n: depth must be 1..16, got {n}")
+    return bytes([0x8F + n])
+
+
 def pop() -> bytes:
     """Emit POP — discard the top stack item."""
     return bytes([OP_POP])

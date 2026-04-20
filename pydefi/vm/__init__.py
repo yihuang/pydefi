@@ -84,6 +84,7 @@ from pydefi.vm.program import (
     call,
     div,
     dup,
+    dup2,
     dup_n,
     eq,
     gas_opcode,
@@ -108,6 +109,7 @@ from pydefi.vm.program import (
     store_reg,
     sub,
     swap,
+    swap_n,
 )
 from pydefi.vm.swap import (
     V2_AMOUNT_OUT_OFFSET,
@@ -167,8 +169,10 @@ __all__ = [
     "push_addr",
     "push_bytes",
     "dup",
+    "dup2",
     "dup_n",
     "swap",
+    "swap_n",
     "pop",
     "load_reg",
     "store_reg",

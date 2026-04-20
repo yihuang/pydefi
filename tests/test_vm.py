@@ -61,6 +61,7 @@ from pydefi.vm.program import (
     call,
     div,
     dup,
+    dup2,
     dup_n,
     eq,
     gas_opcode,
@@ -86,6 +87,7 @@ from pydefi.vm.program import (
     store_reg,
     sub,
     swap,
+    swap_n,
 )
 from tests.conftest import (
     MINI_EVM_RECEIVER,
@@ -126,8 +128,19 @@ class TestProgramInstructionEmission:
     def test_dup(self):
         assert Program().dup().build() == dup()
 
+    def test_dup2(self):
+        assert Program().dup2().build() == dup2()
+
     def test_swap(self):
         assert Program().swap().build() == swap()
+
+    def test_swap_n(self):
+        assert Program().swap_n(1).build() == swap_n(1)
+        assert Program().swap_n(2).build() == swap_n(2)
+        assert Program().swap_n(3).build() == swap_n(3)
+
+    def test_gas_opcode(self):
+        assert Program().gas_opcode().build() == gas_opcode()
 
     def test_pop(self):
         assert Program().pop().build() == pop()
@@ -792,7 +805,180 @@ class TestPatchBytesFromStack:
             Program().push_bytes(self._template()).patch_bytes_from_stack([(4, 0)]).build()
 
 
-class TestArithmeticOpcodes:
+# ---------------------------------------------------------------------------
+# swap_n and dup2 low-level helpers
+# ---------------------------------------------------------------------------
+
+
+class TestSwapNDup2Helpers:
+    """Verify swap_n() and dup2() emitters and the Program builder wrappers."""
+
+    # -- swap_n emitter --------------------------------------------------------
+
+    def test_swap_n_swap1(self):
+        """swap_n(1) emits SWAP1 (0x90) — same as swap()."""
+        assert swap_n(1) == bytes([0x90])
+        assert swap_n(1) == swap()
+
+    def test_swap_n_swap2(self):
+        """swap_n(2) emits SWAP2 (0x91)."""
+        assert swap_n(2) == bytes([0x91])
+
+    def test_swap_n_swap3(self):
+        """swap_n(3) emits SWAP3 (0x92)."""
+        assert swap_n(3) == bytes([0x92])
+
+    def test_swap_n_swap16(self):
+        """swap_n(16) emits SWAP16 (0x9F)."""
+        assert swap_n(16) == bytes([0x9F])
+
+    def test_swap_n_out_of_range_raises(self):
+        """swap_n raises ValueError for depths outside 1..16."""
+        with pytest.raises(ValueError, match="depth must be 1..16"):
+            swap_n(0)
+        with pytest.raises(ValueError, match="depth must be 1..16"):
+            swap_n(17)
+
+    # -- dup2 emitter ----------------------------------------------------------
+
+    def test_dup2_emitter(self):
+        """dup2() emits DUP2 (0x81) — same as dup_n(2)."""
+        assert dup2() == bytes([0x81])
+        assert dup2() == dup_n(2)
+
+    # -- Program builder methods -----------------------------------------------
+
+    def test_builder_swap_n(self):
+        """Program.swap_n(n) emits the same bytes as swap_n(n)."""
+        assert Program().swap_n(1).build() == swap_n(1)
+        assert Program().swap_n(2).build() == swap_n(2)
+        assert Program().swap_n(3).build() == swap_n(3)
+
+    def test_builder_dup2(self):
+        """Program.dup2() emits the same bytes as dup2()."""
+        assert Program().dup2().build() == dup2()
+
+    def test_swap_n_chained(self):
+        """swap_n can be chained with other Program operations."""
+        expected = push_u256(1) + push_u256(2) + swap_n(1)
+        actual = Program().push_u256(1).push_u256(2).swap_n(1).build()
+        assert actual == expected
+
+    def test_dup2_chained(self):
+        """dup2 can be chained with other Program operations."""
+        expected = push_u256(10) + push_u256(20) + dup2()
+        actual = Program().push_u256(10).push_u256(20).dup2().build()
+        assert actual == expected
+
+
+# ---------------------------------------------------------------------------
+# ERC-20 high-level helpers
+# ---------------------------------------------------------------------------
+
+
+class TestERC20Helpers:
+    """Verify the ERC-20 helper methods on Program.
+
+    All helpers are thin wrappers over call_contract_abi(...).pop(), so
+    these tests verify the bytecode produced equals the equivalent manual
+    chain.
+    """
+
+    def test_erc20_approve_matches_manual(self):
+        """erc20_approve produces identical bytes to call_contract_abi + pop."""
+        expected = (
+            Program()
+            .call_contract_abi(
+                ADDR_A,
+                "function approve(address,uint256)",
+                ADDR_B,
+                10**18,
+            )
+            .pop()
+            .build()
+        )
+        actual = Program().erc20_approve(ADDR_A, ADDR_B, 10**18).build()
+        assert actual == expected
+
+    def test_erc20_transfer_matches_manual(self):
+        """erc20_transfer produces identical bytes to call_contract_abi + pop."""
+        expected = (
+            Program()
+            .call_contract_abi(
+                ADDR_A,
+                "function transfer(address,uint256)",
+                ADDR_B,
+                500,
+            )
+            .pop()
+            .build()
+        )
+        actual = Program().erc20_transfer(ADDR_A, ADDR_B, 500).build()
+        assert actual == expected
+
+    def test_erc20_transfer_from_matches_manual(self):
+        """erc20_transfer_from produces identical bytes to call_contract_abi + pop."""
+        expected = (
+            Program()
+            .call_contract_abi(
+                ADDR_A,
+                "function transferFrom(address,address,uint256)",
+                ADDR_B,
+                ADDR_ZERO,
+                999,
+            )
+            .pop()
+            .build()
+        )
+        actual = Program().erc20_transfer_from(ADDR_A, ADDR_B, ADDR_ZERO, 999).build()
+        assert actual == expected
+
+    def test_erc20_approve_selector_embedded(self):
+        """Approve calldata contains the ERC-20 approve selector (0x095ea7b3)."""
+        bc = Program().erc20_approve(ADDR_A, ADDR_B, 10**18).build()
+        assert bytes.fromhex("095ea7b3") in bc
+
+    def test_erc20_transfer_selector_embedded(self):
+        """Transfer calldata contains the ERC-20 transfer selector (0xa9059cbb)."""
+        bc = Program().erc20_transfer(ADDR_A, ADDR_B, 1).build()
+        assert bytes.fromhex("a9059cbb") in bc
+
+    def test_erc20_transfer_from_selector_embedded(self):
+        """TransferFrom calldata contains the selector (0x23b872dd)."""
+        bc = Program().erc20_transfer_from(ADDR_A, ADDR_B, ADDR_ZERO, 1).build()
+        assert bytes.fromhex("23b872dd") in bc
+
+    def test_erc20_helpers_chainable(self):
+        """ERC-20 helpers can be chained with other Program methods."""
+        bc = (
+            Program()
+            .erc20_approve(ADDR_A, ADDR_B, 2**256 - 1)
+            .erc20_transfer(ADDR_A, ADDR_B, 100)
+            .build()
+        )
+        assert len(bc) > 0
+
+    def test_erc20_approve_with_patch(self):
+        """erc20_approve accepts a Patch for the amount to support runtime patching."""
+        bc = (
+            Program()
+            .push_u256(10**18)  # patch value for amount
+            .erc20_approve(ADDR_A, ADDR_B, Patch())
+            .build()
+        )
+        assert len(bc) > 0
+        assert bytes.fromhex("095ea7b3") in bc
+
+    def test_erc20_transfer_with_patch(self):
+        """erc20_transfer accepts a Patch for the amount."""
+        bc = (
+            Program()
+            .push_u256(500)
+            .erc20_transfer(ADDR_A, ADDR_B, Patch())
+            .build()
+        )
+        assert len(bc) > 0
+        assert bytes.fromhex("a9059cbb") in bc
     """Verify bytecode emitted by arithmetic helpers and the Program builder."""
 
     def test_add_emitter(self):

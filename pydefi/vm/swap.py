@@ -41,18 +41,6 @@ from eth_contract.contract import ContractFunction
 
 from pydefi.types import Address, RouteSwap, SwapProtocol
 from pydefi.vm.builder import Patch, Program
-from pydefi.vm.program import (
-    _SWAP2,
-    add,
-    bitwise_not,
-    div,
-    dup,
-    dup_n,
-    mul,
-    push_u256,
-    ret_u256,
-    swap,
-)
 
 # ---------------------------------------------------------------------------
 # Pool function ABI signatures — selectors and argument encoding are computed
@@ -238,26 +226,26 @@ def _build_v3_pool_swap_segment(hop: SwapHop) -> Program:
         sqrt_price_limit_x96 = _SQRT_PRICE_MIN if hop.zero_for_one else _SQRT_PRICE_MAX
     callback_data = encode_v3_callback_data(hop.token_in)
 
-    prog = Program()
-    prog.call_contract_abi(
-        hop.pool,
-        "function swap(address recipient, bool zeroForOne,"
-        " int256 amountSpecified, uint160 sqrtPriceLimitX96, bytes data)",
-        hop.recipient,
-        hop.zero_for_one,
-        Patch(),
-        sqrt_price_limit_x96,
-        callback_data,
-    ).pop()
+    prog = (
+        Program()
+        .call_contract_abi(
+            hop.pool,
+            "function swap(address recipient, bool zeroForOne,"
+            " int256 amountSpecified, uint160 sqrtPriceLimitX96, bytes data)",
+            hop.recipient,
+            hop.zero_for_one,
+            Patch(),
+            sqrt_price_limit_x96,
+            callback_data,
+        )
+        .pop()
+    )
 
     if hop.zero_for_one:
-        prog._emit(ret_u256(32))
+        prog.ret_u256(32)
     else:
-        prog._emit(ret_u256(0))
-    prog._emit(bitwise_not())
-    prog._emit(push_u256(1))
-    prog._emit(add())
-    return prog
+        prog.ret_u256(0)
+    return prog.bitwise_not().push_u256(1).add()
 
 
 def _build_v2_direct_swap_segment(hop: SwapHop) -> Program:
@@ -271,29 +259,29 @@ def _build_v2_direct_swap_segment(hop: SwapHop) -> Program:
         raise ValueError(f"hop.fee must be in basis points within [0, 10000), got {hop.fee_bps}")
     fee_num = 10000 - hop.fee_bps
 
-    prog = Program()
-    prog.call_contract_abi(hop.pool, "getReserves()").pop()
+    prog = Program().call_contract_abi(hop.pool, "getReserves()").pop()
     if hop.zero_for_one:
-        prog._emit(ret_u256(0))
-        prog._emit(ret_u256(32))
+        prog.ret_u256(0).ret_u256(32)
     else:
-        prog._emit(ret_u256(32))
-        prog._emit(ret_u256(0))
+        prog.ret_u256(32).ret_u256(0)
 
     # [amount_in, rIn, rOut] -> compute amount_out while keeping amount_in.
-    prog._emit(dup_n(3))  # DUP3: amount_in
-    prog._emit(push_u256(fee_num))
-    prog._emit(mul())
-    prog._emit(dup())
-    prog._emit(bytes([_SWAP2]))
-    prog._emit(mul())
-    prog._emit(bytes([_SWAP2]))
-    prog._emit(push_u256(10000))
-    prog._emit(mul())
-    prog._emit(add())
-    prog._emit(swap())
-    prog._emit(div())  # [amount_in, amount_out]
-    prog._emit(swap())  # [amount_out, amount_in]
+    (
+        prog
+        .dup_n(3)           # DUP3: amount_in
+        .push_u256(fee_num)
+        .mul()
+        .dup()
+        .swap_n(2)
+        .mul()
+        .swap_n(2)
+        .push_u256(10000)
+        .mul()
+        .add()
+        .swap()
+        .div()              # [amount_in, amount_out]
+        .swap()             # [amount_out, amount_in]
+    )
 
     prog.call_contract_abi(
         hop.token_in,
@@ -302,7 +290,7 @@ def _build_v2_direct_swap_segment(hop: SwapHop) -> Program:
         Patch(),
     ).pop()
 
-    prog._emit(dup())  # [amount_out, amount_out]
+    prog.dup()  # [amount_out, amount_out]
     if hop.zero_for_one:
         prog.call_contract_abi(
             hop.pool,
