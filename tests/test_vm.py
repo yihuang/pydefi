@@ -979,6 +979,14 @@ class TestERC20Helpers:
         )
         assert len(bc) > 0
         assert bytes.fromhex("a9059cbb") in bc
+
+
+# ---------------------------------------------------------------------------
+# Arithmetic opcodes
+# ---------------------------------------------------------------------------
+
+
+class TestArithmeticOpcodes:
     """Verify bytecode emitted by arithmetic helpers and the Program builder."""
 
     def test_add_emitter(self):
