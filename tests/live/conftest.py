@@ -96,7 +96,14 @@ async def interpreter_addr(fork_w3_module) -> Address:
 @pytest.fixture
 async def eth_w3() -> AsyncWeb3:
     """Return an :class:`~web3.AsyncWeb3` instance backed by public RPC endpoints
-    auto-discovered via chainlist.org, with automatic failover."""
+    auto-discovered via chainlist.org, with automatic failover.
+
+    Set the ``ETH_RPC_URL`` environment variable to use a specific endpoint
+    instead of the auto-discovered ones (useful for authenticated providers
+    such as Infura or Alchemy).
+    """
+    if "ETH_RPC_URL" in os.environ:
+        return AsyncWeb3(AsyncWeb3.AsyncHTTPProvider(ETH_RPC_URL))
     return await get_w3(ChainId.ETHEREUM)
 
 
