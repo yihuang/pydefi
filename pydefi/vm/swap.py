@@ -86,7 +86,6 @@ from pydefi.vm.program import (
     dup,
     load_reg,
     mul,
-    pop,
     push_addr,
     push_u256,
     ret_u256,
@@ -317,14 +316,13 @@ def _build_v3_pool_swap_segment_on_stack(hop: SwapHop) -> Program:
     callback_data = encode_v3_callback_data(hop.token_in)
 
     prog = Program()
-    prog._emit(dup())  # pre-push amount_in copy for Patch to consume
     prog.call_contract_abi(
         hop.pool,
         "function swap(address recipient, bool zeroForOne,"
         " int256 amountSpecified, uint160 sqrtPriceLimitX96, bytes data)",
         hop.recipient,
         hop.zero_for_one,
-        Patch(),  # amountSpecified: consumes pre-pushed amount_in copy from stack
+        Patch(),
         sqrt_price_limit_x96,
         callback_data,
     ).pop()
@@ -336,11 +334,6 @@ def _build_v3_pool_swap_segment_on_stack(hop: SwapHop) -> Program:
     prog._emit(bitwise_not())
     prog._emit(push_u256(1))
     prog._emit(add())
-    # Stack is now [amount_out, amount_in, ...].  Drop the stale amount_in that
-    # survived call_with_patches (dup() created a copy for Patch to consume, but
-    # the original was never popped by the CALL machinery).
-    prog._emit(swap())
-    prog._emit(pop())
     return prog
 
 
@@ -877,12 +870,3 @@ def build_swap_transaction(
     )
     calldata = _EXECUTE_SELECTOR + encode(["bytes"], [bytes(program)])
     return SwapTransaction(to=vm_address, data=calldata)
-
-
-def _pool_to_swap_protocol(protocol_name: str) -> SwapProtocol:
-    name = protocol_name.lower()
-    if "v3" in name:
-        return SwapProtocol.UNISWAP_V3
-    if "v2" in name:
-        return SwapProtocol.UNISWAP_V2
-    raise ValueError(f"unsupported pool protocol {protocol_name!r}")

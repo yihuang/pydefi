@@ -177,6 +177,7 @@ class Router:
             amount_in=amount_in,
             amount_out=TokenAmount(token=token_out, amount=final_amount),
             price_impact=self._estimate_price_impact(final_path, amount_in.amount),
+            dag=self._edges_to_dag(src, final_path),
         )
 
     def _find_best_route_gas_aware(
@@ -226,6 +227,7 @@ class Router:
             amount_in=amount_in,
             amount_out=TokenAmount(token=token_out, amount=final_amount),
             price_impact=self._estimate_price_impact(path, amount_in.amount),
+            dag=self._edges_to_dag(amount_in.token, path),
         )
 
     def find_all_routes(
@@ -307,6 +309,7 @@ class Router:
                         amount_in=amount_in,
                         amount_out=TokenAmount(token=token_out, amount=current_amount),
                         price_impact=self._estimate_price_impact(path, amount_in.amount),
+                        dag=self._edges_to_dag(src, path),
                     )
                 )
                 return
@@ -355,8 +358,9 @@ class Router:
             token_out_price_usd=token_out_price_usd,
             max_hops=max_hops,
         )
-        edges = [self.graph.get_edge(step.pool_address, step.token_in, step.token_out) for step in route.steps]
-        return self._edges_to_dag(route.token_in, edges)
+        if route.dag is None:
+            raise ValueError("internal Router error: missing DAG representation")
+        return route.dag
 
     def find_all_routes_dag(
         self,
@@ -366,13 +370,9 @@ class Router:
     ) -> list[RouteDAG]:
         """Find top-*k* routes and return them as :class:`~pydefi.types.RouteDAG` objects."""
         routes = self.find_all_routes(amount_in, token_out, top_k=top_k)
-        return [
-            self._edges_to_dag(
-                route.token_in,
-                [self.graph.get_edge(step.pool_address, step.token_in, step.token_out) for step in route.steps],
-            )
-            for route in routes
-        ]
+        if any(route.dag is None for route in routes):
+            raise ValueError("internal Router error: missing DAG representation")
+        return [route.dag for route in routes if route.dag is not None]
 
     def find_best_split(
         self,

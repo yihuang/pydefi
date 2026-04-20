@@ -38,7 +38,6 @@ from pydefi.vm.swap import (
     SwapProtocol,
     _build_v2_direct_swap_segment,
     _build_v3_pool_swap_segment_on_stack,
-    _pool_to_swap_protocol,
 )
 
 _BPS_DENOMINATOR = 10_000
@@ -235,3 +234,12 @@ def _swap_hop_from_route_swap(swap_action: RouteSwap, *, recipient: str) -> Swap
         recipient=Address(recipient),
         zero_for_one=zero_for_one,
     )
+
+
+def _pool_to_swap_protocol(protocol_name: str) -> SwapProtocol:
+    name = protocol_name.lower()
+    if "v3" in name:
+        return SwapProtocol.UNISWAP_V3
+    if "v2" in name:
+        return SwapProtocol.UNISWAP_V2
+    raise ValueError(f"build_program_for_dag: unsupported pool protocol {protocol_name!r}")
