@@ -25,7 +25,7 @@ another:
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 from pydefi.types import ZERO_ADDRESS, Address, RouteAction, RouteDAG, RouteSplit, RouteSwap, SwapProtocol
 from pydefi.vm.builder import Program
@@ -156,10 +156,11 @@ def _build_dag_actions(
 
         if isinstance(action, RouteSplit):
             segments.extend(
-                _build_route_split_segment(
+                _build_split_frame(
                     action,
-                    vm_address=vm_address,
-                    terminal_recipient=action_recipient,
+                    lambda acts, r=action_recipient: _build_dag_actions(
+                        acts, vm_address=vm_address, terminal_recipient=r
+                    ),
                 )
             )
             continue
@@ -169,20 +170,20 @@ def _build_dag_actions(
     return segments
 
 
-def _build_route_split_segment(
+def _build_split_frame(
     split: RouteSplit,
-    *,
-    vm_address: str,
-    terminal_recipient: str,
+    build_leg_actions: Callable[[Sequence[RouteAction]], list[Program]],
 ) -> list[Program]:
+    """Emit split-frame bytecode, delegating leg action building to a callback.
+
+    Stack convention on entry/exit:
+    - entry: ``[... , total_in]``
+    - exit:  ``[... , total_out]``
+    """
     if len(split.legs) == 1:
         # Fast path: full-allocation single leg does not need split-frame
         # bookkeeping; emit leg actions directly.
-        return _build_dag_actions(
-            split.legs[0].actions,
-            vm_address=vm_address,
-            terminal_recipient=terminal_recipient,
-        )
+        return build_leg_actions(split.legs[0].actions)
 
     # Runtime guard: for each leg we compute total_in * fraction_bps / 10_000.
     # Enforce `total_in <= floor((2**256-1)/10_000)` before any multiplication.
@@ -204,13 +205,7 @@ def _build_route_split_segment(
             ._emit(swap())
             ._emit(div())
         )
-        segments.extend(
-            _build_dag_actions(
-                leg.actions,
-                vm_address=vm_address,
-                terminal_recipient=terminal_recipient,
-            )
-        )
+        segments.extend(build_leg_actions(leg.actions))
         segments.append(Program()._emit(add()))
 
     segments.append(Program()._emit(swap())._emit(pop()))
@@ -235,40 +230,13 @@ def _build_dag_quote_actions(
             continue
 
         if isinstance(action, RouteSplit):
-            segments.extend(_build_route_quote_split_segment(action, quoter_address=quoter_address))
+            segments.extend(
+                _build_split_frame(
+                    action,
+                    lambda acts, q=quoter_address: _build_dag_quote_actions(acts, quoter_address=q),
+                )
+            )
             continue
 
         raise ValueError(f"build_quote_program_for_dag: unsupported route action {type(action)!r}")
-    return segments
-
-
-def _build_route_quote_split_segment(
-    split: RouteSplit,
-    *,
-    quoter_address: str | None,
-) -> list[Program]:
-    if len(split.legs) == 1:
-        return _build_dag_quote_actions(split.legs[0].actions, quoter_address=quoter_address)
-
-    segments: list[Program] = [
-        Program()
-        ._emit(dup())
-        ._emit(push_u256(_MAX_TOTAL_IN_FOR_SPLIT))
-        ._emit(swap())
-        ._emit(assert_le("split: total_in overflow guard"))
-        ._emit(push_u256(0))
-    ]
-    for leg in split.legs:
-        segments.append(
-            Program()
-            ._emit(dup2())
-            ._emit(push_u256(leg.fraction_bps))
-            ._emit(mul())
-            ._emit(push_u256(_BPS_DENOMINATOR))
-            ._emit(swap())
-            ._emit(div())
-        )
-        segments.extend(_build_dag_quote_actions(leg.actions, quoter_address=quoter_address))
-        segments.append(Program()._emit(add()))
-    segments.append(Program()._emit(swap())._emit(pop()))
     return segments
