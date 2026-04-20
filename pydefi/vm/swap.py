@@ -39,11 +39,7 @@ from dataclasses import dataclass, field
 from eth_abi import encode
 from eth_contract.contract import ContractFunction
 
-<<<<<<< HEAD
-from pydefi.types import Address, RouteDAG, SwapProtocol
-=======
 from pydefi.types import Address, RouteSwap, SwapProtocol
->>>>>>> 93d2c72 (cleanup)
 from pydefi.vm.builder import Patch, Program
 from pydefi.vm.program import (
     _SWAP2,
