@@ -183,8 +183,6 @@ def encode_v3_path(tokens: list[Address], fees: list[int]) -> bytes:
 # ---------------------------------------------------------------------------
 
 
-
-
 @dataclass
 class SwapHop:
     """Descriptor for one swap hop in a multi-hop DeFiVM program.
