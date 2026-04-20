@@ -715,7 +715,7 @@ wheels = [
 [[package]]
 name = "eth-contract"
 version = "0.4.0"
-source = { git = "https://github.com/mmsqe/eth-contract.git?rev=encode_abi#08ac3a3e65d10e109c819cc37cb4b329650056ef" }
+source = { git = "https://github.com/yihuang/eth-contract.git?rev=main#56db52d29e75af6aa0f97f4113ef20171826eff4" }
 dependencies = [
     { name = "eth-abi" },
     { name = "web3" },
@@ -1556,7 +1556,7 @@ requires-dist = [
     { name = "aiohttp", specifier = ">=3.9.0" },
     { name = "base58", specifier = ">=2.1.0" },
     { name = "eth-abi", git = "https://github.com/yihuang/eth-abi.git?rev=copilot%2Fsupport-hooks-for-offset-detection" },
-    { name = "eth-contract", git = "https://github.com/mmsqe/eth-contract.git?rev=encode_abi" },
+    { name = "eth-contract", git = "https://github.com/yihuang/eth-contract.git?rev=main" },
     { name = "ethereum-execution", marker = "extra == 'dev'", specifier = ">=2.19.0" },
     { name = "msgpack", specifier = ">=1.0.0" },
     { name = "py-solc-x", marker = "extra == 'dev'", specifier = ">=2.0.0" },
