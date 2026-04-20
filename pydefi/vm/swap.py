@@ -267,8 +267,7 @@ def _build_v2_direct_swap_segment(hop: SwapHop) -> Program:
 
     # [amount_in, rIn, rOut] -> compute amount_out while keeping amount_in.
     (
-        prog
-        .dup_n(3)           # DUP3: amount_in
+        prog.dup_n(3)  # DUP3: amount_in
         .push_u256(fee_num)
         .mul()
         .dup()
@@ -279,8 +278,8 @@ def _build_v2_direct_swap_segment(hop: SwapHop) -> Program:
         .mul()
         .add()
         .swap()
-        .div()              # [amount_in, amount_out]
-        .swap()             # [amount_out, amount_in]
+        .div()  # [amount_in, amount_out]
+        .swap()  # [amount_out, amount_in]
     )
 
     prog.call_contract_abi(

@@ -950,12 +950,7 @@ class TestERC20Helpers:
 
     def test_erc20_helpers_chainable(self):
         """ERC-20 helpers can be chained with other Program methods."""
-        bc = (
-            Program()
-            .erc20_approve(ADDR_A, ADDR_B, 2**256 - 1)
-            .erc20_transfer(ADDR_A, ADDR_B, 100)
-            .build()
-        )
+        bc = Program().erc20_approve(ADDR_A, ADDR_B, 2**256 - 1).erc20_transfer(ADDR_A, ADDR_B, 100).build()
         assert len(bc) > 0
 
     def test_erc20_approve_with_patch(self):
@@ -971,14 +966,10 @@ class TestERC20Helpers:
 
     def test_erc20_transfer_with_patch(self):
         """erc20_transfer accepts a Patch for the amount."""
-        bc = (
-            Program()
-            .push_u256(500)
-            .erc20_transfer(ADDR_A, ADDR_B, Patch())
-            .build()
-        )
+        bc = Program().push_u256(500).erc20_transfer(ADDR_A, ADDR_B, Patch()).build()
         assert len(bc) > 0
         assert bytes.fromhex("a9059cbb") in bc
+
     """Verify bytecode emitted by arithmetic helpers and the Program builder."""
 
     def test_add_emitter(self):
