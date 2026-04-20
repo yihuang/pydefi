@@ -864,6 +864,15 @@ wheels = [
 ]
 
 [[package]]
+name = "evmdasm"
+version = "0.1.10"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/00/c4/2c782594450eac176ca0785904245979a7c0ecd3a96e65781a192f6b5765/evmdasm-0.1.10.tar.gz", hash = "sha256:b7a699740ab56bee605e0ffff51c72d49033755f41d40d001a4769567e906d78", size = 12878, upload-time = "2022-03-11T10:21:02.356Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8a/46/b2cae45334f4e1e658aacb0f44feb175c1354f297e969203fa49423b0aff/evmdasm-0.1.10-py3-none-any.whl", hash = "sha256:30b7ef0c7b13edcaed7ee04a31fac7e24735610fa24b6803cd81706d93db1c61", size = 14341, upload-time = "2022-03-11T10:20:59.046Z" },
+]
+
+[[package]]
 name = "frozenlist"
 version = "1.8.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1682,6 +1691,7 @@ dependencies = [
     { name = "base58" },
     { name = "eth-abi" },
     { name = "eth-contract" },
+    { name = "evmdasm" },
     { name = "msgpack" },
     { name = "pydantic" },
     { name = "requests" },
@@ -1710,6 +1720,7 @@ requires-dist = [
     { name = "eth-abi", git = "https://github.com/yihuang/eth-abi.git?rev=copilot%2Fsupport-hooks-for-offset-detection" },
     { name = "eth-contract", git = "https://github.com/yihuang/eth-contract.git?rev=main" },
     { name = "ethereum-execution", marker = "extra == 'dev'", specifier = ">=2.19.0" },
+    { name = "evmdasm", specifier = ">=0.1.10" },
     { name = "msgpack", specifier = ">=1.0.0" },
     { name = "py-solc-x", marker = "extra == 'dev'", specifier = ">=2.0.0" },
     { name = "pydantic", specifier = ">=2.0.0" },
