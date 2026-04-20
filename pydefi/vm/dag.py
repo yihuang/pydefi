@@ -96,13 +96,7 @@ def _build_program_for_dag(
     )
 
     if min_final_out > 0:
-        segments.append(
-            Program()
-            .dup()
-            .push_u256(min_final_out)
-            .swap()
-            .assert_ge("slippage: out too low")
-        )
+        segments.append(Program().dup().push_u256(min_final_out).swap().assert_ge("slippage: out too low"))
 
     return Program.compose(segments)
 
