@@ -794,3 +794,29 @@ class TestFindBestSplit:
         router = Router(g)
         with pytest.raises(NoRouteFoundError):
             router.find_best_split(TokenAmount(WETH, 10**18), DAI)
+
+    def test_find_top_routes_multi_state_same_destination(self):
+        """Two intermediate states at hop-1 both expand to WBTC at hop-2.
+
+        Exercises the path where multiple ``current_states`` entries contribute
+        to the same ``next_key`` in ``_find_top_routes``.  Both routes must be
+        returned with correct output amounts sorted descending.
+        """
+        g = PoolGraph()
+        # hop-1: WETH → USDC and WETH → DAI (two independent intermediate states)
+        g.add_pool(PoolEdge(WETH, USDC, POOL_A, "UniswapV2", reserve_in=10**21, reserve_out=2 * 10**9, fee_bps=30))
+        g.add_pool(PoolEdge(WETH, DAI, POOL_B, "UniswapV2", reserve_in=10**21, reserve_out=2 * 10**21, fee_bps=30))
+        # hop-2: both intermediate tokens expand to WBTC (same next_key (WBTC, 2))
+        g.add_pool(PoolEdge(USDC, WBTC, POOL_C, "UniswapV2", reserve_in=2 * 10**9, reserve_out=5 * 10**7, fee_bps=30))
+        g.add_pool(PoolEdge(DAI, WBTC, POOL_D, "UniswapV2", reserve_in=2 * 10**21, reserve_out=5 * 10**7, fee_bps=30))
+
+        router = Router(g, max_hops=2)
+        routes = router._find_top_routes(TokenAmount(WETH, 10**18), WBTC, top_n=2)
+
+        assert len(routes) == 2
+        assert all(len(r.steps) == 2 for r in routes)
+        assert all(r.token_out == WBTC for r in routes)
+        # diverse: each route starts through a different first-hop pool
+        assert {r.steps[0].pool_address for r in routes} == {POOL_A, POOL_B}
+        # sorted descending by output
+        assert routes[0].amount_out.amount >= routes[1].amount_out.amount

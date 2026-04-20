@@ -483,9 +483,9 @@ class Router:
 
         for hop in range(effective_max_hops):
             current_states = [(k, v) for k, v in best.items() if k[1] == hop and v]
-            updated_keys: set[tuple[str, int]] = set()
             for (token_addr, _), candidates in current_states:
                 token: Token = candidates[0][1][-1].token_out if candidates[0][1] else src
+                updated_keys: set[tuple[str, int]] = set()
 
                 for current_amount, path in candidates:
                     visited = {e.token_in.address.lower() for e in path}
@@ -502,10 +502,10 @@ class Router:
                         best.setdefault(next_key, []).append((next_amount, path + [edge]))
                         updated_keys.add(next_key)
 
-            for key in updated_keys:
-                lst = best[key]
-                lst.sort(key=lambda x: x[0], reverse=True)
-                best[key] = lst[:top_n]
+                for key in updated_keys:
+                    lst = best[key]
+                    lst.sort(key=lambda x: x[0], reverse=True)
+                    best[key] = lst[:top_n]
 
         all_candidates: list[tuple[int, list[PoolEdge]]] = []
         for h in range(1, effective_max_hops + 1):
