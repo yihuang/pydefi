@@ -324,14 +324,22 @@ def _build_v2_direct_swap_segment(hop: SwapHop) -> Program:
     return prog
 
 
+_PROTOCOL_LOOKUP: dict[str, SwapProtocol] = {
+    "uniswapv2": SwapProtocol.UNISWAP_V2,
+    "uniswap_v2": SwapProtocol.UNISWAP_V2,
+    "uniswap v2": SwapProtocol.UNISWAP_V2,
+    "uniswapv3": SwapProtocol.UNISWAP_V3,
+    "uniswap_v3": SwapProtocol.UNISWAP_V3,
+    "uniswap v3": SwapProtocol.UNISWAP_V3,
+}
+
+
 def _pool_to_swap_protocol(protocol_name: str) -> SwapProtocol:
     """Convert a human-readable protocol name to a :class:`SwapProtocol` enum value."""
-    name = protocol_name.lower()
-    if "v3" in name:
-        return SwapProtocol.UNISWAP_V3
-    if "v2" in name:
-        return SwapProtocol.UNISWAP_V2
-    raise ValueError(f"unsupported pool protocol {protocol_name!r}")
+    result = _PROTOCOL_LOOKUP.get(protocol_name.lower())
+    if result is None:
+        raise ValueError(f"unsupported pool protocol {protocol_name!r}")
+    return result
 
 
 def _swap_hop_from_route_swap(swap_action: RouteSwap, *, recipient: Address) -> SwapHop:
