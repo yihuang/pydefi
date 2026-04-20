@@ -14,8 +14,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Callable, ClassVar, Iterator
 
-from pydefi.pools import BasePool
-from pydefi.types import Address, Token
+from pydefi.types import Address, BasePool, Token
 
 
 @dataclass

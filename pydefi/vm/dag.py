@@ -27,15 +27,11 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from pydefi.pathfinder.graph import V3PoolEdge
 from pydefi.types import RouteAction, RouteDAG, RouteSplit, RouteSwap
 from pydefi.vm.builder import Program
 from pydefi.vm.program import add, assert_ge, assert_le, div, dup, dup2, mul, pop, push_u256, swap
 from pydefi.vm.swap import (
-    SwapHop,
-    SwapProtocol,
-    _build_v2_direct_swap_segment,
-    _build_v3_pool_swap_segment,
+    _build_route_swap_segment,
 )
 
 _BPS_DENOMINATOR = 10_000
@@ -118,7 +114,7 @@ def _build_dag_actions(
         action_recipient = terminal_recipient if i == len(actions) - 1 else vm_address
         if isinstance(action, RouteSwap):
             segments.append(
-                _build_route_swap_segment_on_stack(
+                _build_route_swap_segment(
                     action,
                     recipient=action_recipient,
                 )
@@ -186,46 +182,3 @@ def _build_route_split_segment(
 
     segments.append(Program()._emit(swap())._emit(pop()))
     return segments
-
-
-def _build_route_swap_segment_on_stack(
-    swap_action: RouteSwap,
-    *,
-    recipient: str,
-) -> Program:
-    hop = _swap_hop_from_route_swap(swap_action, recipient=recipient)
-    if hop.protocol == SwapProtocol.UNISWAP_V3:
-        return _build_v3_pool_swap_segment(hop)
-    return _build_v2_direct_swap_segment(hop)
-
-
-def _swap_hop_from_route_swap(swap_action: RouteSwap, *, recipient: str) -> SwapHop:
-    pool = swap_action.pool
-    protocol = _pool_to_swap_protocol(pool.protocol)
-    if isinstance(pool, V3PoolEdge):
-        zero_for_one = pool.is_token0_in
-    else:
-        is_token0_in = getattr(pool, "extra", {}).get("is_token0_in")
-        if is_token0_in is None:
-            raise ValueError("build_program_for_dag: non-V3 pool is missing extra['is_token0_in'] metadata")
-        zero_for_one = bool(is_token0_in)
-    return SwapHop(
-        protocol=protocol,
-        pool=pool.pool_address,
-        token_in=pool.token_in.address,
-        token_out=pool.token_out.address,
-        fee=pool.fee_bps,
-        amount_in=0,
-        amount_out_min=0,
-        recipient=recipient,
-        zero_for_one=zero_for_one,
-    )
-
-
-def _pool_to_swap_protocol(protocol_name: str) -> SwapProtocol:
-    name = protocol_name.lower()
-    if "v3" in name:
-        return SwapProtocol.UNISWAP_V3
-    if "v2" in name:
-        return SwapProtocol.UNISWAP_V2
-    raise ValueError(f"build_program_for_dag: unsupported pool protocol {protocol_name!r}")

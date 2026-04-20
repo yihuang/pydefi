@@ -68,12 +68,11 @@ Quick-start — two-hop swap (WETH → USDC → DAI) via pool contracts
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
 
 from eth_abi import encode
 from eth_contract.contract import ContractFunction
 
-from pydefi.types import Address, RouteDAG
+from pydefi.types import Address, RouteDAG, SwapProtocol
 from pydefi.vm.builder import Patch, Program
 from pydefi.vm.program import (
     _SWAP2,
@@ -217,25 +216,6 @@ def encode_v3_path(tokens: list[Address], fees: list[int]) -> bytes:
 # ---------------------------------------------------------------------------
 
 
-class SwapProtocol(str, Enum):
-    """Supported DEX protocols for :class:`SwapHop`.
-
-    Both values use **direct pool/pair calls** — no router contract is involved.
-    """
-
-    UNISWAP_V2 = "uniswap_v2"
-    """Uniswap V2-compatible pair: pre-transfer tokenIn, then call ``pair.swap()``.
-
-    On-chain amountOut is computed from ``pair.getReserves()`` using the
-    constant-product formula, so no off-chain quote is required.
-    """
-
-    UNISWAP_V3 = "uniswap_v3"
-    """Uniswap V3-compatible pool: call ``pool.swap()`` directly.
-
-    The pool fires a flash-swap callback (``uniswapV3SwapCallback`` or a
-    compatible variant) which ``DeFiVM.fallback()`` handles automatically.
-    """
 
 
 @dataclass
@@ -254,13 +234,6 @@ class SwapHop:
             pools the fee is encoded in the pool itself and is not passed to
             ``pool.swap()``; it is kept here for documentation only.  For V2
             pairs it is used to compute ``amountOut`` from reserves on-chain.
-        amount_in: Static input amount for the **first** hop.  Set to ``0``
-            for subsequent hops — the amount is read at runtime from the
-            register that holds the previous hop's output.
-        amount_out_min: Minimum acceptable output amount for this hop.
-            Currently unused in the generated program (pass ``0``); rely on
-            the global ``min_final_out`` parameter of
-            :func:`build_multi_hop_program` instead.
         recipient: Address to receive the output tokens.  For intermediate
             hops this must be the DeFiVM contract address so that tokens are
             available for subsequent hops.
@@ -276,9 +249,7 @@ class SwapHop:
     pool: Address
     token_in: Address
     token_out: Address
-    fee: int
-    amount_in: int
-    amount_out_min: int
+    fee_bps: int
     recipient: Address
     zero_for_one: bool
     sqrt_price_limit_x96: int = field(default=0)
@@ -330,9 +301,9 @@ def _build_v2_direct_swap_segment(hop: SwapHop) -> Program:
     - input:  ``[... , amount_in]``
     - output: ``[... , amount_out]``
     """
-    if not 0 <= hop.fee < 10000:
-        raise ValueError(f"hop.fee must be in basis points within [0, 10000), got {hop.fee}")
-    fee_num = 10000 - hop.fee
+    if not 0 <= hop.fee_bps < 10000:
+        raise ValueError(f"hop.fee must be in basis points within [0, 10000), got {hop.fee_bps}")
+    fee_num = 10000 - hop.fee_bps
 
     prog = Program()
     prog.call_contract_abi(hop.pool, "getReserves()").pop()

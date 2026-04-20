@@ -4,15 +4,14 @@ Common types used throughout pydefi.
 
 from __future__ import annotations
 
+from abc import ABC
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from decimal import ROUND_DOWN, Decimal
-from enum import IntEnum
+from enum import Enum, IntEnum
 from typing import Any, TypeAlias
 
 from hexbytes import HexBytes
-
-from pydefi.pools import BasePool
 
 MAX_BPS = 10_000
 
@@ -188,12 +187,47 @@ class SwapRoute:
         return f"SwapRoute({path}, in={self.amount_in.human_amount}, out={self.amount_out.human_amount})"
 
 
+class SwapProtocol(str, Enum):
+    """Supported DEX protocols for :class:`SwapHop`.
+
+    Both values use **direct pool/pair calls** — no router contract is involved.
+    """
+
+    UNISWAP_V2 = "uniswap_v2"
+    """Uniswap V2-compatible pair: pre-transfer tokenIn, then call ``pair.swap()``.
+
+    On-chain amountOut is computed from ``pair.getReserves()`` using the
+    constant-product formula, so no off-chain quote is required.
+    """
+
+    UNISWAP_V3 = "uniswap_v3"
+    """Uniswap V3-compatible pool: call ``pool.swap()`` directly.
+
+    The pool fires a flash-swap callback (``uniswapV3SwapCallback`` or a
+    compatible variant) which ``DeFiVM.fallback()`` handles automatically.
+    """
+
+
+class BasePool(ABC):
+    """Base class for pool descriptors used by RouteDAG actions."""
+
+    pool_address: Address
+    protocol: SwapProtocol
+    fee_bps: int
+
+    def zero_for_one(self, token_out: Address) -> bool:
+        raise NotImplementedError("BasePool.zero_for_one() must be implemented by subclasses")
+
+
 @dataclass(frozen=True)
 class RouteSwap:
     """A single swap edge in a route DAG."""
 
     token_out: Token
     pool: BasePool
+
+    def zero_for_one(self) -> bool:
+        return self.pool.zero_for_one(self.token_out.address)
 
 
 @dataclass(frozen=True)
