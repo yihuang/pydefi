@@ -72,7 +72,11 @@ from dataclasses import dataclass, field
 from eth_abi import encode
 from eth_contract.contract import ContractFunction
 
+<<<<<<< HEAD
 from pydefi.types import Address, RouteDAG, SwapProtocol
+=======
+from pydefi.types import Address, RouteSwap, SwapProtocol
+>>>>>>> 93d2c72 (cleanup)
 from pydefi.vm.builder import Patch, Program
 from pydefi.vm.program import (
     _SWAP2,
@@ -359,50 +363,24 @@ def _build_v2_direct_swap_segment(hop: SwapHop) -> Program:
     return prog
 
 
-# ---------------------------------------------------------------------------
-# Balance-check helper
-# ---------------------------------------------------------------------------
-
-
-def build_execution_program_for_dag(
-    dag: RouteDAG,
-    *,
-    amount_in: int,
-    vm_address: str,
-    recipient: str,
-    min_final_out: int = 0,
-) -> Program:
-    """Build execution bytecode from a :class:`RouteDAG`.
-
-    Implementation is in :mod:`pydefi.vm.dag`.
-    """
-    from pydefi.vm.dag import build_execution_program_for_dag as _build
-
-    return _build(
-        dag,
-        amount_in=amount_in,
-        vm_address=vm_address,
+def _swap_hop_from_route_swap(swap_action: RouteSwap, *, recipient: str) -> SwapHop:
+    pool = swap_action.pool
+    return SwapHop(
+        protocol=pool.protocol,
+        pool=pool.pool_address,
+        token_in=pool.token_in.address,
+        token_out=pool.token_out.address,
+        fee=pool.fee_bps,
         recipient=recipient,
-        min_final_out=min_final_out,
+        zero_for_one=swap_action.zero_for_one(),
     )
 
 
-def build_quote_program_for_dag(
-    dag: RouteDAG,
+def _build_route_swap_segment(
+    hop: RouteSwap,
     *,
-    amount_in: int,
-    vm_address: str,
-    min_final_out: int = 0,
+    recipient: str,
 ) -> Program:
-    """Build quote/simulation bytecode from a :class:`RouteDAG`.
-
-    Implementation is in :mod:`pydefi.vm.dag`.
-    """
-    from pydefi.vm.dag import build_quote_program_for_dag as _build
-
-    return _build(
-        dag,
-        amount_in=amount_in,
-        vm_address=vm_address,
-        min_final_out=min_final_out,
-    )
+    if hop.protocol == SwapProtocol.UNISWAP_V3:
+        return _build_v3_pool_swap_segment(hop)
+    return _build_v2_direct_swap_segment(hop)
