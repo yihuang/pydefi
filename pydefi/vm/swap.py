@@ -47,6 +47,7 @@ from pydefi.vm.program import (
     bitwise_not,
     div,
     dup,
+    dup_n,
     mul,
     push_u256,
     ret_u256,
@@ -280,7 +281,7 @@ def _build_v2_direct_swap_segment(hop: SwapHop) -> Program:
         prog._emit(ret_u256(0))
 
     # [amount_in, rIn, rOut] -> compute amount_out while keeping amount_in.
-    prog._emit(bytes([0x82]))  # DUP3: amount_in
+    prog._emit(dup_n(3))  # DUP3: amount_in
     prog._emit(push_u256(fee_num))
     prog._emit(mul())
     prog._emit(dup())
