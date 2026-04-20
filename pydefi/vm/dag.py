@@ -65,8 +65,13 @@ def build_quote_program_for_dag(
     min_final_out: int = 0,
 ) -> Program:
     """Build a quote/simulation program from a :class:`RouteDAG`."""
-    # TODO
-    raise NotImplementedError
+    return _build_program_for_dag(
+        dag,
+        amount_in=amount_in,
+        vm_address=vm_address,
+        terminal_recipient=vm_address,
+        min_final_out=min_final_out,
+    )
 
 
 def _build_program_for_dag(
