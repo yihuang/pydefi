@@ -60,6 +60,7 @@ import asyncio
 import logging
 from typing import Any, Optional
 
+from hexbytes import HexBytes
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlmodel import Session, SQLModel, create_engine, select
 from web3 import AsyncWeb3, Web3
@@ -74,10 +75,10 @@ logger = logging.getLogger(__name__)
 # Event topic hashes — derived from the canonical ABI definitions.
 # ---------------------------------------------------------------------------
 
-_V2_SYNC_TOPIC = "0x" + UNISWAP_V2_PAIR.events.Sync.topic.hex()
-_V3_SWAP_TOPIC = "0x" + UNISWAP_V3_POOL.events.Swap.topic.hex()
-_V2_PAIR_CREATED_TOPIC = "0x" + UNISWAP_V2_FACTORY.events.PairCreated.topic.hex()
-_V3_POOL_CREATED_TOPIC = "0x" + UNISWAP_V3_FACTORY.events.PoolCreated.topic.hex()
+_V2_SYNC_TOPIC = UNISWAP_V2_PAIR.events.Sync.topic
+_V3_SWAP_TOPIC = "0x" + UNISWAP_V3_POOL.events.Swap.topic
+_V2_PAIR_CREATED_TOPIC = "0x" + UNISWAP_V2_FACTORY.events.PairCreated.topic
+_V3_POOL_CREATED_TOPIC = "0x" + UNISWAP_V3_FACTORY.events.PoolCreated.topic
 
 # How many blocks to request per getLogs call during back-fill
 _DEFAULT_BATCH_SIZE = 2_000
@@ -107,13 +108,6 @@ def _hex_data(data: Any) -> bytes:
         return bytes(data)
     hex_str = data[2:] if isinstance(data, str) and data.startswith("0x") else data
     return bytes.fromhex(hex_str)
-
-
-def _topic_str(topic: Any) -> str:
-    """Normalise a log topic to a lowercase hex string."""
-    if isinstance(topic, (bytes, bytearray)):
-        return "0x" + bytes(topic).hex()
-    return topic.lower() if isinstance(topic, str) else str(topic)
 
 
 def _addr_from_topic(topic: Any) -> str:
@@ -586,7 +580,7 @@ class PoolIndexer:
         stored = 0
         with Session(self._engine) as session:
             for log in logs:
-                topic0 = _topic_str(log["topics"][0])
+                topic0 = HexBytes(log["topics"][0])
                 emitter = log["address"].lower()
                 bn = int(log["blockNumber"])
                 ts = timestamps[bn]
