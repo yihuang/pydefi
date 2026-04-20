@@ -35,7 +35,7 @@ from pydefi.vm.swap import (
     SwapHop,
     SwapProtocol,
     _build_v2_direct_swap_segment,
-    _build_v3_pool_swap_segment_on_stack,
+    _build_v3_pool_swap_segment,
 )
 
 _BPS_DENOMINATOR = 10_000
@@ -200,7 +200,7 @@ def _build_route_swap_segment_on_stack(
 ) -> Program:
     hop = _swap_hop_from_route_swap(swap_action, recipient=recipient)
     if hop.protocol == SwapProtocol.UNISWAP_V3:
-        return _build_v3_pool_swap_segment_on_stack(hop)
+        return _build_v3_pool_swap_segment(hop)
     return _build_v2_direct_swap_segment(hop)
 
 
