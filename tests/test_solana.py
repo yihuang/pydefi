@@ -149,7 +149,7 @@ class TestRaydium:
         assert route.token_out == USDC
         assert len(route.steps) == 1
         assert route.steps[0].protocol == "Raydium"
-        assert route.steps[0].pool_address == "58oQChx4yWmvKnami8n1LnxS7vQp5YCGLGjrQCZFdcxm"
+        assert route.steps[0].pool_address is None  # Solana pool IDs are not EVM addresses
         assert route.amount_out.amount == 150_000_000
         assert route.price_impact == Decimal("0.0005")  # 0.05% / 100
 
@@ -172,7 +172,7 @@ class TestRaydium:
         with patch.object(raydium, "_get", new=AsyncMock(return_value=mock_response)):
             route = await raydium.build_swap_route(amount_in, USDC)
 
-        assert route.steps[0].pool_address == ""
+        assert route.steps[0].pool_address is None
 
     @pytest.mark.asyncio
     async def test_get_passes_slippage_bps(self):
@@ -384,7 +384,7 @@ class TestJupiter:
         assert route.token_out == USDC
         assert len(route.steps) == 1
         assert route.steps[0].protocol == "Jupiter"
-        assert route.steps[0].pool_address == ""
+        assert route.steps[0].pool_address is None
         assert route.amount_out.amount == 300_000_000
 
     @pytest.mark.asyncio
