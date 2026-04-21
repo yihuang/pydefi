@@ -149,7 +149,9 @@ class TestRaydium:
         assert route.token_out == USDC
         assert len(route.steps) == 1
         assert route.steps[0].protocol == "Raydium"
-        assert route.steps[0].pool_address is None  # Solana pool IDs are not EVM addresses
+        assert route.steps[0].pool_address == decode_address(
+            "58oQChx4yWmvKnami8n1LnxS7vQp5YCGLGjrQCZFdcxm", ChainId.SOLANA
+        )
         assert route.amount_out.amount == 150_000_000
         assert route.price_impact == Decimal("0.0005")  # 0.05% / 100
 
