@@ -19,7 +19,7 @@ import aiohttp
 
 from pydefi.amm.base import BaseSolanaAMM
 from pydefi.exceptions import InsufficientLiquidityError
-from pydefi.types import SwapRoute, SwapStep, Token, TokenAmount
+from pydefi.types import Address, SwapRoute, SwapStep, Token, TokenAmount
 
 _RAYDIUM_API_BASE = "https://transaction-v1.raydium.io"
 _SOL_MINT = "So11111111111111111111111111111111111111112"
@@ -133,12 +133,12 @@ class Raydium(BaseSolanaAMM):
 
         # Use the first pool address from the route plan if available
         route_plan = route_data.get("routePlan") or []
-        pool_address = route_plan[0].get("poolId", "") if route_plan else ""
+        pool_id = route_plan[0].get("poolId", "") if route_plan else ""
 
         step = SwapStep(
             token_in=amount_in.token,
             token_out=token_out,
-            pool_address=pool_address,
+            pool_address=Address(pool_id) if pool_id else None,
             protocol=self.protocol_name,
             fee=0,
         )

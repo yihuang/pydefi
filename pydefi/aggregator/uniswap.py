@@ -328,7 +328,7 @@ class UniswapAPI(BaseAggregator):
         step = SwapStep(
             token_in=amount_in.token,
             token_out=token_out,
-            pool_address="",  # Uniswap API routes through multiple pools
+            pool_address=None,  # Uniswap API routes through multiple pools
             protocol=self.protocol_name,
             fee=0,
         )

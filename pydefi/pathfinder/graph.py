@@ -38,7 +38,7 @@ class PoolEdge(BasePool):
 
     token_in: Token
     token_out: Token
-    pool_address: str
+    pool_address: Address
     protocol: str
     reserve_in: int = 0
     reserve_out: int = 0
@@ -465,13 +465,14 @@ class PoolGraph:
             fee_bps: Swap fee in basis points.
             **extra: Extra metadata stored in ``PoolEdge.extra``.
         """
+        addr = Address(pool_address)
         extra_forward = dict(extra)
         extra_forward.setdefault("is_token0_in", True)
         self.add_pool(
             PoolEdge(
                 token_in=token_a,
                 token_out=token_b,
-                pool_address=pool_address,
+                pool_address=addr,
                 protocol=protocol,
                 reserve_in=reserve_a,
                 reserve_out=reserve_b,
@@ -485,7 +486,7 @@ class PoolGraph:
             PoolEdge(
                 token_in=token_b,
                 token_out=token_a,
-                pool_address=pool_address,
+                pool_address=addr,
                 protocol=protocol,
                 reserve_in=reserve_b,
                 reserve_out=reserve_a,

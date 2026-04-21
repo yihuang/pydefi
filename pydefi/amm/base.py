@@ -11,7 +11,7 @@ from typing import Any
 from eth_contract import Contract
 from web3 import AsyncWeb3
 
-from pydefi.types import SwapRoute, Token, TokenAmount
+from pydefi.types import Address, SwapRoute, Token, TokenAmount
 
 
 class BaseAMM(ABC):
@@ -27,7 +27,7 @@ class BaseAMM(ABC):
 
     def __init__(self, w3: AsyncWeb3, router_address: str) -> None:
         self.w3 = w3
-        self.router_address = router_address
+        self.router_address: Address = Address(router_address)
 
     @property
     @abstractmethod

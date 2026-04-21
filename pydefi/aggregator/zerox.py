@@ -13,7 +13,7 @@ import aiohttp
 
 from pydefi.aggregator.base import AggregatorQuote, BaseAggregator
 from pydefi.exceptions import AggregatorError
-from pydefi.types import SwapRoute, SwapStep, Token, TokenAmount
+from pydefi.types import Address, SwapRoute, SwapStep, Token, TokenAmount
 
 # Mapping from chain IDs to 0x API subdomain / base URLs
 _CHAIN_URLS: dict[int, str] = {
@@ -170,7 +170,7 @@ class ZeroX(BaseAggregator):
         step = SwapStep(
             token_in=amount_in.token,
             token_out=token_out,
-            pool_address=quote.tx_data.get("to", ""),
+            pool_address=Address(quote.tx_data["to"]) if quote.tx_data.get("to") else None,
             protocol=self.protocol_name,
             fee=0,
         )

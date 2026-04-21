@@ -146,7 +146,7 @@ class SwapStep:
 
     token_in: Token
     token_out: Token
-    pool_address: str
+    pool_address: Address | None
     protocol: str
     fee: int = 30
 

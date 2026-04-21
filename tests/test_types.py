@@ -158,7 +158,7 @@ class TestSwapRoute:
         step = SwapStep(
             token_in=self.weth,
             token_out=self.usdc,
-            pool_address="0x" + "11" * 20,
+            pool_address=Address("0x" + "11" * 20),
             protocol="UniswapV2",
             fee=3000,
         )
@@ -176,13 +176,13 @@ class TestSwapRoute:
         step1 = SwapStep(
             token_in=self.weth,
             token_out=self.dai,
-            pool_address="0x" + "11" * 20,
+            pool_address=Address("0x" + "11" * 20),
             protocol="UniswapV2",
         )
         step2 = SwapStep(
             token_in=self.dai,
             token_out=self.usdc,
-            pool_address="0x" + "22" * 20,
+            pool_address=Address("0x" + "22" * 20),
             protocol="Curve",
         )
         route = SwapRoute(
@@ -198,7 +198,7 @@ class TestSwapRoute:
         step = SwapStep(
             token_in=self.weth,
             token_out=self.usdc,
-            pool_address="0x" + "11" * 20,
+            pool_address=Address("0x" + "11" * 20),
             protocol="UniswapV2",
         )
         route = SwapRoute(
