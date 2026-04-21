@@ -65,21 +65,6 @@ from __future__ import annotations
 import re
 from typing import Sequence
 
-from pydefi.vm.program import (
-    _DUP2,
-    _PUSH1,
-    OP_ADD,
-    OP_AND,
-    OP_DUP,
-    OP_ISZERO,
-    OP_MSTORE,
-    OP_POP,
-    OP_PUSH_U256,
-    OP_SHL,
-    OP_SWAP,
-    fp_init,
-)
-
 # Internal EVM opcode not exposed from program.py
 _SIGNEXTEND: int = 0x0B
 

@@ -29,7 +29,6 @@ from collections.abc import Sequence
 
 from pydefi.types import RouteAction, RouteDAG, RouteSplit, RouteSwap
 from pydefi.vm.builder import Program
-from pydefi.vm.program import add, assert_ge, assert_le, div, dup, dup2, mul, pop, push_u256, swap
 from pydefi.vm.swap import (
     _build_route_swap_segment,
 )

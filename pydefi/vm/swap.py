@@ -41,18 +41,6 @@ from eth_contract.contract import ContractFunction
 
 from pydefi.types import Address, RouteSwap, SwapProtocol
 from pydefi.vm.builder import Patch, Program
-from pydefi.vm.program import (
-    _SWAP2,
-    add,
-    bitwise_not,
-    div,
-    dup,
-    dup_n,
-    mul,
-    push_u256,
-    ret_u256,
-    swap,
-)
 
 # ---------------------------------------------------------------------------
 # Pool function ABI signatures — selectors and argument encoding are computed

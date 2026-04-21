@@ -184,45 +184,6 @@ from hexbytes import HexBytes
 
 from pydefi.types import Address
 from pydefi.vm.abi import emit_abi_encode, emit_abi_encode_packed
-from pydefi.vm.program import (
-    OP_JUMPDEST,
-    add,
-    assert_ge,
-    assert_le,
-    balance_of,
-    bitwise_and,
-    bitwise_not,
-    bitwise_or,
-    bitwise_xor,
-    call,
-    div,
-    dup,
-    dup_n,
-    eq,
-    gas_opcode,
-    gt,
-    iszero,
-    jump,
-    jumpi,
-    load_reg,
-    lt,
-    mod,
-    mul,
-    patch_value,
-    pop,
-    push_addr,
-    push_bytes,
-    push_u256,
-    ret_slice,
-    ret_u256,
-    revert_if,
-    self_addr,
-    shl,
-    shr,
-    store_reg,
-    sub,
-    swap,
-)
 
 # ---------------------------------------------------------------------------
 # Patch source types
