@@ -11,7 +11,7 @@ from pydefi.aggregator.jupiter import _JUPITER_API_BASE, _JUPITER_SWAP_V2_BASE, 
 from pydefi.amm.base import BaseSolanaAMM
 from pydefi.amm.raydium import _RAYDIUM_API_BASE, Raydium
 from pydefi.exceptions import AggregatorError, InsufficientLiquidityError
-from pydefi.types import ChainId, SwapRoute, Token, TokenAmount
+from pydefi.types import Address, ChainId, SwapRoute, Token, TokenAmount
 
 # ---------------------------------------------------------------------------
 # Solana token fixtures
@@ -512,7 +512,7 @@ class TestStargateSolana:
             w3=None,
             src_chain_id=ChainId.ETHEREUM,
             dst_chain_id=ChainId.SOLANA,
-            router_address="0x8731d54E9D02c286767d56ac03e8037C07e01e98",
+            router_address=Address("0x8731d54E9D02c286767d56ac03e8037C07e01e98"),
         )
         assert sg._lz_chain_id(ChainId.SOLANA) == 30168
 

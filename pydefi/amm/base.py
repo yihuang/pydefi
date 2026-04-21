@@ -22,12 +22,12 @@ class BaseAMM(ABC):
 
     Args:
         w3: An :class:`~web3.AsyncWeb3` instance connected to the target chain.
-        router_address: Checksum address of the on-chain router/swap contract.
+        router_address: Address of the on-chain router/swap contract.
     """
 
-    def __init__(self, w3: AsyncWeb3, router_address: str) -> None:
+    def __init__(self, w3: AsyncWeb3, router_address: Address) -> None:
         self.w3 = w3
-        self.router_address: Address = Address(router_address)
+        self.router_address = router_address
 
     @property
     @abstractmethod

@@ -25,14 +25,14 @@ from web3 import AsyncWeb3, Web3
 
 from pydefi.amm.uniswap_v3 import UniswapV3
 from pydefi.amm.universal_router import UNIVERSAL_ROUTER_ADDRESSES, UniversalRouter, V4Hop
-from pydefi.types import TokenAmount
+from pydefi.types import Address, TokenAmount
 from tests.addrs import ETH_WHALE, UNISWAP_V3_QUOTER, UNISWAP_V3_ROUTER, UNISWAP_V4_POOL_MANAGER, USDC, WETH, ZERO_ADDR
 
 # ---------------------------------------------------------------------------
 # Contract addresses
 # ---------------------------------------------------------------------------
 
-UNIVERSAL_ROUTER_V2 = UNIVERSAL_ROUTER_ADDRESSES[1]
+UNIVERSAL_ROUTER_V2 = Address(UNIVERSAL_ROUTER_ADDRESSES[1])
 V4_POOL_MANAGER = UNISWAP_V4_POOL_MANAGER
 
 # 0.01 ETH in wei

@@ -32,7 +32,7 @@ from enum import IntEnum
 from eth_abi import encode as abi_encode
 
 from pydefi.amm.uniswap_v3 import UniswapV3
-from pydefi.types import SwapTransaction, Token, TokenAmount
+from pydefi.types import Address, SwapTransaction, Token, TokenAmount
 
 # ---------------------------------------------------------------------------
 # Well-known Universal Router V2 deployment addresses
@@ -300,7 +300,7 @@ class UniversalRouter:
     #: Canonical Universal Router addresses keyed by chain ID.
     KNOWN_ADDRESSES: dict[int, str] = UNIVERSAL_ROUTER_ADDRESSES
 
-    def __init__(self, router_address: str) -> None:
+    def __init__(self, router_address: Address) -> None:
         self.router_address = router_address
 
     # ------------------------------------------------------------------

@@ -42,7 +42,7 @@ from tests.addrs import ETH_WHALE, UNISWAP_V3_QUOTER, UNISWAP_V3_ROUTER, UNISWAP
 # ---------------------------------------------------------------------------
 
 # UniversalRouterV2 on Ethereum mainnet (supports Uniswap V4)
-UNIVERSAL_ROUTER_V2 = UNIVERSAL_ROUTER_ADDRESSES[1]
+UNIVERSAL_ROUTER_V2 = Address(UNIVERSAL_ROUTER_ADDRESSES[1])
 V4_POOL_MANAGER = UNISWAP_V4_POOL_MANAGER
 
 # Plausible price bounds for 1 WETH in USDC
