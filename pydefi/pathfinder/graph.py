@@ -14,8 +14,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Callable, ClassVar, Iterator
 
-from pydefi.pools import BasePool
-from pydefi.types import Address, Token
+from pydefi.types import Address, BasePool, Token
 
 
 @dataclass
@@ -77,6 +76,19 @@ class PoolEdge(BasePool):
         if denominator == 0:
             return 0
         return numerator // denominator
+
+    def zero_for_one(self, token_out: Address) -> bool:
+        """Return ``True`` if this edge sends token0 into the pool (zeroForOne direction).
+
+        Reads ``extra['is_token0_in']``, which must be present for V2-style pools.
+
+        Raises:
+            ValueError: If ``extra['is_token0_in']`` is not set.
+        """
+        is_token0_in = self.extra.get("is_token0_in")
+        if is_token0_in is None:
+            raise ValueError("PoolEdge is missing extra['is_token0_in'] metadata")
+        return bool(is_token0_in)
 
     def estimate_price_impact(self, amount_in: int) -> Decimal:
         """Estimate the price impact of swapping *amount_in* through this pool.
@@ -201,6 +213,13 @@ class V3PoolEdge(PoolEdge):
     is_token0_in: bool = True
 
     _Q96: ClassVar[int] = 2**96
+
+    def zero_for_one(self, token_out: Address) -> bool:
+        """Return ``True`` if this edge sends token0 into the V3 pool.
+
+        Uses the ``is_token0_in`` field directly.
+        """
+        return self.is_token0_in
 
     @property
     def spot_price(self) -> Decimal:

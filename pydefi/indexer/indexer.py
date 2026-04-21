@@ -322,10 +322,9 @@ class PoolIndexer:
     ) -> int:
         """Fetch and store historical events for all registered pools and factories.
 
-        Issues a single ``eth_getLogs`` call per block-range batch (without an
-        address filter) covering all monitored event topics, then dispatches
-        each log to the appropriate handler.  Pass *pool_address* to restrict
-        indexing to a single pool.
+        Issues a single ``eth_getLogs`` call per block-range batch covering all
+        monitored event topics, filtered to the registered pool and factory
+        addresses.  Pass *pool_address* to restrict indexing to a single pool.
 
         Args:
             from_block: First block to include (inclusive).
@@ -368,6 +367,10 @@ class PoolIndexer:
             }
             if target_addr is not None:
                 filter_params["address"] = Web3.to_checksum_address(target_addr)
+            else:
+                tracked = self._all_tracked_addresses
+                if tracked:
+                    filter_params["address"] = [Web3.to_checksum_address(a) for a in tracked]
             logs = await self.w3.eth.get_logs(filter_params)
             logger.debug("backfill blocks %d-%d: fetched %d logs", current, end, len(logs))
 

@@ -750,3 +750,23 @@ class TestFactoryDiscovery:
         state = indexer.get_latest_v2_state(_NEW_PAIR)
         assert state is not None
         assert state["reserve0"] == 500
+
+    @pytest.mark.asyncio
+    async def test_backfill_full_scan_address_filter(self):
+        """backfill() without pool_address filters get_logs to all tracked addresses."""
+        from web3 import Web3
+
+        mock_w3 = _make_mock_w3(block_number=50)
+        mock_w3.eth.get_logs = AsyncMock(return_value=[])
+
+        indexer = PoolIndexer(db_url="sqlite://", w3=mock_w3)
+        indexer.add_factory(factory_address=_FACTORY_V2, protocol="UniswapV2", chain_id=1)
+        indexer.add_factory(factory_address=_FACTORY_V3, protocol="UniswapV3", chain_id=1)
+
+        await indexer.backfill(from_block=10, to_block=50)
+
+        call_kwargs = mock_w3.eth.get_logs.call_args[0][0]
+        assert "address" in call_kwargs, "backfill() must include address filter to avoid exceeding node result limits"
+        addresses = call_kwargs["address"]
+        assert Web3.to_checksum_address(_FACTORY_V2) in addresses
+        assert Web3.to_checksum_address(_FACTORY_V3) in addresses
