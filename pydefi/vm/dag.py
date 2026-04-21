@@ -225,9 +225,9 @@ def _swap_hop_from_route_swap(swap_action: RouteSwap, *, recipient: str) -> Swap
         zero_for_one = bool(is_token0_in)
     return SwapHop(
         protocol=protocol,
-        pool=pool.pool_address,
-        token_in=pool.token_in.address,
-        token_out=pool.token_out.address,
+        pool=Address(pool.pool_address),
+        token_in=Address(pool.token_in.address),
+        token_out=Address(pool.token_out.address),
         fee_bps=pool.fee_bps,
         recipient=Address(recipient),
         zero_for_one=zero_for_one,
