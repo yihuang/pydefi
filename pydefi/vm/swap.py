@@ -48,11 +48,11 @@ from pydefi.vm.program import (
     bitwise_not,
     div,
     dup,
-    load_reg,
+    dup_n,
     mul,
+    pop,
     push_u256,
     ret_u256,
-    store_reg,
     swap,
 )
 
@@ -198,7 +198,7 @@ class SwapHop:
         pool: Pool or pair contract address (not a router).
         token_in: Input token address.
         token_out: Output token address.
-        fee: Pool fee in **basis points** (e.g. ``30`` for 0.30 %).  For V3
+        fee_bps: Pool fee in **basis points** (e.g. ``30`` for 0.30 %).  For V3
             pools the fee is encoded in the pool itself and is not passed to
             ``pool.swap()``; it is kept here for documentation only.  For V2
             pairs it is used to compute ``amountOut`` from reserves on-chain.
@@ -223,16 +223,12 @@ class SwapHop:
     sqrt_price_limit_x96: int = field(default=0)
 
 
-# Register indices used by the register-based swap segment builders.
-_AMOUNT_REG: int = 0
-_AMOUNT_OUT_REG: int = 1
-
 # ---------------------------------------------------------------------------
 # Internal program-segment builders
 # ---------------------------------------------------------------------------
 
 
-def _build_v3_pool_swap_segment_on_stack(hop: SwapHop) -> Program:
+def _build_v3_pool_swap_segment(hop: SwapHop) -> Program:
     """V3 pool direct swap (stack ABI).
 
     Stack contract:
@@ -266,42 +262,17 @@ def _build_v3_pool_swap_segment_on_stack(hop: SwapHop) -> Program:
     return prog
 
 
-def _build_v3_pool_swap_segment(hop: SwapHop, *, amount_reg: int) -> Program:
-    """V3 pool direct swap (register ABI).
+def _build_v2_compute_out_segment(hop: SwapHop, fee_num: int) -> Program:
+    """Compute V2 ``amountOut`` from reserves (no token transfer).
 
-    Sequence:
-    1. ``pool.swap(recipient, zeroForOne, amountIn, sqrtPriceLimit,
-       abi.encode(tokenIn))`` — amountIn patched from *amount_reg* via
-       :class:`~pydefi.vm.builder.Patch` (offset detected automatically).
-    2. Extract ``amountOut`` from return values (negate the negative delta).
-    3. Store ``amountOut`` back in *amount_reg*.
+    Stack contract:
+    - input:  ``[... , amount_in]``
+    - output: ``[... , amount_out]``
+
+    Calls ``pair.getReserves()`` and computes the constant-product formula
+    entirely on-stack.  Callers that need to preserve ``amount_in`` should
+    ``dup()`` it before calling this segment.
     """
-    return (
-        Program()
-        ._emit(load_reg(amount_reg))
-        .extend(_build_v3_pool_swap_segment_on_stack(hop))
-        ._emit(store_reg(amount_reg))
-    )
-
-
-def _build_v2_quote_segment(hop: SwapHop, *, amount_reg: int, result_reg: int) -> Program:
-    """V2 pair quote: compute ``amountOut`` from reserves on-chain (no transfer).
-
-    Shared core used by :func:`_build_v2_direct_swap_segment` and
-    :func:`build_quote_swap_calldata`.  Calls ``getReserves`` + constant-product
-    formula but **omits** the ``tokenIn.transfer`` and ``pair.swap`` calls.
-    Safe to run inside an ``eth_call``.
-
-    Args:
-        hop: V2 hop descriptor.  ``hop.fee`` must be in **basis points**
-            (e.g. ``30`` for 0.30 %).
-        amount_reg: Register holding ``amountIn`` on entry (read-only).
-        result_reg: Register that receives the computed ``amountOut``.
-    """
-    if not 0 <= hop.fee_bps < 10000:
-        raise ValueError(f"hop.fee must be in basis points within [0, 10000), got {hop.fee_bps}")
-    fee_num = 10000 - hop.fee_bps
-
     prog = Program()
 
     prog.call_contract_abi(hop.pool, "getReserves()").pop()
@@ -312,64 +283,89 @@ def _build_v2_quote_segment(hop: SwapHop, *, amount_reg: int, result_reg: int) -
         prog._emit(ret_u256(32))  # [rIn]
         prog._emit(ret_u256(0))  # [rIn, rOut]
 
-    # [rIn, rOut] — compute amountOut = amountIn*fee_num*rOut / (rIn*10000 + amountIn*fee_num)
-    prog._emit(load_reg(amount_reg))  # [rIn, rOut, amountIn]
-    prog._emit(push_u256(fee_num))  # [rIn, rOut, amountIn, fee_num]
-    prog._emit(mul())  # [rIn, rOut, aif=amountIn*fee_num]
-    prog._emit(dup())  # [rIn, rOut, aif, aif_dup]
-    prog._emit(bytes([_SWAP2]))  # [rIn, aif_dup, aif, rOut]
-    prog._emit(mul())  # [rIn, aif_dup, numerator=aif*rOut]
-    prog._emit(bytes([_SWAP2]))  # [numerator, aif_dup, rIn]
-    prog._emit(push_u256(10000))  # [numerator, aif_dup, rIn, 10000]
-    prog._emit(mul())  # [numerator, aif_dup, rIn*10000]
-    prog._emit(add())  # [numerator, denominator]
-    prog._emit(swap())  # [denominator, numerator]
-    prog._emit(div())  # [amountOut]
-    prog._emit(store_reg(result_reg))  # result_reg = amountOut
-
+    # [amount_in, rIn, rOut] -> amount_out
+    prog._emit(dup_n(3))  # DUP3: amount_in
+    prog._emit(push_u256(fee_num))
+    prog._emit(mul())
+    prog._emit(dup())
+    prog._emit(bytes([_SWAP2]))
+    prog._emit(mul())
+    prog._emit(bytes([_SWAP2]))
+    prog._emit(push_u256(10000))
+    prog._emit(mul())
+    prog._emit(add())
+    prog._emit(swap())
+    prog._emit(div())  # [amount_in, amount_out]
+    prog._emit(swap())  # [amount_out, amount_in]
+    prog._emit(pop())  # [amount_out]
     return prog
 
 
-# ---------------------------------------------------------------------------
-# V2 direct swap (execution — includes transfer + pair.swap)
-# ---------------------------------------------------------------------------
+def _build_v2_quote_segment(hop: SwapHop) -> Program:
+    """V2 pair quote: compute ``amountOut`` from reserves (view-only, no transfer).
 
-
-def _build_v2_direct_swap_segment(hop: SwapHop, *, amount_reg: int, amount_out_reg: int) -> Program:
-    """V2 pair direct swap: compute amountOut from reserves on-chain.
-
-    Sequence:
-    1. ``pair.getReserves()`` + constant-product formula via
-       :func:`_build_v2_quote_segment` — stores ``amountOut`` in *amount_out_reg*.
-    2. ``tokenIn.transfer(pair, amountIn)`` — transfer input from VM.
-    3. ``pair.swap(amount0Out, amount1Out, recipient, "")`` — amounts patched
-       from registers at runtime.
-    4. Copy ``amountOut`` from *amount_out_reg* back to *amount_reg*.
-
-    Args:
-        hop: The V2 swap hop descriptor.
-        amount_reg: Register holding ``amountIn`` on entry; updated with
-            ``amountOut`` on exit.
-        amount_out_reg: Scratch register for the computed ``amountOut``
-            (must differ from *amount_reg*).
+    Stack contract:
+    - input:  ``[... , amount_in]``
+    - output: ``[... , amount_out]``
     """
-    prog = _build_v2_quote_segment(hop, amount_reg=amount_reg, result_reg=amount_out_reg)
+    if not 0 <= hop.fee_bps < 10000:
+        raise ValueError(f"hop.fee_bps must be in basis points within [0, 10000), got {hop.fee_bps}")
+    return _build_v2_compute_out_segment(hop, 10000 - hop.fee_bps)
 
-    prog._emit(load_reg(amount_reg))  # push amountIn for Patch
+
+def _build_v3_quote_segment(hop: SwapHop, quoter_address: str) -> Program:
+    """V3 pool quote: call ``quoter.quoteExactInput`` (view-only).
+
+    Stack contract:
+    - input:  ``[... , amount_in]``
+    - output: ``[... , amount_out]``
+
+    Compatible with both QuoterV1 and QuoterV2.  ``hop.fee_bps`` is in basis points
+    (e.g. ``5`` for 0.05 %); converted to V3 fee tier (``fee_bps * 100``).
+    """
+    packed_path = encode_v3_path([hop.token_in, hop.token_out], [hop.fee_bps * 100])
+    prog = Program()
+    prog.call_contract_abi(
+        Address(quoter_address),
+        "function quoteExactInput(bytes path, uint256 amountIn) returns (uint256 amountOut)",
+        packed_path,
+        Patch(),  # consumes amount_in from TOS
+    ).pop()
+    prog._emit(ret_u256(0))  # amountOut is first uint256 in returndata
+    return prog
+
+
+def _build_v2_direct_swap_segment(hop: SwapHop) -> Program:
+    """V2 pair direct swap (stack ABI).
+
+    Stack contract:
+    - input:  ``[... , amount_in]``
+    - output: ``[... , amount_out]``
+    """
+    if not 0 <= hop.fee_bps < 10000:
+        raise ValueError(f"hop.fee_bps must be in basis points within [0, 10000), got {hop.fee_bps}")
+
+    prog = Program()
+    prog._emit(dup())  # preserve amount_in for transfer: [amount_in, amount_in]
+    prog.extend(_build_v2_compute_out_segment(hop, 10000 - hop.fee_bps))
+    # stack: [amount_in, amount_out]
+    prog._emit(swap())  # [amount_out, amount_in]
+
     prog.call_contract_abi(
         hop.token_in,
         "function transfer(address to, uint256 amount)",
         hop.pool,
-        Patch(),  # consumes load_reg(amount_reg) from TOS
+        Patch(),
     ).pop()
+    # stack: [amount_out]
 
-    prog._emit(load_reg(amount_out_reg))  # push amountOut for Patch
+    prog._emit(dup())  # [amount_out, amount_out]
     if hop.zero_for_one:
         prog.call_contract_abi(
             hop.pool,
             "function swap(uint256 amount0Out, uint256 amount1Out, address to, bytes data)",
             0,
-            Patch(),  # amount1Out — consumes load_reg(amount_out_reg) from TOS
+            Patch(),
             hop.recipient,
             b"",
         ).pop()
@@ -377,14 +373,11 @@ def _build_v2_direct_swap_segment(hop: SwapHop, *, amount_reg: int, amount_out_r
         prog.call_contract_abi(
             hop.pool,
             "function swap(uint256 amount0Out, uint256 amount1Out, address to, bytes data)",
-            Patch(),  # amount0Out — consumes load_reg(amount_out_reg) from TOS
+            Patch(),
             0,
             hop.recipient,
             b"",
         ).pop()
-
-    prog._emit(load_reg(amount_out_reg))
-    prog._emit(store_reg(amount_reg))
 
     return prog
 
@@ -412,8 +405,8 @@ def _swap_hop_from_route_swap(swap_action: RouteSwap, *, recipient: Address) -> 
     return SwapHop(
         protocol=_pool_to_swap_protocol(pool.protocol),
         pool=pool.pool_address,
-        token_in=pool.token_in.address,
-        token_out=pool.token_out.address,
+        token_in=pool.token_in.address,  # type: ignore[attr-defined]
+        token_out=swap_action.token_out.address,
         fee_bps=pool.fee_bps,
         recipient=recipient,
         zero_for_one=swap_action.zero_for_one(),
@@ -427,15 +420,8 @@ def _build_route_swap_segment(
 ) -> Program:
     hop = _swap_hop_from_route_swap(action, recipient=recipient)
     if hop.protocol == SwapProtocol.UNISWAP_V3:
-        return _build_v3_pool_swap_segment_on_stack(hop)
-    # Bridge stack → register convention: store TOS (amount_in) into _AMOUNT_REG,
-    # run register-based segment (which writes amount_out to _AMOUNT_REG), then push result.
-    return (
-        Program()
-        ._emit(store_reg(_AMOUNT_REG))
-        .extend(_build_v2_direct_swap_segment(hop, amount_reg=_AMOUNT_REG, amount_out_reg=_AMOUNT_OUT_REG))
-        ._emit(load_reg(_AMOUNT_REG))
-    )
+        return _build_v3_pool_swap_segment(hop)
+    return _build_v2_direct_swap_segment(hop)
 
 
 # ---------------------------------------------------------------------------

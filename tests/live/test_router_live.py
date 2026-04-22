@@ -261,7 +261,7 @@ class TestRouterLive:
         )
         payload = dag.to_dict()
         assert isinstance(payload["actions"][0], RouteSplit)
-        bc = build_quote_program_for_dag(dag, amount_in=10**18, vm_address="0x" + "00" * 20).build()
+        bc = build_quote_program_for_dag(dag, amount_in=10**18).build()
         assert len(bc) > 0
 
 

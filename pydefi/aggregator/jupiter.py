@@ -213,7 +213,7 @@ class Jupiter(BaseAggregator):
         step = SwapStep(
             token_in=amount_in.token,
             token_out=token_out,
-            pool_address="",  # Jupiter routes across multiple pools internally
+            pool_address=None,  # Jupiter routes across multiple pools internally
             protocol=self.protocol_name,
             fee=0,
         )
@@ -495,7 +495,7 @@ class JupiterSwapV2(BaseAggregator):
         step = SwapStep(
             token_in=amount_in.token,
             token_out=token_out,
-            pool_address="",  # Jupiter routes across multiple pools internally
+            pool_address=None,  # Jupiter routes across multiple pools internally
             protocol=self.protocol_name,
             fee=0,
         )

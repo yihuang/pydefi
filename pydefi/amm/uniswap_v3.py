@@ -22,7 +22,7 @@ from pydefi.abi.amm import (
 )
 from pydefi.amm.base import BaseAMM
 from pydefi.exceptions import InsufficientLiquidityError
-from pydefi.types import SwapRoute, SwapStep, Token, TokenAmount
+from pydefi.types import Address, SwapRoute, SwapStep, Token, TokenAmount
 
 # Canonical fee tiers (in hundredths of a basis point)
 FEE_TIERS: tuple[int, ...] = (100, 500, 3000, 10000)
@@ -43,8 +43,8 @@ class UniswapV3(BaseAMM):
     def __init__(
         self,
         w3: AsyncWeb3,
-        router_address: str,
-        quoter_address: str,
+        router_address: Address,
+        quoter_address: Address,
         protocol_name: str = "UniswapV3",
         default_fee: int = 3000,
     ) -> None:

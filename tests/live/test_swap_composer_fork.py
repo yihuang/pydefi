@@ -19,19 +19,23 @@ Run with::
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
 import solcx
+from eth_abi import decode as abi_decode
 from eth_contract import Contract
 from eth_contract.erc20 import ERC20
 from hexbytes import HexBytes
 from web3.exceptions import ContractLogicError, Web3RPCError
+from web3.types import Wei
 
+from pydefi.abi.amm import UNISWAP_V3_POOL
 from pydefi.abi.codec import codec
 from pydefi.pathfinder.graph import PoolEdge, V3PoolEdge
 from pydefi.types import Address, ChainId, RouteDAG, Token
-from pydefi.vm import build_execution_program_for_dag
+from pydefi.vm import build_execution_program_for_dag, build_quote_program_for_dag
 from pydefi.vm.swap import (
     encode_v2_callback_data,
     encode_v3_callback_data,
@@ -40,6 +44,9 @@ from pydefi.vm.swap import (
 )
 from tests.addrs import (
     DAI,
+    PAIR_WETH_DAI,
+    POOL_WETH_USDC_500,
+    UNISWAP_V3_QUOTER,
     USDC,
     WETH,
 )
@@ -58,6 +65,8 @@ DEFI_VM_SOL_FILE = REPO_ROOT / "pydefi" / "vm" / "DeFiVM.sol"
 WETH_ADDR: Address = WETH.address
 USDC_ADDR: Address = USDC.address
 DAI_ADDR: Address = DAI.address
+
+_WETH_DEPOSIT = Contract.from_abi(["function deposit() payable"])
 
 # ---------------------------------------------------------------------------
 # Mock pool contracts (inline Solidity)
@@ -707,3 +716,112 @@ class TestDAGProgramFork:
 
         bal_after = await token0.functions.balanceOf(deployer).call()
         assert bal_after > bal_before
+
+    async def test_quote_matches_execution_for_dag(self, ctx):
+        """Quote program output must equal actual execution output (V2 route, real mainnet pair).
+
+        Wraps ETH → WETH and swaps via the real Uniswap V2 WETH/DAI pair on the
+        Anvil mainnet fork.  Both the quote and execution programs call
+        pair.getReserves() on-chain, so quoted_out == actual_out exactly.
+        """
+        w3 = ctx["w3"]
+        deployer = ctx["deployer"]
+        vm_address = ctx["vm_address"]
+        vm = ctx["vm"]
+
+        amount_in = 10**15  # 0.001 WETH
+
+        # Wrap ETH → WETH and transfer to DeFiVM so it can repay the pair.
+        await _WETH_DEPOSIT.fns.deposit().transact(w3, deployer, to=WETH_ADDR, value=Wei(amount_in))
+        await ERC20.fns.transfer(vm_address, amount_in).transact(w3, deployer, to=WETH_ADDR)
+
+        pair_token0 = await UNISWAP_V3_POOL.fns.token0().call(w3, to=PAIR_WETH_DAI)
+        is_weth_token0 = HexBytes(pair_token0) == WETH_ADDR
+
+        v2_edge = PoolEdge(
+            token_in=WETH,
+            token_out=DAI,
+            pool_address=PAIR_WETH_DAI,
+            protocol="UniswapV2",
+            reserve_in=1,  # not used: program reads getReserves() on-chain
+            reserve_out=1,
+            fee_bps=30,
+            extra={"is_token0_in": is_weth_token0},
+        )
+        dag = RouteDAG().from_token(WETH).swap(DAI, v2_edge)
+
+        # Quote via eth_call — no state change
+        quote_bytecode = build_quote_program_for_dag(dag, amount_in=amount_in).build()
+        call_data = vm.encode_abi("execute", [quote_bytecode])
+        raw = await w3.eth.call({"to": vm_address, "data": call_data})
+        (quoted_out,) = abi_decode(["uint256"], raw)
+        assert quoted_out > 0
+
+        # Execute and measure actual DAI received by deployer
+        bal_before = await ERC20.fns.balanceOf(deployer).call(w3, to=DAI_ADDR)
+        exec_bytecode = build_execution_program_for_dag(
+            dag, amount_in=amount_in, vm_address=vm_address, recipient=deployer
+        ).build()
+        tx = await vm.functions.execute(exec_bytecode).transact({"from": deployer})
+        receipt = await w3.eth.get_transaction_receipt(tx)
+        assert receipt["status"] == 1
+        actual_out = (await ERC20.fns.balanceOf(deployer).call(w3, to=DAI_ADDR)) - bal_before
+
+        assert actual_out == quoted_out
+
+    async def test_quote_matches_execution_for_dag_v3(self, ctx):
+        """Quote program output must equal actual execution output (V3 route, real mainnet pool).
+
+        Wraps ETH → WETH and swaps via the real Uniswap V3 USDC/WETH 0.05% pool on the
+        Anvil mainnet fork.  The quote calls the real QuoterV2 which simulates the
+        identical pool.swap(), so quoted_out == actual_out exactly.
+        """
+        w3 = ctx["w3"]
+        deployer = ctx["deployer"]
+        vm_address = ctx["vm_address"]
+        vm = ctx["vm"]
+
+        amount_in = 10**15  # 0.001 WETH
+        # Wrap ETH → WETH and transfer to DeFiVM so it can repay the pool callback.
+        await _WETH_DEPOSIT.fns.deposit().transact(w3, deployer, to=WETH_ADDR, value=Wei(amount_in))
+        await ERC20.fns.transfer(vm_address, amount_in).transact(w3, deployer, to=WETH_ADDR)
+
+        # Read live pool state to populate V3PoolEdge.
+        slot0, liquidity, pool_token0 = await asyncio.gather(
+            UNISWAP_V3_POOL.fns.slot0().call(w3, to=POOL_WETH_USDC_500),
+            UNISWAP_V3_POOL.fns.liquidity().call(w3, to=POOL_WETH_USDC_500),
+            UNISWAP_V3_POOL.fns.token0().call(w3, to=POOL_WETH_USDC_500),
+        )
+        # POOL_WETH_USDC_500: token0=USDC (0xA0b8…), token1=WETH (0xC02a…)
+        is_weth_token0 = HexBytes(pool_token0) == WETH_ADDR
+
+        v3_edge = V3PoolEdge(
+            token_in=WETH,
+            token_out=USDC,
+            pool_address=POOL_WETH_USDC_500,
+            protocol="UniswapV3",
+            fee_bps=5,  # 0.05% pool → 500 fee tier → 5 bps
+            sqrt_price_x96=slot0[0],
+            liquidity=liquidity,
+            is_token0_in=is_weth_token0,
+        )
+        dag = RouteDAG().from_token(WETH).swap(USDC, v3_edge)
+
+        # Quote via eth_call using the real QuoterV2 — no state change
+        quote_bytecode = build_quote_program_for_dag(dag, amount_in=amount_in, quoter_address=UNISWAP_V3_QUOTER).build()
+        call_data = vm.encode_abi("execute", [quote_bytecode])
+        raw = await w3.eth.call({"to": vm_address, "data": call_data})
+        (quoted_out,) = abi_decode(["uint256"], raw)
+        assert quoted_out > 0
+
+        # Execute and measure actual USDC received by deployer
+        bal_before = await ERC20.fns.balanceOf(deployer).call(w3, to=USDC_ADDR)
+        exec_bytecode = build_execution_program_for_dag(
+            dag, amount_in=amount_in, vm_address=vm_address, recipient=deployer
+        ).build()
+        tx = await vm.functions.execute(exec_bytecode).transact({"from": deployer})
+        receipt = await w3.eth.get_transaction_receipt(tx)
+        assert receipt["status"] == 1
+        actual_out = (await ERC20.fns.balanceOf(deployer).call(w3, to=USDC_ADDR)) - bal_before
+
+        assert actual_out == quoted_out

@@ -250,7 +250,7 @@ class OpenOcean(BaseAggregator):
         step = SwapStep(
             token_in=amount_in.token,
             token_out=token_out,
-            pool_address="",
+            pool_address=None,
             protocol=self.protocol_name,
             fee=0,
         )
