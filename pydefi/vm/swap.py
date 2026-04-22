@@ -40,7 +40,7 @@ from eth_abi import encode
 from eth_contract.contract import ContractFunction
 from eth_utils import keccak
 
-from pydefi.types import Address, RouteDAG, RouteSwap, SwapProtocol, SwapTransaction
+from pydefi.types import Address, RouteDAG, RouteSwap, SwapProtocol, SwapRoute, SwapTransaction
 from pydefi.vm.builder import Patch, Program
 from pydefi.vm.program import (
     _SWAP2,
@@ -312,7 +312,7 @@ def _build_v2_quote_segment(hop: SwapHop) -> Program:
     return _build_v2_compute_out_segment(hop, 10000 - hop.fee_bps)
 
 
-def _build_v3_quote_segment(hop: SwapHop, quoter_address: str) -> Program:
+def _build_v3_quote_segment(hop: SwapHop, quoter_address: Address) -> Program:
     """V3 pool quote: call ``quoter.quoteExactInput`` (view-only).
 
     Stack contract:
@@ -325,7 +325,7 @@ def _build_v3_quote_segment(hop: SwapHop, quoter_address: str) -> Program:
     packed_path = encode_v3_path([hop.token_in, hop.token_out], [hop.fee_bps * 100])
     prog = Program()
     prog.call_contract_abi(
-        Address(quoter_address),
+        quoter_address,
         "function quoteExactInput(bytes path, uint256 amountIn) returns (uint256 amountOut)",
         packed_path,
         Patch(),  # consumes amount_in from TOS
@@ -461,3 +461,59 @@ def build_swap_transaction(
     )
     calldata = _EXECUTE_SELECTOR + encode(["bytes"], [bytes(program)])
     return SwapTransaction(to=vm_address, data=calldata)
+
+
+def swap_route_to_hops(
+    route: SwapRoute,
+    vm_address: str,
+    recipient: str,
+) -> list[SwapHop]:
+    """Convert a :class:`~pydefi.types.SwapRoute` into :class:`SwapHop` descriptors.
+
+    Protocol detection: ``"v2"`` in the lower-cased protocol string maps to
+    :attr:`SwapProtocol.UNISWAP_V2`; ``"v3"`` maps to
+    :attr:`SwapProtocol.UNISWAP_V3`.
+
+    ``zero_for_one`` is derived from EVM token-ordering convention: token0 is
+    the numerically smaller address.
+
+    All intermediate hops send output to *vm_address*; only the final hop
+    sends to *recipient*.
+
+    Args:
+        route: As returned by :meth:`~pydefi.pathfinder.Router.find_best_route`.
+        vm_address: DeFiVM contract address (intermediate recipient).
+        recipient: Final output recipient.
+
+    Returns:
+        Ordered :class:`SwapHop` list ready for :func:`build_multi_hop_program`.
+
+    Raises:
+        :class:`ValueError`: If any step has an unrecognised protocol.
+    """
+    hops: list[SwapHop] = []
+    steps = route.steps
+    n = len(steps)
+
+    for i, step in enumerate(steps):
+        try:
+            protocol = _pool_to_swap_protocol(step.protocol)
+        except ValueError:
+            raise ValueError(f"swap_route_to_hops: unrecognised protocol {step.protocol!r} on step {i}.")
+
+        zero_for_one = step.token_in.address < step.token_out.address
+        hop_recipient = recipient if i == n - 1 else vm_address
+
+        hops.append(
+            SwapHop(
+                protocol=protocol,
+                pool=step.pool_address,
+                token_in=step.token_in.address,
+                token_out=step.token_out.address,
+                fee_bps=step.fee,
+                recipient=Address(hop_recipient),
+                zero_for_one=zero_for_one,
+            )
+        )
+
+    return hops

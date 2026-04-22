@@ -443,9 +443,9 @@ class TestRouter:
         assert route.token_in == WETH
         assert route.token_out == USDC
         assert route.amount_out.amount > 0
-        dag = router.find_best_route_dag(amount_in, USDC)
-        assert isinstance(dag, RouteDAG)
-        dag_payload = dag.to_dict()
+        assert route.dag is not None
+        assert isinstance(route.dag, RouteDAG)
+        dag_payload = route.dag.to_dict()
         assert dag_payload["token_in"] == WETH
         assert isinstance(dag_payload["actions"][0], RouteSwap)
         assert len(dag_payload["actions"]) == len(route.steps)
@@ -479,7 +479,8 @@ class TestRouter:
         assert route.token_in == WETH
         assert route.token_out == DAI
         assert len(route.steps) == 2
-        dag_payload = router.find_best_route_dag(amount_in, DAI).to_dict()
+        assert route.dag is not None
+        dag_payload = route.dag.to_dict()
         assert [a.pool.pool_address for a in dag_payload["actions"]] == [POOL_A, POOL_B]
 
     def test_find_best_route_no_path_raises(self):
@@ -530,7 +531,7 @@ class TestRouter:
         # Routes should be sorted by descending output amount
         for i in range(len(routes) - 1):
             assert routes[i].amount_out.amount >= routes[i + 1].amount_out.amount
-        assert len(router.find_all_routes_dag(amount_in, DAI)) == len(routes)
+        assert all(route.dag is not None for route in routes)
 
     def test_find_all_routes_top_k(self):
         g = self._make_graph()
@@ -820,3 +821,89 @@ class TestFindBestSplit:
         assert {r.steps[0].pool_address for r in routes} == {POOL_A, POOL_B}
         # sorted descending by output
         assert routes[0].amount_out.amount >= routes[1].amount_out.amount
+
+
+# ---------------------------------------------------------------------------
+# Router.simulate
+# ---------------------------------------------------------------------------
+
+
+class TestRouterSimulate:
+    """Verify off-chain DAG simulation using constant-product pool math."""
+
+    def _make_edge(
+        self, token_in: Token, token_out: Token, pool: Address, reserve_in: int, reserve_out: int, fee_bps: int = 30
+    ) -> PoolEdge:
+        return PoolEdge(
+            token_in=token_in,
+            token_out=token_out,
+            pool_address=pool,
+            protocol="UniswapV2",
+            reserve_in=reserve_in,
+            reserve_out=reserve_out,
+            fee_bps=fee_bps,
+        )
+
+    def test_linear_single_hop_matches_pool_math(self):
+        """simulate() result equals edge.amount_out() for a single-hop DAG."""
+        edge = self._make_edge(WETH, USDC, POOL_A, 1_000 * 10**18, 2_000_000 * 10**6)
+        g = PoolGraph()
+        g.add_pool(edge)
+        router = Router(g)
+
+        amount_in = 10**18
+        dag = router.find_best_route(TokenAmount(WETH, amount_in), USDC).dag
+        result = router.simulate(dag, amount_in)
+
+        assert result == edge.amount_out(amount_in)
+        assert result > 0
+
+    def test_two_hop_chains_amount_out(self):
+        """simulate() chains amount_out through both hops."""
+        edge_ab = self._make_edge(WETH, USDC, POOL_A, 1_000 * 10**18, 2_000_000 * 10**6)
+        edge_bc = self._make_edge(USDC, DAI, POOL_B, 5_000_000 * 10**6, 5_000_000 * 10**18, fee_bps=4)
+        g = PoolGraph()
+        g.add_pool(edge_ab)
+        g.add_pool(edge_bc)
+        router = Router(g)
+
+        amount_in = 10**18
+        dag = router.find_best_route(TokenAmount(WETH, amount_in), DAI).dag
+        result = router.simulate(dag, amount_in)
+
+        mid = edge_ab.amount_out(amount_in)
+        expected = edge_bc.amount_out(mid)
+        assert result == expected
+
+    def test_split_dag_sums_legs(self):
+        """simulate() sums each split leg proportionally."""
+        edge_a1 = self._make_edge(WETH, USDC, POOL_A, 10 * 10**18, 20_000 * 10**6)
+        edge_a2 = self._make_edge(WETH, USDC, POOL_B, 10 * 10**18, 20_000 * 10**6)
+        g = PoolGraph()
+        g.add_pool(edge_a1)
+        g.add_pool(edge_a2)
+        router = Router(g)
+
+        amount_in = 10**18
+        dag = router.find_best_split(TokenAmount(WETH, amount_in), USDC, step_bps=5000)
+        result = router.simulate(dag, amount_in)
+
+        # Manual: each leg gets amount_in * bps / 10000
+        from pydefi.types import RouteSplit
+
+        payload = dag.to_dict()
+        split = payload["actions"][0]
+        assert isinstance(split, RouteSplit)
+        expected = sum(leg.actions[0].pool.amount_out(amount_in * leg.fraction_bps // 10_000) for leg in split.legs)
+        assert result == expected
+
+    def test_zero_reserves_returns_zero(self):
+        """simulate() propagates zero when a pool has no reserves."""
+        edge = self._make_edge(WETH, USDC, POOL_A, 0, 0)
+        g = PoolGraph()
+        g.add_pool(edge)
+        router = Router(g)
+
+        dag = RouteDAG().from_token(WETH)
+        dag.swap(USDC, edge)
+        assert router.simulate(dag, 10**18) == 0

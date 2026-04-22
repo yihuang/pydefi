@@ -30,7 +30,7 @@ from eth_contract.contract import ContractFunction
 from eth_contract.erc20 import ERC20
 from eth_utils import keccak
 
-from pydefi.types import Address
+from pydefi.types import Address, ChainId, SwapProtocol, SwapRoute, Token, TokenAmount
 from pydefi.vm import Patch, Program, emit_abi_encode, emit_abi_encode_packed
 from pydefi.vm.program import (
     OP_ADD,
@@ -936,6 +936,109 @@ class TestSplitSwapComposition:
         via_compose = Program.compose([step1, split]).build()
         via_add = (step1 + split).build()
         assert via_compose == via_add
+
+
+# ---------------------------------------------------------------------------
+# swap_route_to_hops
+# ---------------------------------------------------------------------------
+
+
+class TestSwapRouteToHops:
+    """Verify protocol detection, zero_for_one, and recipient routing."""
+
+    from pydefi.types import SwapStep
+
+    VM = Address("0x" + "cc" * 20)
+    RECIPIENT = Address("0x" + "dd" * 20)
+    # token_a < token_b by address so zero_for_one=True when in=a, out=b
+    TOKEN_A = Token(chain_id=ChainId.ETHEREUM, address=Address("0x" + "11" * 20), symbol="TKA", decimals=18)
+    TOKEN_B = Token(chain_id=ChainId.ETHEREUM, address=Address("0x" + "99" * 20), symbol="TKB", decimals=18)
+    POOL_X = Address("0x" + "aa" * 20)
+    POOL_Y = Address("0x" + "bb" * 20)
+
+    def _make_route(self, steps_data: list[tuple]) -> SwapRoute:
+        from pydefi.types import SwapStep
+
+        steps = [
+            SwapStep(
+                token_in=tin,
+                token_out=tout,
+                pool_address=pool,
+                protocol=proto,
+                fee=fee,
+            )
+            for tin, tout, pool, proto, fee in steps_data
+        ]
+        return SwapRoute(
+            steps=steps,
+            amount_in=TokenAmount(token=steps[0].token_in, amount=10**18),
+            amount_out=TokenAmount(token=steps[-1].token_out, amount=1),
+        )
+
+    def test_single_v2_hop(self):
+        from pydefi.vm.swap import swap_route_to_hops
+
+        route = self._make_route([(self.TOKEN_A, self.TOKEN_B, self.POOL_X, "UniswapV2", 30)])
+        hops = swap_route_to_hops(route, self.VM, self.RECIPIENT)
+
+        assert len(hops) == 1
+        assert hops[0].protocol == SwapProtocol.UNISWAP_V2
+        assert hops[0].pool == self.POOL_X
+        assert hops[0].fee_bps == 30
+        assert hops[0].recipient == self.RECIPIENT
+
+    def test_single_v3_hop(self):
+        from pydefi.vm.swap import swap_route_to_hops
+
+        route = self._make_route([(self.TOKEN_A, self.TOKEN_B, self.POOL_X, "UniswapV3", 5)])
+        hops = swap_route_to_hops(route, self.VM, self.RECIPIENT)
+
+        assert len(hops) == 1
+        assert hops[0].protocol == SwapProtocol.UNISWAP_V3
+
+    def test_zero_for_one_from_address_order(self):
+        from pydefi.vm.swap import swap_route_to_hops
+
+        # TOKEN_A address (0x11*20) < TOKEN_B address (0x99*20) → zero_for_one True
+        route = self._make_route([(self.TOKEN_A, self.TOKEN_B, self.POOL_X, "UniswapV3", 5)])
+        hops = swap_route_to_hops(route, self.VM, self.RECIPIENT)
+        assert hops[0].zero_for_one is True
+
+        # Reverse direction → zero_for_one False
+        route_rev = self._make_route([(self.TOKEN_B, self.TOKEN_A, self.POOL_X, "UniswapV3", 5)])
+        hops_rev = swap_route_to_hops(route_rev, self.VM, self.RECIPIENT)
+        assert hops_rev[0].zero_for_one is False
+
+    def test_multihop_intermediate_recipient_is_vm(self):
+        from pydefi.vm.swap import swap_route_to_hops
+
+        route = self._make_route(
+            [
+                (self.TOKEN_A, self.TOKEN_B, self.POOL_X, "UniswapV2", 30),
+                (self.TOKEN_B, self.TOKEN_A, self.POOL_Y, "UniswapV3", 5),
+            ]
+        )
+        hops = swap_route_to_hops(route, self.VM, self.RECIPIENT)
+
+        assert len(hops) == 2
+        assert hops[0].recipient == self.VM
+        assert hops[1].recipient == self.RECIPIENT
+
+    def test_unknown_protocol_raises(self):
+        from pydefi.vm.swap import swap_route_to_hops
+
+        route = self._make_route([(self.TOKEN_A, self.TOKEN_B, self.POOL_X, "SushiSwapV99", 30)])
+        with pytest.raises(ValueError, match="unrecognised protocol.*step 0"):
+            swap_route_to_hops(route, self.VM, self.RECIPIENT)
+
+    def test_protocol_variants(self):
+        """All protocol strings mapped by _PROTOCOL_LOOKUP are accepted."""
+        from pydefi.vm.swap import _PROTOCOL_LOOKUP, swap_route_to_hops
+
+        for proto in _PROTOCOL_LOOKUP:
+            route = self._make_route([(self.TOKEN_A, self.TOKEN_B, self.POOL_X, proto, 30)])
+            hops = swap_route_to_hops(route, self.VM, self.RECIPIENT)
+            assert len(hops) == 1
 
 
 # ---------------------------------------------------------------------------
