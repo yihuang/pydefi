@@ -274,14 +274,13 @@ def _build_v2_compute_out_segment(hop: SwapHop, fee_num: int) -> Program:
     ``dup()`` it before calling this segment.
     """
     prog = Program()
-
     prog.call_contract_abi(hop.pool, "getReserves()").pop()
     if hop.zero_for_one:
-        prog._emit(ret_u256(0))  # [rIn]
-        prog._emit(ret_u256(32))  # [rIn, rOut]
+        prog._emit(ret_u256(0))
+        prog._emit(ret_u256(32))
     else:
-        prog._emit(ret_u256(32))  # [rIn]
-        prog._emit(ret_u256(0))  # [rIn, rOut]
+        prog._emit(ret_u256(32))
+        prog._emit(ret_u256(0))
 
     # [amount_in, rIn, rOut] -> amount_out
     prog._emit(dup_n(3))  # DUP3: amount_in
@@ -405,7 +404,7 @@ def _swap_hop_from_route_swap(swap_action: RouteSwap, *, recipient: Address) -> 
     return SwapHop(
         protocol=_pool_to_swap_protocol(pool.protocol),
         pool=pool.pool_address,
-        token_in=pool.token_in.address,  # type: ignore[attr-defined]
+        token_in=pool.token_in.address,
         token_out=swap_action.token_out.address,
         fee_bps=pool.fee_bps,
         recipient=recipient,

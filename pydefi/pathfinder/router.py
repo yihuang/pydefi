@@ -426,8 +426,8 @@ class Router:
         if max_splits < 1:
             raise ValueError("max_splits must be >= 1")
         routes = self._find_top_routes(amount_in, token_out, top_n=max_splits, max_hops=max_hops)
-        edge_index: dict[tuple[str, str], PoolEdge] = {
-            (edge.pool_address.lower(), edge.token_in.address.lower()): edge for edge in self.graph
+        edge_index: dict[tuple[Address, Address], PoolEdge] = {
+            (edge.pool_address, edge.token_in.address): edge for edge in self.graph
         }
         legs = self._best_n_way_split(routes, amount_in, edge_index, step_bps)
 
@@ -472,27 +472,27 @@ class Router:
         """
         effective_max_hops = self.max_hops if max_hops is None else max_hops
         src = amount_in.token
-        dst_addr = token_out.address.lower()
+        dst_addr: Address = token_out.address
 
-        if src.address.lower() == dst_addr:
+        if src.address == dst_addr:
             raise ValueError("token_in and token_out must be different")
 
-        best: dict[tuple[str, int], list[tuple[int, list[PoolEdge]]]] = {
-            (src.address.lower(), 0): [(amount_in.amount, [])]
-        }
+        best: dict[tuple[Address, int], list[tuple[int, list[PoolEdge]]]] = {(src.address, 0): [(amount_in.amount, [])]}
+        # Map Address → Token, kept in sync with `best` key convention.
+        token_by_addr: dict[Address, Token] = {src.address: src}
 
         for hop in range(effective_max_hops):
             current_states = [(k, v) for k, v in best.items() if k[1] == hop and v]
             for (token_addr, _), candidates in current_states:
-                token: Token = candidates[0][1][-1].token_out if candidates[0][1] else src
-                updated_keys: set[tuple[str, int]] = set()
+                token: Token = token_by_addr[token_addr]
+                updated_keys: set[tuple[Address, int]] = set()
 
                 for current_amount, path in candidates:
-                    visited = {e.token_in.address.lower() for e in path}
+                    visited: set[Address] = {e.token_in.address for e in path}
                     visited.add(token_addr)
 
                     for edge in self.graph.edges_from(token):
-                        next_addr = edge.token_out.address.lower()
+                        next_addr: Address = edge.token_out.address
                         if next_addr in visited:
                             continue
                         next_amount = edge.amount_out(current_amount)
@@ -500,6 +500,7 @@ class Router:
                             continue
                         next_key = (next_addr, hop + 1)
                         best.setdefault(next_key, []).append((next_amount, path + [edge]))
+                        token_by_addr.setdefault(next_addr, edge.token_out)
                         updated_keys.add(next_key)
 
                 for key in updated_keys:
@@ -518,10 +519,10 @@ class Router:
 
         all_candidates.sort(key=lambda x: x[0], reverse=True)
 
-        seen_first_pools: set[str] = set()
+        seen_first_pools: set[Address] = set()
         diverse: list[tuple[int, list[PoolEdge]]] = []
         for amount, path in all_candidates:
-            first_pool = path[0].pool_address.lower()
+            first_pool: Address = path[0].pool_address
             if first_pool not in seen_first_pools:
                 seen_first_pools.add(first_pool)
                 diverse.append((amount, path))
@@ -554,7 +555,7 @@ class Router:
         self,
         routes: list[SwapRoute],
         amount_in: TokenAmount,
-        edge_index: dict[tuple[str, str], PoolEdge],
+        edge_index: dict[tuple[Address, Address], PoolEdge],
         step_bps: int,
     ) -> list[tuple[int, list[PoolEdge]]]:
         """Return the best N-way weight allocation across *routes* at *step_bps* granularity.
@@ -580,7 +581,11 @@ class Router:
         # Pre-build per-route edge lists once to avoid repeated dict lookups.
         route_edges: list[list[PoolEdge]] = []
         for route in routes:
-            edges = [edge_index[(step.pool_address.lower(), step.token_in.address.lower())] for step in route.steps]
+            edges = [
+                edge_index[(step.pool_address, step.token_in.address)]
+                for step in route.steps
+                if step.pool_address is not None
+            ]
             route_edges.append(edges)
 
         def _follow_edges(edges: list[PoolEdge], raw_amount: int) -> int:
