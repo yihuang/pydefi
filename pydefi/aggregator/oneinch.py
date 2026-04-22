@@ -178,7 +178,7 @@ class OneInch(BaseAggregator):
         step = SwapStep(
             token_in=amount_in.token,
             token_out=token_out,
-            pool_address="",  # 1inch routes through multiple pools
+            pool_address=None,  # 1inch routes through multiple pools
             protocol=self.protocol_name,
             fee=0,
         )

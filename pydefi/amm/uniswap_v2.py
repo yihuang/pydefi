@@ -34,7 +34,7 @@ class UniswapV2(BaseAMM):
     def __init__(
         self,
         w3: AsyncWeb3,
-        router_address: str,
+        router_address: Address,
         protocol_name: str = "UniswapV2",
     ) -> None:
         super().__init__(w3, router_address)

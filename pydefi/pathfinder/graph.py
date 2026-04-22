@@ -38,7 +38,7 @@ class PoolEdge(BasePool):
 
     token_in: Token
     token_out: Token
-    pool_address: str
+    pool_address: Address
     protocol: str
     reserve_in: int = 0
     reserve_out: int = 0
@@ -446,7 +446,7 @@ class PoolGraph:
         self,
         token_a: Token,
         token_b: Token,
-        pool_address: str,
+        pool_address: Address,
         protocol: str,
         reserve_a: int = 0,
         reserve_b: int = 0,

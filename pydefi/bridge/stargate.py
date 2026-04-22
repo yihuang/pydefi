@@ -69,7 +69,7 @@ class Stargate(BaseBridge):
         w3: AsyncWeb3,
         src_chain_id: int,
         dst_chain_id: int,
-        router_address: str,
+        router_address: Address,
     ) -> None:
         super().__init__(src_chain_id, dst_chain_id)
         self.w3 = w3

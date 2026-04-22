@@ -139,14 +139,16 @@ class SwapStep:
     Attributes:
         token_in: Input token for this hop.
         token_out: Output token for this hop.
-        pool_address: Address of the liquidity pool used.
+        pool_address: Address of the liquidity pool used, or ``None`` when the
+            pool identity is unavailable (e.g. aggregator routes that do not
+            expose individual pool addresses).
         protocol: Human-readable protocol name (e.g. ``"UniswapV2"``).
         fee: Swap fee in basis points (base 10000, e.g. ``30`` = 0.3%).
     """
 
     token_in: Token
     token_out: Token
-    pool_address: str
+    pool_address: Address | None
     protocol: str
     fee: int = 30
 

@@ -264,7 +264,7 @@ class TestUniversalRouterConstants:
     def test_known_addresses_contains_ethereum(self):
         assert 1 in UNIVERSAL_ROUTER_ADDRESSES
         # UniversalRouterV2 (supports Uniswap V4)
-        assert UNIVERSAL_ROUTER_ADDRESSES[1].lower() == UNIVERSAL_ROUTER.to_0x_hex().lower()
+        assert UNIVERSAL_ROUTER_ADDRESSES[1] == UNIVERSAL_ROUTER
 
     def test_known_addresses_contains_arbitrum(self):
         assert 42161 in UNIVERSAL_ROUTER_ADDRESSES
