@@ -24,6 +24,18 @@ Fork tests (``@pytest.mark.fork``) require either:
 Run fork tests with::
 
     pytest -m fork
+
+Testnet tests (``@pytest.mark.testnet``) run against a real testnet (default:
+Sepolia) and can automatically fund the test wallet when a supported faucet
+API key is available.  Configure via environment variables::
+
+    SEPOLIA_RPC_URL  — Sepolia JSON-RPC URL (default: https://rpc.sepolia.org)
+    TESTNET_PRIVATE_KEY — hex private key of the test wallet
+    ALCHEMY_API_KEY  — Alchemy API key for the faucet
+
+Run testnet tests with::
+
+    pytest -m testnet
 """
 
 import asyncio
@@ -47,6 +59,14 @@ from tests.live.sol_utils import compile_interpreter_sync
 # ---------------------------------------------------------------------------
 
 ETH_RPC_URL = os.environ.get("ETH_RPC_URL") or "https://eth.drpc.org"
+
+# ---------------------------------------------------------------------------
+# Testnet (Sepolia) configuration — used by ``@pytest.mark.testnet`` tests
+# ---------------------------------------------------------------------------
+
+SEPOLIA_RPC_URL = os.environ.get("SEPOLIA_RPC_URL", "https://rpc.sepolia.org")
+TESTNET_PRIVATE_KEY = os.environ.get("TESTNET_PRIVATE_KEY", "")
+ALCHEMY_API_KEY = os.environ.get("ALCHEMY_API_KEY", "")
 
 # ---------------------------------------------------------------------------
 # Solana public RPC (used for simulation and as the surfpool upstream)
@@ -328,3 +348,69 @@ async def surfpool_rpc():
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             pass
+
+
+# ---------------------------------------------------------------------------
+# Testnet (Sepolia) fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def sepolia_w3() -> AsyncWeb3:
+    """Return an :class:`~web3.AsyncWeb3` instance connected to Sepolia.
+
+    Override the RPC URL via the ``SEPOLIA_RPC_URL`` environment variable.
+    """
+    return AsyncWeb3(AsyncWeb3.AsyncHTTPProvider(SEPOLIA_RPC_URL))
+
+
+@pytest.fixture
+def testnet_faucet():
+    """Return a configured testnet faucet, or skip the test if none is set up.
+
+    Requires the ``ALCHEMY_API_KEY`` environment variable.
+    The test is skipped automatically when the variable is not set.
+    """
+    from pydefi.faucet import AlchemyFaucet
+
+    if ALCHEMY_API_KEY:
+        return AlchemyFaucet(api_key=ALCHEMY_API_KEY, chain_id=ChainId.SEPOLIA)
+    pytest.skip("No testnet faucet configured — set ALCHEMY_API_KEY to enable automatic wallet funding")
+
+
+@pytest.fixture
+async def funded_testnet_account(sepolia_w3, testnet_faucet):
+    """Return an :mod:`eth_account` ``Account`` object funded with Sepolia ETH.
+
+    The fixture:
+
+    1. Reads the hex private key from ``TESTNET_PRIVATE_KEY``.  The test is
+       skipped when the variable is not set.
+    2. Checks the wallet balance on Sepolia.
+    3. Calls the configured faucet (see :func:`testnet_faucet`) to top-up the
+       wallet when the balance is below 0.01 ETH.
+    4. Waits up to 60 seconds for the faucet funds to appear on-chain before
+       yielding the :class:`~eth_account.signers.local.LocalAccount`.
+
+    The *testnet_faucet* fixture is implicitly requested; if no faucet is
+    configured the test is skipped there.
+
+    Example usage in a ``@pytest.mark.testnet`` test::
+
+        @pytest.mark.testnet
+        async def test_something(funded_testnet_account, sepolia_w3):
+            balance = await sepolia_w3.eth.get_balance(funded_testnet_account.address)
+            assert balance > 0
+    """
+    from eth_account import Account
+
+    if not TESTNET_PRIVATE_KEY:
+        pytest.skip("TESTNET_PRIVATE_KEY not set — cannot derive testnet wallet")
+
+    account = Account.from_key(TESTNET_PRIVATE_KEY)
+    await testnet_faucet.ensure_funded(
+        sepolia_w3,
+        account.address,
+        min_balance=10**16,  # 0.01 ETH
+    )
+    return account

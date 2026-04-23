@@ -49,6 +49,7 @@ testpaths = ["tests"]
 markers = [
     "live: marks tests as live integration tests that require network access (run with '-m live')",
     "fork: marks tests that require a local fork of mainnet — EVM via Anvil or Solana via surfpool (run with '-m fork')",
+    "testnet: marks tests that run against a real testnet and may auto-fund wallets via a faucet (run with '-m testnet')",
 ]
 
 [tool.ruff]
