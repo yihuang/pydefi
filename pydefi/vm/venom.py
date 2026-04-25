@@ -155,7 +155,7 @@ class ModuleBuilder(VenomBuilder):
             return IRLabel(f"{self._prefix}.{label.value}")
         return label
 
-    def append_data_section(self, name: str) -> None:  # type: ignore[override]
+    def append_data_section(self, name: str) -> None:
         """Append a namespaced data section to the context's data segment."""
         self.ctx.append_data_section(self.named_label(name))
 
