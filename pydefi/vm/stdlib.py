@@ -75,7 +75,7 @@ from vyper.venom.basicblock import IRLiteral
 if TYPE_CHECKING:
     from pydefi.vm.venom import ModuleBuilder
 
-__all__ = ["STDLIB"]
+__all__ = ["STDLIB", "_encode_msg"]
 
 # keccak256("Error(string)")[:4] stored as a full 32-byte MSTORE word
 # (4-byte selector in the high bits, 28 zero bytes in the low bits)
