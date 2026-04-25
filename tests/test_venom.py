@@ -10,6 +10,7 @@ Verifies:
 7. Runnable bytecode verified with mini_evm
 8. Stdlib: revert_if and assert_ge emit correct Error(string) data
 9. Block labels from create_block are prefixed (no collision after merge)
+10. Stdlib functions are proper IR functions invokable by label name
 """
 
 from __future__ import annotations
@@ -540,3 +541,81 @@ def test_assert_ge_msg_too_long_raises():
     mod = ModuleBuilder("ag5")
     with pytest.raises(ValueError, match="too long"):
         mod.assert_ge(IRLiteral(1), IRLiteral(2), "y" * 33)
+
+
+# ---------------------------------------------------------------------------
+# 10. Stdlib module structure — functions as proper IR, invoke by label name
+# ---------------------------------------------------------------------------
+
+
+def test_stdlib_has_revert_if_function():
+    """STDLIB module exposes stdlib.revert_if as an IR function."""
+    from pydefi.vm.stdlib import STDLIB
+
+    assert "stdlib.revert_if" in {fn.name.value for fn in STDLIB.ctx.functions.values()}
+
+
+def test_stdlib_has_assert_ge_function():
+    """STDLIB module exposes stdlib.assert_ge as an IR function."""
+    from pydefi.vm.stdlib import STDLIB
+
+    assert "stdlib.assert_ge" in {fn.name.value for fn in STDLIB.ctx.functions.values()}
+
+
+def test_stdlib_invoke_by_label_explicit_merge():
+    """Direct invoke by IRLabel + explicit merge compiles and runs correctly."""
+    from pydefi.vm.stdlib import STDLIB, _encode_msg
+
+    msg_len, msg_word = _encode_msg("explicit merge")
+    mod = ModuleBuilder("ibl")
+    # invoke stdlib.revert_if directly, without using ModuleBuilder.revert_if
+    mod.invoke(
+        IRLabel("stdlib.revert_if"),
+        [IRLiteral(1), IRLiteral(msg_len), IRLiteral(msg_word)],
+        returns=0,
+    )
+    buf = mod.alloca(32)
+    mod.mstore(buf, IRLiteral(0))
+    mod.return_(buf, IRLiteral(32))
+    # explicit merge of the stdlib context
+    mod.merge(STDLIB.ctx)
+
+    bytecode = mod.compile()
+    result = mini_evm(bytecode)
+    assert result.is_error
+    assert _decode_error_string(result.output) == "explicit merge"
+
+
+def test_stdlib_auto_merged_after_revert_if():
+    """Calling mod.revert_if auto-merges stdlib functions into the context."""
+    mod = ModuleBuilder("am1")
+    mod.revert_if(IRLiteral(0), "no revert")
+    buf = mod.alloca(32)
+    mod.mstore(buf, IRLiteral(55))
+    mod.return_(buf, IRLiteral(32))
+
+    # stdlib.revert_if must be present in the context after the call
+    assert any(
+        "stdlib.revert_if" in fn.name.value
+        for fn in mod.ctx.functions.values()
+    )
+
+    bytecode = mod.compile()
+    result = mini_evm(bytecode)
+    assert not result.is_error
+    assert int.from_bytes(result.output, "big") == 55
+
+
+def test_stdlib_merge_idempotent():
+    """Calling revert_if twice must not double-merge stdlib (no duplicate fn error)."""
+    mod = ModuleBuilder("idem")
+    mod.revert_if(IRLiteral(0), "first")
+    mod.revert_if(IRLiteral(0), "second")
+    buf = mod.alloca(32)
+    mod.mstore(buf, IRLiteral(77))
+    mod.return_(buf, IRLiteral(32))
+
+    bytecode = mod.compile()
+    result = mini_evm(bytecode)
+    assert not result.is_error
+    assert int.from_bytes(result.output, "big") == 77

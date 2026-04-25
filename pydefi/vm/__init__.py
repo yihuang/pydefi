@@ -110,6 +110,7 @@ from pydefi.vm.program import (
     swap,
 )
 from pydefi.vm.stdlib import (
+    STDLIB,
     assert_ge as venom_assert_ge,
 )
 from pydefi.vm.stdlib import (
@@ -136,7 +137,8 @@ __all__ = [
     "Program",
     # Venom IR module builder
     "ModuleBuilder",
-    # Venom IR stdlib helpers (standalone functions)
+    # Venom IR stdlib module and standalone helpers
+    "STDLIB",
     "venom_revert_if",
     "venom_assert_ge",
     # Patch type aliases and Patch class

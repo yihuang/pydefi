@@ -121,6 +121,7 @@ class ModuleBuilder(VenomBuilder):
             ctx.entry_function = fn
         super().__init__(ctx, fn)
         self._prefix = prefix
+        self._stdlib_merged: bool = False
 
     # ------------------------------------------------------------------
     # Label helpers
@@ -211,18 +212,33 @@ class ModuleBuilder(VenomBuilder):
     # Stdlib helpers
     # ------------------------------------------------------------------
 
+    def _ensure_stdlib_merged(self) -> None:
+        """Merge the stdlib context into this builder's context (at most once).
+
+        Idempotent — subsequent calls after the first are no-ops.  Called
+        automatically by :meth:`revert_if` and :meth:`assert_ge`.
+        """
+        if not self._stdlib_merged:
+            from pydefi.vm.stdlib import STDLIB
+
+            self.merge(STDLIB.ctx)
+            self._stdlib_merged = True
+
     def revert_if(self, cond: object, msg: str) -> None:
         """Conditionally revert with ``Error(string)`` *msg*.
 
-        If *cond* is non-zero the function builds the standard Solidity
-        ``Error(string)`` ABI payload in memory and reverts.  On return the
-        active block is the continuation (non-revert) block.
-
-        See :func:`~pydefi.vm.stdlib.revert_if` for full documentation.
+        Emits an ``invoke stdlib.revert_if`` instruction targeting the
+        pre-built stdlib function.  The
+        :class:`~vyper.venom.passes.function_inliner.FunctionInlinerPass`
+        inlines it at the call site during :meth:`compile`.  The stdlib
+        context is merged automatically if it hasn't been already.
 
         Args:
             cond: Venom IR operand — non-zero triggers the revert.
             msg:  Error message string (≤ 32 bytes UTF-8).
+
+        Raises:
+            ValueError: If *msg* encodes to more than 32 bytes.
         """
         from pydefi.vm.stdlib import revert_if as _revert_if
 
@@ -231,14 +247,19 @@ class ModuleBuilder(VenomBuilder):
     def assert_ge(self, a: object, b: object, msg: str) -> None:
         """Assert *a* ≥ *b*, reverting with ``Error(string)`` *msg* if violated.
 
-        On return the active block is the continuation (assertion-passed) block.
-
-        See :func:`~pydefi.vm.stdlib.assert_ge` for full documentation.
+        Emits an ``invoke stdlib.assert_ge`` instruction targeting the
+        pre-built stdlib function.  The
+        :class:`~vyper.venom.passes.function_inliner.FunctionInlinerPass`
+        inlines it at the call site during :meth:`compile`.  The stdlib
+        context is merged automatically if it hasn't been already.
 
         Args:
             a:   Venom IR operand — left-hand side of the comparison.
             b:   Venom IR operand — right-hand side of the comparison.
             msg: Error message string (≤ 32 bytes UTF-8).
+
+        Raises:
+            ValueError: If *msg* encodes to more than 32 bytes.
         """
         from pydefi.vm.stdlib import assert_ge as _assert_ge
 
