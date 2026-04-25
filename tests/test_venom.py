@@ -12,12 +12,10 @@ Verifies:
 
 from __future__ import annotations
 
-import pytest
 from vyper.venom.basicblock import IRLabel, IRLiteral
 
 from pydefi.vm.venom import ModuleBuilder
 from tests.conftest import mini_evm
-
 
 # ---------------------------------------------------------------------------
 # 1. Label namespacing
@@ -196,8 +194,8 @@ def test_cross_module_invoke():
 
     fn_compute = mod_a.create_function("compute")
     mod_a.set_block(fn_compute.entry)
-    x = mod_a.param()          # first argument
-    y = mod_a.param()          # second argument
+    x = mod_a.param()  # first argument
+    y = mod_a.param()  # second argument
     return_pc = mod_a.param()  # return-PC — always last param
     result = mod_a.add(x, y)
     mod_a.ret(result, return_pc)
@@ -279,8 +277,8 @@ def test_data_section_second_item():
     mod = ModuleBuilder("data2")
 
     mod.append_data_section("lut")
-    mod.append_data_item(b"\x00" * 31 + b"\x01")   # word 0 = 1
-    mod.append_data_item(b"\x00" * 31 + b"\x63")   # word 1 = 99
+    mod.append_data_item(b"\x00" * 31 + b"\x01")  # word 0 = 1
+    mod.append_data_item(b"\x00" * 31 + b"\x63")  # word 1 = 99
 
     # Read the second word: offset = 32 bytes into the table
     src = mod.offset(IRLiteral(32), mod.named_label("lut"))
