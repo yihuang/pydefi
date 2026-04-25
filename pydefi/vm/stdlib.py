@@ -69,9 +69,7 @@ __all__ = ["STDLIB", "revert_if", "assert_ge"]
 
 # keccak256("Error(string)")[:4] stored as a full 32-byte MSTORE word
 # (4-byte selector in the high bits, 28 zero bytes in the low bits)
-_ERROR_SELECTOR_WORD: int = (
-    0x08C379A0_00000000_00000000_00000000_00000000_00000000_00000000_00000000
-)
+_ERROR_SELECTOR_WORD: int = 0x08C379A000000000000000000000000000000000000000000000000000000000
 
 # Maximum encoded message length (must fit in a single EVM word)
 _MAX_MSG_BYTES: int = 32
@@ -231,7 +229,11 @@ def revert_if(builder: VenomBuilder, cond: object, msg: str) -> None:
         [cond, IRLiteral(msg_len), IRLiteral(msg_word)],
         returns=0,
     )
-    if hasattr(builder, "_ensure_stdlib_merged"):
+    # Auto-merge the stdlib context when builder is a ModuleBuilder.
+    # The import is deferred to avoid a circular dependency at module load time.
+    from pydefi.vm.venom import ModuleBuilder
+
+    if isinstance(builder, ModuleBuilder):
         builder._ensure_stdlib_merged()
 
 
@@ -269,5 +271,9 @@ def assert_ge(builder: VenomBuilder, a: object, b: object, msg: str) -> None:
         [a, b, IRLiteral(msg_len), IRLiteral(msg_word)],
         returns=0,
     )
-    if hasattr(builder, "_ensure_stdlib_merged"):
+    # Auto-merge the stdlib context when builder is a ModuleBuilder.
+    # The import is deferred to avoid a circular dependency at module load time.
+    from pydefi.vm.venom import ModuleBuilder
+
+    if isinstance(builder, ModuleBuilder):
         builder._ensure_stdlib_merged()
