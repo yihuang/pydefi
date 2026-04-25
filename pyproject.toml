@@ -19,6 +19,7 @@ dependencies = [
     "msgpack>=1.0.0",
     "sqlmodel>=0.0.38",
     "base58>=2.1.0",
+    "vyper @ git+https://github.com/vyperlang/vyper.git@master",
 ]
 
 [project.optional-dependencies]
