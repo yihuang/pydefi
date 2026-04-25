@@ -18,7 +18,7 @@ from __future__ import annotations
 import pytest
 from vyper.venom.basicblock import IRLabel, IRLiteral
 
-from pydefi.vm.stdlib import STDLIB, encode_msg
+from pydefi.vm.stdlib import STDLIB, _encode_msg
 from pydefi.vm.venom import ModuleBuilder
 from tests.conftest import mini_evm
 
@@ -32,34 +32,35 @@ _ERROR_SELECTOR = bytes.fromhex("08c379a0")
 
 def test_named_label_with_prefix():
     mod = ModuleBuilder("mymod")
-    label = mod.ctx.named_label("foo")
+    label = mod.named_label("foo")
     assert label.value == "mymod.foo"
     assert label.is_symbol is True
 
 
 def test_named_label_without_prefix():
     mod = ModuleBuilder("")
-    label = mod.ctx.named_label("bar")
+    label = mod.named_label("bar")
     assert label.value == "bar"
 
 
 def test_get_next_label_with_prefix():
     mod = ModuleBuilder("abc")
-    l1 = mod.ctx.get_next_label()
-    l2 = mod.ctx.get_next_label("loop")
+    l1 = mod.get_next_label()
+    l2 = mod.get_next_label("loop")
     assert l1.value.startswith("abc.")
     assert "loop" in l2.value
 
 
 def test_get_next_label_no_prefix():
     mod = ModuleBuilder("")
-    l1 = mod.ctx.get_next_label()
+    l1 = mod.get_next_label()
+    # When no prefix the label comes directly from IRContext counter
     assert l1.value != ""
 
 
 def test_create_function_namespaced():
     mod = ModuleBuilder("svc")
-    fn = mod.ctx.create_function("helper")
+    fn = mod.create_function("helper")
     assert "svc.helper" in str(fn.name)
 
 
@@ -76,7 +77,7 @@ def test_entry_function_is_main():
 
 def test_data_section_label_prefixed():
     mod = ModuleBuilder("ds")
-    mod.ctx.append_data_section("table")
+    mod.append_data_section("table")
     assert len(mod.ctx.data_segment) == 1
     lbl = mod.ctx.data_segment[0].label
     assert "ds.table" in str(lbl)
@@ -84,8 +85,8 @@ def test_data_section_label_prefixed():
 
 def test_data_item_appended():
     mod = ModuleBuilder("ds")
-    mod.ctx.append_data_section("lut")
-    mod.ctx.append_data_item(b"\xde\xad\xbe\xef")
+    mod.append_data_section("lut")
+    mod.append_data_item(b"\xde\xad\xbe\xef")
     items = mod.ctx.data_segment[0].data_items
     assert len(items) == 1
     assert items[0].data == b"\xde\xad\xbe\xef"
@@ -153,7 +154,7 @@ def test_merge_two_modules_no_collision():
     buf = main.alloca(32)
     main.mstore(buf, result)
     main.return_(buf, IRLiteral(32))
-    main.ctx.merge(mod_a.ctx, mod_b.ctx)
+    main.merge(mod_a.ctx, mod_b.ctx)
 
     # All three modules' functions should be present
     fn_names = [str(name) for name in main.ctx.functions]
@@ -175,7 +176,7 @@ def test_merge_produces_correct_result():
     buf = main.alloca(32)
     main.mstore(buf, result)
     main.return_(buf, IRLiteral(32))
-    main.ctx.merge(mod_a.ctx, mod_b.ctx)
+    main.merge(mod_a.ctx, mod_b.ctx)
 
     bytecode = main.compile()
     evm_result = mini_evm(bytecode)
@@ -199,7 +200,7 @@ def test_cross_module_invoke():
     mod_a = ModuleBuilder("mod_a")
     mod_a.stop()  # terminate the default entry; we only use mod_a.compute
 
-    fn_compute = mod_a.ctx.create_function("compute")
+    fn_compute = mod_a.create_function("compute")
     mod_a.set_block(fn_compute.entry)
     x = mod_a.param()  # first argument
     y = mod_a.param()  # second argument
@@ -213,7 +214,7 @@ def test_cross_module_invoke():
     buf = main.alloca(32)
     main.mstore(buf, rets[0])
     main.return_(buf, IRLiteral(32))
-    main.ctx.merge(mod_a.ctx)
+    main.merge(mod_a.ctx)
 
     bytecode = main.compile()
     evm_result = mini_evm(bytecode)
@@ -226,7 +227,7 @@ def test_cross_module_invoke_mul():
     mod_a = ModuleBuilder("mod_a")
     mod_a.stop()
 
-    fn_mul = mod_a.ctx.create_function("multiply")
+    fn_mul = mod_a.create_function("multiply")
     mod_a.set_block(fn_mul.entry)
     a = mod_a.param()
     b = mod_a.param()
@@ -239,7 +240,7 @@ def test_cross_module_invoke_mul():
     buf = main.alloca(32)
     main.mstore(buf, rets[0])
     main.return_(buf, IRLiteral(32))
-    main.ctx.merge(mod_a.ctx)
+    main.merge(mod_a.ctx)
 
     bytecode = main.compile()
     evm_result = mini_evm(bytecode)
@@ -260,12 +261,12 @@ def test_data_section_read():
     """Store a known value in a data section and read it back at runtime."""
     mod = ModuleBuilder("data_test")
 
-    mod.ctx.append_data_section("table")
+    mod.append_data_section("table")
     # Store 42 as a 32-byte big-endian word
-    mod.ctx.append_data_item(b"\x00" * 31 + b"\x2a")
+    mod.append_data_item(b"\x00" * 31 + b"\x2a")
 
     # Read 32 bytes from the table via offset + codecopy
-    src = mod.offset(IRLiteral(0), "table")
+    src = mod.offset(IRLiteral(0), mod.named_label("table"))
     buf = mod.alloca(32)
     mod.codecopy(buf, src, IRLiteral(32))
     val = mod.mload(buf)
@@ -283,12 +284,12 @@ def test_data_section_second_item():
     """Access the second 32-byte word in a data section."""
     mod = ModuleBuilder("data2")
 
-    mod.ctx.append_data_section("lut")
-    mod.ctx.append_data_item(b"\x00" * 31 + b"\x01")  # word 0 = 1
-    mod.ctx.append_data_item(b"\x00" * 31 + b"\x63")  # word 1 = 99
+    mod.append_data_section("lut")
+    mod.append_data_item(b"\x00" * 31 + b"\x01")  # word 0 = 1
+    mod.append_data_item(b"\x00" * 31 + b"\x63")  # word 1 = 99
 
     # Read the second word: offset = 32 bytes into the table
-    src = mod.offset(IRLiteral(32), "lut")
+    src = mod.offset(IRLiteral(32), mod.named_label("lut"))
     buf = mod.alloca(32)
     mod.codecopy(buf, src, IRLiteral(32))
     val = mod.mload(buf)
@@ -306,8 +307,8 @@ def test_two_modules_separate_data_sections():
     """Each module has its own data section; both are accessible after merge."""
     # Module A: has data section with value 11
     mod_a = ModuleBuilder("mod_a")
-    mod_a.ctx.append_data_section("data")
-    mod_a.ctx.append_data_item(b"\x00" * 31 + b"\x0b")  # 11
+    mod_a.append_data_section("data")
+    mod_a.append_data_item(b"\x00" * 31 + b"\x0b")  # 11
     mod_a.stop()  # mod_a just declares data; main reads it
 
     # Main: reads from mod_a.data and returns it
@@ -319,7 +320,7 @@ def test_two_modules_separate_data_sections():
     out = main.alloca(32)
     main.mstore(out, val)
     main.return_(out, IRLiteral(32))
-    main.ctx.merge(mod_a.ctx)
+    main.merge(mod_a.ctx)
 
     bytecode = main.compile()
     evm_result = mini_evm(bytecode)
@@ -344,7 +345,7 @@ def test_create_block_no_collision_after_merge():
     # Each module creates a function with internal blocks (simulates revert_if).
     mod_a = ModuleBuilder("mod_a")
     mod_a.stop()
-    fn_a = mod_a.ctx.create_function("helper_a")
+    fn_a = mod_a.create_function("helper_a")
     mod_a.set_block(fn_a.entry)
     rpc = mod_a.param()
     ba1 = mod_a.create_block("check")  # should be "mod_a.N_check"
@@ -359,7 +360,7 @@ def test_create_block_no_collision_after_merge():
 
     mod_b = ModuleBuilder("mod_b")
     mod_b.stop()
-    fn_b = mod_b.ctx.create_function("helper_b")
+    fn_b = mod_b.create_function("helper_b")
     mod_b.set_block(fn_b.entry)
     rpc2 = mod_b.param()
     bb1 = mod_b.create_block("check")  # should be "mod_b.N_check" — different
@@ -382,7 +383,7 @@ def test_create_block_no_collision_after_merge():
     buf = main.alloca(32)
     main.mstore(buf, IRLiteral(1))
     main.return_(buf, IRLiteral(32))
-    main.ctx.merge(mod_a.ctx, mod_b.ctx)
+    main.merge(mod_a.ctx, mod_b.ctx)
 
     bytecode = main.compile()
     evm_result = mini_evm(bytecode)
@@ -408,7 +409,7 @@ def _invoke_revert_if(mod: ModuleBuilder, cond: object, msg: str) -> None:
 
     The caller is responsible for merging STDLIB.ctx before compiling.
     """
-    msg_len, msg_word = encode_msg(msg)
+    msg_len, msg_word = _encode_msg(msg)
     mod.invoke(
         IRLabel("stdlib.revert_if"),
         [cond, IRLiteral(msg_len), IRLiteral(msg_word)],
@@ -421,7 +422,7 @@ def _invoke_assert_ge(mod: ModuleBuilder, a: object, b: object, msg: str) -> Non
 
     The caller is responsible for merging STDLIB.ctx before compiling.
     """
-    msg_len, msg_word = encode_msg(msg)
+    msg_len, msg_word = _encode_msg(msg)
     mod.invoke(
         IRLabel("stdlib.assert_ge"),
         [a, b, IRLiteral(msg_len), IRLiteral(msg_word)],
@@ -436,7 +437,7 @@ def test_revert_if_triggers_on_true():
     buf = mod.alloca(32)
     mod.mstore(buf, IRLiteral(0))
     mod.return_(buf, IRLiteral(32))
-    mod.ctx.merge(STDLIB.ctx)
+    mod.merge(STDLIB.ctx)
 
     bytecode = mod.compile()
     result = mini_evm(bytecode)
@@ -454,7 +455,7 @@ def test_revert_if_passes_on_false():
     buf = mod.alloca(32)
     mod.mstore(buf, IRLiteral(99))
     mod.return_(buf, IRLiteral(32))
-    mod.ctx.merge(STDLIB.ctx)
+    mod.merge(STDLIB.ctx)
 
     bytecode = mod.compile()
     result = mini_evm(bytecode)
@@ -472,7 +473,7 @@ def test_revert_if_uses_runtime_condition():
     buf = mod.alloca(32)
     mod.mstore(buf, IRLiteral(7))
     mod.return_(buf, IRLiteral(32))
-    mod.ctx.merge(STDLIB.ctx)
+    mod.merge(STDLIB.ctx)
 
     bytecode = mod.compile()
     result = mini_evm(bytecode)
@@ -483,7 +484,7 @@ def test_revert_if_uses_runtime_condition():
 def test_revert_if_msg_too_long_raises():
     """_encode_msg with a message > 32 bytes must raise ValueError."""
     with pytest.raises(ValueError, match="too long"):
-        encode_msg("x" * 33)
+        _encode_msg("x" * 33)
 
 
 # ---------------------------------------------------------------------------
@@ -498,7 +499,7 @@ def test_assert_ge_passes_when_a_ge_b():
     buf = mod.alloca(32)
     mod.mstore(buf, IRLiteral(10))
     mod.return_(buf, IRLiteral(32))
-    mod.ctx.merge(STDLIB.ctx)
+    mod.merge(STDLIB.ctx)
 
     bytecode = mod.compile()
     result = mini_evm(bytecode)
@@ -513,7 +514,7 @@ def test_assert_ge_passes_when_equal():
     buf = mod.alloca(32)
     mod.mstore(buf, IRLiteral(7))
     mod.return_(buf, IRLiteral(32))
-    mod.ctx.merge(STDLIB.ctx)
+    mod.merge(STDLIB.ctx)
 
     bytecode = mod.compile()
     result = mini_evm(bytecode)
@@ -528,7 +529,7 @@ def test_assert_ge_reverts_when_a_lt_b():
     buf = mod.alloca(32)
     mod.mstore(buf, IRLiteral(0))
     mod.return_(buf, IRLiteral(32))
-    mod.ctx.merge(STDLIB.ctx)
+    mod.merge(STDLIB.ctx)
 
     bytecode = mod.compile()
     result = mini_evm(bytecode)
@@ -539,7 +540,7 @@ def test_assert_ge_reverts_when_a_lt_b():
 def test_assert_ge_msg_too_long_raises():
     """_encode_msg with a message > 32 bytes must raise ValueError."""
     with pytest.raises(ValueError, match="too long"):
-        encode_msg("y" * 33)
+        _encode_msg("y" * 33)
 
 
 # ---------------------------------------------------------------------------
@@ -548,18 +549,18 @@ def test_assert_ge_msg_too_long_raises():
 
 
 def test_stdlib_has_revert_if_function():
-    """STDLIB exposes stdlib.revert_if as an IR function."""
+    """STDLIB module exposes stdlib.revert_if as an IR function."""
     assert "stdlib.revert_if" in {fn.name.value for fn in STDLIB.ctx.functions.values()}
 
 
 def test_stdlib_has_assert_ge_function():
-    """STDLIB exposes stdlib.assert_ge as an IR function."""
+    """STDLIB module exposes stdlib.assert_ge as an IR function."""
     assert "stdlib.assert_ge" in {fn.name.value for fn in STDLIB.ctx.functions.values()}
 
 
 def test_stdlib_invoke_by_label_explicit_merge():
     """Direct invoke by IRLabel + explicit merge compiles and runs correctly."""
-    msg_len, msg_word = encode_msg("explicit merge")
+    msg_len, msg_word = _encode_msg("explicit merge")
     mod = ModuleBuilder("ibl")
     mod.invoke(
         IRLabel("stdlib.revert_if"),
@@ -569,7 +570,7 @@ def test_stdlib_invoke_by_label_explicit_merge():
     buf = mod.alloca(32)
     mod.mstore(buf, IRLiteral(0))
     mod.return_(buf, IRLiteral(32))
-    mod.ctx.merge(STDLIB.ctx)
+    mod.merge(STDLIB.ctx)
 
     bytecode = mod.compile()
     result = mini_evm(bytecode)
