@@ -182,6 +182,8 @@ def _build_stdlib() -> ModuleBuilder:
     mod.stop()  # terminate the auto-created stdlib.main entry function
     _build_revert_if(mod)
     _build_assert_ge(mod)
+    del mod.ctx.functions[mod.named_label("main")]
+    mod.ctx.entry_function = None
     return mod
 
 
