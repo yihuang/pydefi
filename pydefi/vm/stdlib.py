@@ -53,8 +53,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from vyper.venom.basicblock import IRLiteral
-
 if TYPE_CHECKING:
     from pydefi.vm.venom import ModuleBuilder
 
@@ -79,11 +77,11 @@ def encode_msg(msg: str) -> tuple[int, int]:
 def _emit_error_revert(mod: "ModuleBuilder", msg_len, msg_word) -> None:
     """Emit MSTOREs + REVERT for a 100-byte ``Error(string)`` payload."""
     buf = mod.alloca(100)
-    mod.mstore(buf, IRLiteral(_ERROR_SELECTOR_WORD))
-    mod.mstore(mod.add(buf, IRLiteral(4)), IRLiteral(32))
-    mod.mstore(mod.add(buf, IRLiteral(36)), msg_len)
-    mod.mstore(mod.add(buf, IRLiteral(68)), msg_word)
-    mod.revert(buf, IRLiteral(100))
+    mod.mstore(buf, _ERROR_SELECTOR_WORD)
+    mod.mstore(mod.add(buf, 4), 32)
+    mod.mstore(mod.add(buf, 36), msg_len)
+    mod.mstore(mod.add(buf, 68), msg_word)
+    mod.revert(buf, 100)
 
 
 def _build_revert_branch(mod: "ModuleBuilder", cond, msg_len, msg_word, ret_pc) -> None:
