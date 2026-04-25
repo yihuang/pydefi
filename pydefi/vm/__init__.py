@@ -109,7 +109,7 @@ from pydefi.vm.program import (
     sub,
     swap,
 )
-from pydefi.vm.stdlib import STDLIB
+from pydefi.vm.stdlib import STDLIB, encode_msg
 from pydefi.vm.swap import (
     V2_AMOUNT_OUT_OFFSET,
     V3_AMOUNT_OUT_OFFSET,
@@ -133,6 +133,7 @@ __all__ = [
     "ModuleBuilder",
     # Venom IR stdlib module
     "STDLIB",
+    "encode_msg",
     # Patch type aliases and Patch class
     "Patch",
     "PatchSpec",

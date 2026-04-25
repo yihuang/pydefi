@@ -18,7 +18,7 @@ from __future__ import annotations
 import pytest
 from vyper.venom.basicblock import IRLabel, IRLiteral
 
-from pydefi.vm.stdlib import STDLIB, _encode_msg
+from pydefi.vm.stdlib import STDLIB, encode_msg
 from pydefi.vm.venom import ModuleBuilder
 from tests.conftest import mini_evm
 
@@ -409,7 +409,7 @@ def _invoke_revert_if(mod: ModuleBuilder, cond: object, msg: str) -> None:
 
     The caller is responsible for merging STDLIB.ctx before compiling.
     """
-    msg_len, msg_word = _encode_msg(msg)
+    msg_len, msg_word = encode_msg(msg)
     mod.invoke(
         IRLabel("stdlib.revert_if"),
         [cond, IRLiteral(msg_len), IRLiteral(msg_word)],
@@ -422,7 +422,7 @@ def _invoke_assert_ge(mod: ModuleBuilder, a: object, b: object, msg: str) -> Non
 
     The caller is responsible for merging STDLIB.ctx before compiling.
     """
-    msg_len, msg_word = _encode_msg(msg)
+    msg_len, msg_word = encode_msg(msg)
     mod.invoke(
         IRLabel("stdlib.assert_ge"),
         [a, b, IRLiteral(msg_len), IRLiteral(msg_word)],
@@ -482,9 +482,9 @@ def test_revert_if_uses_runtime_condition():
 
 
 def test_revert_if_msg_too_long_raises():
-    """_encode_msg with a message > 32 bytes must raise ValueError."""
+    """encode_msg with a message > 32 bytes must raise ValueError."""
     with pytest.raises(ValueError, match="too long"):
-        _encode_msg("x" * 33)
+        encode_msg("x" * 33)
 
 
 # ---------------------------------------------------------------------------
@@ -538,9 +538,9 @@ def test_assert_ge_reverts_when_a_lt_b():
 
 
 def test_assert_ge_msg_too_long_raises():
-    """_encode_msg with a message > 32 bytes must raise ValueError."""
+    """encode_msg with a message > 32 bytes must raise ValueError."""
     with pytest.raises(ValueError, match="too long"):
-        _encode_msg("y" * 33)
+        encode_msg("y" * 33)
 
 
 # ---------------------------------------------------------------------------
@@ -560,7 +560,7 @@ def test_stdlib_has_assert_ge_function():
 
 def test_stdlib_invoke_by_label_explicit_merge():
     """Direct invoke by IRLabel + explicit merge compiles and runs correctly."""
-    msg_len, msg_word = _encode_msg("explicit merge")
+    msg_len, msg_word = encode_msg("explicit merge")
     mod = ModuleBuilder("ibl")
     mod.invoke(
         IRLabel("stdlib.revert_if"),
