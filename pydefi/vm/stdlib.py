@@ -15,7 +15,7 @@ Usage pattern
 ::
 
     from pydefi.vm.venom import ModuleBuilder
-    from pydefi.vm.stdlib import STDLIB, _encode_msg
+    from pydefi.vm.stdlib import STDLIB, encode_msg
     from vyper.venom.basicblock import IRLabel, IRLiteral
 
     mod = ModuleBuilder("example")
@@ -23,7 +23,7 @@ Usage pattern
 
     # Conditional revert:
     is_zero = mod.iszero(amount)
-    msg_len, msg_word = _encode_msg("amount is zero")
+    msg_len, msg_word = encode_msg("amount is zero")
     mod.invoke(
         IRLabel("stdlib.revert_if"),
         [is_zero, IRLiteral(msg_len), IRLiteral(msg_word)],
@@ -31,7 +31,7 @@ Usage pattern
     )
 
     # Assertion:
-    msg_len2, msg_word2 = _encode_msg("amount too small")
+    msg_len2, msg_word2 = encode_msg("amount too small")
     mod.invoke(
         IRLabel("stdlib.assert_ge"),
         [amount, IRLiteral(1000), IRLiteral(msg_len2), IRLiteral(msg_word2)],
@@ -70,12 +70,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from vyper.venom.basicblock import IRLiteral
+from vyper.venom.basicblock import IRLabel, IRLiteral
 
 if TYPE_CHECKING:
     from pydefi.vm.venom import ModuleBuilder
 
-__all__ = ["STDLIB", "_encode_msg"]
+__all__ = ["STDLIB", "encode_msg"]
 
 # keccak256("Error(string)")[:4] stored as a full 32-byte MSTORE word
 # (4-byte selector in the high bits, 28 zero bytes in the low bits)
@@ -85,7 +85,7 @@ _ERROR_SELECTOR_WORD: int = 0x08C379A0000000000000000000000000000000000000000000
 _MAX_MSG_BYTES: int = 32
 
 
-def _encode_msg(msg: str) -> tuple[int, int]:
+def encode_msg(msg: str) -> tuple[int, int]:
     """Encode a UTF-8 string into ``(msg_len, msg_word)`` for the stdlib functions.
 
     Args:
@@ -101,7 +101,7 @@ def _encode_msg(msg: str) -> tuple[int, int]:
 
     Example::
 
-        msg_len, msg_word = _encode_msg("amount is zero")
+        msg_len, msg_word = encode_msg("amount is zero")
         mod.invoke(
             IRLabel("stdlib.revert_if"),
             [cond, IRLiteral(msg_len), IRLiteral(msg_word)],
@@ -159,29 +159,9 @@ def _build_assert_ge(mod: "ModuleBuilder") -> None:
     msg_word = mod.param()
     ret_pc = mod.param()
 
-    # Assertion fails when a < b (lt returns 1).
+    # Assertion fails when a < b (lt returns 1); delegate revert to revert_if.
     cond = mod.lt(a, b)
-
-    bb_revert = mod.create_block("revert")
-    bb_ok = mod.create_block("ok")
-    mod.jnz(cond, bb_revert.label, bb_ok.label)
-
-    # --- revert path ---
-    mod.append_block(bb_revert)
-    mod.set_block(bb_revert)
-    buf = mod.alloca(100)
-    mod.mstore(buf, IRLiteral(_ERROR_SELECTOR_WORD))
-    ptr4 = mod.add(buf, IRLiteral(4))
-    mod.mstore(ptr4, IRLiteral(32))
-    ptr36 = mod.add(buf, IRLiteral(36))
-    mod.mstore(ptr36, msg_len)
-    ptr68 = mod.add(buf, IRLiteral(68))
-    mod.mstore(ptr68, msg_word)
-    mod.revert(buf, IRLiteral(100))
-
-    # --- ok path ---
-    mod.append_block(bb_ok)
-    mod.set_block(bb_ok)
+    mod.invoke(IRLabel("stdlib.revert_if"), [cond, msg_len, msg_word], returns=0)
     mod.ret(ret_pc)
 
 
