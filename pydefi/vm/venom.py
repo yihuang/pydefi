@@ -194,18 +194,39 @@ class ModuleBuilder(VenomBuilder):
         """Merge one or more :class:`~vyper.venom.context.IRContext` objects into
         this builder's context.
 
-        All labels in *sources* are expected to already be namespace-prefixed (as
-        produced by other :class:`ModuleBuilder` instances), so no collisions should
-        occur.
+        Raises :class:`ValueError` on duplicate function, basic-block, or
+        data-section labels *before* mutating ``self.ctx``.  Sources are cleared
+        after a successful merge so they cannot be merged twice.
 
         Args:
             *sources: Contexts to merge.  Their functions and data-segment entries
                       are appended to ``self.ctx``.
         """
+        fn_labels = set(self.ctx.functions)
+        data_labels = {section.label for section in self.ctx.data_segment}
+        bb_labels = {bb.label for bb in self.ctx.get_basic_blocks()}
+
         for src in sources:
             for fn in src.functions.values():
+                if fn.name in fn_labels:
+                    raise ValueError(f"merge: duplicate function label {fn.name}")
+                fn_labels.add(fn.name)
+                for bb in fn.get_basic_blocks():
+                    if bb.label in bb_labels:
+                        raise ValueError(f"merge: duplicate basic block label {bb.label}")
+                    bb_labels.add(bb.label)
+            for section in src.data_segment:
+                if section.label in data_labels:
+                    raise ValueError(f"merge: duplicate data section label {section.label}")
+                data_labels.add(section.label)
+
+        for src in sources:
+            for fn in list(src.functions.values()):
                 self.ctx.add_function(fn)
             self.ctx.data_segment.extend(src.data_segment)
+            src.functions.clear()
+            src.data_segment.clear()
+            src.entry_function = None
 
     def compile(
         self,
