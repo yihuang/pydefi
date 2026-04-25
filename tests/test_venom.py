@@ -405,7 +405,10 @@ def _decode_error_string(data: bytes) -> str:
 
 
 def _invoke_revert_if(mod: ModuleBuilder, cond: object, msg: str) -> None:
-    """Helper: emit invoke stdlib.revert_if and merge STDLIB into *mod*."""
+    """Helper: emit invoke stdlib.revert_if into *mod*.
+
+    The caller is responsible for merging STDLIB.ctx before compiling.
+    """
     msg_len, msg_word = _encode_msg(msg)
     mod.invoke(
         IRLabel("stdlib.revert_if"),
@@ -415,7 +418,10 @@ def _invoke_revert_if(mod: ModuleBuilder, cond: object, msg: str) -> None:
 
 
 def _invoke_assert_ge(mod: ModuleBuilder, a: object, b: object, msg: str) -> None:
-    """Helper: emit invoke stdlib.assert_ge and merge STDLIB into *mod*."""
+    """Helper: emit invoke stdlib.assert_ge into *mod*.
+
+    The caller is responsible for merging STDLIB.ctx before compiling.
+    """
     msg_len, msg_word = _encode_msg(msg)
     mod.invoke(
         IRLabel("stdlib.assert_ge"),
