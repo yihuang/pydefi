@@ -109,13 +109,7 @@ from pydefi.vm.program import (
     sub,
     swap,
 )
-from pydefi.vm.stdlib import (
-    STDLIB,
-    assert_ge as venom_assert_ge,
-)
-from pydefi.vm.stdlib import (
-    revert_if as venom_revert_if,
-)
+from pydefi.vm.stdlib import STDLIB
 from pydefi.vm.swap import (
     V2_AMOUNT_OUT_OFFSET,
     V3_AMOUNT_OUT_OFFSET,
@@ -137,10 +131,8 @@ __all__ = [
     "Program",
     # Venom IR module builder
     "ModuleBuilder",
-    # Venom IR stdlib module and standalone helpers
+    # Venom IR stdlib module
     "STDLIB",
-    "venom_revert_if",
-    "venom_assert_ge",
     # Patch type aliases and Patch class
     "Patch",
     "PatchSpec",
