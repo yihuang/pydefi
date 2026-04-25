@@ -78,7 +78,7 @@ from __future__ import annotations
 from vyper.compiler.settings import VenomOptimizationFlags
 from vyper.evm.assembler.core import assembly_to_evm
 from vyper.venom import VenomCompiler, run_passes_on
-from vyper.venom.basicblock import IRLabel
+from vyper.venom.basicblock import IRBasicBlock, IRLabel
 from vyper.venom.builder import VenomBuilder
 from vyper.venom.context import IRContext
 from vyper.venom.function import IRFunction
@@ -155,6 +155,29 @@ class ModuleBuilder(VenomBuilder):
             return IRLabel(f"{self._prefix}.{label.value}")
         return label
 
+    def create_block(self, suffix: str = "") -> IRBasicBlock:
+        """Create a new block with a namespace-prefixed auto-generated label.
+
+        Overrides :meth:`~vyper.venom.builder.VenomBuilder.create_block` to use
+        the prefixed :meth:`get_next_label` instead of
+        :meth:`~vyper.venom.context.IRContext.get_next_label` directly, ensuring
+        that all block labels are unique across merged modules.
+        """
+        label = self.get_next_label(suffix)
+        return IRBasicBlock(label, self.fn)
+
+    def set_block(self, bb: IRBasicBlock) -> None:
+        """Switch the emission target to *bb* and update the active function.
+
+        Overrides :meth:`~vyper.venom.builder.VenomBuilder.set_block` to also
+        update :attr:`fn` to ``bb.parent``.  This ensures that
+        :meth:`create_block` and :meth:`append_block` target the same function
+        as the current block, which is required when building secondary functions
+        via :meth:`create_function` + :meth:`set_block`.
+        """
+        self._current_bb = bb
+        self.fn = bb.parent
+
     def append_data_section(self, name: str) -> None:
         """Append a namespaced data section to the context's data segment."""
         self.ctx.append_data_section(self.named_label(name))
@@ -183,6 +206,43 @@ class ModuleBuilder(VenomBuilder):
             for fn in src.functions.values():
                 self.ctx.add_function(fn)
             self.ctx.data_segment.extend(src.data_segment)
+
+    # ------------------------------------------------------------------
+    # Stdlib helpers
+    # ------------------------------------------------------------------
+
+    def revert_if(self, cond: object, msg: str) -> None:
+        """Conditionally revert with ``Error(string)`` *msg*.
+
+        If *cond* is non-zero the function builds the standard Solidity
+        ``Error(string)`` ABI payload in memory and reverts.  On return the
+        active block is the continuation (non-revert) block.
+
+        See :func:`~pydefi.vm.stdlib.revert_if` for full documentation.
+
+        Args:
+            cond: Venom IR operand — non-zero triggers the revert.
+            msg:  Error message string (≤ 32 bytes UTF-8).
+        """
+        from pydefi.vm.stdlib import revert_if as _revert_if
+
+        _revert_if(self, cond, msg)
+
+    def assert_ge(self, a: object, b: object, msg: str) -> None:
+        """Assert *a* ≥ *b*, reverting with ``Error(string)`` *msg* if violated.
+
+        On return the active block is the continuation (assertion-passed) block.
+
+        See :func:`~pydefi.vm.stdlib.assert_ge` for full documentation.
+
+        Args:
+            a:   Venom IR operand — left-hand side of the comparison.
+            b:   Venom IR operand — right-hand side of the comparison.
+            msg: Error message string (≤ 32 bytes UTF-8).
+        """
+        from pydefi.vm.stdlib import assert_ge as _assert_ge
+
+        _assert_ge(self, a, b, msg)
 
     def compile(
         self,

@@ -8,14 +8,22 @@ Verifies:
 5. Cross-module function calls (correct param/ret calling convention)
 6. Data section access via offset + codecopy
 7. Runnable bytecode verified with mini_evm
+8. Stdlib: revert_if and assert_ge emit correct Error(string) data
+9. Block labels from create_block are prefixed (no collision after merge)
 """
 
 from __future__ import annotations
 
+import pytest
 from vyper.venom.basicblock import IRLabel, IRLiteral
 
+from pydefi.vm.stdlib import assert_ge as venom_assert_ge
+from pydefi.vm.stdlib import revert_if as venom_revert_if
 from pydefi.vm.venom import ModuleBuilder
 from tests.conftest import mini_evm
+
+# Error(string) ABI selector
+_ERROR_SELECTOR = bytes.fromhex("08c379a0")
 
 # ---------------------------------------------------------------------------
 # 1. Label namespacing
@@ -318,3 +326,217 @@ def test_two_modules_separate_data_sections():
     evm_result = mini_evm(bytecode)
     assert not evm_result.is_error
     assert int.from_bytes(evm_result.output, "big") == 11
+
+
+# ---------------------------------------------------------------------------
+# 7. create_block label prefixing — no collision after merge
+# ---------------------------------------------------------------------------
+
+
+def test_create_block_labels_are_prefixed():
+    """Blocks created via create_block carry the module prefix."""
+    mod = ModuleBuilder("mymod")
+    bb = mod.create_block("loop")
+    assert "mymod." in bb.label.value
+
+
+def test_create_block_no_collision_after_merge():
+    """Two modules using create_block internally must not collide after merge."""
+    # Each module creates a function with internal blocks (simulates revert_if).
+    mod_a = ModuleBuilder("mod_a")
+    mod_a.stop()
+    fn_a = mod_a.create_function("helper_a")
+    mod_a.set_block(fn_a.entry)
+    rpc = mod_a.param()
+    ba1 = mod_a.create_block("check")  # should be "mod_a.N_check"
+    ba2 = mod_a.create_block("done")   # should be "mod_a.M_done"
+    mod_a.jnz(IRLiteral(0), ba1.label, ba2.label)
+    mod_a.append_block(ba1)
+    mod_a.set_block(ba1)
+    mod_a.jmp(ba2.label)
+    mod_a.append_block(ba2)
+    mod_a.set_block(ba2)
+    mod_a.ret(rpc)
+
+    mod_b = ModuleBuilder("mod_b")
+    mod_b.stop()
+    fn_b = mod_b.create_function("helper_b")
+    mod_b.set_block(fn_b.entry)
+    rpc2 = mod_b.param()
+    bb1 = mod_b.create_block("check")  # should be "mod_b.N_check" — different
+    bb2 = mod_b.create_block("done")
+    mod_b.jnz(IRLiteral(0), bb1.label, bb2.label)
+    mod_b.append_block(bb1)
+    mod_b.set_block(bb1)
+    mod_b.jmp(bb2.label)
+    mod_b.append_block(bb2)
+    mod_b.set_block(bb2)
+    mod_b.ret(rpc2)
+
+    # Labels are different thanks to the prefix
+    assert ba1.label.value != bb1.label.value
+
+    # Merge and compile — must not raise due to duplicate labels
+    main = ModuleBuilder("main")
+    main.invoke(IRLabel("mod_a.helper_a"), [], returns=0)
+    main.invoke(IRLabel("mod_b.helper_b"), [], returns=0)
+    buf = main.alloca(32)
+    main.mstore(buf, IRLiteral(1))
+    main.return_(buf, IRLiteral(32))
+    main.merge(mod_a.ctx, mod_b.ctx)
+
+    bytecode = main.compile()
+    evm_result = mini_evm(bytecode)
+    assert not evm_result.is_error
+
+
+# ---------------------------------------------------------------------------
+# 8. Stdlib: revert_if
+# ---------------------------------------------------------------------------
+
+
+def _decode_error_string(data: bytes) -> str:
+    """Decode the string from an Error(string) ABI payload."""
+    # Layout: [4 sel][32 offset][32 length][32 data...]
+    assert data[:4] == _ERROR_SELECTOR, f"bad selector: {data[:4].hex()}"
+    assert int.from_bytes(data[4:36], "big") == 32  # ABI offset
+    length = int.from_bytes(data[36:68], "big")
+    return data[68 : 68 + length].decode()
+
+
+def test_revert_if_triggers_on_true():
+    """revert_if(cond=1, msg) must revert with correct Error(string) payload."""
+    mod = ModuleBuilder("rv1")
+    mod.revert_if(IRLiteral(1), "bad input")
+    # Unreachable after revert — but the compiler needs a return for the ok block
+    buf = mod.alloca(32)
+    mod.mstore(buf, IRLiteral(0))
+    mod.return_(buf, IRLiteral(32))
+
+    bytecode = mod.compile()
+    result = mini_evm(bytecode)
+
+    assert result.is_error
+    assert len(result.output) == 100
+    assert result.output[:4] == _ERROR_SELECTOR
+    assert _decode_error_string(result.output) == "bad input"
+
+
+def test_revert_if_passes_on_false():
+    """revert_if(cond=0, msg) must continue normally and return the expected value."""
+    mod = ModuleBuilder("rv2")
+    mod.revert_if(IRLiteral(0), "should not revert")
+    buf = mod.alloca(32)
+    mod.mstore(buf, IRLiteral(99))
+    mod.return_(buf, IRLiteral(32))
+
+    bytecode = mod.compile()
+    result = mini_evm(bytecode)
+
+    assert not result.is_error
+    assert int.from_bytes(result.output, "big") == 99
+
+
+def test_revert_if_uses_runtime_condition():
+    """revert_if with a computed condition triggers correctly at runtime."""
+    mod = ModuleBuilder("rv3")
+    # iszero(5) = 0 → no revert; iszero(0) = 1 → revert
+    cond = mod.iszero(IRLiteral(5))  # = 0, so no revert
+    mod.revert_if(cond, "unreachable")
+    buf = mod.alloca(32)
+    mod.mstore(buf, IRLiteral(7))
+    mod.return_(buf, IRLiteral(32))
+
+    bytecode = mod.compile()
+    result = mini_evm(bytecode)
+    assert not result.is_error
+    assert int.from_bytes(result.output, "big") == 7
+
+
+def test_revert_if_msg_too_long_raises():
+    """revert_if with a message > 32 bytes must raise ValueError."""
+    mod = ModuleBuilder("rv4")
+    with pytest.raises(ValueError, match="too long"):
+        mod.revert_if(IRLiteral(1), "x" * 33)
+
+
+def test_revert_if_standalone_function():
+    """revert_if can be called as a standalone function (not just a method)."""
+    mod = ModuleBuilder("rv5")
+    venom_revert_if(mod, IRLiteral(1), "standalone")
+    buf = mod.alloca(32)
+    mod.mstore(buf, IRLiteral(0))
+    mod.return_(buf, IRLiteral(32))
+
+    bytecode = mod.compile()
+    result = mini_evm(bytecode)
+    assert result.is_error
+    assert _decode_error_string(result.output) == "standalone"
+
+
+# ---------------------------------------------------------------------------
+# 9. Stdlib: assert_ge
+# ---------------------------------------------------------------------------
+
+
+def test_assert_ge_passes_when_a_ge_b():
+    """assert_ge(a, b) must not revert when a >= b."""
+    mod = ModuleBuilder("ag1")
+    mod.assert_ge(IRLiteral(10), IRLiteral(5), "too small")
+    buf = mod.alloca(32)
+    mod.mstore(buf, IRLiteral(10))
+    mod.return_(buf, IRLiteral(32))
+
+    bytecode = mod.compile()
+    result = mini_evm(bytecode)
+    assert not result.is_error
+    assert int.from_bytes(result.output, "big") == 10
+
+
+def test_assert_ge_passes_when_equal():
+    """assert_ge(a, b) must not revert when a == b."""
+    mod = ModuleBuilder("ag2")
+    mod.assert_ge(IRLiteral(7), IRLiteral(7), "not equal")
+    buf = mod.alloca(32)
+    mod.mstore(buf, IRLiteral(7))
+    mod.return_(buf, IRLiteral(32))
+
+    bytecode = mod.compile()
+    result = mini_evm(bytecode)
+    assert not result.is_error
+    assert int.from_bytes(result.output, "big") == 7
+
+
+def test_assert_ge_reverts_when_a_lt_b():
+    """assert_ge(a, b) must revert with Error(msg) when a < b."""
+    mod = ModuleBuilder("ag3")
+    mod.assert_ge(IRLiteral(3), IRLiteral(10), "amount too small")
+    buf = mod.alloca(32)
+    mod.mstore(buf, IRLiteral(0))
+    mod.return_(buf, IRLiteral(32))
+
+    bytecode = mod.compile()
+    result = mini_evm(bytecode)
+    assert result.is_error
+    assert _decode_error_string(result.output) == "amount too small"
+
+
+def test_assert_ge_standalone_function():
+    """assert_ge can be called as a standalone function (not just a method)."""
+    mod = ModuleBuilder("ag4")
+    venom_assert_ge(mod, IRLiteral(5), IRLiteral(10), "standalone fail")
+    buf = mod.alloca(32)
+    mod.mstore(buf, IRLiteral(0))
+    mod.return_(buf, IRLiteral(32))
+
+    bytecode = mod.compile()
+    result = mini_evm(bytecode)
+    assert result.is_error
+    assert _decode_error_string(result.output) == "standalone fail"
+
+
+def test_assert_ge_msg_too_long_raises():
+    """assert_ge with a message > 32 bytes must raise ValueError."""
+    mod = ModuleBuilder("ag5")
+    with pytest.raises(ValueError, match="too long"):
+        mod.assert_ge(IRLiteral(1), IRLiteral(2), "y" * 33)

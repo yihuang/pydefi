@@ -121,6 +121,10 @@ from pydefi.vm.swap import (
     v3_pool_swap_calldata,
 )
 from pydefi.vm.venom import ModuleBuilder
+from pydefi.vm.stdlib import (
+    assert_ge as venom_assert_ge,
+    revert_if as venom_revert_if,
+)
 
 __all__ = [
     # In-VM ABI encoding bytecode generators
@@ -130,6 +134,9 @@ __all__ = [
     "Program",
     # Venom IR module builder
     "ModuleBuilder",
+    # Venom IR stdlib helpers (standalone functions)
+    "venom_revert_if",
+    "venom_assert_ge",
     # Patch type aliases and Patch class
     "Patch",
     "PatchSpec",
