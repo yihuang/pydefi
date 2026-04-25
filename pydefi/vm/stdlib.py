@@ -111,9 +111,7 @@ def _encode_msg(msg: str) -> tuple[int, int]:
     """
     raw = msg.encode("utf-8")
     if len(raw) > _MAX_MSG_BYTES:
-        raise ValueError(
-            f"message too long ({len(raw)} bytes, max {_MAX_MSG_BYTES})"
-        )
+        raise ValueError(f"message too long ({len(raw)} bytes, max {_MAX_MSG_BYTES})")
     msg_len = len(raw)
     msg_word = int.from_bytes(raw.ljust(_MAX_MSG_BYTES, b"\x00"), "big")
     return msg_len, msg_word
