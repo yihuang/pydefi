@@ -206,10 +206,12 @@ class ModuleBuilder(VenomBuilder):
             for fn in src.functions.values():
                 self.ctx.add_function(fn.copy())
             for segment in src.data_segment:
-                self.ctx.data_segment.append(DataSection(
-                    label=segment.label,
-                    data_items=segment.data_items.copy(),
-                ))
+                self.ctx.data_segment.append(
+                    DataSection(
+                        label=segment.label,
+                        data_items=segment.data_items.copy(),
+                    )
+                )
 
     def compile(
         self,
