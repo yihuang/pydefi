@@ -109,6 +109,12 @@ from pydefi.vm.program import (
     sub,
     swap,
 )
+from pydefi.vm.stdlib import (
+    assert_ge as venom_assert_ge,
+)
+from pydefi.vm.stdlib import (
+    revert_if as venom_revert_if,
+)
 from pydefi.vm.swap import (
     V2_AMOUNT_OUT_OFFSET,
     V3_AMOUNT_OUT_OFFSET,
@@ -121,10 +127,6 @@ from pydefi.vm.swap import (
     v3_pool_swap_calldata,
 )
 from pydefi.vm.venom import ModuleBuilder
-from pydefi.vm.stdlib import (
-    assert_ge as venom_assert_ge,
-    revert_if as venom_revert_if,
-)
 
 __all__ = [
     # In-VM ABI encoding bytecode generators

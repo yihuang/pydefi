@@ -58,9 +58,7 @@ __all__ = ["revert_if", "assert_ge"]
 
 # keccak256("Error(string)")[:4] stored as a full 32-byte MSTORE word
 # (4-byte selector in the high bits, 28 zero bytes in the low bits)
-_ERROR_SELECTOR_WORD: int = (
-    0x08C379A0_00000000_00000000_00000000_00000000_00000000_00000000_00000000
-)
+_ERROR_SELECTOR_WORD: int = 0x08C379A0_00000000_00000000_00000000_00000000_00000000_00000000_00000000
 
 # Maximum encoded message length (must fit in a single EVM word)
 _MAX_MSG_BYTES: int = 32
@@ -93,9 +91,7 @@ def revert_if(builder: VenomBuilder, cond: object, msg: str) -> None:
     """
     raw = msg.encode()
     if len(raw) > _MAX_MSG_BYTES:
-        raise ValueError(
-            f"revert_if: message too long ({len(raw)} bytes, max {_MAX_MSG_BYTES})"
-        )
+        raise ValueError(f"revert_if: message too long ({len(raw)} bytes, max {_MAX_MSG_BYTES})")
 
     msg_len = len(raw)
     # Left-justified in a 32-byte word (high bytes = msg, low bytes = zeros)

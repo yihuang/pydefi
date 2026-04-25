@@ -349,7 +349,7 @@ def test_create_block_no_collision_after_merge():
     mod_a.set_block(fn_a.entry)
     rpc = mod_a.param()
     ba1 = mod_a.create_block("check")  # should be "mod_a.N_check"
-    ba2 = mod_a.create_block("done")   # should be "mod_a.M_done"
+    ba2 = mod_a.create_block("done")  # should be "mod_a.M_done"
     mod_a.jnz(IRLiteral(0), ba1.label, ba2.label)
     mod_a.append_block(ba1)
     mod_a.set_block(ba1)
