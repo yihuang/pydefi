@@ -248,7 +248,7 @@ class ModuleBuilder(VenomBuilder):
             for fn in src.functions.values():
                 self.ctx.add_function(_clone_function(fn))
             self.ctx.data_segment.extend(
-                DataSection(s.label, [DataItem(item.data) for item in s.data_items]) for s in src.data_segment
+                DataSection(s.label, s.data_items.copy()) for s in src.data_segment
             )
 
     def compile(
