@@ -117,7 +117,7 @@ def encode_msg(msg: str) -> tuple[int, int]:
     return msg_len, msg_word
 
 
-def _build_revert_if(mod: "ModuleBuilder") -> None:
+def _build_revert_if(mod: ModuleBuilder) -> None:
     """Add ``stdlib.revert_if(cond, msg_len, msg_word, ret_pc)`` to *mod*."""
     fn = mod.create_function("revert_if")
     mod.set_block(fn.entry)
@@ -149,7 +149,7 @@ def _build_revert_if(mod: "ModuleBuilder") -> None:
     mod.ret(ret_pc)
 
 
-def _build_assert_ge(mod: "ModuleBuilder") -> None:
+def _build_assert_ge(mod: ModuleBuilder) -> None:
     """Add ``stdlib.assert_ge(a, b, msg_len, msg_word, ret_pc)`` to *mod*."""
     fn = mod.create_function("assert_ge")
     mod.set_block(fn.entry)
@@ -165,7 +165,7 @@ def _build_assert_ge(mod: "ModuleBuilder") -> None:
     mod.ret(ret_pc)
 
 
-def _build_stdlib() -> "ModuleBuilder":
+def _build_stdlib() -> ModuleBuilder:
     """Build the stdlib ModuleBuilder with revert_if and assert_ge IR functions.
 
     Returns a fresh :class:`~pydefi.vm.venom.ModuleBuilder` whose context
@@ -188,4 +188,4 @@ def _build_stdlib() -> "ModuleBuilder":
 #: Pre-built stdlib module.  Merge ``STDLIB.ctx`` into your builder before
 #: :meth:`~pydefi.vm.venom.ModuleBuilder.compile` to make the stdlib functions
 #: available for inlining.
-STDLIB: "ModuleBuilder" = _build_stdlib()
+STDLIB: ModuleBuilder = _build_stdlib()

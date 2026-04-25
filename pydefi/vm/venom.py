@@ -80,7 +80,7 @@ from vyper.evm.assembler.core import assembly_to_evm
 from vyper.venom import VenomCompiler, run_passes_on
 from vyper.venom.basicblock import IRBasicBlock, IRLabel
 from vyper.venom.builder import VenomBuilder
-from vyper.venom.context import IRContext
+from vyper.venom.context import DataSection, IRContext
 from vyper.venom.function import IRFunction
 
 __all__ = ["ModuleBuilder"]
@@ -204,8 +204,12 @@ class ModuleBuilder(VenomBuilder):
         """
         for src in sources:
             for fn in src.functions.values():
-                self.ctx.add_function(fn)
-            self.ctx.data_segment.extend(src.data_segment)
+                self.ctx.add_function(fn.copy())
+            for segment in src.data_segment:
+                self.ctx.data_segment.append(DataSection(
+                    label=segment.label,
+                    data_items=segment.data_items.copy(),
+                ))
 
     def compile(
         self,
