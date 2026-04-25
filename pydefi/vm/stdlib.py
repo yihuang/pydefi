@@ -68,7 +68,12 @@ Total revert data: 100 bytes.
 
 from __future__ import annotations
 
-from vyper.venom.basicblock import IRLabel, IRLiteral
+from typing import TYPE_CHECKING
+
+from vyper.venom.basicblock import IRLiteral
+
+if TYPE_CHECKING:
+    from pydefi.vm.venom import ModuleBuilder
 
 __all__ = ["STDLIB", "_encode_msg"]
 
