@@ -38,7 +38,7 @@ Usage pattern
         returns=0,
     )
 
-    mod.return_(mod.alloca(32), IRLiteral(32))
+    mod.stop()
     mod.merge(STDLIB.ctx)
     bytecode = mod.compile()
 
