@@ -75,7 +75,7 @@ from vyper.venom.basicblock import IRLiteral
 if TYPE_CHECKING:
     from pydefi.vm.venom import ModuleBuilder
 
-__all__ = ["STDLIB", "_encode_msg"]
+__all__ = ["STDLIB"]
 
 # keccak256("Error(string)")[:4] stored as a full 32-byte MSTORE word
 # (4-byte selector in the high bits, 28 zero bytes in the low bits)
@@ -117,6 +117,16 @@ def _encode_msg(msg: str) -> tuple[int, int]:
     return msg_len, msg_word
 
 
+def _emit_error_revert(mod: "ModuleBuilder", msg_len, msg_word) -> None:
+    """Emit MSTOREs + REVERT for a 100-byte ``Error(string)`` payload."""
+    buf = mod.alloca(100)
+    mod.mstore(buf, IRLiteral(_ERROR_SELECTOR_WORD))
+    mod.mstore(mod.add(buf, IRLiteral(4)), IRLiteral(32))
+    mod.mstore(mod.add(buf, IRLiteral(36)), msg_len)
+    mod.mstore(mod.add(buf, IRLiteral(68)), msg_word)
+    mod.revert(buf, IRLiteral(100))
+
+
 def _build_revert_if(mod: "ModuleBuilder") -> None:
     """Add ``stdlib.revert_if(cond, msg_len, msg_word, ret_pc)`` to *mod*."""
     fn = mod.create_function("revert_if")
@@ -133,15 +143,7 @@ def _build_revert_if(mod: "ModuleBuilder") -> None:
     # --- revert path ---
     mod.append_block(bb_revert)
     mod.set_block(bb_revert)
-    buf = mod.alloca(100)
-    mod.mstore(buf, IRLiteral(_ERROR_SELECTOR_WORD))
-    ptr4 = mod.add(buf, IRLiteral(4))
-    mod.mstore(ptr4, IRLiteral(32))
-    ptr36 = mod.add(buf, IRLiteral(36))
-    mod.mstore(ptr36, msg_len)
-    ptr68 = mod.add(buf, IRLiteral(68))
-    mod.mstore(ptr68, msg_word)
-    mod.revert(buf, IRLiteral(100))
+    _emit_error_revert(mod, msg_len, msg_word)
 
     # --- ok path ---
     mod.append_block(bb_ok)
@@ -169,15 +171,7 @@ def _build_assert_ge(mod: "ModuleBuilder") -> None:
     # --- revert path ---
     mod.append_block(bb_revert)
     mod.set_block(bb_revert)
-    buf = mod.alloca(100)
-    mod.mstore(buf, IRLiteral(_ERROR_SELECTOR_WORD))
-    ptr4 = mod.add(buf, IRLiteral(4))
-    mod.mstore(ptr4, IRLiteral(32))
-    ptr36 = mod.add(buf, IRLiteral(36))
-    mod.mstore(ptr36, msg_len)
-    ptr68 = mod.add(buf, IRLiteral(68))
-    mod.mstore(ptr68, msg_word)
-    mod.revert(buf, IRLiteral(100))
+    _emit_error_revert(mod, msg_len, msg_word)
 
     # --- ok path ---
     mod.append_block(bb_ok)

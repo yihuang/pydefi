@@ -86,6 +86,25 @@ from vyper.venom.function import IRFunction
 __all__ = ["ModuleBuilder"]
 
 
+def _clone_function(fn: IRFunction) -> IRFunction:
+    """Clone *fn* into a fresh :class:`~vyper.venom.function.IRFunction`.
+
+    Workarounds applied:
+
+    * upstream ``IRFunction.copy()`` double-appends the auto-created entry
+      block — we clear it first;
+    * upstream ``IRBasicBlock.copy()`` keeps the original ``parent`` reference —
+      we reparent each cloned block to the new function.
+    """
+    new = IRFunction(fn.name)
+    new.clear_basic_blocks()
+    for bb in fn.get_basic_blocks():
+        new_bb = bb.copy()
+        new_bb.parent = new
+        new.append_basic_block(new_bb)
+    return new
+
+
 class ModuleBuilder(VenomBuilder):
     """A :class:`~vyper.venom.builder.VenomBuilder` that auto-prefixes all labels.
 
@@ -194,17 +213,21 @@ class ModuleBuilder(VenomBuilder):
         """Merge one or more :class:`~vyper.venom.context.IRContext` objects into
         this builder's context.
 
+        Functions are cloned via :meth:`IRFunction.copy
+        <vyper.venom.function.IRFunction.copy>` so reusable singleton sources
+        (e.g. :data:`~pydefi.vm.stdlib.STDLIB`) stay intact across merges and
+        downstream optimization passes never mutate them.
+
         Raises :class:`ValueError` on duplicate function, basic-block, or
-        data-section labels *before* mutating ``self.ctx``.  Sources are cleared
-        after a successful merge so they cannot be merged twice.
+        data-section labels *before* mutating ``self.ctx``.
 
         Args:
-            *sources: Contexts to merge.  Their functions and data-segment entries
-                      are appended to ``self.ctx``.
+            *sources: Contexts to merge.  Their functions and data-segment
+                      entries are cloned and appended to ``self.ctx``.
         """
         fn_labels = set(self.ctx.functions)
-        data_labels = {section.label for section in self.ctx.data_segment}
         bb_labels = {bb.label for bb in self.ctx.get_basic_blocks()}
+        data_labels = {section.label for section in self.ctx.data_segment}
 
         for src in sources:
             for fn in src.functions.values():
@@ -221,12 +244,9 @@ class ModuleBuilder(VenomBuilder):
                 data_labels.add(section.label)
 
         for src in sources:
-            for fn in list(src.functions.values()):
-                self.ctx.add_function(fn)
+            for fn in src.functions.values():
+                self.ctx.add_function(_clone_function(fn))
             self.ctx.data_segment.extend(src.data_segment)
-            src.functions.clear()
-            src.data_segment.clear()
-            src.entry_function = None
 
     def compile(
         self,
