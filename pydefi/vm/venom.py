@@ -252,8 +252,6 @@ class ModuleBuilder(VenomBuilder):
     def compile(
         self,
         flags: VenomOptimizationFlags | None = None,
-        *,
-        disable_mem_checks: bool = True,
     ) -> bytes:
         """Compile this builder's context to EVM bytecode.
 
@@ -269,18 +267,13 @@ class ModuleBuilder(VenomBuilder):
             flags: Venom optimization flags.  Defaults to
                    :class:`~vyper.compiler.settings.VenomOptimizationFlags` (standard
                    O2 level).
-            disable_mem_checks: Pass ``True`` (the default) to skip the concrete
-                                 memory-address check in
-                                 :func:`~vyper.venom.run_passes_on`.  Required when
-                                 using literal memory addresses such as ``PUSH0`` for
-                                 ``return_`` offset.
 
         Returns:
             The compiled EVM bytecode as :class:`bytes`.
         """
         if flags is None:
             flags = VenomOptimizationFlags()
-        run_passes_on(self.ctx, flags, disable_mem_checks=disable_mem_checks)
+        run_passes_on(self.ctx, flags)
         compiler = VenomCompiler(self.ctx)
         asm = compiler.generate_evm_assembly(no_optimize=True)
         bytecode, _ = assembly_to_evm(asm)
