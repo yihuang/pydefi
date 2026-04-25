@@ -89,7 +89,7 @@ def revert_if(builder: VenomBuilder, cond: object, msg: str) -> None:
         revert_if(mod, is_zero, "amount is zero")
         # instructions here run only when amount != 0
     """
-    raw = msg.encode()
+    raw = msg.encode("utf-8")
     if len(raw) > _MAX_MSG_BYTES:
         raise ValueError(f"revert_if: message too long ({len(raw)} bytes, max {_MAX_MSG_BYTES})")
 
