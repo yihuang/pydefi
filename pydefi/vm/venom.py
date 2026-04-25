@@ -80,10 +80,30 @@ from vyper.evm.assembler.core import assembly_to_evm
 from vyper.venom import VenomCompiler, run_passes_on
 from vyper.venom.basicblock import IRBasicBlock, IRLabel
 from vyper.venom.builder import VenomBuilder
-from vyper.venom.context import DataSection, IRContext
+from vyper.venom.context import DataItem, DataSection, IRContext
 from vyper.venom.function import IRFunction
 
 __all__ = ["ModuleBuilder"]
+
+
+def _clone_function(fn: IRFunction) -> IRFunction:
+    """Clone *fn* into a fresh :class:`~vyper.venom.function.IRFunction`.
+
+    Workarounds applied:
+
+    * upstream ``IRFunction.copy()`` double-appends the auto-created entry
+      block — we clear it first;
+    * upstream ``IRBasicBlock.copy()`` keeps the original ``parent`` reference —
+      we reparent each cloned block to the new function.
+    """
+    new = IRFunction(fn.name)
+    new.clear_basic_blocks()
+    for bb in fn.get_basic_blocks():
+        new_bb = bb.copy()
+        new_bb.parent = new
+        new.append_basic_block(new_bb)
+    new.last_variable = fn.last_variable
+    return new
 
 
 class ModuleBuilder(VenomBuilder):
@@ -194,24 +214,42 @@ class ModuleBuilder(VenomBuilder):
         """Merge one or more :class:`~vyper.venom.context.IRContext` objects into
         this builder's context.
 
-        All labels in *sources* are expected to already be namespace-prefixed (as
-        produced by other :class:`ModuleBuilder` instances), so no collisions should
-        occur.
+        Functions are cloned via :meth:`IRFunction.copy
+        <vyper.venom.function.IRFunction.copy>` so reusable singleton sources
+        (e.g. :data:`~pydefi.vm.stdlib.STDLIB`) stay intact across merges and
+        downstream optimization passes never mutate them.
+
+        Raises :class:`ValueError` on duplicate function, basic-block, or
+        data-section labels *before* mutating ``self.ctx``.
 
         Args:
-            *sources: Contexts to merge.  Their functions and data-segment entries
-                      are appended to ``self.ctx``.
+            *sources: Contexts to merge.  Their functions and data-segment
+                      entries are cloned and appended to ``self.ctx``.
         """
+        fn_labels = set(self.ctx.functions)
+        bb_labels = {bb.label for bb in self.ctx.get_basic_blocks()}
+        data_labels = {section.label for section in self.ctx.data_segment}
+
         for src in sources:
             for fn in src.functions.values():
-                self.ctx.add_function(fn.copy())
-            for segment in src.data_segment:
-                self.ctx.data_segment.append(
-                    DataSection(
-                        label=segment.label,
-                        data_items=segment.data_items.copy(),
-                    )
-                )
+                if fn.name in fn_labels:
+                    raise ValueError(f"merge: duplicate function label {fn.name}")
+                fn_labels.add(fn.name)
+                for bb in fn.get_basic_blocks():
+                    if bb.label in bb_labels:
+                        raise ValueError(f"merge: duplicate basic block label {bb.label}")
+                    bb_labels.add(bb.label)
+            for section in src.data_segment:
+                if section.label in data_labels:
+                    raise ValueError(f"merge: duplicate data section label {section.label}")
+                data_labels.add(section.label)
+
+        for src in sources:
+            for fn in src.functions.values():
+                self.ctx.add_function(_clone_function(fn))
+            self.ctx.data_segment.extend(
+                DataSection(s.label, s.data_items.copy()) for s in src.data_segment
+            )
 
     def compile(
         self,
