@@ -7,6 +7,7 @@ from hexbytes import HexBytes
 
 from pydefi.types import BasePool, RouteDAG, SwapProtocol, Token
 from pydefi.vm import (
+    STDLIB,
     Placeholder,
     Program,
     Value,
@@ -236,6 +237,44 @@ class TestAssert:
         p.assert_le(p.const(10), p.const(3))
         p.stop()
         _ = _run_assert_revert(p, disable_constant_folding=True)
+
+    def test_assert_le_fail_with_msg(self):
+        """assert_le(a, b, msg) must revert with the Error(string) payload."""
+        p = Program()
+        p.assert_le(p.const(10), p.const(3), "above max")
+        p.stop()
+        out = _run_assert_revert(p, disable_constant_folding=True)
+        assert out[:4] == bytes.fromhex("08c379a0")
+        length = int.from_bytes(out[36:68], "big")
+        assert out[68 : 68 + length] == b"above max"
+
+    def test_stdlib_singleton_survives_repeated_builds(self):
+        """ModuleBuilder.merge clones — STDLIB stays intact across many Programs."""
+        before = sorted(fn.name.value for fn in STDLIB.ctx.functions.values())
+        for _ in range(3):
+            p = Program()
+            p.assert_(p.const(1), "x")
+            p.stop()
+            p.build()
+        after = sorted(fn.name.value for fn in STDLIB.ctx.functions.values())
+        assert before == after
+
+    def test_codesize_optimization_shares_revert_helper(self):
+        """Under Os, per-extra-messaged-assert cost should be cheaper than under
+        O2 — FunctionInlinerPass keeps stdlib_revert_if shared at codesize-opt."""
+        from vyper.compiler.settings import OptimizationLevel
+
+        def size(n: int, opt: OptimizationLevel) -> int:
+            p = Program()
+            cond = p.stack_param()  # runtime value — SCCP can't elide
+            for _ in range(n):
+                p.assert_(cond, "msg")
+            p.return_word(p.const(7))
+            return len(p.build(optimize=opt))
+
+        gas_growth = size(8, OptimizationLevel.GAS) - size(2, OptimizationLevel.GAS)
+        os_growth = size(8, OptimizationLevel.CODESIZE) - size(2, OptimizationLevel.CODESIZE)
+        assert os_growth < gas_growth, f"expected Os ({os_growth}b) < O2 ({gas_growth}b)"
 
 
 # ---------------------------------------------------------------------------

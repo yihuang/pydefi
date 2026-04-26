@@ -68,8 +68,9 @@ from vyper.evm.assembler.symbols import SYMBOL_SIZE
 from vyper.evm.opcodes import OPCODES
 from vyper.venom import generate_assembly_experimental, run_passes_on
 from vyper.venom.basicblock import IRLabel, IRLiteral, IRVariable
-from vyper.venom.builder import VenomBuilder
-from vyper.venom.context import IRContext
+
+from pydefi.vm.stdlib import STDLIB, encode_msg
+from pydefi.vm.venom import ModuleBuilder
 
 if TYPE_CHECKING:
     from eth_abi.hooks import EncodingContext
@@ -255,11 +256,11 @@ class Program:
     # ------------------------------------------------------------------
 
     def __init__(self) -> None:
-        self._ctx = IRContext()
-        self._fn = self._ctx.create_function("main")
-        self._ctx.entry_function = self._fn
-        self._builder = VenomBuilder(self._ctx, self._fn)
-        self._data_section_counter = 0  # for unique label names
+        self._builder = ModuleBuilder()  # collision-safe merge of STDLIB
+        self._ctx = self._builder.ctx
+        self._fn = self._builder.fn
+        self._data_section_counter = 0
+        self._uses_stdlib = False  # set by helpers; build() merges STDLIB lazily
 
     # ------------------------------------------------------------------
     # Operand coercion
@@ -621,61 +622,44 @@ class Program:
     def assert_(self, cond: ValueLike, msg: str = "") -> None:
         """Revert if *cond* is zero.
 
-        With ``msg=""`` (default) emits a bare REVERT(0, 0).  With a non-empty
-        message ≤ 32 bytes, encodes ``Error(string)`` ABI in memory and
-        REVERTs with that payload — matching Solidity's
-        ``require(cond, "message")``.
+        Empty *msg* emits a bare ``REVERT(0, 0)``; non-empty *msg* (≤ 32 bytes)
+        invokes ``stdlib_revert_if`` for the Solidity ``Error(string)`` payload.
         """
         if not msg:
             self._builder.assert_(self._to_operand(cond))
             return
-
-        raw = msg.encode()
-        if len(raw) > 32:
-            raise ValueError(f"assert_: message too long ({len(raw)} bytes, max 32)")
-
-        # Conditional revert: if cond == 0 → revert with Error(string), else fall through.
-        ok_bb = self._builder.create_block("assert_ok")
-        revert_bb = self._builder.create_block("assert_revert")
-        self._builder.append_block(ok_bb)
-        self._builder.append_block(revert_bb)
-        self._builder.jnz(self._to_operand(cond), ok_bb.label, revert_bb.label)
-
-        # Build Error(string) payload in revert_bb:
-        #   mem[fp+0..4]     = selector 0x08c379a0
-        #   mem[fp+4..36]    = offset 0x20
-        #   mem[fp+36..68]   = msg length
-        #   mem[fp+68..68+padded] = msg bytes
-        self._builder.set_block(revert_bb)
-        msglen = len(raw)
-        msg_word = int.from_bytes(raw.ljust(32, b"\x00"), "big")
-        # Selector left-aligned in a 32-byte slot at fp+0; mstore(fp, selector_word)
-        # writes the selector at fp+0..4 with zeros at fp+4..32 — but we then
-        # overwrite fp+4..36 with the offset, so net layout is correct.
-        selector_word = 0x08C379A000000000000000000000000000000000000000000000000000000000
-        base = self._alloc(100)  # 4 + 32 + 32 + 32
-        self._builder.mstore(base, selector_word)
-        self._builder.mstore(self._builder.add(base, 4), 0x20)
-        self._builder.mstore(self._builder.add(base, 36), msglen)
-        self._builder.mstore(self._builder.add(base, 68), msg_word)
-        self._builder.revert(base, 100)
-
-        # Continue at ok_bb
-        self._builder.set_block(ok_bb)
+        cond_zero = self._builder.iszero(self._to_operand(cond))
+        self._invoke_revert_if(cond_zero, msg)
 
     def assert_ge(self, a: ValueLike, b: ValueLike, msg: str = "") -> None:
         """Revert if ``a < b`` (i.e. require ``a >= b``)."""
-        a_op = self._to_operand(a)
-        b_op = self._to_operand(b)
-        not_lt = self._builder.iszero(self._builder.lt(a_op, b_op))
-        self.assert_(not_lt, msg)
+        if msg:
+            self._invoke_assert_ge(a, b, msg)
+            return
+        not_lt = self._builder.iszero(self._builder.lt(self._to_operand(a), self._to_operand(b)))
+        self._builder.assert_(not_lt)
 
     def assert_le(self, a: ValueLike, b: ValueLike, msg: str = "") -> None:
-        """Revert if ``a > b`` (i.e. require ``a <= b``)."""
-        a_op = self._to_operand(a)
-        b_op = self._to_operand(b)
-        not_gt = self._builder.iszero(self._builder.gt(a_op, b_op))
-        self.assert_(not_gt, msg)
+        """Revert if ``a > b`` (i.e. require ``a <= b``) — ``assert_ge(b, a)``."""
+        self.assert_ge(b, a, msg)
+
+    def _invoke_revert_if(self, cond: ValueLike, msg: str) -> None:
+        msg_len, msg_word = encode_msg(msg)
+        self._builder.invoke(
+            IRLabel("stdlib_revert_if"),
+            [self._to_operand(cond), IRLiteral(msg_len), IRLiteral(msg_word)],
+            returns=0,
+        )
+        self._uses_stdlib = True
+
+    def _invoke_assert_ge(self, a: ValueLike, b: ValueLike, msg: str) -> None:
+        msg_len, msg_word = encode_msg(msg)
+        self._builder.invoke(
+            IRLabel("stdlib_assert_ge"),
+            [self._to_operand(a), self._to_operand(b), IRLiteral(msg_len), IRLiteral(msg_word)],
+            returns=0,
+        )
+        self._uses_stdlib = True
 
     # ------------------------------------------------------------------
     # Termination
@@ -736,6 +720,10 @@ class Program:
         """
         if not self._builder.is_terminated():
             self._builder.stop()
+
+        # lazy merge STDLIB only if a messaged assert invoked a helper
+        if self._uses_stdlib:
+            self._builder.merge(STDLIB.ctx)
 
         if disable_constant_folding:
             flags = VenomOptimizationFlags(  # type: ignore[call-arg]
