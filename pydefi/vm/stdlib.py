@@ -1,7 +1,7 @@
 """Venom IR stdlib — utility functions defined as proper IR functions.
 
 This module builds a pre-compiled ``STDLIB`` :class:`~pydefi.vm.venom.ModuleBuilder`
-containing ``stdlib.revert_if`` and ``stdlib.assert_ge`` as named venom IR functions.
+containing ``stdlib_revert_if`` and ``stdlib_assert_ge`` as named venom IR functions.
 
 Rather than inlining error-handling logic directly into the calling module, callers
 **invoke the functions by label** after merging the stdlib context.  The
@@ -25,7 +25,7 @@ Usage pattern
     is_zero = mod.iszero(amount)
     msg_len, msg_word = encode_msg("amount is zero")
     mod.invoke(
-        IRLabel("stdlib.revert_if"),
+        IRLabel("stdlib_revert_if"),
         [is_zero, IRLiteral(msg_len), IRLiteral(msg_word)],
         returns=0,
     )
@@ -33,7 +33,7 @@ Usage pattern
     # Assertion:
     msg_len2, msg_word2 = encode_msg("amount too small")
     mod.invoke(
-        IRLabel("stdlib.assert_ge"),
+        IRLabel("stdlib_assert_ge"),
         [amount, IRLiteral(1000), IRLiteral(msg_len2), IRLiteral(msg_word2)],
         returns=0,
     )
@@ -45,11 +45,11 @@ Usage pattern
 Stdlib functions
 ----------------
 
-``stdlib.revert_if(cond, msg_len, msg_word, ret_pc)``
+``stdlib_revert_if(cond, msg_len, msg_word, ret_pc)``
     Conditionally reverts with a 100-byte ``Error(string)`` ABI payload when
     *cond* is non-zero, otherwise returns to the caller.
 
-``stdlib.assert_ge(a, b, msg_len, msg_word, ret_pc)``
+``stdlib_assert_ge(a, b, msg_len, msg_word, ret_pc)``
     Reverts with ``Error(string)`` when ``a < b``, otherwise returns.
 
 Error encoding
@@ -103,7 +103,7 @@ def encode_msg(msg: str) -> tuple[int, int]:
 
         msg_len, msg_word = encode_msg("amount is zero")
         mod.invoke(
-            IRLabel("stdlib.revert_if"),
+            IRLabel("stdlib_revert_if"),
             [cond, IRLiteral(msg_len), IRLiteral(msg_word)],
             returns=0,
         )
@@ -118,7 +118,7 @@ def encode_msg(msg: str) -> tuple[int, int]:
 
 
 def _build_revert_if(mod: ModuleBuilder) -> None:
-    """Add ``stdlib.revert_if(cond, msg_len, msg_word, ret_pc)`` to *mod*."""
+    """Add ``stdlib_revert_if(cond, msg_len, msg_word, ret_pc)`` to *mod*."""
     fn = mod.create_function("revert_if")
     mod.set_block(fn.entry)
     cond = mod.param()
@@ -150,7 +150,7 @@ def _build_revert_if(mod: ModuleBuilder) -> None:
 
 
 def _build_assert_ge(mod: ModuleBuilder) -> None:
-    """Add ``stdlib.assert_ge(a, b, msg_len, msg_word, ret_pc)`` to *mod*."""
+    """Add ``stdlib_assert_ge(a, b, msg_len, msg_word, ret_pc)`` to *mod*."""
     fn = mod.create_function("assert_ge")
     mod.set_block(fn.entry)
     a = mod.param()
@@ -161,7 +161,7 @@ def _build_assert_ge(mod: ModuleBuilder) -> None:
 
     # Assertion fails when a < b (lt returns 1); delegate revert to revert_if.
     cond = mod.lt(a, b)
-    mod.invoke(IRLabel("stdlib.revert_if"), [cond, msg_len, msg_word], returns=0)
+    mod.invoke(IRLabel("stdlib_revert_if"), [cond, msg_len, msg_word], returns=0)
     mod.ret(ret_pc)
 
 
@@ -171,15 +171,15 @@ def _build_stdlib() -> ModuleBuilder:
     Returns a fresh :class:`~pydefi.vm.venom.ModuleBuilder` whose context
     contains two named functions:
 
-    * ``stdlib.revert_if`` — conditional revert with ``Error(string)`` encoding
-    * ``stdlib.assert_ge`` — revert with ``Error(string)`` when ``a < b``
+    * ``stdlib_revert_if`` — conditional revert with ``Error(string)`` encoding
+    * ``stdlib_assert_ge`` — revert with ``Error(string)`` when ``a < b``
 
-    The entry function (``stdlib.main``) contains only a ``stop`` instruction.
+    The entry function (``stdlib_main``) contains only a ``stop`` instruction.
     """
     from pydefi.vm.venom import ModuleBuilder
 
     mod = ModuleBuilder("stdlib")
-    mod.stop()  # terminate the auto-created stdlib.main entry function
+    mod.stop()  # terminate the auto-created stdlib_main entry function
     _build_revert_if(mod)
     _build_assert_ge(mod)
     del mod.ctx.functions[mod.named_label("main")]

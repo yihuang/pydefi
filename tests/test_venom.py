@@ -33,7 +33,7 @@ _ERROR_SELECTOR = bytes.fromhex("08c379a0")
 def test_named_label_with_prefix():
     mod = ModuleBuilder("mymod")
     label = mod.named_label("foo")
-    assert label.value == "mymod.foo"
+    assert label.value == "mymod_foo"
     assert label.is_symbol is True
 
 
@@ -47,7 +47,7 @@ def test_get_next_label_with_prefix():
     mod = ModuleBuilder("abc")
     l1 = mod.get_next_label()
     l2 = mod.get_next_label("loop")
-    assert l1.value.startswith("abc.")
+    assert l1.value.startswith("abc_")
     assert "loop" in l2.value
 
 
@@ -61,13 +61,13 @@ def test_get_next_label_no_prefix():
 def test_create_function_namespaced():
     mod = ModuleBuilder("svc")
     fn = mod.create_function("helper")
-    assert "svc.helper" in str(fn.name)
+    assert "svc_helper" in str(fn.name)
 
 
 def test_entry_function_is_main():
     mod = ModuleBuilder("svc")
     assert mod.ctx.entry_function is not None
-    assert "svc.main" in str(mod.ctx.entry_function.name)
+    assert "svc_main" in str(mod.ctx.entry_function.name)
 
 
 # ---------------------------------------------------------------------------
@@ -80,7 +80,7 @@ def test_data_section_label_prefixed():
     mod.append_data_section("table")
     assert len(mod.ctx.data_segment) == 1
     lbl = mod.ctx.data_segment[0].label
-    assert "ds.table" in str(lbl)
+    assert "ds_table" in str(lbl)
 
 
 def test_data_item_appended():
@@ -158,9 +158,9 @@ def test_merge_two_modules_no_collision():
 
     # All three modules' functions should be present
     fn_names = [str(name) for name in main.ctx.functions]
-    assert any("main.main" in n for n in fn_names)
-    assert any("mod_a.main" in n for n in fn_names)
-    assert any("mod_b.main" in n for n in fn_names)
+    assert any("main_main" in n for n in fn_names)
+    assert any("mod_a_main" in n for n in fn_names)
+    assert any("mod_b_main" in n for n in fn_names)
 
 
 def test_merge_produces_correct_result():
@@ -210,7 +210,7 @@ def test_cross_module_invoke():
 
     # --- Main module: calls mod_a.compute(10, 20) ---
     main = ModuleBuilder("main")
-    rets = main.invoke(IRLabel("mod_a.compute"), [IRLiteral(10), IRLiteral(20)], returns=1)
+    rets = main.invoke(IRLabel("mod_a_compute"), [IRLiteral(10), IRLiteral(20)], returns=1)
     buf = main.alloca(32)
     main.mstore(buf, rets[0])
     main.return_(buf, IRLiteral(32))
@@ -236,7 +236,7 @@ def test_cross_module_invoke_mul():
     mod_a.ret(product, ret_pc)
 
     main = ModuleBuilder("main")
-    rets = main.invoke(IRLabel("mod_a.multiply"), [IRLiteral(6), IRLiteral(7)], returns=1)
+    rets = main.invoke(IRLabel("mod_a_multiply"), [IRLiteral(6), IRLiteral(7)], returns=1)
     buf = main.alloca(32)
     main.mstore(buf, rets[0])
     main.return_(buf, IRLiteral(32))
@@ -313,7 +313,7 @@ def test_two_modules_separate_data_sections():
 
     # Main: reads from mod_a.data and returns it
     main = ModuleBuilder("main")
-    src = main.offset(IRLiteral(0), IRLabel("mod_a.data"))
+    src = main.offset(IRLiteral(0), IRLabel("mod_a_data"))
     buf = main.alloca(32)
     main.codecopy(buf, src, IRLiteral(32))
     val = main.mload(buf)
@@ -337,7 +337,7 @@ def test_create_block_labels_are_prefixed():
     """Blocks created via create_block carry the module prefix."""
     mod = ModuleBuilder("mymod")
     bb = mod.create_block("loop")
-    assert "mymod." in bb.label.value
+    assert "mymod_" in bb.label.value
 
 
 def test_create_block_no_collision_after_merge():
@@ -378,8 +378,8 @@ def test_create_block_no_collision_after_merge():
 
     # Merge and compile — must not raise due to duplicate labels
     main = ModuleBuilder("main")
-    main.invoke(IRLabel("mod_a.helper_a"), [], returns=0)
-    main.invoke(IRLabel("mod_b.helper_b"), [], returns=0)
+    main.invoke(IRLabel("mod_a_helper_a"), [], returns=0)
+    main.invoke(IRLabel("mod_b_helper_b"), [], returns=0)
     buf = main.alloca(32)
     main.mstore(buf, IRLiteral(1))
     main.return_(buf, IRLiteral(32))
@@ -411,7 +411,7 @@ def _invoke_revert_if(mod: ModuleBuilder, cond: object, msg: str) -> None:
     """
     msg_len, msg_word = encode_msg(msg)
     mod.invoke(
-        IRLabel("stdlib.revert_if"),
+        IRLabel("stdlib_revert_if"),
         [cond, IRLiteral(msg_len), IRLiteral(msg_word)],
         returns=0,
     )
@@ -424,7 +424,7 @@ def _invoke_assert_ge(mod: ModuleBuilder, a: object, b: object, msg: str) -> Non
     """
     msg_len, msg_word = encode_msg(msg)
     mod.invoke(
-        IRLabel("stdlib.assert_ge"),
+        IRLabel("stdlib_assert_ge"),
         [a, b, IRLiteral(msg_len), IRLiteral(msg_word)],
         returns=0,
     )
@@ -550,12 +550,12 @@ def test_assert_ge_msg_too_long_raises():
 
 def test_stdlib_has_revert_if_function():
     """STDLIB module exposes stdlib.revert_if as an IR function."""
-    assert "stdlib.revert_if" in {fn.name.value for fn in STDLIB.ctx.functions.values()}
+    assert "stdlib_revert_if" in {fn.name.value for fn in STDLIB.ctx.functions.values()}
 
 
 def test_stdlib_has_assert_ge_function():
     """STDLIB module exposes stdlib.assert_ge as an IR function."""
-    assert "stdlib.assert_ge" in {fn.name.value for fn in STDLIB.ctx.functions.values()}
+    assert "stdlib_assert_ge" in {fn.name.value for fn in STDLIB.ctx.functions.values()}
 
 
 def test_stdlib_invoke_by_label_explicit_merge():
@@ -563,7 +563,7 @@ def test_stdlib_invoke_by_label_explicit_merge():
     msg_len, msg_word = encode_msg("explicit merge")
     mod = ModuleBuilder("ibl")
     mod.invoke(
-        IRLabel("stdlib.revert_if"),
+        IRLabel("stdlib_revert_if"),
         [IRLiteral(1), IRLiteral(msg_len), IRLiteral(msg_word)],
         returns=0,
     )

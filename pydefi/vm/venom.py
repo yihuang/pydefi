@@ -24,7 +24,7 @@ Correspondingly, ``ret()`` must receive the return values first and the return P
     mod.ret(result, return_pc)        # value(s), then return_pc
 
     # Caller side:
-    rets = main.invoke(IRLabel("mod.add"), [IRLiteral(3), IRLiteral(4)], returns=1)
+    rets = main.invoke(IRLabel("mod_add"), [IRLiteral(3), IRLiteral(4)], returns=1)
 
 Data sections
 -------------
@@ -52,7 +52,7 @@ Typical usage::
 
     # Build module A
     mod_a = ModuleBuilder("mod_a")
-    mod_a.append_data_section("table")               # DataSection(IRLabel("mod_a.table"))
+    mod_a.append_data_section("table")               # DataSection(IRLabel("mod_a_table"))
     mod_a.append_data_item(b"\\x01\\x02\\x03\\x04")
 
     addr = mod_a.offset(IRLiteral(0), mod_a.named_label("table"))
@@ -62,7 +62,7 @@ Typical usage::
 
     # Build module B — cross-module reference to A's table
     mod_b = ModuleBuilder("mod_b")
-    addr_a = mod_b.offset(IRLiteral(0), IRLabel("mod_a.table"))
+    addr_a = mod_b.offset(IRLiteral(0), IRLabel("mod_a_table"))
     buf2   = mod_b.alloca(32)
     mod_b.codecopy(buf2, addr_a, IRLiteral(4))
     mod_b.stop()
@@ -121,7 +121,7 @@ class ModuleBuilder(VenomBuilder):
         ctx:    Existing :class:`~vyper.venom.context.IRContext` to use.
                 A fresh context is created when ``None``.
         fn:     Existing entry :class:`~vyper.venom.function.IRFunction` to use.
-                A function named ``"<prefix>.main"`` is created when ``None``.
+                A function named ``"<prefix>_main"`` is created when ``None``.
     """
 
     def __init__(
@@ -133,7 +133,7 @@ class ModuleBuilder(VenomBuilder):
         if ctx is None:
             ctx = IRContext()
         if fn is None:
-            fn_name = f"{prefix}.main" if prefix else "main"
+            fn_name = f"{prefix}_main" if prefix else "main"
             fn = ctx.create_function(fn_name)
         # The first (entry) function is designated as the context entry point
         # so that optimization passes (e.g. FunctionInlinerPass) can find it.
@@ -151,7 +151,7 @@ class ModuleBuilder(VenomBuilder):
 
         When *prefix* is empty the label value is just *name*.
         """
-        value = f"{self._prefix}.{name}" if self._prefix else name
+        value = f"{self._prefix}_{name}" if self._prefix else name
         return IRLabel(value, is_symbol=is_symbol)
 
     # ------------------------------------------------------------------
@@ -172,7 +172,7 @@ class ModuleBuilder(VenomBuilder):
         """Generate the next auto-label, prepending the namespace prefix."""
         label = self.ctx.get_next_label(suffix)
         if self._prefix:
-            return IRLabel(f"{self._prefix}.{label.value}")
+            return IRLabel(f"{self._prefix}_{label.value}")
         return label
 
     def create_block(self, suffix: str = "") -> IRBasicBlock:
