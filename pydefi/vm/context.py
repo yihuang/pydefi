@@ -14,18 +14,22 @@ Usage::
     from vyper.semantics.types.shortcuts import UINT256_T
     from vyper.semantics.types.primitives import AddressT
     from vyper.venom.basicblock import IRLiteral
+    from eth_contract import ContractFunction
 
+    TRANSFER = ContractFunction.from_abi("function transfer(address recipient, uint256 amount)")
     ctx = ProgramContext()
     calldata = ctx.abi_encode(
-        [IRLiteral(recipient), IRLiteral(10**18)],
-        [AddressT(), UINT256_T],
-        method_id=bytes.fromhex("a9059cbb"),
+        [recipient, 10**18],
+        TRANSFER.input_types,
+        method_id=TRANSFER.selector,
     )
     ctx.builder.stop()
     bytecode = ctx.compile()
 """
 
 from __future__ import annotations
+
+from typing import Any
 
 from vyper import ast as vy_ast
 from vyper.codegen_venom.abi.abi_decoder import abi_decode_to_buf
@@ -42,6 +46,13 @@ from vyper.venom import VenomCompiler, run_passes_on
 from vyper.venom.basicblock import IRLabel, IRLiteral, IROperand, IRVariable
 from vyper.venom.builder import VenomBuilder
 from vyper.venom.context import IRContext
+
+from pydefi.vm.abiutils import load_object
+
+# Type alias for values accepted by load_object_to_vyper_value.
+# Broad enough to cover int literals, IR operands, raw bytes,
+# and recursive list/dict for tuples and arrays.
+_LoaderInput = int | IROperand | bytes | list | dict | tuple
 
 # Module-level dummy ModuleT shared by all ProgramContext instances.
 # VenomCodegenContext requires a ModuleT, but our operations (abi encode/decode,
@@ -94,64 +105,43 @@ class ProgramContext(VenomCodegenContext):
 
     def abi_encode(
         self,
-        args: list[IROperand],
+        args: list[Any],
         types: list[VyperType],
         *,
         method_id: bytes | None = None,
         ensure_tuple: bool = True,
     ) -> VyperValue:
-        """ABI-encode arguments and return a Bytes buffer in memory.
-
-        Args:
-            args: IR operands for each argument.  For primitive-word types
-                (uint256, address, bool, bytes32) the operand is the **value**
-                itself.  For complex types (bytes, arrays, tuples) it is a
-                **memory pointer** to the Vyper-layout data.
-            types: VyperType for each argument.
-            method_id: Optional 4-byte function selector to prepend.
-            ensure_tuple: If True (default), a single arg is wrapped in a
-                tuple for ABI conformance.
-
-        Returns:
-            ``VyperValue`` pointing to a ``Bytes[N]`` buffer in memory
-            (length word + optional method_id + ABI-encoded data).
-        """
         b = self.builder
 
-        # Build the input for the encoder: either a single value or a tuple.
         if len(args) == 1 and not ensure_tuple:
-            arg_type = types[0]
-            if arg_type._is_prim_word:
-                # abi_encode_to_buf expects a memory pointer, not a stack value.
-                tmp = self.new_temporary_value(arg_type)
-                assert isinstance(tmp.operand, IRVariable)
-                b.mstore(tmp.operand, args[0])
-                encode_input: IROperand = tmp.operand
-            else:
-                encode_input = args[0]
-            encode_type = arg_type
+            value = args[0]
+            vyper_type = types[0]
         else:
-            encode_input, encode_type = self._build_tuple_in_memory(args, types)
+            value = args
+            vyper_type = TupleT(tuple(types))
+
+        vyper_value = load_object(self, value, vyper_type)
 
         # Allocate output buffer: [length word] [method_id?] [data]
-        maxlen = encode_type.abi_type.size_bound()
-        if method_id is not None:
-            maxlen += 4
+        offset = 4 if method_id is not None else 0
+        maxlen = vyper_type.abi_type.size_bound() + offset
         buf_t = BytesT(maxlen)
         buf_val = self.new_temporary_value(buf_t)
         assert isinstance(buf_val.operand, IRVariable)
 
         if method_id is not None:
-            method_id_word = int.from_bytes(method_id, "big") << (32 - len(method_id)) * 8
+            method_id_word = (
+                int.from_bytes(method_id.ljust(32, b"\x00"), "big")
+            )
             b.mstore(b.add(buf_val.operand, IRLiteral(32)), IRLiteral(method_id_word))
-            data_dst = b.add(buf_val.operand, IRLiteral(36))
-            encoded_len = abi_encode_to_buf(self, data_dst, encode_input, encode_type)
-            total_len = b.add(encoded_len, IRLiteral(4))
-            b.mstore(buf_val.operand, total_len)
+            data_dst = b.add(buf_val.operand, IRLiteral(32+4))
         else:
             data_dst = b.add(buf_val.operand, IRLiteral(32))
-            encoded_len = abi_encode_to_buf(self, data_dst, encode_input, encode_type)
-            b.mstore(buf_val.operand, encoded_len)
+
+        encoded_len = abi_encode_to_buf(self, data_dst, vyper_value.operand, vyper_type)
+        if offset > 0:
+            encoded_len = b.add(encoded_len, IRLiteral(offset))
+        b.mstore(buf_val.operand, encoded_len)
 
         return buf_val
 
@@ -288,34 +278,3 @@ class ProgramContext(VenomCodegenContext):
     def ir_ctx(self) -> IRContext:
         """The underlying :class:`~vyper.venom.context.IRContext`."""
         return self._ir_ctx
-
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
-    def _build_tuple_in_memory(
-        self,
-        args: list[IROperand],
-        types: list[VyperType],
-    ) -> tuple[IROperand, TupleT]:
-        """Pack *args* into a tuple in memory and return ``(pointer, TupleT)``."""
-        b = self.builder
-        tuple_t = TupleT(tuple(types))
-        val = self.new_temporary_value(tuple_t)
-        assert isinstance(val.operand, IRVariable)
-
-        offset = 0
-        for arg, typ in zip(args, types):
-            if offset == 0:
-                dst = val.operand
-            else:
-                dst = b.add(val.operand, IRLiteral(offset))
-
-            if typ._is_prim_word:
-                b.mstore(dst, arg)
-            else:
-                self.copy_memory(dst, arg, typ.memory_bytes_required)
-
-            offset += typ.memory_bytes_required
-
-        return val.operand, tuple_t

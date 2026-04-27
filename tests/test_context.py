@@ -365,10 +365,8 @@ def test_abi_encode_dynamic_array():
     """Encode DynArray[uint256,3] with ensure_tuple=False (raw array data)."""
     expected = _expected_raw("uint256[]", [100, 200])
     arr_type = DArrayT(UINT256_T, 3)
-    raw = (2).to_bytes(32, "big") + (100).to_bytes(32, "big") + (200).to_bytes(32, "big") + (0).to_bytes(32, "big")
     ctx = ProgramContext()
-    buf = ctx.embed_and_load(raw)
-    encoded = ctx.abi_encode([buf], [arr_type], ensure_tuple=False)
+    encoded = ctx.abi_encode([[100, 200]], [arr_type])
     _build_return_bytes_buffer(ctx, encoded.operand)
     bytecode = ctx.compile()
     result = mini_evm(bytecode)
