@@ -140,6 +140,18 @@ class TestEncodeAbi:
         with pytest.raises(ValueError, match="expects exactly 4 bytes"):
             _encode_and_return((BytesM_T(4),), (b"\x11\x22\x33",))
 
+    def test_signed_int_accepts_negative_python_int(self) -> None:
+        int256 = parse_sig("int256")
+        out = _encode_and_return((int256,), (-1,))
+        assert out == eth_abi_encode(["int256"], [-1])
+
+    def test_signed_int_rejects_out_of_bounds(self) -> None:
+        int8 = parse_sig("int8")
+        with pytest.raises(ValueError, match="out of bounds"):
+            _encode_and_return((int8,), (128,))
+        with pytest.raises(ValueError, match="out of bounds"):
+            _encode_and_return((int8,), (-129,))
+
     def test_method_id_prepends_4_byte_selector(self) -> None:
         method_id = bytes.fromhex("a9059cbb")
         addr_int = 0x0000000000000000000000000000000000000001

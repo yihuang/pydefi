@@ -445,6 +445,15 @@ class ProgramContext(VenomCodegenContext):
                 word = int.from_bytes(payload, "big") << ((32 - typ.m) * 8)
                 _mstore_at(offset, word)
                 return
+            if isinstance(typ, IntegerT) and isinstance(value, int):
+                lo, hi = typ.int_bounds
+                if not (lo <= value <= hi):
+                    raise ValueError(f"{typ!r} out of bounds: {value}")
+                if typ.is_signed and value < 0:
+                    # mstore expects an unsigned word; map negative signed ints to two's-complement.
+                    value = (1 << 256) + value
+                _mstore_at(offset, value)
+                return
             _mstore_at(offset, self._coerce_value(value))
             return
 
