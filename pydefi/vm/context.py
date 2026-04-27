@@ -109,10 +109,7 @@ class ProgramContext(VenomCodegenContext):
     ) -> VyperValue:
         b = self.builder
 
-        vyper_types = [
-            abi_to_vyper(comp) if not isinstance(comp, VyperType) else comp
-            for comp in types
-        ]
+        vyper_types = [abi_to_vyper(comp) if not isinstance(comp, VyperType) else comp for comp in types]
 
         if len(args) == 1 and not ensure_tuple:
             value = args[0]

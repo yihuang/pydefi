@@ -1,4 +1,3 @@
-
 # Default max length for ABI types with no bound (bytes, string, dynamic arrays).
 # Required for vyper types.
 import re
@@ -61,9 +60,7 @@ def abi_to_vyper(comp: ABIComponent) -> VyperType:
     base, arrays = _split_type_and_arrays(type_str)
 
     if base == "tuple":
-        typ: VyperType = TupleT(
-            tuple(abi_to_vyper(c) for c in components)
-        )
+        typ: VyperType = TupleT(tuple(abi_to_vyper(c) for c in components))
     else:
         typ = _base_to_vyper(base)
 
@@ -174,9 +171,7 @@ def _load_primitive(value: Any, typ: VyperType) -> VyperValue:
         except ValueError:
             pass
 
-    raise CompilerPanic(
-        f"load_object: cannot convert {type(value).__name__}({value!r}) to {typ}"
-    )
+    raise CompilerPanic(f"load_object: cannot convert {type(value).__name__}({value!r}) to {typ}")
 
 
 def _load_bytestring(
@@ -194,14 +189,10 @@ def _load_bytestring(
     elif isinstance(value, bytearray):
         bytez = bytes(value)
     else:
-        raise CompilerPanic(
-            f"load_object: expected bytes/str for {typ}, got {type(value).__name__}"
-        )
+        raise CompilerPanic(f"load_object: expected bytes/str for {typ}, got {type(value).__name__}")
 
     if len(bytez) > typ.length:
-        raise CompilerPanic(
-            f"load_object: value length {len(bytez)} exceeds {typ} max length {typ.length}"
-        )
+        raise CompilerPanic(f"load_object: value length {len(bytez)} exceeds {typ} max length {typ.length}")
 
     val = ctx.new_temporary_value(typ)
     assert isinstance(val.operand, IRVariable)
@@ -228,15 +219,10 @@ def _load_tuple(
     if isinstance(value, (list, tuple)):
         elements = list(value)
     else:
-        raise CompilerPanic(
-            f"load_object: expected list/tuple for {typ}, got {type(value).__name__}"
-        )
+        raise CompilerPanic(f"load_object: expected list/tuple for {typ}, got {type(value).__name__}")
 
     if len(elements) != len(typ.member_types):
-        raise CompilerPanic(
-            f"load_object: expected {len(typ.member_types)} elements for {typ}, "
-            f"got {len(elements)}"
-        )
+        raise CompilerPanic(f"load_object: expected {len(typ.member_types)} elements for {typ}, got {len(elements)}")
 
     val = ctx.new_temporary_value(typ)
     assert isinstance(val.operand, IRVariable)
@@ -267,14 +253,10 @@ def _load_sarray(
     if isinstance(value, (list, tuple)):
         elements = list(value)
     else:
-        raise CompilerPanic(
-            f"load_object: expected list/tuple for {typ}, got {type(value).__name__}"
-        )
+        raise CompilerPanic(f"load_object: expected list/tuple for {typ}, got {type(value).__name__}")
 
     if len(elements) != typ.count:
-        raise CompilerPanic(
-            f"load_object: expected {typ.count} elements for {typ}, got {len(elements)}"
-        )
+        raise CompilerPanic(f"load_object: expected {typ.count} elements for {typ}, got {len(elements)}")
 
     val = ctx.new_temporary_value(typ)
     assert isinstance(val.operand, IRVariable)
@@ -301,14 +283,10 @@ def _load_darray(
     if isinstance(value, (list, tuple)):
         elements = list(value)
     else:
-        raise CompilerPanic(
-            f"load_object: expected list/tuple for {typ}, got {type(value).__name__}"
-        )
+        raise CompilerPanic(f"load_object: expected list/tuple for {typ}, got {type(value).__name__}")
 
     if len(elements) > typ.count:
-        raise CompilerPanic(
-            f"load_object: {len(elements)} elements exceeds {typ} max length {typ.count}"
-        )
+        raise CompilerPanic(f"load_object: {len(elements)} elements exceeds {typ} max length {typ.count}")
 
     val = ctx.new_temporary_value(typ)
     assert isinstance(val.operand, IRVariable)

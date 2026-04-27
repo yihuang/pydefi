@@ -61,7 +61,7 @@ def _check_encode(abi_type: str, value) -> None:
 
     enc_len = int.from_bytes(result.output[:32], "big")
     assert enc_len == len(expected), f"len mismatch: {enc_len} vs {len(expected)}"
-    assert result.output[32:32 + enc_len] == expected, "data mismatch"
+    assert result.output[32 : 32 + enc_len] == expected, "data mismatch"
 
 
 # ---------------------------------------------------------------------------
@@ -132,7 +132,7 @@ def test_abi_encode_address():
     assert not result.is_error
     enc_len = int.from_bytes(result.output[:32], "big")
     assert enc_len == len(expected)
-    assert result.output[32:32 + enc_len] == expected
+    assert result.output[32 : 32 + enc_len] == expected
 
 
 def test_abi_encode_bytes32():
@@ -146,7 +146,7 @@ def test_abi_encode_bytes32():
     result = mini_evm(bytecode)
     assert not result.is_error
     enc_len = int.from_bytes(result.output[:32], "big")
-    assert result.output[32:32 + enc_len] == expected
+    assert result.output[32 : 32 + enc_len] == expected
 
 
 def test_abi_encode_tuple():
@@ -160,7 +160,7 @@ def test_abi_encode_tuple():
     assert not result.is_error
     enc_len = int.from_bytes(result.output[:32], "big")
     assert enc_len == len(expected)
-    assert result.output[32:32 + enc_len] == expected
+    assert result.output[32 : 32 + enc_len] == expected
 
 
 def test_abi_encode_with_method_id():
@@ -183,7 +183,7 @@ def test_abi_encode_with_method_id():
     enc_len = int.from_bytes(result.output[:32], "big")
     assert enc_len == len(method_id) + len(expected)
     assert result.output[32:36] == method_id
-    assert result.output[36:36 + len(expected)] == expected
+    assert result.output[36 : 36 + len(expected)] == expected
 
 
 # ---------------------------------------------------------------------------
@@ -206,7 +206,7 @@ def test_abi_encode_dynamic_bytes():
     assert not result.is_error
     enc_len = int.from_bytes(result.output[:32], "big")
     assert enc_len == len(expected)
-    assert result.output[32:32 + enc_len] == expected
+    assert result.output[32 : 32 + enc_len] == expected
 
 
 def test_abi_encode_string():
@@ -221,7 +221,7 @@ def test_abi_encode_string():
     assert not result.is_error
     enc_len = int.from_bytes(result.output[:32], "big")
     assert enc_len == len(expected)
-    assert result.output[32:32 + enc_len] == expected
+    assert result.output[32 : 32 + enc_len] == expected
 
 
 # ---------------------------------------------------------------------------
@@ -272,7 +272,7 @@ def test_abi_decode_dynamic_bytes():
     assert not result.is_error
     dec_len = int.from_bytes(result.output[:32], "big")
     assert dec_len == len(data)
-    assert result.output[32:32 + dec_len] == data
+    assert result.output[32 : 32 + dec_len] == data
 
 
 # ---------------------------------------------------------------------------
@@ -291,7 +291,7 @@ def test_abi_roundtrip_uint256():
 
     expected = eth_abi_encode(["uint256"], [12345])
     enc_len = int.from_bytes(encoded[:32], "big")
-    assert encoded[32:32 + enc_len] == expected
+    assert encoded[32 : 32 + enc_len] == expected
 
     ctx_dec = ProgramContext()
     buf_dec = ctx_dec.embed_and_load(encoded)
@@ -326,7 +326,7 @@ def test_abi_encode_static_array():
     assert not result.is_error
     enc_len = int.from_bytes(result.output[:32], "big")
     assert enc_len == len(expected)
-    assert result.output[32:32 + enc_len] == expected
+    assert result.output[32 : 32 + enc_len] == expected
 
 
 def test_abi_decode_static_array():
@@ -360,7 +360,7 @@ def test_abi_encode_dynamic_array():
     assert not result.is_error
     enc_len = int.from_bytes(result.output[:32], "big")
     assert enc_len == len(expected)
-    assert result.output[32:32 + enc_len] == expected
+    assert result.output[32 : 32 + enc_len] == expected
 
 
 def test_abi_decode_dynamic_array():
