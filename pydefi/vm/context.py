@@ -438,6 +438,13 @@ class ProgramContext(VenomCodegenContext):
             b.mstore(addr, v)
 
         if typ._is_prim_word:
+            if isinstance(typ, BytesM_T) and isinstance(value, (bytes, bytearray, memoryview)):
+                payload = bytes(value)
+                if len(payload) != typ.m:
+                    raise ValueError(f"{typ!r} expects exactly {typ.m} bytes, got {len(payload)}")
+                word = int.from_bytes(payload, "big") << ((32 - typ.m) * 8)
+                _mstore_at(offset, word)
+                return
             _mstore_at(offset, self._coerce_value(value))
             return
 

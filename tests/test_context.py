@@ -130,6 +130,16 @@ class TestEncodeAbi:
         assert len(out) == 32
         assert out[:5] == b"hello"
 
+    def test_bytesm_accepts_python_bytes(self) -> None:
+        payload = b"\x11\x22\x33\x44"
+        out = _encode_and_return((BytesM_T(4),), (payload,))
+        assert out[:4] == payload
+        assert out[4:] == b"\x00" * 28
+
+    def test_bytesm_rejects_wrong_size_python_bytes(self) -> None:
+        with pytest.raises(ValueError, match="expects exactly 4 bytes"):
+            _encode_and_return((BytesM_T(4),), (b"\x11\x22\x33",))
+
     def test_method_id_prepends_4_byte_selector(self) -> None:
         method_id = bytes.fromhex("a9059cbb")
         addr_int = 0x0000000000000000000000000000000000000001
