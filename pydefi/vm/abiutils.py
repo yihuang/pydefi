@@ -4,6 +4,7 @@ import re
 from typing import Any, Sequence
 
 from eth_typing import ABIComponent
+from hexbytes import HexBytes
 from vyper.codegen_venom.context import VenomCodegenContext
 from vyper.codegen_venom.value import VyperValue
 from vyper.exceptions import CompilerPanic
@@ -49,10 +50,11 @@ def _split_type_and_arrays(type_str: str) -> tuple[str, list[int | None]]:
 
 def abi_to_vyper(comp: ABIComponent) -> VyperType:
     """
-    Convert a JSON ABI component TypedDict to a VyperType.
+    Convert an ABI type description to a VyperType.
 
-    The canonical path for all type conversion — both human-readable strings
-    and eth_abi ASTs are bridged to this format first.
+    Accepts a JSON ABI component dict (``{"type": "uint256"}``), a plain
+    ABI type string (``"uint256"``), or a nested dict for tuples.
+    This is the canonical path for all type conversion.
     """
     type_str: str = comp["type"]
     components: Sequence[ABIComponent] = comp.get("components", [])
@@ -158,18 +160,15 @@ def _load_primitive(value: Any, typ: VyperType) -> VyperValue:
         return VyperValue.from_stack_op(IRLiteral(int(value * DECIMAL_DIVISOR)), typ)
 
     if isinstance(value, str):
-        if value.startswith("0x") or value.startswith("0X"):
-            int_val = int(value, 16)
-            if isinstance(typ, AddressT):
-                return VyperValue.from_stack_op(IRLiteral(int_val), typ)
-            if isinstance(typ, BytesM_T):
-                n_bytes = typ.m
-                int_val = int_val << 8 * (32 - n_bytes)
-                return VyperValue.from_stack_op(IRLiteral(int_val), typ)
-        try:
-            return VyperValue.from_stack_op(IRLiteral(int(value)), typ)
-        except ValueError:
-            pass
+        int_val = int.from_bytes(HexBytes(value), "big")
+
+        if isinstance(typ, AddressT):
+            return VyperValue.from_stack_op(IRLiteral(int_val), typ)
+
+        if isinstance(typ, BytesM_T):
+            n_bytes = typ.m
+            int_val = int_val << 8 * (32 - n_bytes)
+            return VyperValue.from_stack_op(IRLiteral(int_val), typ)
 
     raise CompilerPanic(f"load_object: cannot convert {type(value).__name__}({value!r}) to {typ}")
 

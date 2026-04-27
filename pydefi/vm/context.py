@@ -29,7 +29,7 @@ Usage::
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Sequence
 
 from eth_typing import ABIComponent
 from vyper import ast as vy_ast
@@ -101,8 +101,8 @@ class ProgramContext(VenomCodegenContext):
 
     def abi_encode(
         self,
-        args: list[Any],
-        types: list[VyperType | ABIComponent],
+        args: Sequence[Any],
+        types: Sequence[VyperType | ABIComponent],
         *,
         method_id: bytes | None = None,
         ensure_tuple: bool = True,

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import pytest
 from eth_abi import encode as eth_abi_encode
+from eth_contract import ERC20
 from vyper.compiler.settings import Settings, anchor_settings
 from vyper.semantics.types.bytestrings import BytesT, StringT
 from vyper.semantics.types.primitives import AddressT, BytesM_T
@@ -61,7 +62,7 @@ def _check_encode(abi_type: str, value) -> None:
 
     enc_len = int.from_bytes(result.output[:32], "big")
     assert enc_len == len(expected), f"len mismatch: {enc_len} vs {len(expected)}"
-    assert result.output[32 : 32 + enc_len] == expected, "data mismatch"
+    assert result.output[32:] == expected, "data mismatch"
 
 
 # ---------------------------------------------------------------------------
@@ -382,3 +383,70 @@ def test_abi_decode_dynamic_array():
     result = mini_evm(bytecode)
     assert not result.is_error
     assert int.from_bytes(result.output, "big") == 20
+
+
+# ---------------------------------------------------------------------------
+# 7. ContractFunction integration
+# ---------------------------------------------------------------------------
+
+
+def test_abi_encode_contract_function():
+    """Encode via ``abi_encode`` + ``method_id`` matching ``ContractFunction.data``.
+
+    Uses a real ERC-20 ``transfer`` call from :mod:`eth_contract.erc20`.
+    Values are passed as hex strings — :func:`~pydefi.vm.abiutils.load_object`
+    handles the conversion to ``IRLiteral`` internally.
+    """
+    fn = ERC20.fns.transfer
+    recipient = "0xAb5801a6D3984aD3E0E5dA0aF725376d06f5Cd8a"
+    amount = 10 ** 18
+    calldata = fn(recipient, amount)
+
+    ctx = ProgramContext()
+    buf = ctx.abi_encode(
+        [recipient, amount],
+        calldata.abi["inputs"],
+        method_id=calldata.selector,
+    )
+    _build_return_bytes_buffer(ctx, buf.operand)
+    bytecode = ctx.compile()
+    result = mini_evm(bytecode)
+    assert not result.is_error
+
+    enc_len = int.from_bytes(result.output[:32], "big")
+    assert enc_len == len(calldata.data)
+    assert result.output[32:32 + enc_len] == calldata.data
+
+
+def test_abi_encode_with_ir_variable():
+    """Encode with an ``IRVariable`` as one of the input values.
+
+    Verifies that :func:`~pydefi.vm.abiutils.load_object` accepts
+    ``IROperand`` s alongside raw Python values.
+    """
+    fn = ERC20.fns.transfer
+    recipient = "0xAb5801a6D3984aD3E0E5dA0aF725376d06f5Cd8a"
+    amount = 10 ** 18
+    calldata = fn(recipient, amount)
+
+    ctx = ProgramContext()
+    # Pass the amount as an IRVariable (loaded from a temporary) while
+    # the recipient stays as a raw hex string.
+    tmp = ctx.new_temporary_value(UINT256_T)
+    assert isinstance(tmp.operand, IRVariable)
+    ctx.builder.mstore(tmp.operand, IRLiteral(amount))
+    loaded = ctx.builder.mload(tmp.operand)
+
+    buf = ctx.abi_encode(
+        [recipient, loaded],
+        calldata.abi['inputs'],
+        method_id=calldata.selector,
+    )
+    _build_return_bytes_buffer(ctx, buf.operand)
+    bytecode = ctx.compile()
+    result = mini_evm(bytecode)
+    assert not result.is_error
+
+    enc_len = int.from_bytes(result.output[:32], "big")
+    assert enc_len == len(calldata.data)
+    assert result.output[32:32 + enc_len] == calldata.data
