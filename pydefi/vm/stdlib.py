@@ -4,46 +4,6 @@ This module provides factory functions to build named venom IR functions
 (``stdlib_revert_if``, ``stdlib_assert_ge``) into a shared
 :class:`~vyper.venom.context.IRContext` using :class:`~pydefi.vm.context.ProgramContext`.
 
-Unlike the old ``ModuleBuilder`` approach, stdlib functions are built directly
-into the user's ``IRContext`` — no merge step needed.  Simply create a
-:class:`~vyper.venom.context.IRContext`, call :func:`build_stdlib`, and then
-create your main :class:`~pydefi.vm.context.ProgramContext` in the same context.
-The :class:`~vyper.venom.passes.function_inliner.FunctionInlinerPass`
-automatically inlines them at each call site during compilation.
-
-Usage pattern::
-
-    from vyper.venom.context import IRContext
-    from pydefi.vm.context import ProgramContext
-    from pydefi.vm.stdlib import build_stdlib, encode_msg
-    from vyper.venom.basicblock import IRLabel, IRLiteral
-
-    ir_ctx = IRContext()
-    build_stdlib(ir_ctx)
-
-    ctx = ProgramContext(ir_ctx, "main")
-    amount = ctx.builder.calldataload(IRLiteral(4))
-
-    # Conditional revert:
-    is_zero = ctx.builder.iszero(amount)
-    msg_len, msg_word = encode_msg("amount is zero")
-    ctx.builder.invoke(
-        IRLabel("stdlib_revert_if"),
-        [is_zero, IRLiteral(msg_len), IRLiteral(msg_word)],
-        returns=0,
-    )
-
-    # Assertion:
-    msg_len2, msg_word2 = encode_msg("amount too small")
-    ctx.builder.invoke(
-        IRLabel("stdlib_assert_ge"),
-        [amount, IRLiteral(1000), IRLiteral(msg_len2), IRLiteral(msg_word2)],
-        returns=0,
-    )
-
-    ctx.builder.stop()
-    bytecode = ctx.compile()
-
 Stdlib functions
 ----------------
 
