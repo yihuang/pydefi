@@ -14,11 +14,11 @@ from vyper.semantics.types.primitives import AddressT, BytesM_T
 from vyper.semantics.types.shortcuts import UINT256_T
 from vyper.semantics.types.subscriptable import DArrayT, SArrayT
 from vyper.semantics.types.utils import type_from_abi
-from vyper.venom.basicblock import IRLiteral, IROperand, IRVariable
+from vyper.venom.basicblock import IRLabel, IRLiteral, IROperand, IRVariable
 from vyper.venom.context import IRContext
 
 from pydefi.vm.context import ProgramContext
-from pydefi.vm.stdlib import build_stdlib
+from pydefi.vm.stdlib import build_stdlib, encode_msg
 from tests.conftest import mini_evm
 
 _SHANGHAI_SETTINGS = Settings(evm_version="shanghai")
@@ -110,6 +110,126 @@ def test_stdlib_then_program_compiles():
     assert next(iter(ir_ctx.functions)) == ir_ctx.entry_function.name
     bytecode = ctx.compile()
     assert len(bytecode) > 0
+
+
+def test_stdlib_encode_msg():
+    """encode_msg produces correct (length, word) pairs."""
+    length, word = encode_msg("ok")
+    assert length == 2
+    assert word == int.from_bytes(b"ok".ljust(32, b"\x00"), "big")
+
+    length, word = encode_msg("hello world")
+    assert length == 11
+    assert word == int.from_bytes(b"hello world".ljust(32, b"\x00"), "big")
+
+    # 32-byte message (exact fit)
+    msg = "a" * 32
+    length, word = encode_msg(msg)
+    assert length == 32
+    assert word == int.from_bytes(msg.encode(), "big")
+
+
+def test_stdlib_encode_msg_too_long():
+    """encode_msg raises on strings > 32 UTF-8 bytes."""
+    with pytest.raises(ValueError, match="message too long"):
+        encode_msg("a" * 33)
+
+
+@pytest.mark.parametrize("cond,should_revert", [(1, True), (42, True), (0, False)])
+def test_stdlib_revert_if(cond: int, should_revert: bool):
+    """stdlib_revert_if reverts when cond is non-zero, passes when zero."""
+    ir_ctx = IRContext()
+    build_stdlib(ir_ctx)
+    ctx = ProgramContext(ir_ctx, "main")
+    builder = ctx.builder
+
+    msg_len, msg_word = encode_msg("test")
+    builder.invoke(
+        IRLabel("stdlib_revert_if"),
+        [IRLiteral(cond), IRLiteral(msg_len), IRLiteral(msg_word)],
+        returns=0,
+    )
+    # If we get here, return a success marker
+    marker = IRLiteral(0xCAFE)
+    out = builder.alloca(32)
+    builder.mstore(out, marker)
+    builder.return_(out, IRLiteral(32))
+
+    bytecode = ctx.compile()
+    result = mini_evm(bytecode)
+    assert result.is_error == should_revert
+    if not should_revert:
+        assert int.from_bytes(result.output, "big") == 0xCAFE
+
+
+@pytest.mark.parametrize("x,y,should_revert", [(5, 3, False), (3, 3, False), (1, 5, True)])
+def test_stdlib_assert_ge(x: int, y: int, should_revert: bool):
+    """stdlib_assert_ge reverts when x < y, passes when x >= y."""
+    ir_ctx = IRContext()
+    build_stdlib(ir_ctx)
+    ctx = ProgramContext(ir_ctx, "main")
+    builder = ctx.builder
+
+    msg_len, msg_word = encode_msg("too small")
+    builder.invoke(
+        IRLabel("stdlib_assert_ge"),
+        [IRLiteral(x), IRLiteral(y), IRLiteral(msg_len), IRLiteral(msg_word)],
+        returns=0,
+    )
+    marker = IRLiteral(0xCAFE)
+    out = builder.alloca(32)
+    builder.mstore(out, marker)
+    builder.return_(out, IRLiteral(32))
+
+    bytecode = ctx.compile()
+    result = mini_evm(bytecode)
+    assert result.is_error == should_revert
+    if not should_revert:
+        assert int.from_bytes(result.output, "big") == 0xCAFE
+
+
+def test_stdlib_revert_if_error_payload():
+    """stdlib_revert_if produces a valid Error(string) ABI revert reason."""
+    ir_ctx = IRContext()
+    build_stdlib(ir_ctx)
+    ctx = ProgramContext(ir_ctx, "main")
+    builder = ctx.builder
+
+    msg = "amount is zero"
+    msg_len, msg_word = encode_msg(msg)
+    builder.invoke(
+        IRLabel("stdlib_revert_if"),
+        [IRLiteral(1), IRLiteral(msg_len), IRLiteral(msg_word)],
+        returns=0,
+    )
+    builder.stop()
+
+    bytecode = ctx.compile()
+    result = mini_evm(bytecode)
+    assert result.is_error
+
+    # REVERT returns data on the stack as output
+    output = result.output
+    assert len(output) >= 4, f"output too short: {len(output)}"
+
+    # First 4 bytes: keccak256("Error(string)")[:4]
+    error_selector = 0x08C379A0
+    actual_selector = int.from_bytes(output[:4], "big")
+    assert actual_selector == error_selector, (
+        f"expected Error selector {error_selector:#010x}, got {actual_selector:#010x}"
+    )
+
+    # Offset (32): should point to byte 32 (right after the offset word)
+    offset = int.from_bytes(output[4:36], "big")
+    assert offset == 32, f"expected offset 32, got {offset}"
+
+    # Length
+    payload_len = int.from_bytes(output[36:68], "big")
+    assert payload_len == len(msg.encode()), f"msg length mismatch: {payload_len} vs {len(msg)}"
+
+    # Actual message
+    payload = output[68:68 + payload_len]
+    assert payload == msg.encode(), f"msg payload mismatch: {payload} vs {msg.encode()}"
 
 
 # ---------------------------------------------------------------------------
