@@ -44,7 +44,7 @@ from vyper.semantics.data_locations import DataLocation
 from vyper.semantics.types import BytesT, TupleT, VyperType
 from vyper.semantics.types.module import ModuleT
 from vyper.venom import VenomCompiler, run_passes_on
-from vyper.venom.basicblock import IRLabel, IRLiteral, IROperand, IRVariable
+from vyper.venom.basicblock import IRLabel, IRLiteral, IRVariable
 from vyper.venom.builder import VenomBuilder
 from vyper.venom.context import IRContext
 
@@ -107,6 +107,9 @@ class ProgramContext(VenomCodegenContext):
         method_id: bytes | None = None,
         ensure_tuple: bool = True,
     ) -> VyperValue:
+        assert method_id is None or len(method_id) == 4, "method_id must be 4 bytes"
+        assert len(args) == len(types), "args and types must have the same length"
+
         b = self.builder
 
         vyper_types = [abi_to_vyper(comp) if not isinstance(comp, VyperType) else comp for comp in types]
@@ -154,7 +157,7 @@ class ProgramContext(VenomCodegenContext):
 
     def abi_decode(
         self,
-        data: IROperand,
+        data: IRVariable,
         output_type: VyperType,
         *,
         unwrap_tuple: bool = True,
@@ -171,7 +174,6 @@ class ProgramContext(VenomCodegenContext):
             ``VyperValue`` pointing to the decoded value in Vyper memory layout.
         """
         b = self.builder
-        assert isinstance(data, IRVariable)
 
         # The Bytes buffer: [length_word][ABI data ...]
         data_len = b.mload(data)
