@@ -120,7 +120,7 @@ def load_object(
     Lower a Python object to a VyperValue using the given type.
 
     Accepts a VyperType, ABI type string, or JSON ABI component dict.
-    See :func:`parse_type` for the supported formats.
+    See :func:`abi_to_vyper` for the supported non-VyperType input formats.
     """
     if not isinstance(typ, VyperType):
         typ = abi_to_vyper(typ)
