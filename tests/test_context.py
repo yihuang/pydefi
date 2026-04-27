@@ -399,7 +399,7 @@ def test_abi_encode_contract_function():
     """
     fn = ERC20.fns.transfer
     recipient = "0xAb5801a6D3984aD3E0E5dA0aF725376d06f5Cd8a"
-    amount = 10 ** 18
+    amount = 10**18
     calldata = fn(recipient, amount)
 
     ctx = ProgramContext()
@@ -415,7 +415,7 @@ def test_abi_encode_contract_function():
 
     enc_len = int.from_bytes(result.output[:32], "big")
     assert enc_len == len(calldata.data)
-    assert result.output[32:32 + enc_len] == calldata.data
+    assert result.output[32 : 32 + enc_len] == calldata.data
 
 
 def test_abi_encode_with_ir_variable():
@@ -426,7 +426,7 @@ def test_abi_encode_with_ir_variable():
     """
     fn = ERC20.fns.transfer
     recipient = "0xAb5801a6D3984aD3E0E5dA0aF725376d06f5Cd8a"
-    amount = 10 ** 18
+    amount = 10**18
     calldata = fn(recipient, amount)
 
     ctx = ProgramContext()
@@ -439,7 +439,7 @@ def test_abi_encode_with_ir_variable():
 
     buf = ctx.abi_encode(
         [recipient, loaded],
-        calldata.abi['inputs'],
+        calldata.abi["inputs"],
         method_id=calldata.selector,
     )
     _build_return_bytes_buffer(ctx, buf.operand)
@@ -449,4 +449,4 @@ def test_abi_encode_with_ir_variable():
 
     enc_len = int.from_bytes(result.output[:32], "big")
     assert enc_len == len(calldata.data)
-    assert result.output[32:32 + enc_len] == calldata.data
+    assert result.output[32 : 32 + enc_len] == calldata.data
