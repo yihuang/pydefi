@@ -198,8 +198,10 @@ def _load_bytestring(
 
     ctx.ptr_store(val.ptr(), IRLiteral(len(bytez)))
 
+    padded = bytez.ljust(((len(bytez) + 31) // 32) * 32, b"\x00")
+
     for i in range(0, len(bytez), 32):
-        chunk = (bytez + b"\x00" * 31)[i : i + 32]
+        chunk = padded[i : i + 32]
         word = int.from_bytes(chunk, "big")
         offset = b.add(val.operand, IRLiteral(32 + i))
         b.mstore(offset, IRLiteral(word))
