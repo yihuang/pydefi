@@ -109,8 +109,10 @@ class ProgramContext(VenomCodegenContext):
         method_id: bytes | None = None,
         ensure_tuple: bool = True,
     ) -> VyperValue:
-        assert method_id is None or len(method_id) == 4, "method_id must be 4 bytes"
-        assert len(args) == len(types), "args and types must have the same length"
+        if method_id is not None and len(method_id) != 4:
+            raise ValueError("method_id must be 4 bytes")
+        if len(args) != len(types):
+            raise ValueError("args and types must have the same length")
 
         b = self.builder
 
