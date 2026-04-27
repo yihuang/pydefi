@@ -48,16 +48,20 @@ def _split_type_and_arrays(type_str: str) -> tuple[str, list[int | None]]:
     return base, arrays
 
 
-def abi_to_vyper(comp: ABIComponent) -> VyperType:
+def abi_to_vyper(comp: str | ABIComponent) -> VyperType:
     """
     Convert an ABI type description to a VyperType.
 
-    Accepts a JSON ABI component dict (``{"type": "uint256"}``), a plain
-    ABI type string (``"uint256"``), or a nested dict for tuples.
+    Accepts a plain ABI type string (``"uint256"``), a JSON ABI component
+    dict (``{"type": "uint256"}``), or a nested dict for tuple types.
     This is the canonical path for all type conversion.
     """
-    type_str: str = comp["type"]
-    components: Sequence[ABIComponent] = comp.get("components", [])
+    if isinstance(comp, str):
+        type_str: str = comp
+        components: Sequence[ABIComponent] = []
+    else:
+        type_str = comp["type"]
+        components = comp.get("components", [])
 
     base, arrays = _split_type_and_arrays(type_str)
 
@@ -114,13 +118,14 @@ def _base_to_vyper(base: str) -> VyperType:
 def load_object(
     ctx: VenomCodegenContext,
     value: Any,
-    typ: VyperType | ABIComponent,
+    typ: VyperType | str | ABIComponent,
 ) -> VyperValue:
     """
     Lower a Python object to a VyperValue using the given type.
 
-    Accepts a VyperType, ABI type string, or JSON ABI component dict.
-    See :func:`abi_to_vyper` for the supported non-VyperType input formats.
+    Accepts a VyperType, a plain ABI type string (e.g. ``"uint256"``),
+    or a JSON ABI component dict.  Non-VyperType inputs are converted
+    via :func:`abi_to_vyper`.
     """
     if not isinstance(typ, VyperType):
         typ = abi_to_vyper(typ)
