@@ -31,6 +31,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from eth_typing import ABIComponent
 from vyper import ast as vy_ast
 from vyper.codegen_venom.abi.abi_decoder import abi_decode_to_buf
 from vyper.codegen_venom.abi.abi_encoder import abi_encode_to_buf
@@ -47,12 +48,7 @@ from vyper.venom.basicblock import IRLabel, IRLiteral, IROperand, IRVariable
 from vyper.venom.builder import VenomBuilder
 from vyper.venom.context import IRContext
 
-from pydefi.vm.abiutils import load_object
-
-# Type alias for values accepted by load_object_to_vyper_value.
-# Broad enough to cover int literals, IR operands, raw bytes,
-# and recursive list/dict for tuples and arrays.
-_LoaderInput = int | IROperand | bytes | list | dict | tuple
+from pydefi.vm.abiutils import abi_to_vyper, load_object
 
 # Module-level dummy ModuleT shared by all ProgramContext instances.
 # VenomCodegenContext requires a ModuleT, but our operations (abi encode/decode,
@@ -106,21 +102,37 @@ class ProgramContext(VenomCodegenContext):
     def abi_encode(
         self,
         args: list[Any],
-        types: list[VyperType],
+        types: list[VyperType | ABIComponent],
         *,
         method_id: bytes | None = None,
         ensure_tuple: bool = True,
     ) -> VyperValue:
         b = self.builder
 
+        vyper_types = [
+            abi_to_vyper(comp) if not isinstance(comp, VyperType) else comp
+            for comp in types
+        ]
+
         if len(args) == 1 and not ensure_tuple:
             value = args[0]
-            vyper_type = types[0]
+            vyper_type = vyper_types[0]
         else:
             value = args
-            vyper_type = TupleT(tuple(types))
+            vyper_type = TupleT(tuple(vyper_types))
 
         vyper_value = load_object(self, value, vyper_type)
+
+        # abi_encode_to_buf expects a memory pointer for src, even for
+        # primitives.  If load_object returned a stack value (primitives),
+        # store it to a temporary first.
+        if vyper_value.is_stack_value:
+            tmp = self.new_temporary_value(vyper_type)
+            assert isinstance(tmp.operand, IRVariable)
+            b.mstore(tmp.operand, vyper_value.operand)
+            encode_src = tmp.operand
+        else:
+            encode_src = vyper_value.operand
 
         # Allocate output buffer: [length word] [method_id?] [data]
         offset = 4 if method_id is not None else 0
@@ -130,15 +142,13 @@ class ProgramContext(VenomCodegenContext):
         assert isinstance(buf_val.operand, IRVariable)
 
         if method_id is not None:
-            method_id_word = (
-                int.from_bytes(method_id.ljust(32, b"\x00"), "big")
-            )
+            method_id_word = int.from_bytes(method_id.ljust(32, b"\x00"), "big")
             b.mstore(b.add(buf_val.operand, IRLiteral(32)), IRLiteral(method_id_word))
-            data_dst = b.add(buf_val.operand, IRLiteral(32+4))
+            data_dst = b.add(buf_val.operand, IRLiteral(36))
         else:
             data_dst = b.add(buf_val.operand, IRLiteral(32))
 
-        encoded_len = abi_encode_to_buf(self, data_dst, vyper_value.operand, vyper_type)
+        encoded_len = abi_encode_to_buf(self, data_dst, encode_src, vyper_type)
         if offset > 0:
             encoded_len = b.add(encoded_len, IRLiteral(offset))
         b.mstore(buf_val.operand, encoded_len)

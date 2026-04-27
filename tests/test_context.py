@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import pytest
 from eth_abi import encode as eth_abi_encode
-from eth_abi.grammar import parse as _parse_abi_type
 from vyper.compiler.settings import Settings, anchor_settings
 from vyper.semantics.types.bytestrings import BytesT, StringT
 from vyper.semantics.types.primitives import AddressT, BytesM_T
@@ -43,36 +42,18 @@ def _build_return_bytes_buffer(ctx: ProgramContext, buf: IROperand) -> None:
     b.return_(buf, size)
 
 
-def _is_dynamic_abi(abi_type: str) -> bool:
-    """Check if an ABI type is dynamically-sized."""
-    parsed = _parse_abi_type(abi_type)
-    if parsed.is_array:
-        return True
-    return parsed.base in ("bytes", "string")
-
-
-def _expected_raw(abi_type: str, value) -> bytes:
-    """Return raw ABI encoding of *value* (no tuple envelope).
-
-    For static types the eth_abi output is used directly.
-    For dynamic types the 32-byte tuple offset is stripped.
-    """
-    return eth_abi_encode([abi_type], [value])
-
-
 def _check_encode(abi_type: str, value) -> None:
-    """Encode *value* via Venom encoder and cross-check against eth_abi."""
+    """Encode *value* via Venom encoder and cross-check against eth_abi.
+
+    Uses ``ensure_tuple=True`` (default) so the Venom output wraps the
+    value in a ``(type,)`` tuple, matching ``eth_abi.encode([type], [value])``
+    exactly — no tuple-offset stripping needed.
+    """
     vyper_type = type_from_abi({"type": abi_type})
-    expected = _expected_raw(abi_type, value)
+    expected = eth_abi_encode([abi_type], [value])
 
     ctx = ProgramContext()
-    if vyper_type._is_prim_word:
-        args = [IRLiteral(value)]
-    else:
-        # Complex type: value is prepackaged bytes, embed in data section
-        buf = ctx.embed_and_load(value)
-        args = [buf]
-    buf = ctx.abi_encode(args, [vyper_type], ensure_tuple=False)
+    buf = ctx.abi_encode([value], [vyper_type])  # ensure_tuple=True
     _build_return_bytes_buffer(ctx, buf.operand)
     bytecode = ctx.compile()
     result = mini_evm(bytecode)
@@ -211,12 +192,14 @@ def test_abi_encode_with_method_id():
 
 
 def test_abi_encode_dynamic_bytes():
-    """Encode Bytes[32] — eth_abi raw format: [length][data]."""
+    """Encode Bytes[32] — eth_abi raw format: [length][data].
+
+    load_object handles bytes → memory lowering automatically.
+    """
     data = b"dead"
-    expected = _expected_raw("bytes", data)
+    expected = eth_abi_encode(["bytes"], [data])
     ctx = ProgramContext()
-    buf = ctx.embed_and_load((4).to_bytes(32, "big") + b"dead\x00" * 8)
-    encoded = ctx.abi_encode([buf], [BytesT(32)], ensure_tuple=False)
+    encoded = ctx.abi_encode([data], [BytesT(32)])  # ensure_tuple=True
     _build_return_bytes_buffer(ctx, encoded.operand)
     bytecode = ctx.compile()
     result = mini_evm(bytecode)
@@ -227,11 +210,11 @@ def test_abi_encode_dynamic_bytes():
 
 
 def test_abi_encode_string():
+    """Encode String[32] — load_object handles str → memory lowering."""
     s = "hello"
-    expected = _expected_raw("string", s)
+    expected = eth_abi_encode(["string"], [s])
     ctx = ProgramContext()
-    buf = ctx.embed_and_load((5).to_bytes(32, "big") + b"hello\x00" * 8)
-    encoded = ctx.abi_encode([buf], [StringT(32)], ensure_tuple=False)
+    encoded = ctx.abi_encode([s], [StringT(32)])  # ensure_tuple=True
     _build_return_bytes_buffer(ctx, encoded.operand)
     bytecode = ctx.compile()
     result = mini_evm(bytecode)
@@ -250,10 +233,13 @@ def test_abi_decode_uint256():
     expected = eth_abi_encode(["uint256"], [99])
     ctx = ProgramContext()
     buf = ctx.embed_and_load((len(expected)).to_bytes(32, "big") + expected)
-    decoded = ctx.abi_decode(buf, UINT256_T, unwrap_tuple=False)
+    decoded = ctx.abi_decode(buf, UINT256_T)
+    assert isinstance(decoded.operand, IRVariable)
     loaded = ctx.builder.mload(decoded.operand)
     out = ctx.allocate_buffer(32)
-    ctx.builder.mstore(out.base_ptr().operand, loaded)
+    ptr = out.base_ptr().operand
+    assert isinstance(ptr, IRVariable)
+    ctx.builder.mstore(ptr, loaded)
     ctx.builder.return_(out.base_ptr().operand, IRLiteral(32))
     bytecode = ctx.compile()
     result = mini_evm(bytecode)
@@ -265,7 +251,7 @@ def test_abi_decode_reverts_on_short_data():
     ctx = ProgramContext()
     input_data = (16).to_bytes(32, "big") + (42).to_bytes(16, "big") + b"\x00" * 16
     buf = ctx.embed_and_load(input_data)
-    ctx.abi_decode(buf, UINT256_T, unwrap_tuple=False)
+    ctx.abi_decode(buf, UINT256_T)
     ctx.builder.stop()
     bytecode = ctx.compile()
     result = mini_evm(bytecode)
@@ -273,16 +259,13 @@ def test_abi_decode_reverts_on_short_data():
 
 
 def test_abi_decode_dynamic_bytes():
-    """Decode bytes — input from eth_abi, wrapped in tuple offset."""
+    """Decode bytes — input from eth_abi."""
     data = b"dead"
-    raw_abi = _expected_raw("bytes", data)
-    # Wrapped in a tuple: [offset=32][raw_abi]
-    wrapped = (32).to_bytes(32, "big") + raw_abi
-    # Bytes buffer: [total_length][wrapped ABI data]
-    buf_data = (len(wrapped)).to_bytes(32, "big") + wrapped
+    abi_data = eth_abi_encode(["bytes"], [data])  # [offset=32][length=4][data]
+    buf_data = (len(abi_data)).to_bytes(32, "big") + abi_data
     ctx = ProgramContext()
     buf = ctx.embed_and_load(buf_data)
-    decoded = ctx.abi_decode(buf, BytesT(32))  # unwrap_tuple=True wraps in (Bytes,)
+    decoded = ctx.abi_decode(buf, BytesT(32))  # unwrap_tuple=True
     _build_return_bytes_buffer(ctx, decoded.operand)
     bytecode = ctx.compile()
     result = mini_evm(bytecode)
@@ -313,9 +296,12 @@ def test_abi_roundtrip_uint256():
     ctx_dec = ProgramContext()
     buf_dec = ctx_dec.embed_and_load(encoded)
     decoded = ctx_dec.abi_decode(buf_dec, UINT256_T)
+    assert isinstance(decoded.operand, IRVariable)
     loaded_val = ctx_dec.builder.mload(decoded.operand)
     out = ctx_dec.allocate_buffer(32)
-    ctx_dec.builder.mstore(out.base_ptr().operand, loaded_val)
+    ptr = out.base_ptr().operand
+    assert isinstance(ptr, IRVariable)
+    ctx_dec.builder.mstore(ptr, loaded_val)
     ctx_dec.builder.return_(out.base_ptr().operand, IRLiteral(32))
     bytecode_dec = ctx_dec.compile()
     result_dec = mini_evm(bytecode_dec)
@@ -329,12 +315,11 @@ def test_abi_roundtrip_uint256():
 
 
 def test_abi_encode_static_array():
+    """Encode uint256[3] — load_object handles list → memory lowering."""
     expected = eth_abi_encode(["uint256[3]"], [[10, 20, 30]])
     arr_type = SArrayT(UINT256_T, 3)
-    raw = (10).to_bytes(32, "big") + (20).to_bytes(32, "big") + (30).to_bytes(32, "big")
     ctx = ProgramContext()
-    buf = ctx.embed_and_load(raw)
-    encoded = ctx.abi_encode([buf], [arr_type], ensure_tuple=False)
+    encoded = ctx.abi_encode([[10, 20, 30]], [arr_type])  # ensure_tuple=True
     _build_return_bytes_buffer(ctx, encoded.operand)
     bytecode = ctx.compile()
     result = mini_evm(bytecode)
@@ -353,7 +338,9 @@ def test_abi_decode_static_array():
     elem2_ptr = ctx.builder.add(decoded.operand, IRLiteral(64))
     loaded = ctx.builder.mload(elem2_ptr)
     out = ctx.allocate_buffer(32)
-    ctx.builder.mstore(out.base_ptr().operand, loaded)
+    ptr = out.base_ptr().operand
+    assert isinstance(ptr, IRVariable)
+    ctx.builder.mstore(ptr, loaded)
     ctx.builder.return_(out.base_ptr().operand, IRLiteral(32))
     bytecode = ctx.compile()
     result = mini_evm(bytecode)
@@ -362,11 +349,11 @@ def test_abi_decode_static_array():
 
 
 def test_abi_encode_dynamic_array():
-    """Encode DynArray[uint256,3] with ensure_tuple=False (raw array data)."""
-    expected = _expected_raw("uint256[]", [100, 200])
+    """Encode DynArray[uint256,3] — uses default ensure_tuple=True."""
+    expected = eth_abi_encode(["uint256[]"], [[100, 200]])
     arr_type = DArrayT(UINT256_T, 3)
     ctx = ProgramContext()
-    encoded = ctx.abi_encode([[100, 200]], [arr_type])
+    encoded = ctx.abi_encode([[100, 200]], [arr_type])  # ensure_tuple=True
     _build_return_bytes_buffer(ctx, encoded.operand)
     bytecode = ctx.compile()
     result = mini_evm(bytecode)
@@ -377,16 +364,19 @@ def test_abi_encode_dynamic_array():
 
 
 def test_abi_decode_dynamic_array():
-    """Decode DynArray[uint256, 3] — input from eth_abi (raw)."""
-    raw_abi = _expected_raw("uint256[]", [10, 20])
+    """Decode DynArray[uint256, 3] — input from eth_abi."""
+    abi_data = eth_abi_encode(["uint256[]"], [[10, 20]])
     arr_type = DArrayT(UINT256_T, 3)
     ctx = ProgramContext()
-    buf = ctx.embed_and_load((len(raw_abi)).to_bytes(32, "big") + raw_abi)
-    decoded = ctx.abi_decode(buf, arr_type, unwrap_tuple=False)
+    buf_data = len(abi_data).to_bytes(32, "big") + abi_data
+    buf = ctx.embed_and_load(buf_data)
+    decoded = ctx.abi_decode(buf, arr_type)  # unwrap_tuple=True
     elem1_ptr = ctx.builder.add(decoded.operand, IRLiteral(64))
     loaded = ctx.builder.mload(elem1_ptr)
     out = ctx.allocate_buffer(32)
-    ctx.builder.mstore(out.base_ptr().operand, loaded)
+    ptr = out.base_ptr().operand
+    assert isinstance(ptr, IRVariable)
+    ctx.builder.mstore(ptr, loaded)
     ctx.builder.return_(out.base_ptr().operand, IRLiteral(32))
     bytecode = ctx.compile()
     result = mini_evm(bytecode)
