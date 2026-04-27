@@ -228,7 +228,7 @@ def test_stdlib_revert_if_error_payload():
     assert payload_len == len(msg.encode()), f"msg length mismatch: {payload_len} vs {len(msg)}"
 
     # Actual message
-    payload = output[68:68 + payload_len]
+    payload = output[68 : 68 + payload_len]
     assert payload == msg.encode(), f"msg payload mismatch: {payload} vs {msg.encode()}"
 
 
