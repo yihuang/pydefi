@@ -57,6 +57,8 @@ Stdlib functions
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from vyper.venom.basicblock import IRLabel, IRLiteral
 from vyper.venom.context import IRContext
 
@@ -93,9 +95,7 @@ def encode_msg(msg: str) -> tuple[int, int]:
     return msg_len, msg_word
 
 
-def _build_revert_if(ir_ctx: IRContext) -> None:
-    """Add ``stdlib_revert_if(cond, msg_len, msg_word, ret_pc)`` to *ir_ctx*."""
-    ctx = ProgramContext(ir_ctx, "stdlib_revert_if", set_entry=False)
+def _build_revert_if(ctx: ProgramContext) -> None:
     b = ctx.builder
     cond = b.param()
     msg_len = b.param()
@@ -125,9 +125,7 @@ def _build_revert_if(ir_ctx: IRContext) -> None:
     b.ret(ret_pc)
 
 
-def _build_assert_ge(ir_ctx: IRContext) -> None:
-    """Add ``stdlib_assert_ge(a, b, msg_len, msg_word, ret_pc)`` to *ir_ctx*."""
-    ctx = ProgramContext(ir_ctx, "stdlib_assert_ge", set_entry=False)
+def _build_assert_ge(ctx: ProgramContext) -> None:
     b = ctx.builder
     a_val = b.param()
     b_val = b.param()
@@ -140,17 +138,14 @@ def _build_assert_ge(ir_ctx: IRContext) -> None:
     b.ret(ret_pc)
 
 
+#: Registry of built-in functions.
+STDLIB_FUNCTIONS: dict[str, Callable[[ProgramContext], None]] = {
+    "stdlib_revert_if": _build_revert_if,
+    "stdlib_assert_ge": _build_assert_ge,
+}
+
+
 def build_stdlib(ir_ctx: IRContext) -> None:
-    """Build stdlib functions (``stdlib_revert_if``, ``stdlib_assert_ge``) into
-    an :class:`~vyper.venom.context.IRContext`.
-
-    Call this before creating the main :class:`~pydefi.vm.context.ProgramContext`
-    so that the stdlib functions are available for ``invoke`` in the main body::
-
-        ir_ctx = IRContext()
-        build_stdlib(ir_ctx)
-        ctx = ProgramContext(ir_ctx, "main")
-        ...
-    """
-    _build_revert_if(ir_ctx)
-    _build_assert_ge(ir_ctx)
+    for name, builder in STDLIB_FUNCTIONS.items():
+        ctx = ProgramContext(ir_ctx, name, set_entry=False)
+        builder(ctx)
