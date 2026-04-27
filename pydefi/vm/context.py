@@ -68,9 +68,7 @@ class ProgramContext(VenomCodegenContext):
     ``compile()``.
     """
 
-    def __init__(
-        self, ir_ctx: IRContext | None = None, fn_name: str = "main", *, set_entry: bool = True
-    ) -> None:
+    def __init__(self, ir_ctx: IRContext | None = None, fn_name: str = "main", *, set_entry: bool = True) -> None:
         """Create a ProgramContext for a function within an IRContext.
 
         Args:
