@@ -68,21 +68,25 @@ class ProgramContext(VenomCodegenContext):
     ``compile()``.
     """
 
-    def __init__(self, ir_ctx: IRContext | None = None, fn_name: str = "main") -> None:
+    def __init__(
+        self, ir_ctx: IRContext | None = None, fn_name: str = "main", *, set_entry: bool = True
+    ) -> None:
         """Create a ProgramContext for a function within an IRContext.
 
         Args:
             ir_ctx: Shared IRContext to add the function to.  When ``None``
                 (default) a fresh context is created.
-            fn_name: Name for the function.  Defaults to ``"main"``; the
-                first function added to an IRContext that has no entry
-                function is automatically set as the entry point.
+            fn_name: Name for the function.  Defaults to ``"main"``.
+            set_entry: If ``True`` (default) and *ir_ctx* has no entry
+                function yet, this function is set as the entry point.
+                Pass ``False`` when building library/utility functions
+                that should not be the entry point.
         """
         if ir_ctx is None:
             ir_ctx = IRContext()
         self._ir_ctx = ir_ctx
         fn = ir_ctx.create_function(fn_name)
-        if ir_ctx.entry_function is None:
+        if set_entry and ir_ctx.entry_function is None:
             ir_ctx.entry_function = fn
             # VenomCompiler emits functions in dict insertion order. Ensure
             # the entry function is first once at construction time.

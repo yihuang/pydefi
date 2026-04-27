@@ -58,8 +58,9 @@ Stdlib functions
 from __future__ import annotations
 
 from vyper.venom.basicblock import IRLabel, IRLiteral
-from vyper.venom.builder import VenomBuilder
 from vyper.venom.context import IRContext
+
+from pydefi.vm.context import ProgramContext
 
 __all__ = ["build_stdlib", "encode_msg"]
 
@@ -94,8 +95,8 @@ def encode_msg(msg: str) -> tuple[int, int]:
 
 def _build_revert_if(ir_ctx: IRContext) -> None:
     """Add ``stdlib_revert_if(cond, msg_len, msg_word, ret_pc)`` to *ir_ctx*."""
-    fn = ir_ctx.create_function("stdlib_revert_if")
-    b = VenomBuilder(ir_ctx, fn)
+    ctx = ProgramContext(ir_ctx, "stdlib_revert_if", set_entry=False)
+    b = ctx.builder
     cond = b.param()
     msg_len = b.param()
     msg_word = b.param()
@@ -126,8 +127,8 @@ def _build_revert_if(ir_ctx: IRContext) -> None:
 
 def _build_assert_ge(ir_ctx: IRContext) -> None:
     """Add ``stdlib_assert_ge(a, b, msg_len, msg_word, ret_pc)`` to *ir_ctx*."""
-    fn = ir_ctx.create_function("stdlib_assert_ge")
-    b = VenomBuilder(ir_ctx, fn)
+    ctx = ProgramContext(ir_ctx, "stdlib_assert_ge", set_entry=False)
+    b = ctx.builder
     a_val = b.param()
     b_val = b.param()
     msg_len = b.param()
