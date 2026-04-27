@@ -13,19 +13,22 @@ Usage::
     from pydefi.vm.context import ProgramContext
     from vyper.semantics.types.shortcuts import UINT256_T
     from vyper.semantics.types.primitives import AddressT
-    from vyper.venom.basicblock import IRLiteral
 
     ctx = ProgramContext()
-    calldata = ctx.abi_encode(
-        [IRLiteral(recipient), IRLiteral(10**18)],
-        [AddressT(), UINT256_T],
+    enc = ctx.abi_encode(
+        (AddressT(), UINT256_T),
+        (recipient, 10**18),
         method_id=bytes.fromhex("a9059cbb"),
     )
-    ctx.builder.stop()
+    ctx.builder.return_(enc.buf, enc.length)
     bytecode = ctx.compile()
 """
 
 from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from typing import Sequence, Union
 
 from vyper import ast as vy_ast
 from vyper.codegen_venom.abi.abi_decoder import abi_decode_to_buf
@@ -33,15 +36,21 @@ from vyper.codegen_venom.abi.abi_encoder import abi_encode_to_buf
 from vyper.codegen_venom.buffer import Buffer, Ptr
 from vyper.codegen_venom.context import VenomCodegenContext
 from vyper.codegen_venom.value import VyperValue
-from vyper.compiler.settings import VenomOptimizationFlags
+from vyper.compiler.settings import Settings, VenomOptimizationFlags, anchor_settings
 from vyper.evm.assembler.core import assembly_to_evm
 from vyper.semantics.data_locations import DataLocation
-from vyper.semantics.types import BytesT, TupleT, VyperType
+from vyper.semantics.types import BytesT, DArrayT, SArrayT, StringT, TupleT, VyperType
 from vyper.semantics.types.module import ModuleT
+from vyper.semantics.types.primitives import AddressT, BoolT, BytesM_T, IntegerT
 from vyper.venom import VenomCompiler, run_passes_on
 from vyper.venom.basicblock import IRLabel, IRLiteral, IROperand, IRVariable
 from vyper.venom.builder import VenomBuilder
 from vyper.venom.context import IRContext
+
+#: Handle to an SSA value.  Returned by builder methods (an ``IRVariable``)
+#: or used as a compile-time constant (an ``IRLiteral``).  Both are accepted
+#: anywhere ``IROperand`` is.
+Value = Union[IRVariable, IRLiteral]
 
 # Module-level dummy ModuleT shared by all ProgramContext instances.
 # VenomCodegenContext requires a ModuleT, but our operations (abi encode/decode,
@@ -50,6 +59,188 @@ from vyper.venom.context import IRContext
 _dummy_ast = vy_ast.Module(body=[], name="", doc_string=None, source_id=0)
 _dummy_ast.path = ""  # required by ModuleT.__init__
 _DUMMY_MODULE_T: ModuleT = ModuleT(_dummy_ast)
+
+
+# ---------------------------------------------------------------------------
+# Sig-string parsing
+# ---------------------------------------------------------------------------
+#
+# Mini grammar (supports the cases pydefi needs today; nested tuples NYI):
+#
+#   atom = "uint" [bits]
+#        | "int"  [bits]
+#        | "address"
+#        | "bool"
+#        | "bytes" digits           # fixed bytesM, e.g. "bytes32"
+#        | "bytes" ":" maxlen       # variable bytes, e.g. "bytes:64"
+#   sig  = atom ("[" length "]")?   # optional dynamic-array dim
+#
+# Examples:
+#   "uint256"      -> IntegerT(False, 256)
+#   "address"      -> AddressT()
+#   "bytes32"      -> BytesM_T(32)
+#   "bytes:64"     -> BytesT(64)
+#   "bytes:64[4]"  -> DArrayT(BytesT(64), 4)
+#   "address[10]"  -> DArrayT(AddressT(), 10)
+
+_SIG_RE = re.compile(r"^([a-z]+)(\d*)?(?::(\d+))?(?:\[(\d+)\])?$")
+
+
+def _split_top_level_commas(s: str) -> list[str]:
+    """Split *s* on top-level commas, respecting nested ``()`` / ``[]``."""
+    parts: list[str] = []
+    cur: list[str] = []
+    depth = 0
+    for ch in s:
+        if ch in "([":
+            depth += 1
+            cur.append(ch)
+        elif ch in ")]":
+            depth -= 1
+            if depth < 0:
+                raise ValueError(f"parse_sig: unbalanced brackets in {s!r}")
+            cur.append(ch)
+        elif ch == "," and depth == 0:
+            parts.append("".join(cur).strip())
+            cur = []
+        else:
+            cur.append(ch)
+    if depth != 0:
+        raise ValueError(f"parse_sig: unbalanced brackets in {s!r}")
+    last = "".join(cur).strip()
+    if last:
+        parts.append(last)
+    return parts
+
+
+def parse_sig(sig: str) -> VyperType:
+    """Parse a single ABI-style sig string into a :class:`VyperType`.
+
+    Variable-length bytestrings require an explicit max length via
+    ``bytes:N`` (the standard ABI ``bytes`` is ambiguous about capacity,
+    which the codec needs for buffer allocation).
+
+    Tuples are written ``(t1, t2, ...)``; nest as needed.
+    """
+    sig = sig.strip()
+    if sig.startswith("("):
+        if not sig.endswith(")"):
+            raise ValueError(f"parse_sig: unterminated tuple {sig!r}")
+        inner = sig[1:-1].strip()
+        if not inner:
+            raise ValueError(f"parse_sig: empty tuple {sig!r}")
+        members = tuple(parse_sig(p) for p in _split_top_level_commas(inner))
+        return TupleT(members)
+
+    m = _SIG_RE.match(sig)
+    if not m:
+        raise ValueError(f"parse_sig: unrecognised sig {sig!r}")
+    name, bits, maxlen, dim = m.groups()
+
+    if name == "uint":
+        n = int(bits) if bits else 256
+        base: VyperType = IntegerT(False, n)
+    elif name == "int":
+        n = int(bits) if bits else 256
+        base = IntegerT(True, n)
+    elif name == "address" and not bits:
+        base = AddressT()
+    elif name == "bool" and not bits:
+        base = BoolT()
+    elif name == "bytes":
+        if bits:
+            base = BytesM_T(int(bits))
+        elif maxlen:
+            base = BytesT(int(maxlen))
+        else:
+            raise ValueError(f"parse_sig: bare 'bytes' is ambiguous; use 'bytes:N' for max length (got {sig!r})")
+    else:
+        raise ValueError(f"parse_sig: unknown atom {name!r} in {sig!r}")
+
+    if dim:
+        base = DArrayT(base, int(dim))
+    return base
+
+
+def parse_sigs(sigs: Sequence[str]) -> tuple[VyperType, ...]:
+    """Parse a sequence of sig strings; returns a tuple of :class:`VyperType`
+    (the natural input shape for :meth:`ProgramContext.abi_encode` /
+    :meth:`ProgramContext.abi_decode`)."""
+    return tuple(parse_sig(s) for s in sigs)
+
+
+# ---------------------------------------------------------------------------
+# Codec result types
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RuntimeBytes:
+    """Runtime-sourced bytes payload for a ``BytesT`` slot in
+    :meth:`ProgramContext.abi_encode`.  The data lives at *data_ptr* in
+    memory; *length* is the runtime byte count (must be ``<= BytesT.length``
+    of the slot).  The bytes do not need to be zero-padded.
+    """
+
+    length: Value
+    data_ptr: Value
+
+
+@dataclass(frozen=True)
+class EncodedBuffer:
+    """Result of :meth:`ProgramContext.abi_encode`: a memory pointer plus
+    the encoded length, both as runtime SSA handles.  Pair with
+    :meth:`pydefi.vm.Program.call_contract` ``(buf, length)`` form to send
+    the encoded data, or feed to ``builder.return_(buf, length)``.
+    """
+
+    buf: Value
+    length: Value
+
+
+@dataclass
+class DecodedBuffer:
+    """Result of :meth:`ProgramContext.abi_decode`: a memory pointer to the
+    decoded Vyper-internal-layout buffer for the wrapping tuple, plus the
+    per-field byte offsets.  Use :meth:`read_word` for primitive-word fields
+    (uint/int/address/bool/bytesM) and :meth:`read_bytes` for ``BytesT``
+    fields.  Raw access via *buf* / *offsets* is still supported.
+    """
+
+    buf: Value
+    offsets: tuple[int, ...]
+    types: tuple[VyperType, ...]
+    _ctx: "ProgramContext"
+
+    def _field_ptr(self, idx: int) -> Value:
+        if not 0 <= idx < len(self.types):
+            raise IndexError(f"DecodedBuffer: field index {idx} out of range")
+        off = self.offsets[idx]
+        if off == 0:
+            return self.buf
+        return self._ctx.builder.add(self.buf, off)
+
+    def read_word(self, idx: int) -> Value:
+        """Read the 32-byte word at field *idx*.  Valid for primitive-word
+        types (uint*, int*, address, bool, bytesN)."""
+        typ = self.types[idx]
+        if not typ._is_prim_word:
+            raise TypeError(
+                f"DecodedBuffer.read_word: field {idx} is {typ!r}, "
+                f"not a primitive-word type; use read_bytes for bytestrings"
+            )
+        return self._ctx.builder.mload(self._field_ptr(idx))
+
+    def read_bytes(self, idx: int) -> tuple[Value, Value]:
+        """Return ``(length, data_ptr)`` for a ``BytesT`` field."""
+        typ = self.types[idx]
+        if not isinstance(typ, BytesT):
+            raise TypeError(f"DecodedBuffer.read_bytes: field {idx} is {typ!r}, not BytesT")
+        b = self._ctx.builder
+        slot_ptr = self._field_ptr(idx)
+        length = b.mload(slot_ptr)
+        data_ptr = b.add(slot_ptr, 32)
+        return length, data_ptr
 
 
 class ProgramContext(VenomCodegenContext):
@@ -61,7 +252,13 @@ class ProgramContext(VenomCodegenContext):
     ``compile()``.
     """
 
-    def __init__(self, ir_ctx: IRContext | None = None, fn_name: str = "main") -> None:
+    def __init__(
+        self,
+        ir_ctx: IRContext | None = None,
+        fn_name: str = "main",
+        *,
+        evm_version: str = "shanghai",
+    ) -> None:
         """Create a ProgramContext for a function within an IRContext.
 
         Args:
@@ -70,10 +267,16 @@ class ProgramContext(VenomCodegenContext):
             fn_name: Name for the function.  Defaults to ``"main"``; the
                 first function added to an IRContext that has no entry
                 function is automatically set as the entry point.
+            evm_version: Target EVM hard fork.  Read by emitters that branch
+                on opcode availability (e.g. MCOPY in Cancun+); the codec
+                methods :meth:`abi_encode` / :meth:`abi_decode` wrap their
+                IR emission in ``anchor_settings(Settings(evm_version=...))``.
+                Default ``"shanghai"`` matches pydefi's ``mini_evm`` fixture.
         """
         if ir_ctx is None:
             ir_ctx = IRContext()
         self._ir_ctx = ir_ctx
+        self._evm_version = evm_version
         fn = ir_ctx.create_function(fn_name)
         if ir_ctx.entry_function is None:
             ir_ctx.entry_function = fn
@@ -89,130 +292,216 @@ class ProgramContext(VenomCodegenContext):
         super().__init__(module_ctx=_DUMMY_MODULE_T, builder=builder)
 
     # ------------------------------------------------------------------
-    # ABI helpers (no AST nodes)
+    # ABI codec (Python-value staging, nested tuples, selector)
     # ------------------------------------------------------------------
 
     def abi_encode(
         self,
-        args: list[IROperand],
-        types: list[VyperType],
+        types: tuple[VyperType, ...],
+        values: tuple[object, ...],
         *,
         method_id: bytes | None = None,
-        ensure_tuple: bool = True,
-    ) -> VyperValue:
-        """ABI-encode arguments and return a Bytes buffer in memory.
+    ) -> EncodedBuffer:
+        """ABI-encode *values* according to *types* into a runtime memory
+        buffer, returning ``EncodedBuffer(buf, length)``.
+
+        Wraps the inputs in a tuple type, allocates source/destination buffers,
+        stages each value into Vyper's internal layout (recursively, so nested
+        tuples / dynamic arrays / Bytes work), then calls
+        :func:`abi_encode_to_buf`.  The destination holds the standard ABI
+        encoding; its length is returned as a runtime value (depends on
+        runtime contents for dynamic types).
 
         Args:
-            args: IR operands for each argument.  For primitive-word types
-                (uint256, address, bool, bytes32) the operand is the **value**
-                itself.  For complex types (bytes, arrays, tuples) it is a
-                **memory pointer** to the Vyper-layout data.
-            types: VyperType for each argument.
-            method_id: Optional 4-byte function selector to prepend.
-            ensure_tuple: If True (default), a single arg is wrapped in a
-                tuple for ABI conformance.
+            types: VyperType per argument.  Use objects directly
+                (``UINT256_T``, ``BytesT(64)``) or :func:`parse_sigs`.
+            values: Parallel tuple of values.  Each value may be:
+
+                * a Python ``int`` / ``bool`` / ``bytes`` (primitive-word slots)
+                * a ``bytes`` / :class:`RuntimeBytes` (BytesT slots)
+                * a list / tuple of element values (DArrayT / TupleT slots)
+                * an :class:`IRVariable` / :class:`IRLiteral` (already-staged
+                  runtime SSA handle)
+            method_id: Optional 4-byte function selector to prepend.  When set,
+                ``buf`` points at the selector and ``length`` includes its 4
+                bytes — the result is ready for a CALL's ``argsOffset/argsLen``.
 
         Returns:
-            ``VyperValue`` pointing to a ``Bytes[N]`` buffer in memory
-            (length word + optional method_id + ABI-encoded data).
+            ``EncodedBuffer`` with ``buf`` (memory pointer) and ``length``
+            (runtime SSA value of the encoded byte count).
         """
+        if len(types) != len(values):
+            raise ValueError(f"abi_encode: types/values length mismatch ({len(types)} vs {len(values)})")
+        if method_id is not None and len(method_id) != 4:
+            raise ValueError(f"abi_encode: method_id must be exactly 4 bytes, got {len(method_id)}")
+
         b = self.builder
+        with anchor_settings(Settings(evm_version=self._evm_version)):  # type: ignore[call-arg]
+            wrapped = TupleT(types)
 
-        # Build the input for the encoder: either a single value or a tuple.
-        if len(args) == 1 and not ensure_tuple:
-            arg_type = types[0]
-            if arg_type._is_prim_word:
-                # abi_encode_to_buf expects a memory pointer, not a stack value.
-                tmp = self.new_temporary_value(arg_type)
-                assert isinstance(tmp.operand, IRVariable)
-                b.mstore(tmp.operand, args[0])
-                encode_input: IROperand = tmp.operand
-            else:
-                encode_input = args[0]
-            encode_type = arg_type
-        else:
-            encode_input, encode_type = self._build_tuple_in_memory(args, types)
+            src_buf = self.allocate_buffer(wrapped.memory_bytes_required, annotation="abi_encode_src")
+            cur = 0
+            for typ, val in zip(types, values):
+                self._write_into_internal_layout(src_buf._ptr, cur, typ, val)
+                cur += typ.memory_bytes_required
 
-        # Allocate output buffer: [length word] [method_id?] [data]
-        maxlen = encode_type.abi_type.size_bound()
-        if method_id is not None:
-            maxlen += 4
-        buf_t = BytesT(maxlen)
-        buf_val = self.new_temporary_value(buf_t)
-        assert isinstance(buf_val.operand, IRVariable)
+            extra = 4 if method_id is not None else 0
+            dst_buf = self.allocate_buffer(wrapped.abi_type.size_bound() + extra, annotation="abi_encode_dst")
 
-        if method_id is not None:
-            method_id_word = int.from_bytes(method_id, "big") << (32 - len(method_id)) * 8
-            b.mstore(b.add(buf_val.operand, IRLiteral(32)), IRLiteral(method_id_word))
-            data_dst = b.add(buf_val.operand, IRLiteral(36))
-            encoded_len = abi_encode_to_buf(self, data_dst, encode_input, encode_type)
-            total_len = b.add(encoded_len, IRLiteral(4))
-            b.mstore(buf_val.operand, total_len)
-        else:
-            data_dst = b.add(buf_val.operand, IRLiteral(32))
-            encoded_len = abi_encode_to_buf(self, data_dst, encode_input, encode_type)
-            b.mstore(buf_val.operand, encoded_len)
-
-        return buf_val
+            if method_id is not None:
+                # Selector lives in the high 4 bytes of the word at offset 0.
+                sel_word = int.from_bytes(method_id, "big") << ((32 - 4) * 8)
+                b.mstore(dst_buf._ptr, IRLiteral(sel_word))
+                encode_dst = b.add(dst_buf._ptr, IRLiteral(4))
+                encoded_len = abi_encode_to_buf(self, encode_dst, src_buf._ptr, wrapped)
+                total_len = b.add(encoded_len, IRLiteral(4))
+                return EncodedBuffer(buf=dst_buf._ptr, length=total_len)
+            encoded_len = abi_encode_to_buf(self, dst_buf._ptr, src_buf._ptr, wrapped)
+            return EncodedBuffer(buf=dst_buf._ptr, length=encoded_len)
 
     def abi_decode(
         self,
-        data: IROperand,
-        output_type: VyperType,
-        *,
-        unwrap_tuple: bool = True,
-    ) -> VyperValue:
-        """ABI-decode a Bytes buffer and return the decoded value in memory.
+        src: Value,
+        src_len: Value,
+        types: tuple[VyperType, ...],
+    ) -> DecodedBuffer:
+        """ABI-decode data at *src* (length *src_len*, in memory) into Vyper's
+        internal layout for ``TupleT(types)``.
 
-        Args:
-            data: Memory pointer to the Bytes buffer (length word + ABI data).
-            output_type: The VyperType to decode into.
-            unwrap_tuple: If True (default), single-element tuples are
-                unwrapped to the element type.
+        *src_len* is the upper bound for bounds-checked decode — pydefi callers
+        usually pass ``returndatasize()`` or the calldata length.  The returned
+        :class:`DecodedBuffer` exposes typed accessors (:meth:`read_word`,
+        :meth:`read_bytes`) so callers don't manually compute field offsets.
+        """
+        with anchor_settings(Settings(evm_version=self._evm_version)):  # type: ignore[call-arg]
+            wrapped = TupleT(types)
 
-        Returns:
-            ``VyperValue`` pointing to the decoded value in Vyper memory layout.
+            src_buffer = Buffer(_ptr=src, size=wrapped.memory_bytes_required, annotation="abi_decode_src")
+            src_ptr = Ptr(operand=src, location=DataLocation.MEMORY, buf=src_buffer)
+            src_val = VyperValue.from_ptr(src_ptr, wrapped)
+
+            dst_buf = self.allocate_buffer(wrapped.memory_bytes_required, annotation="abi_decode_dst")
+
+            hi = self.builder.add(src, src_len)
+            abi_decode_to_buf(self, dst_buf._ptr, src_val, hi=hi)
+
+            offsets = []
+            cur = 0
+            for typ in types:
+                offsets.append(cur)
+                cur += typ.memory_bytes_required
+
+            return DecodedBuffer(
+                buf=dst_buf._ptr,
+                offsets=tuple(offsets),
+                types=types,
+                _ctx=self,
+            )
+
+    def _coerce_value(self, v: object) -> IROperand | int:
+        """Coerce a Python value into something acceptable as a Venom operand.
+
+        * ``IRVariable`` / ``IRLiteral`` → returned as-is.
+        * ``int`` / ``bool`` → returned as ``int`` (Venom accepts directly).
+        * ``bytes`` len 20 → big-endian ``int`` (an EVM address).
+        """
+        if isinstance(v, (IRVariable, IRLiteral)):
+            return v
+        if isinstance(v, bool):
+            return int(v)
+        if isinstance(v, int):
+            if v < 0:
+                raise ValueError(f"_coerce_value: must be non-negative, got {v}")
+            return v
+        if isinstance(v, (bytes, bytearray, memoryview)):
+            if len(v) != 20:
+                raise ValueError(f"_coerce_value: bytes must be 20 (an address), got {len(v)} bytes")
+            return int.from_bytes(bytes(v), "big")
+        raise TypeError(f"_coerce_value: unsupported type {type(v).__name__}")
+
+    def _write_into_internal_layout(
+        self,
+        base: IRVariable,
+        offset: int,
+        typ: VyperType,
+        value: object,
+    ) -> None:
+        """Recursively write *value* into Vyper's internal memory layout for
+        *typ* at ``base + offset``.  Supports primitive-word types, ``BytesT``
+        / ``StringT`` (literal ``bytes``/``str`` or :class:`RuntimeBytes`),
+        ``SArrayT``, ``DArrayT``, and nested ``TupleT``.
         """
         b = self.builder
-        assert isinstance(data, IRVariable)
 
-        # The Bytes buffer: [length_word][ABI data ...]
-        data_len = b.mload(data)
-        data_ptr = b.add(data, IRLiteral(32))
+        def _mstore_at(off: int, v: IROperand | int) -> None:
+            addr = base if off == 0 else b.add(base, off)
+            b.mstore(addr, v)
 
-        # Determine the ABI-level type (may be wrapped in a tuple).
-        wrapped_typ = output_type
-        # For ABI conformance, external return types are wrapped in tuples.
-        # We only wrap if the output_type itself isn't already a tuple and
-        # unwrap_tuple is True (meaning the caller wants us to handle the
-        # tuple wrapping/unwrapping automatically).
-        if unwrap_tuple and not isinstance(output_type, TupleT):
-            wrapped_typ = TupleT((output_type,))
+        if typ._is_prim_word:
+            _mstore_at(offset, self._coerce_value(value))
+            return
 
-        # Validate size bounds.
-        abi_min_size = wrapped_typ.abi_type.static_size()
-        abi_max_size = wrapped_typ.abi_type.size_bound()
-        if abi_min_size == abi_max_size:
-            b.assert_(b.eq(data_len, IRLiteral(abi_min_size)))
-        else:
-            ge_min = b.iszero(b.lt(data_len, IRLiteral(abi_min_size)))
-            le_max = b.iszero(b.gt(data_len, IRLiteral(abi_max_size)))
-            b.assert_(b.and_(ge_min, le_max))
+        # BytesT and StringT share the same internal layout: [len][padded data].
+        if isinstance(typ, (BytesT, StringT)):
+            if isinstance(value, RuntimeBytes):
+                # Mirror Vyper's Bytes[N] invariant for runtime payloads.
+                b.assert_(b.iszero(b.gt(value.length, typ.length)))
+                _mstore_at(offset, value.length)
+                data_dst = b.add(base, offset + 32) if offset + 32 != 0 else base
+                self.copy_memory_dynamic(data_dst, value.data_ptr, value.length)
+                return
+            if isinstance(value, str):
+                payload: bytes = value.encode("utf-8")
+            elif isinstance(value, (bytes, bytearray)):
+                payload = bytes(value)
+            else:
+                raise TypeError(f"{type(typ).__name__} slot expects bytes/str/RuntimeBytes; got {type(value).__name__}")
+            if len(payload) > typ.length:
+                raise ValueError(f"payload exceeds {type(typ).__name__}[{typ.length}] cap: {len(payload)}B")
+            _mstore_at(offset, len(payload))
+            padded = payload + b"\x00" * ((32 - len(payload) % 32) % 32)
+            for i in range(0, len(padded), 32):
+                chunk = int.from_bytes(padded[i : i + 32], "big")
+                _mstore_at(offset + 32 + i, chunk)
+            return
 
-        # Allocate output buffer and decode.
-        output_val = self.new_temporary_value(wrapped_typ)
-        assert isinstance(output_val.operand, IRVariable)
+        if isinstance(typ, SArrayT):
+            # layout: [slot_0][slot_1]... (no count prefix; size is fixed).
+            if not isinstance(value, (list, tuple)):
+                raise TypeError(f"SArrayT slot expects list/tuple; got {type(value).__name__}")
+            if len(value) != typ.length:
+                raise ValueError(f"SArrayT[{typ.length}] arity mismatch: expected {typ.length}, got {len(value)}")
+            elem_stride = typ.value_type.memory_bytes_required
+            for i, item in enumerate(value):
+                self._write_into_internal_layout(base, offset + i * elem_stride, typ.value_type, item)
+            return
 
-        hi = b.add(data_ptr, data_len)
-        buf = Buffer(_ptr=data_ptr, size=wrapped_typ.memory_bytes_required, annotation="abi_decode_src")
-        ptr = Ptr(operand=data_ptr, location=DataLocation.MEMORY, buf=buf)
-        src = VyperValue.from_ptr(ptr, wrapped_typ)
-        abi_decode_to_buf(self, output_val.operand, src, hi=hi)
+        if isinstance(typ, DArrayT):
+            # layout: [count][slot_0][slot_1]...
+            if not isinstance(value, (list, tuple)):
+                raise TypeError(f"DArrayT slot expects list/tuple; got {type(value).__name__}")
+            if len(value) > typ.length:
+                raise ValueError(f"list exceeds DynArray[..., {typ.length}] cap: {len(value)}")
+            elem_stride = typ.value_type.memory_bytes_required
+            _mstore_at(offset, len(value))
+            for i, item in enumerate(value):
+                self._write_into_internal_layout(base, offset + 32 + i * elem_stride, typ.value_type, item)
+            return
 
-        # Unwrap single-element tuple if requested.
-        if unwrap_tuple and isinstance(wrapped_typ, TupleT) and wrapped_typ != output_type:
-            return VyperValue.from_ptr(output_val.ptr(), output_type)
-        return output_val
+        if isinstance(typ, TupleT):
+            if not isinstance(value, (list, tuple)):
+                raise TypeError(f"TupleT slot expects list/tuple; got {type(value).__name__}")
+            if len(value) != len(typ.member_types):
+                raise ValueError(
+                    f"tuple arity mismatch for {typ!r}: expected {len(typ.member_types)} members, got {len(value)}"
+                )
+            cur = offset
+            for member_typ, member_val in zip(typ.member_types, value):
+                self._write_into_internal_layout(base, cur, member_typ, member_val)
+                cur += member_typ.memory_bytes_required
+            return
+
+        raise NotImplementedError(f"_write_into_internal_layout: unsupported type {typ!r}")
 
     # ------------------------------------------------------------------
     # Compilation
@@ -233,6 +522,7 @@ class ProgramContext(VenomCodegenContext):
         if flags is None:
             flags = VenomOptimizationFlags()
         run_passes_on(self._ir_ctx, flags)
+
         compiler = VenomCompiler(self._ir_ctx)
         asm = compiler.generate_evm_assembly()
         bytecode, _ = assembly_to_evm(asm)
@@ -288,34 +578,3 @@ class ProgramContext(VenomCodegenContext):
     def ir_ctx(self) -> IRContext:
         """The underlying :class:`~vyper.venom.context.IRContext`."""
         return self._ir_ctx
-
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
-    def _build_tuple_in_memory(
-        self,
-        args: list[IROperand],
-        types: list[VyperType],
-    ) -> tuple[IROperand, TupleT]:
-        """Pack *args* into a tuple in memory and return ``(pointer, TupleT)``."""
-        b = self.builder
-        tuple_t = TupleT(tuple(types))
-        val = self.new_temporary_value(tuple_t)
-        assert isinstance(val.operand, IRVariable)
-
-        offset = 0
-        for arg, typ in zip(args, types):
-            if offset == 0:
-                dst = val.operand
-            else:
-                dst = b.add(val.operand, IRLiteral(offset))
-
-            if typ._is_prim_word:
-                b.mstore(dst, arg)
-            else:
-                self.copy_memory(dst, arg, typ.memory_bytes_required)
-
-            offset += typ.memory_bytes_required
-
-        return val.operand, tuple_t

@@ -1,513 +1,466 @@
-"""Tests for the ProgramContext high-level Venom IR builder.
-
-Verifies:
-1. Basic construction and inherited methods work
-2. ABI encode — simple scalar types, with and without method_id
-3. ABI decode — decode a Bytes buffer back to Vyper memory layout
-4. Compilation produces runnable bytecode (via mini_evm)
-5. ABI encode + decode round-trip
-6. Complex types: dynamic bytes, string, nested tuples, arrays
-"""
+"""Tests for :class:`pydefi.vm.context.ProgramContext` (typed Venom IR builder)."""
 
 from __future__ import annotations
 
+from typing import Callable
+
 import pytest
+from eth_abi.abi import encode as eth_abi_encode
 from vyper.compiler.settings import Settings, anchor_settings
 from vyper.semantics.types.bytestrings import BytesT, StringT
 from vyper.semantics.types.primitives import AddressT, BytesM_T
 from vyper.semantics.types.shortcuts import UINT256_T
 from vyper.semantics.types.subscriptable import DArrayT, SArrayT, TupleT
-from vyper.venom.basicblock import IRLiteral, IROperand, IRVariable
+from vyper.venom.basicblock import IRLiteral
 from vyper.venom.context import IRContext
 
-from pydefi.vm.context import ProgramContext
+from pydefi.vm.context import ProgramContext, RuntimeBytes, parse_sig, parse_sigs
 from pydefi.vm.stdlib import build_stdlib
 from tests.conftest import mini_evm
 
-# mini_evm uses the Shanghai fork.  The default Venom EVM version is Prague
-# (which emits Cancun opcodes like MCOPY), so we must pin the EVM version to
-# "shanghai" during both IR construction (where version_check gates mcopy vs
-# identity-precompile) and compilation.
-_SHANGHAI_SETTINGS = Settings(evm_version="shanghai")
+# Belt-and-suspenders: pin shanghai globally so that any non-anchored sub-call
+# in the IR pipeline (ProgramContext() already defaults shanghai) still picks
+# up the right opcode table.
+_SHANGHAI = Settings(evm_version="shanghai")
 
 
 @pytest.fixture(autouse=True)
 def _pin_shanghai_evm():
-    """Force vyper EVM version to shanghai for every test in this module."""
-    with anchor_settings(_SHANGHAI_SETTINGS):
+    with anchor_settings(_SHANGHAI):
         yield
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+def _internal_layout_uint_and_bytes(value: int, payload: bytes, maxlen: int) -> bytes:
+    """Vyper internal-layout form of ``(uint256, BytesT[maxlen])`` — the shape
+    :meth:`abi_decode` writes into its destination buffer."""
+    out = value.to_bytes(32, "big")
+    out += len(payload).to_bytes(32, "big")
+    padded_len = ((maxlen + 31) // 32) * 32
+    out += payload + b"\x00" * (padded_len - len(payload))
+    return out
 
 
-def _build_return_bytes_buffer(ctx: ProgramContext, buf: IROperand) -> None:
-    """Return the Bytes buffer at *buf* via ``RETURN(memory[buf..buf+32+len])``.
-
-    The buffer layout is: [length word (at buf+0)] [data (at buf+32)...].
-    We read the length word, add 32 for the total return size, and RETURN
-    from buf with that size.
-    """
-    b = ctx.builder
-    assert isinstance(buf, IRVariable)
-    length = b.mload(buf)
-    size = b.add(length, IRLiteral(32))
-    b.return_(buf, size)
+def _compile_and_run(build_fn: Callable[[ProgramContext], None], calldata: bytes = b"") -> bytes:
+    """Run *build_fn* against a fresh :class:`ProgramContext`, compile, execute via
+    :func:`mini_evm`, return the raw output bytes (asserting non-revert)."""
+    prog = ProgramContext()
+    build_fn(prog)
+    bytecode = prog.compile()
+    result = mini_evm(bytecode, calldata=calldata) if calldata else mini_evm(bytecode)
+    assert not result.is_error, f"unexpected revert: {result.output.hex()}"
+    return bytes(result.output)
 
 
-# ---------------------------------------------------------------------------
-# 1. Basic construction
-# ---------------------------------------------------------------------------
+def _encode_and_return(types: tuple, values: tuple, **enc_kwargs) -> bytes:
+    """Build a one-shot ProgramContext: ``abi_encode(types, values) → RETURN(buf, length)``
+    and return the resulting EVM output bytes."""
+
+    def build(prog: ProgramContext) -> None:
+        enc = prog.abi_encode(types, values, **enc_kwargs)
+        prog.builder.return_(enc.buf, enc.length)
+
+    return _compile_and_run(build)
 
 
-def test_construct():
-    ctx = ProgramContext()
-    assert ctx.ir_ctx.entry_function is not None
-    assert str(ctx.ir_ctx.entry_function.name) == "main"
-    assert ctx.builder is not None
+class TestConstruction:
+    def test_fresh_context_has_main_entry(self) -> None:
+        ctx = ProgramContext()
+        assert ctx.ir_ctx.entry_function is not None
+        assert str(ctx.ir_ctx.entry_function.name) == "main"
+        assert ctx.builder is not None
+
+    def test_inherited_new_variable(self) -> None:
+        ctx = ProgramContext()
+        v = ctx.new_variable("x", UINT256_T)
+        assert v.name == "x"
+        assert str(v.typ) == "uint256"
+        assert not v.value.is_stack_value
+
+    def test_inherited_lookup(self) -> None:
+        ctx = ProgramContext()
+        ctx.new_variable("y", UINT256_T)
+        v = ctx.lookup("y")
+        assert v.name == "y"
+
+    def test_basic_compile_round_trip(self) -> None:
+        ctx = ProgramContext()
+        x = ctx.builder.literal(42)
+        ctx.builder.mstore(ctx.builder.alloca(32), x)
+        ctx.builder.stop()
+        bytecode = ctx.compile()
+        assert isinstance(bytecode, bytes)
+        assert len(bytecode) > 0
+
+    def test_stdlib_then_program_compiles(self) -> None:
+        ir_ctx = IRContext()
+        build_stdlib(ir_ctx)
+        ctx = ProgramContext(ir_ctx, "main")
+        ctx.builder.stop()
+        bytecode = ctx.compile()
+        # compile() reorders so the entry function emits first regardless of
+        # insertion order (build_stdlib added two funcs before main).
+        assert next(iter(ir_ctx.functions)) == ir_ctx.entry_function.name
+        assert len(bytecode) > 0
 
 
-def test_inherited_new_variable():
-    ctx = ProgramContext()
-    v = ctx.new_variable("x", UINT256_T)
-    assert v.name == "x"
-    assert str(v.typ) == "uint256"
-    assert not v.value.is_stack_value
+_UINT_BYTES_CASES = [
+    pytest.param(0, b"", 64, id="empty-payload"),
+    pytest.param(42, b"hello", 64, id="short-payload"),
+    pytest.param(1, bytes(range(33)), 64, id="cross-32B-boundary"),
+]
 
 
-def test_inherited_lookup():
-    ctx = ProgramContext()
-    ctx.new_variable("y", UINT256_T)
-    v = ctx.lookup("y")
-    assert v.name == "y"
+class TestEncodeAbi:
+    def test_single_uint256(self) -> None:
+        out = _encode_and_return((UINT256_T,), (42,))
+        assert out == eth_abi_encode(["uint256"], [42])
 
+    def test_multiple_scalars(self) -> None:
+        out = _encode_and_return((UINT256_T, UINT256_T), (10, 20))
+        assert out == eth_abi_encode(["uint256", "uint256"], [10, 20])
 
-def test_basic_compile():
-    ctx = ProgramContext()
-    x = ctx.builder.literal(42)
-    ctx.builder.mstore(ctx.builder.alloca(32), x)
-    ctx.builder.stop()
-    bytecode = ctx.compile()
-    assert isinstance(bytecode, bytes)
-    assert len(bytecode) > 0
+    def test_address_left_pads_to_32_bytes(self) -> None:
+        addr_int = 0xABCDEF0000000000000000000000000000001234
+        out = _encode_and_return((AddressT(),), (addr_int,))
+        assert out[12:32] == addr_int.to_bytes(20, "big")
 
+    def test_bytes32(self) -> None:
+        val_int = int.from_bytes(b"hello" + b"\x00" * 27, "big")
+        out = _encode_and_return((BytesM_T(32),), (val_int,))
+        assert len(out) == 32
+        assert out[:5] == b"hello"
 
-def test_stdlib_then_program_compiles():
-    ir_ctx = IRContext()
-    build_stdlib(ir_ctx)
-    ctx = ProgramContext(ir_ctx, "main")
-    ctx.builder.stop()
-    assert next(iter(ir_ctx.functions)) == ir_ctx.entry_function.name
-    bytecode = ctx.compile()
-    assert len(bytecode) > 0
+    def test_method_id_prepends_4_byte_selector(self) -> None:
+        method_id = bytes.fromhex("a9059cbb")
+        addr_int = 0x0000000000000000000000000000000000000001
+        out = _encode_and_return(
+            (AddressT(), UINT256_T),
+            (addr_int, 2),
+            method_id=method_id,
+        )
+        assert len(out) == 68  # 4 (selector) + 64 (two static words)
+        assert out[:4] == method_id
+        assert out[4:] == eth_abi_encode(["address", "uint256"], [f"0x{addr_int:040x}", 2])
 
+    @pytest.mark.parametrize("value, payload, maxlen", _UINT_BYTES_CASES)
+    def test_baked_uint256_and_bytes(self, value: int, payload: bytes, maxlen: int) -> None:
+        """Baked Python literals → ABI encoding matches ``eth_abi.encode``."""
+        out = _encode_and_return((UINT256_T, BytesT(maxlen)), (value, payload))
+        assert out == eth_abi_encode(["uint256", "bytes"], [value, payload])
 
-# ---------------------------------------------------------------------------
-# 2. ABI encode — simple scalars
-# ---------------------------------------------------------------------------
+    def test_string_literal(self) -> None:
+        out = _encode_and_return((StringT(32),), ("hello",))
+        assert out == eth_abi_encode(["string"], ["hello"])
 
+    @pytest.mark.parametrize("value, payload", [(0, b""), (42, b"hello"), (1, bytes(range(50)))])
+    def test_runtime_bytes_match_eth_abi(self, value: int, payload: bytes) -> None:
+        """``RuntimeBytes`` from calldata → same encoding as eth_abi."""
+        maxlen = 64
 
-def test_abi_encode_single_uint256():
-    """abi_encode([42], [uint256]) should produce 64 bytes: length=32 + value."""
-    ctx = ProgramContext()
-    val = IRLiteral(42)
-    buf = ctx.abi_encode([val], [UINT256_T])
-    assert not buf.is_stack_value
+        def build(prog: ProgramContext) -> None:
+            b = prog.builder
+            value_v = b.calldataload(0)
+            length_v = b.calldataload(32)
+            padded_len = ((maxlen + 31) // 32) * 32
+            payload_buf = b.alloca(padded_len)
+            b.calldatacopy(payload_buf, 64, padded_len)
+            enc = prog.abi_encode(
+                (UINT256_T, BytesT(maxlen)),
+                (value_v, RuntimeBytes(length=length_v, data_ptr=payload_buf)),
+            )
+            b.return_(enc.buf, enc.length)
 
-    _build_return_bytes_buffer(ctx, buf.operand)
+        calldata = _internal_layout_uint_and_bytes(value, payload, maxlen)
+        out = _compile_and_run(build, calldata=calldata)
+        assert out == eth_abi_encode(["uint256", "bytes"], [value, payload])
 
-    bytecode = ctx.compile()
-    result = mini_evm(bytecode)
-    assert not result.is_error
+    def test_runtime_bytes_reverts_when_length_exceeds_cap(self) -> None:
+        """RuntimeBytes whose runtime length exceeds the BytesT cap must revert."""
+        maxlen = 64
 
-    # Bytes layout: [32-byte length][32-byte ABI-encoded value]
-    length = int.from_bytes(result.output[:32], "big")
-    assert length == 32
-    encoded_value = int.from_bytes(result.output[32:64], "big")
-    assert encoded_value == 42
+        def build(prog: ProgramContext) -> None:
+            b = prog.builder
+            value_v = b.calldataload(0)
+            length_v = b.calldataload(32)
+            padded_len = ((maxlen + 31) // 32) * 32
+            payload_buf = b.alloca(padded_len)
+            b.calldatacopy(payload_buf, 64, padded_len)
+            enc = prog.abi_encode(
+                (UINT256_T, BytesT(maxlen)),
+                (value_v, RuntimeBytes(length=length_v, data_ptr=payload_buf)),
+            )
+            b.return_(enc.buf, enc.length)
 
+        prog = ProgramContext()
+        build(prog)
+        bytecode = prog.compile()
+        # length=65 > maxlen=64 — must revert
+        calldata = (1).to_bytes(32, "big") + (65).to_bytes(32, "big") + bytes(range(64))
+        result = mini_evm(bytecode, calldata=calldata)
+        assert result.is_error, "expected revert when RuntimeBytes length exceeds cap"
 
-def test_abi_encode_multiple_scalars():
-    """abi_encode([uint256, uint256]) should encode as a tuple."""
-    ctx = ProgramContext()
-    buf = ctx.abi_encode([IRLiteral(10), IRLiteral(20)], [UINT256_T, UINT256_T])
+    def test_nested_tuple(self) -> None:
+        inner = TupleT((AddressT(), UINT256_T))
+        outer = TupleT((UINT256_T, inner))
+        addr_int = 0xCB00CB00CB00CB00CB00CB00CB00CB00CB00CB00
+        out = _encode_and_return((outer,), ((10, (addr_int, 42)),))
+        expected = eth_abi_encode(
+            ["(uint256,(address,uint256))"],
+            [(10, (f"0x{addr_int:040x}", 42))],
+        )
+        assert out == expected
 
-    _build_return_bytes_buffer(ctx, buf.operand)
+    def test_static_array(self) -> None:
+        out = _encode_and_return((SArrayT(UINT256_T, 3),), ([10, 20, 30],))
+        assert out == eth_abi_encode(["uint256[3]"], [[10, 20, 30]])
 
-    bytecode = ctx.compile()
-    result = mini_evm(bytecode)
-    assert not result.is_error
+    def test_dynamic_array(self) -> None:
+        out = _encode_and_return((DArrayT(UINT256_T, 3),), ([100, 200],))
+        assert out == eth_abi_encode(["uint256[]"], [[100, 200]])
 
-    # Tuple of two uint256 = 64 bytes of data
-    length = int.from_bytes(result.output[:32], "big")
-    assert length == 64
-    assert int.from_bytes(result.output[32:64], "big") == 10
-    assert int.from_bytes(result.output[64:96], "big") == 20
+    def test_parse_sigs_and_direct_types_produce_identical_bytecode(self) -> None:
+        """Sig-string types and hand-built VyperType objects must compile to
+        byte-for-byte identical bytecode."""
+        prog_a = ProgramContext()
+        enc_a = prog_a.abi_encode(parse_sigs(["uint256", "bytes:64"]), (42, b"hello"))
+        prog_a.builder.return_(enc_a.buf, enc_a.length)
 
+        prog_b = ProgramContext()
+        enc_b = prog_b.abi_encode((UINT256_T, BytesT(64)), (42, b"hello"))
+        prog_b.builder.return_(enc_b.buf, enc_b.length)
 
-def test_abi_encode_with_method_id():
-    """abi_encode with method_id should prepend 4 bytes."""
-    ctx = ProgramContext()
-    method_id = bytes.fromhex("a9059cbb")
-    buf = ctx.abi_encode(
-        [IRLiteral(1), IRLiteral(2)],
-        [AddressT(), UINT256_T],
-        method_id=method_id,
+        assert prog_a.compile() == prog_b.compile()
+
+    @pytest.mark.parametrize(
+        "values, exc, msg_fragment",
+        [
+            pytest.param(((1,),), ValueError, "arity mismatch", id="too-few-tuple-members"),
+            pytest.param(((1, b"hi", 3),), ValueError, "arity mismatch", id="too-many-tuple-members"),
+            pytest.param((1,), TypeError, "expects list/tuple", id="non-sequence-tuple-payload"),
+        ],
     )
-
-    _build_return_bytes_buffer(ctx, buf.operand)
-
-    bytecode = ctx.compile()
-    result = mini_evm(bytecode)
-    assert not result.is_error
-
-    length = int.from_bytes(result.output[:32], "big")
-    # Length = 4 (method_id) + 2 * 32 (address + uint256) = 68
-    assert length == 68
-    data = result.output[32:]
-    # First 4 bytes = method_id (at the start of the data area)
-    assert data[:4] == method_id
-
-
-def test_abi_encode_address():
-    """abi_encode an address — should be left-padded to 32 bytes."""
-    ctx = ProgramContext()
-    addr = IRLiteral(0xABCDEF0000000000000000000000000000001234)
-    buf = ctx.abi_encode([addr], [AddressT()])
-
-    _build_return_bytes_buffer(ctx, buf.operand)
-
-    bytecode = ctx.compile()
-    result = mini_evm(bytecode)
-    assert not result.is_error
-    encoded = result.output[32:64]
-    # Address value is right-aligned (uint160) in the 32-byte slot
-    assert encoded[12:] == addr.value.to_bytes(20, "big")
-
-
-def test_abi_encode_bytes32():
-    """abi_encode a bytes32 value."""
-    ctx = ProgramContext()
-    val = IRLiteral(int.from_bytes(b"hello" + b"\x00" * 27, "big"))
-    buf = ctx.abi_encode([val], [BytesM_T(32)])
-
-    _build_return_bytes_buffer(ctx, buf.operand)
-
-    bytecode = ctx.compile()
-    result = mini_evm(bytecode)
-    assert not result.is_error
-    length = int.from_bytes(result.output[:32], "big")
-    assert length == 32
-    assert result.output[32:37] == b"hello"
-
-
-# ---------------------------------------------------------------------------
-# 3. ABI decode (static data via embed_and_load)
-# ---------------------------------------------------------------------------
-
-# embed_and_load embeds raw byte data in a bytecode data-section and copies
-# it into a memory buffer at runtime via codecopy (volatile).  This prevents
-# the optimiser from eliminating the alloca-backed buffer, which would
-# otherwise happen when the input data is a compile-time constant.
-
-
-def test_abi_decode_uint256():
-    """Decode a Bytes buffer containing an ABI-encoded uint256."""
-    ctx = ProgramContext()
-
-    buf = ctx.embed_and_load((32).to_bytes(32, "big") + (99).to_bytes(32, "big"))
-    decoded = ctx.abi_decode(buf, UINT256_T, unwrap_tuple=False)
-    loaded = ctx.builder.mload(decoded.operand)
-    out = ctx.allocate_buffer(32)
-    ctx.builder.mstore(out.base_ptr().operand, loaded)
-    ctx.builder.return_(out.base_ptr().operand, IRLiteral(32))
-
-    bytecode = ctx.compile()
-    result = mini_evm(bytecode)
-    assert not result.is_error
-    assert int.from_bytes(result.output, "big") == 99
-
-
-def test_abi_decode_reverts_on_short_data():
-    """abi_decode with too-short data should revert."""
-    ctx = ProgramContext()
-
-    buf = ctx.embed_and_load((16).to_bytes(32, "big") + (42).to_bytes(32, "big"))
-    ctx.abi_decode(buf, UINT256_T, unwrap_tuple=False)
-    ctx.builder.stop()
-
-    bytecode = ctx.compile()
-    result = mini_evm(bytecode)
-    # uint256 requires exactly 32 bytes of data
-    assert result.is_error
-
-
-# ---------------------------------------------------------------------------
-# 4. Round-trip: encode then decode (static data only)
-# ---------------------------------------------------------------------------
-
-
-def test_abi_roundtrip_uint256():
-    """Encode, then decode in separate programs — decode(encode(x)) == x."""
-    ctx_enc = ProgramContext()
-    buf = ctx_enc.abi_encode([IRLiteral(12345)], [UINT256_T])
-    _build_return_bytes_buffer(ctx_enc, buf.operand)
-    bytecode_enc = ctx_enc.compile()
-    result_enc = mini_evm(bytecode_enc)
-    assert not result_enc.is_error
-    encoded = result_enc.output  # Bytes buffer: [length][data]
-
-    ctx_dec = ProgramContext()
-    buf_dec = ctx_dec.embed_and_load(encoded)
-    decoded = ctx_dec.abi_decode(buf_dec, UINT256_T)
-    loaded_val = ctx_dec.builder.mload(decoded.operand)
-    out = ctx_dec.allocate_buffer(32)
-    ctx_dec.builder.mstore(out.base_ptr().operand, loaded_val)
-    ctx_dec.builder.return_(out.base_ptr().operand, IRLiteral(32))
-    bytecode_dec = ctx_dec.compile()
-
-    result_dec = mini_evm(bytecode_dec)
-    assert not result_dec.is_error
-    assert int.from_bytes(result_dec.output, "big") == 12345
-
-
-def test_abi_roundtrip_two_uint256():
-    """Round-trip a (uint256, uint256) tuple through encode / decode."""
-    tuple_t = TupleT((UINT256_T, UINT256_T))
-
-    ctx_enc = ProgramContext()
-    buf = ctx_enc.abi_encode([IRLiteral(7), IRLiteral(42)], [UINT256_T, UINT256_T])
-    _build_return_bytes_buffer(ctx_enc, buf.operand)
-    bytecode_enc = ctx_enc.compile()
-    result_enc = mini_evm(bytecode_enc)
-    assert not result_enc.is_error
-    encoded = result_enc.output
-
-    ctx_dec = ProgramContext()
-    buf_dec = ctx_dec.embed_and_load(encoded)
-    decoded = ctx_dec.abi_decode(buf_dec, tuple_t)
-    elem1_ptr = ctx_dec.builder.add(decoded.operand, IRLiteral(32))
-    loaded = ctx_dec.builder.mload(elem1_ptr)
-    out = ctx_dec.allocate_buffer(32)
-    ctx_dec.builder.mstore(out.base_ptr().operand, loaded)
-    ctx_dec.builder.return_(out.base_ptr().operand, IRLiteral(32))
-    bytecode_dec = ctx_dec.compile()
-
-    result_dec = mini_evm(bytecode_dec)
-    assert not result_dec.is_error
-    assert int.from_bytes(result_dec.output, "big") == 42
-
-
-# ---------------------------------------------------------------------------
-# 5. Complex types: dynamic bytes / string
-# ---------------------------------------------------------------------------
-
-
-def test_abi_encode_dynamic_bytes():
-    """Encode a Bytes[32] value (dynamic bytestring) and check the ABI output."""
-    ctx = ProgramContext()
-
-    # Bytes buffer: [length word][data...]
-    buf = ctx.embed_and_load((4).to_bytes(32, "big") + b"dead\x00" * 8)
-
-    encoded = ctx.abi_encode([buf], [BytesT(32)], ensure_tuple=False)
-    _build_return_bytes_buffer(ctx, encoded.operand)
-
-    bytecode = ctx.compile()
-    result = mini_evm(bytecode)
-    assert not result.is_error
-
-    # Bytes encoding: [32-byte length][data padded to 32]
-    enc_len = int.from_bytes(result.output[:32], "big")
-    assert enc_len == 64  # 32 + ceil32(4) = 32 + 32
-    assert int.from_bytes(result.output[32:64], "big") == 4
-    assert result.output[64:68] == b"dead"
-
-
-def test_abi_encode_string():
-    """Encode a String[32] value and check the ABI output."""
-    ctx = ProgramContext()
-
-    buf = ctx.embed_and_load((5).to_bytes(32, "big") + b"hello\x00" * 8)
-
-    encoded = ctx.abi_encode([buf], [StringT(32)], ensure_tuple=False)
-    _build_return_bytes_buffer(ctx, encoded.operand)
-
-    bytecode = ctx.compile()
-    result = mini_evm(bytecode)
-    assert not result.is_error
-
-    enc_len = int.from_bytes(result.output[:32], "big")
-    assert enc_len == 64  # 32 + ceil32(5)
-    assert int.from_bytes(result.output[32:64], "big") == 5
-    assert result.output[64:69] == b"hello"
-
-
-def test_abi_decode_dynamic_bytes():
-    """Decode ABI-encoded Bytes[32] data."""
-    ctx = ProgramContext()
-
-    # ABI encoding of Bytes[32]("dead") inside a tuple: [offset=32][len=4][data=padded]
-    raw_abi = (32).to_bytes(32, "big") + (4).to_bytes(32, "big") + b"dead\x00" * 8
-    # Bytes wrapper: [total_len=96][abi_data]
-    buf = ctx.embed_and_load((96).to_bytes(32, "big") + raw_abi)
-    decoded = ctx.abi_decode(buf, BytesT(32))
-
-    _build_return_bytes_buffer(ctx, decoded.operand)
-
-    bytecode = ctx.compile()
-    result = mini_evm(bytecode)
-    assert not result.is_error
-    dec_len = int.from_bytes(result.output[:32], "big")
-    assert dec_len == 4
-    assert result.output[32:36] == b"dead"
-
-
-# ---------------------------------------------------------------------------
-# 6. Complex types: tuples
-# ---------------------------------------------------------------------------
-
-
-def test_abi_encode_nested_tuple():
-    """Encode a nested tuple: (uint256, (address, uint256))."""
-    ctx = ProgramContext()
-
-    inner = TupleT((AddressT(), UINT256_T))
-    outer = TupleT((UINT256_T, inner))
-
-    addr_val = 0xCB00CB00CB00CB00CB00CB00CB00CB00CB00CB00
-    raw = (10).to_bytes(32, "big") + addr_val.to_bytes(32, "big") + (42).to_bytes(32, "big")
-    buf = ctx.embed_and_load(raw)
-
-    encoded = ctx.abi_encode([buf], [outer], ensure_tuple=False)
-    _build_return_bytes_buffer(ctx, encoded.operand)
-
-    bytecode = ctx.compile()
-    result = mini_evm(bytecode)
-    assert not result.is_error
-
-    enc_len = int.from_bytes(result.output[:32], "big")
-    assert enc_len == 96  # 3 static words = 96 bytes
-    assert int.from_bytes(result.output[32:64], "big") == 10
-    assert result.output[76:96] == b"\xcb\x00" * 10  # address at offset 44
-    assert int.from_bytes(result.output[96:128], "big") == 42
-
-
-def test_abi_decode_nested_tuple():
-    """Decode a nested tuple from ABI-encoded input."""
-    ctx = ProgramContext()
-
-    inner = TupleT((AddressT(), UINT256_T))
-    outer = TupleT((UINT256_T, inner))
-
-    addr_val = 0xCB00CB00CB00CB00CB00CB00CB00CB00CB00CB00
-    raw = (10).to_bytes(32, "big") + addr_val.to_bytes(32, "big") + (42).to_bytes(32, "big")
-    buf = ctx.embed_and_load((96).to_bytes(32, "big") + raw)
-    decoded = ctx.abi_decode(buf, outer)
-
-    # Return the inner uint256 (offset 32 + 32 = 64)
-    inner_ptr = ctx.builder.add(decoded.operand, IRLiteral(64))
-    loaded = ctx.builder.mload(inner_ptr)
-    out = ctx.allocate_buffer(32)
-    ctx.builder.mstore(out.base_ptr().operand, loaded)
-    ctx.builder.return_(out.base_ptr().operand, IRLiteral(32))
-
-    bytecode = ctx.compile()
-    result = mini_evm(bytecode)
-    assert not result.is_error
-    assert int.from_bytes(result.output, "big") == 42
-
-
-# ---------------------------------------------------------------------------
-# 7. Complex types: arrays
-# ---------------------------------------------------------------------------
-
-
-def test_abi_encode_static_array():
-    """Encode a static array uint256[3]."""
-    ctx = ProgramContext()
-
-    arr_type = SArrayT(UINT256_T, 3)
-    buf = ctx.embed_and_load((10).to_bytes(32, "big") + (20).to_bytes(32, "big") + (30).to_bytes(32, "big"))
-
-    encoded = ctx.abi_encode([buf], [arr_type], ensure_tuple=False)
-    _build_return_bytes_buffer(ctx, encoded.operand)
-
-    bytecode = ctx.compile()
-    result = mini_evm(bytecode)
-    assert not result.is_error
-
-    enc_len = int.from_bytes(result.output[:32], "big")
-    assert enc_len == 96  # 3 * 32 = 96
-    assert int.from_bytes(result.output[32:64], "big") == 10
-    assert int.from_bytes(result.output[64:96], "big") == 20
-    assert int.from_bytes(result.output[96:128], "big") == 30
-
-
-def test_abi_decode_static_array():
-    """Decode a static array uint256[3] from ABI-encoded input."""
-    ctx = ProgramContext()
-
-    arr_type = SArrayT(UINT256_T, 3)
-    raw = (10).to_bytes(32, "big") + (20).to_bytes(32, "big") + (30).to_bytes(32, "big")
-    buf = ctx.embed_and_load((96).to_bytes(32, "big") + raw)
-    decoded = ctx.abi_decode(buf, arr_type)
-
-    # Return third element
-    elem2_ptr = ctx.builder.add(decoded.operand, IRLiteral(64))
-    loaded = ctx.builder.mload(elem2_ptr)
-    out = ctx.allocate_buffer(32)
-    ctx.builder.mstore(out.base_ptr().operand, loaded)
-    ctx.builder.return_(out.base_ptr().operand, IRLiteral(32))
-
-    bytecode = ctx.compile()
-    result = mini_evm(bytecode)
-    assert not result.is_error
-    assert int.from_bytes(result.output, "big") == 30
-
-
-def test_abi_encode_dynamic_array():
-    """Encode a DynArray[uint256, 3]."""
-    ctx = ProgramContext()
-
-    arr_type = DArrayT(UINT256_T, 3)
-    raw = (2).to_bytes(32, "big") + (100).to_bytes(32, "big") + (200).to_bytes(32, "big") + (0).to_bytes(32, "big")
-    buf = ctx.embed_and_load(raw)
-
-    encoded = ctx.abi_encode([buf], [arr_type], ensure_tuple=False)
-    _build_return_bytes_buffer(ctx, encoded.operand)
-
-    bytecode = ctx.compile()
-    result = mini_evm(bytecode)
-    assert not result.is_error
-
-    enc_len = int.from_bytes(result.output[:32], "big")
-    assert enc_len == 96  # 32 + 2*32
-    count = int.from_bytes(result.output[32:64], "big")
-    assert count == 2
-    assert int.from_bytes(result.output[64:96], "big") == 100
-    assert int.from_bytes(result.output[96:128], "big") == 200
-
-
-def test_abi_decode_dynamic_array():
-    """Decode a DynArray[uint256, 3] from ABI-encoded input."""
-    ctx = ProgramContext()
-
-    arr_type = DArrayT(UINT256_T, 3)
-    raw = (2).to_bytes(32, "big") + (10).to_bytes(32, "big") + (20).to_bytes(32, "big")
-    buf = ctx.embed_and_load((96).to_bytes(32, "big") + raw)
-    decoded = ctx.abi_decode(buf, arr_type, unwrap_tuple=False)
-
-    # Return second element (offset 32 + 32 = 64)
-    elem1_ptr = ctx.builder.add(decoded.operand, IRLiteral(64))
-    loaded = ctx.builder.mload(elem1_ptr)
-    out = ctx.allocate_buffer(32)
-    ctx.builder.mstore(out.base_ptr().operand, loaded)
-    ctx.builder.return_(out.base_ptr().operand, IRLiteral(32))
-
-    bytecode = ctx.compile()
-    result = mini_evm(bytecode)
-    assert not result.is_error
-    assert int.from_bytes(result.output, "big") == 20
+    def test_tuple_payload_validation(self, values: tuple, exc: type, msg_fragment: str) -> None:
+        tuple_type = parse_sig("(uint256, bytes:32)")
+        with pytest.raises(exc, match=msg_fragment):
+            ProgramContext().abi_encode((tuple_type,), values)
+
+
+class TestDecodeAbi:
+    def test_prim_word_round_trip_uint256(self) -> None:
+        """Encode in one program, decode in another — workaround for Vyper's
+        ``ConcretizeMemLocPass`` allocator crash on prim-word in-program round-trip."""
+        encoded = _encode_and_return((UINT256_T,), (12345,))
+
+        ctx = ProgramContext()
+        src = ctx.embed_and_load(encoded)
+        decoded = ctx.abi_decode(src, IRLiteral(len(encoded)), (UINT256_T,))
+        val = decoded.read_word(0)
+        out = ctx.allocate_buffer(32)
+        ctx.builder.mstore(out.base_ptr().operand, val)
+        ctx.builder.return_(out.base_ptr().operand, IRLiteral(32))
+
+        result = mini_evm(ctx.compile())
+        assert not result.is_error
+        assert int.from_bytes(result.output, "big") == 12345
+
+    def test_prim_word_round_trip_two_uint256(self) -> None:
+        encoded = _encode_and_return((UINT256_T, UINT256_T), (7, 42))
+
+        ctx = ProgramContext()
+        src = ctx.embed_and_load(encoded)
+        decoded = ctx.abi_decode(src, IRLiteral(len(encoded)), (UINT256_T, UINT256_T))
+        val1 = decoded.read_word(1)
+        out = ctx.allocate_buffer(32)
+        ctx.builder.mstore(out.base_ptr().operand, val1)
+        ctx.builder.return_(out.base_ptr().operand, IRLiteral(32))
+
+        result = mini_evm(ctx.compile())
+        assert not result.is_error
+        assert int.from_bytes(result.output, "big") == 42
+
+    @pytest.mark.parametrize("value, payload, maxlen", _UINT_BYTES_CASES)
+    def test_calldata_round_trips_to_internal_layout(self, value: int, payload: bytes, maxlen: int) -> None:
+        """ABI calldata → decoded buffer must match Vyper's internal layout."""
+        encoded = eth_abi_encode(["uint256", "bytes"], [value, payload])
+        types = (UINT256_T, BytesT(maxlen))
+        wrapped = TupleT(types)
+
+        def build(prog: ProgramContext) -> None:
+            b = prog.builder
+            src_buf = prog.allocate_buffer(wrapped.abi_type.size_bound(), annotation="abi_src")
+            b.calldatacopy(src_buf._ptr, 0, len(encoded))
+            decoded = prog.abi_decode(src_buf._ptr, IRLiteral(len(encoded)), types)
+            b.return_(decoded.buf, wrapped.memory_bytes_required)
+
+        out = _compile_and_run(build, calldata=encoded)
+        assert out == _internal_layout_uint_and_bytes(value, payload, maxlen)
+
+    @pytest.mark.parametrize("value, payload, maxlen", _UINT_BYTES_CASES)
+    def test_typed_accessors_match_layout(self, value: int, payload: bytes, maxlen: int) -> None:
+        """``DecodedBuffer.read_word`` / ``read_bytes`` retrieve fields at runtime."""
+        encoded = eth_abi_encode(["uint256", "bytes"], [value, payload])
+        types = parse_sigs(["uint256", f"bytes:{maxlen}"])
+
+        def build(prog: ProgramContext) -> None:
+            b = prog.builder
+            src_buf = b.alloca(len(encoded) + 32)  # +32 for hi-bound slack
+            b.calldatacopy(src_buf, 0, len(encoded))
+            decoded = prog.abi_decode(src_buf, IRLiteral(len(encoded)), types)
+            value_v = decoded.read_word(0)
+            payload_len, payload_ptr = decoded.read_bytes(1)
+
+            # Stage [value][len][data] for return.
+            padded_max = ((maxlen + 31) // 32) * 32
+            out_buf = b.alloca(64 + padded_max)
+            b.mstore(out_buf, value_v)
+            b.mstore(b.add(out_buf, 32), payload_len)
+            prog.copy_memory_dynamic(b.add(out_buf, 64), payload_ptr, payload_len)
+            b.return_(out_buf, b.add(payload_len, 64))
+
+        out = _compile_and_run(build, calldata=encoded)
+        expected = value.to_bytes(32, "big") + len(payload).to_bytes(32, "big") + payload
+        assert out == expected
+
+    def test_nested_tuple_round_trip(self) -> None:
+        """Round-trip a (uint256, (address, uint256)) tuple."""
+        inner = TupleT((AddressT(), UINT256_T))
+        outer = TupleT((UINT256_T, inner))
+        addr_int = 0xCB00CB00CB00CB00CB00CB00CB00CB00CB00CB00
+
+        ctx = ProgramContext()
+        enc = ctx.abi_encode((outer,), ((10, (addr_int, 42)),))
+        decoded = ctx.abi_decode(enc.buf, enc.length, (outer,))
+        # Outer wraps the inner tuple at field 0; inner uint256 sits at offset
+        # 32 + 32 = 64 from the decoded buffer.
+        inner_uint_ptr = ctx.builder.add(decoded.buf, IRLiteral(64))
+        val = ctx.builder.mload(inner_uint_ptr)
+
+        out = ctx.allocate_buffer(32)
+        ctx.builder.mstore(out.base_ptr().operand, val)
+        ctx.builder.return_(out.base_ptr().operand, IRLiteral(32))
+
+        result = mini_evm(ctx.compile())
+        assert not result.is_error
+        assert int.from_bytes(result.output, "big") == 42
+
+    def test_static_array_round_trip(self) -> None:
+        arr = SArrayT(UINT256_T, 3)
+        ctx = ProgramContext()
+        enc = ctx.abi_encode((arr,), ([10, 20, 30],))
+        decoded = ctx.abi_decode(enc.buf, enc.length, (arr,))
+        # Third element at offset 64 in array memory layout.
+        elem2_ptr = ctx.builder.add(decoded.buf, IRLiteral(64))
+        val = ctx.builder.mload(elem2_ptr)
+        out = ctx.allocate_buffer(32)
+        ctx.builder.mstore(out.base_ptr().operand, val)
+        ctx.builder.return_(out.base_ptr().operand, IRLiteral(32))
+
+        result = mini_evm(ctx.compile())
+        assert not result.is_error
+        assert int.from_bytes(result.output, "big") == 30
+
+    def test_dynamic_array_round_trip(self) -> None:
+        arr = DArrayT(UINT256_T, 3)
+        ctx = ProgramContext()
+        enc = ctx.abi_encode((arr,), ([10, 20],))
+        decoded = ctx.abi_decode(enc.buf, enc.length, (arr,))
+        # Memory layout: [count][elem0][elem1]...; elem 1 at offset 64.
+        elem1_ptr = ctx.builder.add(decoded.buf, IRLiteral(64))
+        val = ctx.builder.mload(elem1_ptr)
+        out = ctx.allocate_buffer(32)
+        ctx.builder.mstore(out.base_ptr().operand, val)
+        ctx.builder.return_(out.base_ptr().operand, IRLiteral(32))
+
+        result = mini_evm(ctx.compile())
+        assert not result.is_error
+        assert int.from_bytes(result.output, "big") == 20
+
+    def test_read_word_rejects_bytes_slot(self) -> None:
+        decoded = self._make_decoded(("uint256", "bytes:32"))
+        with pytest.raises(TypeError, match="not a primitive"):
+            decoded.read_word(1)  # field 1 is bytes:32
+
+    def test_read_bytes_rejects_primitive_slot(self) -> None:
+        decoded = self._make_decoded(("uint256", "bytes:32"))
+        with pytest.raises(TypeError, match="not BytesT"):
+            decoded.read_bytes(0)  # field 0 is uint256
+
+    def test_read_word_rejects_out_of_range_index(self) -> None:
+        decoded = self._make_decoded(("uint256", "bytes:32"))
+        with pytest.raises(IndexError):
+            decoded.read_word(99)
+
+    @staticmethod
+    def _make_decoded(sigs: tuple[str, ...]):
+        """Build a DecodedBuffer for the given sigs.  The IR does not need
+        to compile — we only exercise Python-side accessor validation."""
+        prog = ProgramContext()
+        b = prog.builder
+        types = parse_sigs(list(sigs))
+        src_buf = b.alloca(128)
+        b.calldatacopy(src_buf, 0, 96)
+        return prog.abi_decode(src_buf, IRLiteral(96), types)
+
+
+class TestParseSig:
+    @pytest.mark.parametrize("sig", ["uint256", "uint8", "int128", "address", "bool", "bytes32"])
+    def test_atoms_are_prim_word(self, sig: str) -> None:
+        assert parse_sig(sig)._is_prim_word
+
+    def test_variable_bytes(self) -> None:
+        bytes64 = parse_sig("bytes:64")
+        assert isinstance(bytes64, BytesT)
+        assert bytes64.length == 64
+
+    def test_dynamic_array_atoms(self) -> None:
+        addrs = parse_sig("address[10]")
+        assert isinstance(addrs, DArrayT)
+        assert addrs.length == 10
+
+        bytes_array = parse_sig("bytes:128[4]")
+        assert isinstance(bytes_array, DArrayT)
+        assert bytes_array.length == 4
+        assert isinstance(bytes_array.value_type, BytesT)
+        assert bytes_array.value_type.length == 128
+
+    def test_parse_sigs_returns_tuple_of_types(self) -> None:
+        types = parse_sigs(["uint256", "bytes:64"])
+        assert len(types) == 2
+
+    def test_bare_bytes_is_ambiguous(self) -> None:
+        with pytest.raises(ValueError, match="ambiguous"):
+            parse_sig("bytes")
+
+    def test_flat_tuple(self) -> None:
+        t = parse_sig("(uint256, bytes:64)")
+        assert isinstance(t, TupleT)
+        assert len(t.member_types) == 2
+
+    def test_nested_tuple(self) -> None:
+        t = parse_sig("(uint256, (address, bytes:32))")
+        assert isinstance(t, TupleT)
+        assert len(t.member_types) == 2
+        inner = t.member_types[1]
+        assert isinstance(inner, TupleT)
+        assert len(inner.member_types) == 2
+
+    def test_tuple_with_dyn_array_atoms(self) -> None:
+        t = parse_sig("(bytes:64, bytes:128[4])")
+        assert isinstance(t, TupleT)
+        assert isinstance(t.member_types[0], BytesT)
+        assert isinstance(t.member_types[1], DArrayT)
+        assert t.member_types[1].length == 4
+
+    @pytest.mark.parametrize("sig", ["(uint256,bytes:64)", "( uint256 ,  bytes:64 )"])
+    def test_whitespace_tolerance(self, sig: str) -> None:
+        parse_sig(sig)
+
+    def test_one_element_tuple(self) -> None:
+        """``(uint256,)`` parses as ``TupleT((UINT256_T,))`` per ABI spec."""
+        t = parse_sig("(uint256,)")
+        assert isinstance(t, TupleT) and len(t.member_types) == 1
+
+    @pytest.mark.parametrize("bad", ["(", "(uint256", "uint256)", "()", "(uint256,,bytes:64)"])
+    def test_malformed_tuples_raise(self, bad: str) -> None:
+        with pytest.raises(ValueError):
+            parse_sig(bad)
