@@ -36,7 +36,7 @@ from pydefi.abi.amm import UNISWAP_V3_POOL
 from pydefi.pathfinder.graph import PoolGraph, V3PoolEdge
 from pydefi.pathfinder.router import Router
 from pydefi.types import Address, TokenAmount
-from pydefi.vm import Placeholder, Program
+from pydefi.vm import Program
 from pydefi.vm.swap import build_swap_transaction
 from tests.addrs import POOL_WETH_USDC_500, POOL_WETH_USDC_3000
 from tests.live.sol_utils import MOCK_TOKEN_SOL, compile_sol_file, compile_sol_source, deploy, ensure_solc
@@ -51,6 +51,9 @@ APPROVE_PROXY_SOL_FILE = REPO_ROOT / "pydefi" / "vm" / "ApproveProxy.sol"
 
 # Coinbase 8 — a well-funded address on mainnet (used for introspection only)
 WHALE: Address = Address("0x77134cbC06cB00b66F4c7e623D5fdBF6777635EC")
+
+_DOUBLE_FN = ContractFunction.from_abi("function double(uint256 x) external pure returns (uint256)")
+_ADD_INPUTS_FN = ContractFunction.from_abi("function addInputs(uint256 a, uint256 b) external pure returns (uint256)")
 
 
 def _compile_defi_vm() -> dict:
@@ -492,11 +495,7 @@ class TestDeFiVMFork:
 
         prog = Program()
         amount = prog.const(7)
-        success = prog.call_contract_abi(
-            adapter,
-            "function double(uint256 x) external pure returns (uint256)",
-            Placeholder(amount),
-        )
+        success = prog.call_contract_abi(adapter, _DOUBLE_FN, amount)
         prog.assert_(success)
         prog.assert_(prog.eq(prog.returndata_word(0), 14), "expected 14")
         prog.stop()
@@ -514,12 +513,7 @@ class TestDeFiVMFork:
         prog = Program()
         a = prog.const(6)
         b = prog.const(11)
-        success = prog.call_contract_abi(
-            adapter,
-            "function addInputs(uint256 a, uint256 b) external pure returns (uint256)",
-            Placeholder(a),
-            Placeholder(b),
-        )
+        success = prog.call_contract_abi(adapter, _ADD_INPUTS_FN, a, b)
         prog.assert_(success)
         prog.assert_(prog.eq(prog.returndata_word(0), 17), "expected 17")
         prog.stop()
@@ -534,15 +528,13 @@ class TestDeFiVMFork:
         deployer = ctx["deployer"]
         adapter = ctx["adapter_address"]
 
-        double_sig = "function double(uint256 x) external pure returns (uint256)"
-
         prog = Program()
-        # Call 1: double(5) → 10  (literal arg, no Placeholder needed)
-        s1 = prog.call_contract_abi(adapter, double_sig, 5)
+        # Call 1: double(5) → 10  (constant arg)
+        s1 = prog.call_contract_abi(adapter, _DOUBLE_FN, 5)
         prog.assert_(s1)
         amount = prog.returndata_word(0)
-        # Call 2: double(amount) → 20  (Placeholder-wrapped runtime patch)
-        s2 = prog.call_contract_abi(adapter, double_sig, Placeholder(amount))
+        # Call 2: double(amount) → 20  (runtime SSA value)
+        s2 = prog.call_contract_abi(adapter, _DOUBLE_FN, amount)
         prog.assert_(s2)
         prog.assert_(prog.eq(prog.returndata_word(0), 20), "expected 20")
         prog.stop()

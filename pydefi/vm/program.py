@@ -101,25 +101,6 @@ ValueLike = Union[Value, int, bytes]
 # ---------------------------------------------------------------------------
 
 
-class Placeholder:
-    """Marks a runtime :class:`Value` embedded in a ``call_contract_abi``
-    argument list.
-
-    Wrap any SSA :class:`Value` that should be substituted into the encoded
-    calldata at runtime::
-
-        prog.call_contract_abi(
-            token, "transfer(address,uint256)", recipient, Placeholder(amount),
-        )
-
-    Plain Python values (``int`` / ``str`` / ``bytes`` / ``bool``) are static
-    and don't need wrapping.
-    """
-
-    def __init__(self, value: Value) -> None:
-        self.value = value
-
-
 def _asm_item_size(item: object) -> int:
     """Byte size that *item* contributes when assembled to EVM bytecode.
 
@@ -186,19 +167,6 @@ def _shift_label_pushes(asm: list, bytecode: bytes, shift: int) -> bytes:
             buf[imm_pos : imm_pos + SYMBOL_SIZE] = shifted.to_bytes(SYMBOL_SIZE, "big")
         pos += size
     return bytes(buf)
-
-
-def _unwrap_placeholders(arg: object) -> object:
-    """Recursively replace :class:`Placeholder` with its inner :class:`Value`.
-
-    ``ProgramContext.abi_encode`` accepts ``IROperand`` arguments directly and
-    encodes them at runtime, so the wrapper is only a marker for the API.
-    """
-    if isinstance(arg, Placeholder):
-        return arg.value
-    if isinstance(arg, (tuple, list)):
-        return type(arg)(_unwrap_placeholders(item) for item in arg)
-    return arg
 
 
 # ---------------------------------------------------------------------------
@@ -514,38 +482,28 @@ class Program(ProgramContext):
     def call_contract_abi(
         self,
         to: ValueLike,
-        abi_sig: str,
+        fn: ContractFunction,
         *args: object,
         value: ValueLike = 0,
         gas: ValueLike | None = None,
     ) -> Value:
-        """Emit a CALL with calldata built from a human-readable ABI signature.
+        """Emit a CALL with calldata built from a :class:`ContractFunction`.
 
-        Plain Python values (``int``, ``str`` address, ``bool``, ``bytes``,
-        nested ``tuple``/``list``) are encoded as constants.  Wrap any runtime
-        :class:`Value` in :class:`Placeholder` to have it embedded into the
-        encoded calldata at runtime.
-
-        The ``function`` keyword in *abi_sig* is optional; both bare
-        ``"transfer(address,uint256)"`` and qualified ``"function transfer(...)"``
-        forms are accepted.
+        Each arg in *args* may be a plain Python constant (``int``, address
+        ``bytes``/``str``, ``bool``, nested ``tuple``/``list``) or a runtime
+        :class:`Value` (``IRVariable``/``IRLiteral``); both are encoded
+        uniformly by :meth:`ProgramContext.abi_encode`.
 
         Returns:
             A :class:`Value` holding the CALL success flag.
         """
-        normalised = abi_sig if abi_sig.lstrip().startswith("function ") else "function " + abi_sig
-        fn = ContractFunction.from_abi(normalised)
         param_types = [abi_to_vyper(t) for t in fn.input_types]
-
         if len(args) != len(param_types):
             raise ValueError(
-                f"call_contract_abi: expected {len(param_types)} argument(s) for signature {abi_sig!r}, got {len(args)}"
+                f"call_contract_abi: expected {len(param_types)} argument(s) for {fn.signature!r}, got {len(args)}"
             )
 
-        # ProgramContext.abi_encode handles plain Python values and IROperands
-        # uniformly — Placeholder is just a marker we strip here.
-        encoded_args = [_unwrap_placeholders(a) for a in args]
-        buf_val = self.abi_encode(encoded_args, param_types, method_id=bytes(fn.selector))
+        buf_val = self.abi_encode(list(args), param_types, method_id=bytes(fn.selector))
 
         # buf_val points to a Bytes buffer: [length_word][selector + abi data].
         buf_ptr = buf_val.operand

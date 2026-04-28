@@ -3,17 +3,22 @@
 from __future__ import annotations
 
 import pytest
+from eth_contract.contract import ContractFunction
 from hexbytes import HexBytes
 
 from pydefi.types import BasePool, RouteDAG, SwapProtocol, Token
 from pydefi.vm import (
-    Placeholder,
     Program,
     Value,
     build_execution_program_for_dag,
     build_quote_program_for_dag,
 )
 from tests.conftest import mini_evm
+
+_TRANSFER_FN = ContractFunction.from_abi("function transfer(address,uint256)")
+_PING_FN = ContractFunction.from_abi("function ping()")
+_PING_ADDR_FN = ContractFunction.from_abi("function ping(address)")
+_SET_UINT_FN = ContractFunction.from_abi("function set(uint256)")
 
 # Common test address — mini_evm makes any CALL succeed.
 _TARGET = HexBytes("0x" + "aa" * 20)
@@ -304,51 +309,43 @@ class TestCallContract:
 
 
 class TestCallContractAbi:
-    def test_static_args_no_patches(self):
+    def test_static_args(self):
         p = Program()
-        success = p.call_contract_abi(_TARGET, "transfer(address,uint256)", _TARGET, 10**18)
+        success = p.call_contract_abi(_TARGET, _TRANSFER_FN, _TARGET, 10**18)
         p.return_word(success)
-        assert _run_int(p) == 1
-
-    def test_function_keyword_optional(self):
-        p = Program()
-        s1 = p.call_contract_abi(_TARGET, "transfer(address,uint256)", _TARGET, 1)
-        p.assert_(s1)
-        s2 = p.call_contract_abi(_TARGET, "function transfer(address,uint256)", _TARGET, 2)
-        p.return_word(s2)
         assert _run_int(p) == 1
 
     def test_no_args(self):
         p = Program()
-        success = p.call_contract_abi(_TARGET, "ping()")
+        success = p.call_contract_abi(_TARGET, _PING_FN)
         p.return_word(success)
         assert _run_int(p) == 1
 
-    def test_value_placeholder_uint256(self):
+    def test_runtime_uint256_arg(self):
         p = Program()
         amount = p.const(0xDEADBEEF)
-        success = p.call_contract_abi(_TARGET, "set(uint256)", Placeholder(amount))
+        success = p.call_contract_abi(_TARGET, _SET_UINT_FN, amount)
         p.return_word(success)
         assert _run_int(p) == 1
 
-    def test_value_placeholder_address(self):
+    def test_runtime_address_arg(self):
         p = Program()
         addr = p.addr(_TARGET)
-        success = p.call_contract_abi(_TARGET, "ping(address)", Placeholder(addr))
+        success = p.call_contract_abi(_TARGET, _PING_ADDR_FN, addr)
         p.return_word(success)
         assert _run_int(p) == 1
 
-    def test_mixed_static_and_value(self):
+    def test_mixed_static_and_runtime(self):
         p = Program()
         amount = p.const(7)
-        success = p.call_contract_abi(_TARGET, "transfer(address,uint256)", _TARGET, Placeholder(amount))
+        success = p.call_contract_abi(_TARGET, _TRANSFER_FN, _TARGET, amount)
         p.return_word(success)
         assert _run_int(p) == 1
 
     def test_arity_mismatch_rejected(self):
         p = Program()
         with pytest.raises(ValueError, match="expected 2"):
-            p.call_contract_abi(_TARGET, "transfer(address,uint256)", _TARGET)
+            p.call_contract_abi(_TARGET, _TRANSFER_FN, _TARGET)
 
 
 # ---------------------------------------------------------------------------

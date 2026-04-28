@@ -16,7 +16,7 @@ from eth_contract.contract import ContractFunction
 from eth_utils import keccak
 
 from pydefi.types import Address, RouteDAG, RouteSwap, SwapProtocol, SwapRoute, SwapTransaction
-from pydefi.vm.program import Placeholder, Program, Value
+from pydefi.vm.program import Program, Value
 
 # ---------------------------------------------------------------------------
 # Pool function ABI signatures
@@ -25,6 +25,14 @@ from pydefi.vm.program import Placeholder, Program, Value
 _V3_POOL_SWAP_FN = ContractFunction.from_abi(
     "function swap(address recipient, bool zeroForOne, int256 amountSpecified, uint160 sqrtPriceLimitX96, bytes data)"
 )
+_V2_PAIR_SWAP_FN = ContractFunction.from_abi(
+    "function swap(uint256 amount0Out, uint256 amount1Out, address to, bytes data)"
+)
+_V2_PAIR_GET_RESERVES_FN = ContractFunction.from_abi("function getReserves()")
+_V3_QUOTER_QUOTE_EXACT_INPUT_FN = ContractFunction.from_abi(
+    "function quoteExactInput(bytes path, uint256 amountIn) returns (uint256 amountOut)"
+)
+_ERC20_TRANSFER_FN = ContractFunction.from_abi("function transfer(address to, uint256 amount)")
 
 # V3 sqrtPriceLimitX96 boundaries (TickMath.MIN/MAX_SQRT_RATIO ± 1)
 _SQRT_PRICE_MIN: int = 4295128740
@@ -115,11 +123,10 @@ def _build_v3_pool_swap(prog: Program, amount_in: Value, hop: SwapHop) -> Value:
 
     success = prog.call_contract_abi(
         hop.pool,
-        "function swap(address recipient, bool zeroForOne,"
-        " int256 amountSpecified, uint160 sqrtPriceLimitX96, bytes data)",
+        _V3_POOL_SWAP_FN,
         hop.recipient,
         hop.zero_for_one,
-        Placeholder(amount_in),
+        amount_in,
         sqrt_price_limit_x96,
         callback_data,
     )
@@ -135,7 +142,7 @@ def _build_v3_pool_swap(prog: Program, amount_in: Value, hop: SwapHop) -> Value:
 
 def _build_v2_compute_out(prog: Program, amount_in: Value, hop: SwapHop, fee_num: int) -> Value:
     """Compute V2 ``amountOut`` from ``getReserves()`` (no transfer)."""
-    success = prog.call_contract_abi(hop.pool, "getReserves()")
+    success = prog.call_contract_abi(hop.pool, _V2_PAIR_GET_RESERVES_FN)
     prog.assert_(success)
 
     if hop.zero_for_one:
@@ -167,9 +174,9 @@ def _build_v3_quote(prog: Program, amount_in: Value, hop: SwapHop, quoter_addres
     packed_path = encode_v3_path([hop.token_in, hop.token_out], [hop.fee_bps * 100])
     success = prog.call_contract_abi(
         quoter_address,
-        "function quoteExactInput(bytes path, uint256 amountIn) returns (uint256 amountOut)",
+        _V3_QUOTER_QUOTE_EXACT_INPUT_FN,
         packed_path,
-        Placeholder(amount_in),
+        amount_in,
     )
     prog.assert_(success)
     return prog.returndata_word(0)
@@ -185,9 +192,9 @@ def _build_v2_direct_swap(prog: Program, amount_in: Value, hop: SwapHop) -> Valu
     # Transfer amount_in to the pool.
     transfer_success = prog.call_contract_abi(
         hop.token_in,
-        "function transfer(address to, uint256 amount)",
+        _ERC20_TRANSFER_FN,
         hop.pool,
-        Placeholder(amount_in),
+        amount_in,
     )
     prog.assert_(transfer_success)
 
@@ -196,17 +203,17 @@ def _build_v2_direct_swap(prog: Program, amount_in: Value, hop: SwapHop) -> Valu
         # token0 in, token1 out: amount0Out=0, amount1Out=amount_out
         swap_success = prog.call_contract_abi(
             hop.pool,
-            "function swap(uint256 amount0Out, uint256 amount1Out, address to, bytes data)",
+            _V2_PAIR_SWAP_FN,
             0,
-            Placeholder(amount_out),
+            amount_out,
             hop.recipient,
             b"",
         )
     else:
         swap_success = prog.call_contract_abi(
             hop.pool,
-            "function swap(uint256 amount0Out, uint256 amount1Out, address to, bytes data)",
-            Placeholder(amount_out),
+            _V2_PAIR_SWAP_FN,
+            amount_out,
             0,
             hop.recipient,
             b"",
