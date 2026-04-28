@@ -18,7 +18,7 @@ from vyper.venom.basicblock import IRLabel, IRLiteral, IROperand, IRVariable
 from vyper.venom.context import IRContext
 
 from pydefi.vm.context import ProgramContext
-from pydefi.vm.stdlib import build_stdlib, encode_msg
+from pydefi.vm.stdlib import encode_msg
 from tests.conftest import mini_evm
 
 _SHANGHAI_SETTINGS = Settings(evm_version="shanghai")
@@ -104,7 +104,6 @@ def test_basic_compile():
 
 def test_stdlib_then_program_compiles():
     ir_ctx = IRContext()
-    build_stdlib(ir_ctx)
     ctx = ProgramContext(ir_ctx, "main")
     ctx.builder.stop()
     assert next(iter(ir_ctx.functions)) == ir_ctx.entry_function.name
@@ -138,9 +137,7 @@ def test_stdlib_encode_msg_too_long():
 @pytest.mark.parametrize("cond,should_revert", [(1, True), (42, True), (0, False)])
 def test_stdlib_revert_if(cond: int, should_revert: bool):
     """stdlib_revert_if reverts when cond is non-zero, passes when zero."""
-    ir_ctx = IRContext()
-    build_stdlib(ir_ctx)
-    ctx = ProgramContext(ir_ctx, "main")
+    ctx = ProgramContext()
     builder = ctx.builder
 
     msg_len, msg_word = encode_msg("test")
@@ -165,9 +162,7 @@ def test_stdlib_revert_if(cond: int, should_revert: bool):
 @pytest.mark.parametrize("x,y,should_revert", [(5, 3, False), (3, 3, False), (1, 5, True)])
 def test_stdlib_assert_ge(x: int, y: int, should_revert: bool):
     """stdlib_assert_ge reverts when x < y, passes when x >= y."""
-    ir_ctx = IRContext()
-    build_stdlib(ir_ctx)
-    ctx = ProgramContext(ir_ctx, "main")
+    ctx = ProgramContext()
     builder = ctx.builder
 
     msg_len, msg_word = encode_msg("too small")
@@ -190,9 +185,7 @@ def test_stdlib_assert_ge(x: int, y: int, should_revert: bool):
 
 def test_stdlib_revert_if_error_payload():
     """stdlib_revert_if produces a valid Error(string) ABI revert reason."""
-    ir_ctx = IRContext()
-    build_stdlib(ir_ctx)
-    ctx = ProgramContext(ir_ctx, "main")
+    ctx = ProgramContext()
     builder = ctx.builder
 
     msg = "amount is zero"

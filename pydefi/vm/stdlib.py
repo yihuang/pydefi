@@ -106,14 +106,13 @@ STDLIB_FUNCTIONS: dict[str, Callable[[ProgramContext], None]] = {
 
 
 def build_stdlib(ir_ctx: IRContext) -> None:
-    """Add stdlib helper functions to *ir_ctx* if not already present.
+    """Add stdlib helper functions to *ir_ctx*.
 
-    Idempotent — skips functions that have already been built into *ir_ctx*,
-    so it is safe to call multiple times (e.g. from ``ProgramContext.__init__``
-    *and* from a caller that pre-populates the stdlib for a shared context).
+    Must be called exactly once per ``ir_ctx``.  ``ProgramContext.__init__``
+    already invokes this for entry contexts (``set_entry=True``), so callers
+    constructing a top-level ``ProgramContext`` should not call it again.
     """
     for name, builder in STDLIB_FUNCTIONS.items():
-        if IRLabel(name, True) in ir_ctx.functions:
-            continue
+        assert IRLabel(name, True) not in ir_ctx.functions, f"stdlib function {name} already present"
         ctx = ProgramContext(ir_ctx, name, set_entry=False)
         builder(ctx)
