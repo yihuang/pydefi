@@ -231,12 +231,11 @@ class Program(ProgramContext):
     # ------------------------------------------------------------------
 
     def __init__(self) -> None:
-        super().__init__(fn_name="main")
+        super().__init__()
         # Stdlib helpers (stdlib_revert_if, stdlib_assert_ge) are added
         # unconditionally; FunctionInlinerPass + DCE eliminate them when
         # unused, so there's no bytecode cost.
         build_stdlib(self.ir_ctx)
-        self._data_section_counter = 0
 
     # ------------------------------------------------------------------
     # Operand coercion
@@ -445,24 +444,15 @@ class Program(ProgramContext):
     # ------------------------------------------------------------------
 
     def _alloc_calldata(self, calldata: bytes) -> tuple[IRVariable, int]:
-        """Append *calldata* as a Venom data section, copy into a fresh buffer.
+        """Embed *calldata* in a data section and return ``(base, len)``.
 
-        Returns ``(base, blen)`` where ``base`` is the SSA pointer to the
-        start of the buffer in memory and ``blen`` is the unpadded byte
-        length (the value to pass as ``argsLen`` to ``CALL``).
+        Thin wrapper around :meth:`ProgramContext.embed_and_load` that returns
+        the unpadded byte length alongside the buffer pointer (the value to
+        pass as ``argsLen`` to ``CALL``).
         """
         if len(calldata) > 0xFFFF:
             raise ValueError(f"calldata too large ({len(calldata)} bytes, max 65535)")
-        blen = len(calldata)
-
-        label = IRLabel(f"pydefi_calldata_{self._data_section_counter}", is_symbol=True)
-        self._data_section_counter += 1
-        self.ir_ctx.append_data_section(label)
-        self.ir_ctx.append_data_item(calldata)
-
-        base = self._alloc(blen)
-        self.builder.codecopy(base, label, blen)
-        return base, blen
+        return self.embed_and_load(calldata), len(calldata)
 
     def _alloc(self, size: int) -> IRVariable:
         """Allocate *size* bytes (rounded up to 32) and return the base pointer."""
@@ -713,4 +703,4 @@ class Program(ProgramContext):
         return self.build()
 
     def __repr__(self) -> str:
-        return f"Program(data_sections={self._data_section_counter})"
+        return f"Program(data_sections={len(self.ir_ctx.data_segment)})"

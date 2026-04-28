@@ -17,7 +17,6 @@ Usage::
 from pydefi.vm.context import ProgramContext
 from pydefi.vm.dag import build_execution_program_for_dag, build_quote_program_for_dag
 from pydefi.vm.program import Placeholder, Program, Value
-from pydefi.vm.stdlib import build_stdlib, encode_msg
 from pydefi.vm.swap import (
     V2_AMOUNT_OUT_OFFSET,
     V3_AMOUNT_OUT_OFFSET,
@@ -36,8 +35,6 @@ __all__ = [
     "Program",
     # Venom IR program builder (high-level, typed)
     "ProgramContext",
-    "build_stdlib",
-    "encode_msg",
     # Swap composer
     "SwapHop",
     "SwapProtocol",
