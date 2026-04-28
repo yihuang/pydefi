@@ -6,7 +6,7 @@ Usage::
     from pydefi.vm import Program
 
     prog = Program()
-    success = prog.call_contract(ROUTER, ERC20.fns.approve, ROUTER, 10**18)
+    success = prog.call_contract(token, ERC20.fns.approve, ROUTER, 10**18)
     prog.assert_(success)
     prog.stop()
     bytecode = prog.build()
