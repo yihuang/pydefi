@@ -76,7 +76,7 @@ _BACKFILL_WINDOW = 50
 
 # How many blocks to scan for factory events.  V2 pair creation is rarer, so
 # we use a larger window to guarantee we find at least one event.
-_FACTORY_WINDOW = 500
+_FACTORY_WINDOW = 1000
 
 
 # ---------------------------------------------------------------------------
