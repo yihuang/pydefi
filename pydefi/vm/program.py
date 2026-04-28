@@ -51,8 +51,6 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Union
 
-from eth_abi.abi import encode, encode_with_hooks
-from eth_abi.encoding import AddressEncoder, BooleanEncoder, BytesEncoder
 from eth_contract.contract import ContractFunction
 from vyper.compiler.phases import generate_bytecode
 from vyper.compiler.settings import OptimizationLevel, VenomOptimizationFlags
@@ -69,12 +67,11 @@ from vyper.evm.opcodes import OPCODES
 from vyper.venom import generate_assembly_experimental, run_passes_on
 from vyper.venom.basicblock import IRLabel, IRLiteral, IRVariable
 
+from pydefi.vm.abiutils import abi_to_vyper
 from pydefi.vm.context import ProgramContext
 from pydefi.vm.stdlib import build_stdlib, encode_msg
 
 if TYPE_CHECKING:
-    from eth_abi.hooks import EncodingContext
-
     from pydefi.types import Address
 
 
@@ -104,50 +101,23 @@ ValueLike = Union[Value, int, bytes]
 # ---------------------------------------------------------------------------
 
 
-def _placeholder_for_encoder(encoder: object) -> object:
-    """Return a value that the given ``eth_abi`` encoder will accept.
-
-    We can't use ``0`` for everything — ``AddressEncoder`` rejects ``int``
-    and ``BytesEncoder`` needs ``bytes`` of the correct width.  Unknown
-    encoders fall back to ``0`` and surface an encoding error if that's
-    not accepted.
-    """
-    if isinstance(encoder, AddressEncoder):
-        return b"\x00" * 20
-    if isinstance(encoder, BooleanEncoder):
-        return False
-    if isinstance(encoder, BytesEncoder):
-        return b"\x00" * (encoder.value_bit_size // 8)
-    return 0
-
-
 class Placeholder:
     """Marks a runtime :class:`Value` embedded in a ``call_contract_abi``
     argument list.
 
-    Wrap any SSA :class:`Value` that should be patched into the encoded
+    Wrap any SSA :class:`Value` that should be substituted into the encoded
     calldata at runtime::
 
         prog.call_contract_abi(
             token, "transfer(address,uint256)", recipient, Placeholder(amount),
         )
 
-    The ABI slot is encoded with a type-safe zero stand-in and overwritten
-    via ``mstore`` with the real value before ``CALL``.  Plain Python values
-    (``int`` / ``str`` / ``bytes`` / ``bool``) are static and don't need
-    wrapping.
+    Plain Python values (``int`` / ``str`` / ``bytes`` / ``bool``) are static
+    and don't need wrapping.
     """
 
     def __init__(self, value: Value) -> None:
         self.value = value
-        self.offset: int | None = None
-
-    def __call__(self, ctx: "EncodingContext") -> object:
-        # 4 = function selector prefix.  ctx.offset is the byte position of
-        # the encoded value within the args (start of its 32-byte slot for
-        # static types — which is where Program.call_contract MSTOREs).
-        self.offset = 4 + ctx.offset
-        return _placeholder_for_encoder(ctx.encoder)
 
 
 def _asm_item_size(item: object) -> int:
@@ -218,13 +188,17 @@ def _shift_label_pushes(asm: list, bytecode: bytes, shift: int) -> bytes:
     return bytes(buf)
 
 
-def _collect_placeholders(arg: object, sink: list[Placeholder]) -> None:
-    """Recursively walk *arg* and append every :class:`Placeholder` to *sink*."""
+def _unwrap_placeholders(arg: object) -> object:
+    """Recursively replace :class:`Placeholder` with its inner :class:`Value`.
+
+    ``ProgramContext.abi_encode`` accepts ``IROperand`` arguments directly and
+    encodes them at runtime, so the wrapper is only a marker for the API.
+    """
     if isinstance(arg, Placeholder):
-        sink.append(arg)
-    elif isinstance(arg, (tuple, list)):
-        for item in arg:
-            _collect_placeholders(item, sink)
+        return arg.value
+    if isinstance(arg, (tuple, list)):
+        return type(arg)(_unwrap_placeholders(item) for item in arg)
+    return arg
 
 
 # ---------------------------------------------------------------------------
@@ -558,9 +532,9 @@ class Program(ProgramContext):
         """Emit a CALL with calldata built from a human-readable ABI signature.
 
         Plain Python values (``int``, ``str`` address, ``bool``, ``bytes``,
-        nested ``tuple``/``list``) are statically encoded.  Wrap any runtime
-        :class:`Value` in :class:`Placeholder` to have it patched into the
-        encoded calldata at runtime via ``mstore`` before ``CALL``.
+        nested ``tuple``/``list``) are encoded as constants.  Wrap any runtime
+        :class:`Value` in :class:`Placeholder` to have it embedded into the
+        encoded calldata at runtime.
 
         The ``function`` keyword in *abi_sig* is optional; both bare
         ``"transfer(address,uint256)"`` and qualified ``"function transfer(...)"``
@@ -571,39 +545,32 @@ class Program(ProgramContext):
         """
         normalised = abi_sig if abi_sig.lstrip().startswith("function ") else "function " + abi_sig
         fn = ContractFunction.from_abi(normalised)
-        param_types = fn.input_types
+        param_types = [abi_to_vyper(t) for t in fn.input_types]
 
         if len(args) != len(param_types):
             raise ValueError(
                 f"call_contract_abi: expected {len(param_types)} argument(s) for signature {abi_sig!r}, got {len(args)}"
             )
 
-        # Scan args for Placeholder instances — the encoder invokes each as a
-        # hook, which records its calldata offset.
-        placeholders: list[Placeholder] = []
-        for a in args:
-            _collect_placeholders(a, placeholders)
+        # ProgramContext.abi_encode handles plain Python values and IROperands
+        # uniformly — Placeholder is just a marker we strip here.
+        encoded_args = [_unwrap_placeholders(a) for a in args]
+        buf_val = self.abi_encode(encoded_args, param_types, method_id=bytes(fn.selector))
 
-        if not placeholders:
-            calldata = bytes(fn.selector) + encode(param_types, args)
-            return self.call_contract(to, calldata, value=value, gas=gas)
-
-        encoded = encode_with_hooks(param_types, args)
-        # Every Placeholder must have had its calldata offset recorded by the
-        # encoder hook.  An unresolved one would silently leave the ABI
-        # stand-in (0 / address(0) / False) in place at runtime and produce a
-        # subtly wrong call — fail loudly instead.
-        unresolved = [i for i, p in enumerate(placeholders) if p.offset is None]
-        if unresolved:
-            raise ValueError(
-                f"call_contract_abi: failed to resolve calldata offset for "
-                f"{len(unresolved)} Placeholder(s) in signature {abi_sig!r} "
-                f"— possibly nested in a tuple/list type the encoder didn't "
-                f"traverse with hooks"
-            )
-        calldata = bytes(fn.selector) + encoded
-        patches: dict[int, ValueLike] = {p.offset: p.value for p in placeholders if p.offset is not None}
-        return self.call_contract(to, calldata, value=value, gas=gas, patches=patches)
+        # buf_val points to a Bytes buffer: [length_word][selector + abi data].
+        buf_ptr = buf_val.operand
+        blen = self.builder.mload(buf_ptr)
+        base = self.builder.add(buf_ptr, IRLiteral(32))
+        gas_op = self.builder.gas() if gas is None else self._to_operand(gas)
+        return self.builder.call(
+            gas_op,
+            self._to_operand(to),
+            self._to_operand(value),
+            base,
+            blen,
+            0,
+            0,
+        )
 
     # ------------------------------------------------------------------
     # Returndata

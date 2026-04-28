@@ -35,9 +35,10 @@ from eth_contract.contract import Contract
 from eth_contract.erc20 import ERC20
 from eth_contract.utils import get_initcode
 from eth_keys import keys
-from ethereum.forks.shanghai.state import (
+from ethereum.forks.cancun.state import (
     EMPTY_ACCOUNT,
     State,
+    TransientStorage,
     begin_transaction,
     get_account,
     get_account_optional,
@@ -49,9 +50,9 @@ from ethereum.forks.shanghai.state import (
     set_code,
     set_storage,
 )
-from ethereum.forks.shanghai.utils.address import compute_contract_address
-from ethereum.forks.shanghai.vm import BlockEnvironment, Message, TransactionEnvironment
-from ethereum.forks.shanghai.vm.interpreter import process_create_message, process_message
+from ethereum.forks.cancun.utils.address import compute_contract_address
+from ethereum.forks.cancun.vm import BlockEnvironment, Message, TransactionEnvironment
+from ethereum.forks.cancun.vm.interpreter import process_create_message, process_message
 from ethereum_types.bytes import Bytes0, Bytes20, Bytes32
 from ethereum_types.numeric import U64, U256, Uint
 
@@ -108,6 +109,7 @@ RETURN_TOP: bytes = bytes(
 # execution in begin_transaction / rollback_transaction so the shared state
 # remains effectively read-only across test calls.
 _mini_evm_state: State = State()
+_mini_evm_transient: TransientStorage = TransientStorage()
 set_account_balance(_mini_evm_state, Bytes20(MINI_EVM_SENDER), U256(MINI_EVM_SENDER_BALANCE))
 
 _MINI_EVM_BLOCK_ENV: BlockEnvironment = BlockEnvironment(
@@ -120,6 +122,8 @@ _MINI_EVM_BLOCK_ENV: BlockEnvironment = BlockEnvironment(
     base_fee_per_gas=Uint(1),
     time=U256(1),
     prev_randao=Bytes32(b"\x00" * 32),
+    excess_blob_gas=U64(0),
+    parent_beacon_block_root=Bytes32(b"\x00" * 32),
 )
 
 
@@ -188,6 +192,8 @@ def mini_evm(
             gas=Uint(gas),
             access_list_addresses=set(),
             access_list_storage_keys=set(),
+            transient_storage=TransientStorage(),
+            blob_versioned_hashes=(),
             index_in_block=None,
             tx_hash=None,
         ),
@@ -206,7 +212,7 @@ def mini_evm(
         accessed_storage_keys=set(),
         parent_evm=None,
     )
-    begin_transaction(_mini_evm_state)
+    begin_transaction(_mini_evm_state, _mini_evm_transient)
     try:
         evm = process_message(msg)
         return EVMResult(
@@ -215,7 +221,7 @@ def mini_evm(
             is_error=evm.error is not None,
         )
     finally:
-        rollback_transaction(_mini_evm_state)
+        rollback_transaction(_mini_evm_state, _mini_evm_transient)
 
 
 # ---------------------------------------------------------------------------
@@ -223,9 +229,9 @@ def mini_evm(
 # ---------------------------------------------------------------------------
 
 #: EVM-version flag used when compiling Solidity sources inside
-#: :class:`MiniEVMContext`.  ``"shanghai"`` enables PUSH0 (required by the
-#: Analog-Labs interpreter) while remaining compatible with Solidity 0.8.24.
-_SOLC_EVM_VERSION: str = "shanghai"
+#: :class:`MiniEVMContext`.  ``"cancun"`` enables MCOPY (used by Vyper's
+#: abi_encode lowering) and PUSH0.
+_SOLC_EVM_VERSION: str = "cancun"
 
 #: EIP-4844 is not used; gas price for deploy transactions in MiniEVMContext.
 _CTX_GAS_PRICE: int = 10**9
@@ -331,6 +337,8 @@ class MiniEVMContext:
             base_fee_per_gas=Uint(1),
             time=U256(1),
             prev_randao=Bytes32(b"\x00" * 32),
+            excess_blob_gas=U64(0),
+            parent_beacon_block_root=Bytes32(b"\x00" * 32),
         )
         # Deploy the real Analog-Labs EVM interpreter + DeFiVM.
         interp_addr = self.deploy(_get_interpreter_bin())
@@ -350,6 +358,8 @@ class MiniEVMContext:
             gas=Uint(gas),
             access_list_addresses=set(),
             access_list_storage_keys=set(),
+            transient_storage=TransientStorage(),
+            blob_versioned_hashes=(),
             index_in_block=None,
             tx_hash=None,
         )
