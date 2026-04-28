@@ -74,9 +74,9 @@ _MAX_V3_SQRT_PRICE = 10**34
 # complete quickly over a public RPC.
 _BACKFILL_WINDOW = 50
 
-# How many blocks to scan for factory events.  V2 pair creation is rarer, so
-# we use a larger window to guarantee we find at least one event.
-_FACTORY_WINDOW = 1000
+# How many blocks to scan for factory events.  Kept small so public RPCs that
+# cap eth_getLogs ranges don't reject the request.
+_FACTORY_WINDOW = 5_000
 
 
 # ---------------------------------------------------------------------------
@@ -192,7 +192,7 @@ class TestIndexerLive:
         assert last == head, f"Checkpoint {last} != requested to_block {head}"
 
     async def test_v2_factory_discovers_new_pools(self, eth_w3):
-        """Backfilling Uniswap V2 factory over a 500-block window auto-registers >= 1 pool."""
+        """Backfilling Uniswap V2 factory over the factory window auto-registers >= 1 pool."""
         head = await eth_w3.eth.block_number
         from_block = head - _FACTORY_WINDOW
 
@@ -212,7 +212,7 @@ class TestIndexerLive:
             assert pool.token1_address
 
     async def test_v3_factory_discovers_new_pools(self, eth_w3):
-        """Backfilling Uniswap V3 factory over a 500-block window auto-registers >= 1 pool."""
+        """Backfilling Uniswap V3 factory over the factory window auto-registers >= 1 pool."""
         head = await eth_w3.eth.block_number
         from_block = head - _FACTORY_WINDOW
 

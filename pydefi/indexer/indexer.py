@@ -83,6 +83,10 @@ _V3_POOL_CREATED_TOPIC = UNISWAP_V3_FACTORY.events.PoolCreated.topic
 # How many blocks to request per getLogs call during back-fill
 _DEFAULT_BATCH_SIZE = 2_000
 
+# Maximum concurrent eth_getBlock calls when resolving timestamps for a log batch.
+# Public RPCs (drpc, ankr, …) 500 under unbounded fan-out for hundreds of blocks.
+_GET_BLOCK_CONCURRENCY = 4
+
 # Default polling interval for live mode (seconds)
 _DEFAULT_POLL_INTERVAL = 12
 
@@ -575,9 +579,17 @@ class PoolIndexer:
         if not logs:
             return 0
 
-        # Fetch timestamps for all unique block numbers in one parallel gather.
+        # Fetch timestamps for all unique block numbers, with bounded concurrency
+        # so a wide backfill doesn't fan out hundreds of parallel requests at a
+        # public RPC (which then 500s).
         unique_bns = list({int(log["blockNumber"]) for log in logs})
-        fetched = await asyncio.gather(*[self.w3.eth.get_block(BlockNumber(bn)) for bn in unique_bns])
+        sem = asyncio.Semaphore(_GET_BLOCK_CONCURRENCY)
+
+        async def _get(bn: int) -> Any:
+            async with sem:
+                return await self.w3.eth.get_block(BlockNumber(bn))
+
+        fetched = await asyncio.gather(*[_get(bn) for bn in unique_bns])
         timestamps = {bn: int(b["timestamp"]) for bn, b in zip(unique_bns, fetched)}
 
         stored = 0
