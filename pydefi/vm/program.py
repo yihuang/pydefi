@@ -32,7 +32,7 @@ Design notes
 ``Program`` owns one :class:`vyper.venom.context.IRContext` and one
 ``main`` :class:`IRFunction` for its lifetime.  Each method that emits IR
 appends instructions to the *current* basic block, exposed via
-``self._builder.current_block()``.
+``self.builder.current_block()``.
 
 **Calldata buffers.**  Static calldata for external calls is appended to a
 Venom data section; the body emits ``codecopy`` from the section into a
@@ -69,8 +69,8 @@ from vyper.evm.opcodes import OPCODES
 from vyper.venom import generate_assembly_experimental, run_passes_on
 from vyper.venom.basicblock import IRLabel, IRLiteral, IRVariable
 
-from pydefi.vm.stdlib import STDLIB, encode_msg
-from pydefi.vm.venom import ModuleBuilder
+from pydefi.vm.context import ProgramContext
+from pydefi.vm.stdlib import build_stdlib, encode_msg
 
 if TYPE_CHECKING:
     from eth_abi.hooks import EncodingContext
@@ -232,12 +232,13 @@ def _collect_placeholders(arg: object, sink: list[Placeholder]) -> None:
 # ---------------------------------------------------------------------------
 
 
-class Program:
+class Program(ProgramContext):
     """SSA-style fluent builder over Vyper's Venom IR.
 
-    Each instance owns one :class:`IRContext` and one ``main``
-    :class:`IRFunction`; method calls append IR to the current basic block.
-    Call :meth:`build` to compile the accumulated IR to EVM bytecode.
+    Subclasses :class:`ProgramContext`, so each instance owns one
+    :class:`IRContext` and one ``main`` :class:`IRFunction`; method calls
+    append IR to the current basic block.  Call :meth:`build` to compile the
+    accumulated IR to EVM bytecode.
 
     Methods either:
 
@@ -256,11 +257,12 @@ class Program:
     # ------------------------------------------------------------------
 
     def __init__(self) -> None:
-        self._builder = ModuleBuilder()  # collision-safe merge of STDLIB
-        self._ctx = self._builder.ctx
-        self._fn = self._builder.fn
+        super().__init__(fn_name="main")
+        # Stdlib helpers (stdlib_revert_if, stdlib_assert_ge) are added
+        # unconditionally; FunctionInlinerPass + DCE eliminate them when
+        # unused, so there's no bytecode cost.
+        build_stdlib(self.ir_ctx)
         self._data_section_counter = 0
-        self._uses_stdlib = False  # set by helpers; build() merges STDLIB lazily
 
     # ------------------------------------------------------------------
     # Operand coercion
@@ -327,11 +329,11 @@ class Program:
         variable is already on the stack.  Must be called before emitting
         any other value-producing instruction in the entry basic block.
         """
-        return self._builder.param()
+        return self.builder.param()
 
     def add(self, a: ValueLike, b: ValueLike) -> Value:
         """Wrapping uint256 ``a + b``."""
-        return self._builder.add(self._to_operand(a), self._to_operand(b))
+        return self.builder.add(self._to_operand(a), self._to_operand(b))
 
     def sub(self, a: ValueLike, b: ValueLike) -> Value:
         """Saturating ``max(a - b, 0)``.
@@ -341,22 +343,22 @@ class Program:
         a_op = self._to_operand(a)
         b_op = self._to_operand(b)
         # raw_diff = a - b (wraps if a < b)
-        raw_diff = self._builder.sub(a_op, b_op)
+        raw_diff = self.builder.sub(a_op, b_op)
         # not_underflow = 1 if a >= b else 0  ==  iszero(a < b)
-        not_underflow = self._builder.iszero(self._builder.lt(a_op, b_op))
-        return self._builder.mul(raw_diff, not_underflow)
+        not_underflow = self.builder.iszero(self.builder.lt(a_op, b_op))
+        return self.builder.mul(raw_diff, not_underflow)
 
     def mul(self, a: ValueLike, b: ValueLike) -> Value:
         """Wrapping uint256 ``a * b``."""
-        return self._builder.mul(self._to_operand(a), self._to_operand(b))
+        return self.builder.mul(self._to_operand(a), self._to_operand(b))
 
     def div(self, a: ValueLike, b: ValueLike) -> Value:
         """Unsigned ``a // b``; EVM DIV returns 0 when ``b == 0``."""
-        return self._builder.div(self._to_operand(a), self._to_operand(b))
+        return self.builder.div(self._to_operand(a), self._to_operand(b))
 
     def mod(self, a: ValueLike, b: ValueLike) -> Value:
         """Unsigned ``a % b``; EVM MOD returns 0 when ``b == 0``."""
-        return self._builder.mod(self._to_operand(a), self._to_operand(b))
+        return self.builder.mod(self._to_operand(a), self._to_operand(b))
 
     # ------------------------------------------------------------------
     # Comparison / boolean
@@ -364,43 +366,43 @@ class Program:
 
     def lt(self, a: ValueLike, b: ValueLike) -> Value:
         """Unsigned ``1 if a < b else 0``."""
-        return self._builder.lt(self._to_operand(a), self._to_operand(b))
+        return self.builder.lt(self._to_operand(a), self._to_operand(b))
 
     def gt(self, a: ValueLike, b: ValueLike) -> Value:
         """Unsigned ``1 if a > b else 0``."""
-        return self._builder.gt(self._to_operand(a), self._to_operand(b))
+        return self.builder.gt(self._to_operand(a), self._to_operand(b))
 
     def eq(self, a: ValueLike, b: ValueLike) -> Value:
         """``1 if a == b else 0``."""
-        return self._builder.eq(self._to_operand(a), self._to_operand(b))
+        return self.builder.eq(self._to_operand(a), self._to_operand(b))
 
     def is_zero(self, a: ValueLike) -> Value:
         """``1 if a == 0 else 0``."""
-        return self._builder.iszero(self._to_operand(a))
+        return self.builder.iszero(self._to_operand(a))
 
     # ------------------------------------------------------------------
     # Bitwise
     # ------------------------------------------------------------------
 
     def bit_and(self, a: ValueLike, b: ValueLike) -> Value:
-        return self._builder.and_(self._to_operand(a), self._to_operand(b))
+        return self.builder.and_(self._to_operand(a), self._to_operand(b))
 
     def bit_or(self, a: ValueLike, b: ValueLike) -> Value:
-        return self._builder.or_(self._to_operand(a), self._to_operand(b))
+        return self.builder.or_(self._to_operand(a), self._to_operand(b))
 
     def bit_xor(self, a: ValueLike, b: ValueLike) -> Value:
-        return self._builder.xor(self._to_operand(a), self._to_operand(b))
+        return self.builder.xor(self._to_operand(a), self._to_operand(b))
 
     def bit_not(self, a: ValueLike) -> Value:
-        return self._builder.not_(self._to_operand(a))
+        return self.builder.not_(self._to_operand(a))
 
     def shl(self, value: ValueLike, shift: ValueLike) -> Value:
         """``value << shift`` (Venom signature: ``shl(bits, val)``)."""
-        return self._builder.shl(self._to_operand(shift), self._to_operand(value))
+        return self.builder.shl(self._to_operand(shift), self._to_operand(value))
 
     def shr(self, value: ValueLike, shift: ValueLike) -> Value:
         """``value >> shift`` (Venom signature: ``shr(bits, val)``)."""
-        return self._builder.shr(self._to_operand(shift), self._to_operand(value))
+        return self.builder.shr(self._to_operand(shift), self._to_operand(value))
 
     # ------------------------------------------------------------------
     # Memory slots
@@ -411,15 +413,15 @@ class Program:
 
         Use :meth:`store_slot` and :meth:`load_slot` to read and write it.
         """
-        return self._builder.alloca(32)
+        return self.builder.alloca(32)
 
     def load_slot(self, slot: IRVariable) -> Value:
         """Load the 32-byte word stored at *slot*."""
-        return self._builder.mload(slot)
+        return self.builder.mload(slot)
 
     def store_slot(self, slot: IRVariable, v: ValueLike) -> None:
         """Store *v* (32 bytes) into *slot*."""
-        self._builder.mstore(slot, self._to_operand(v))
+        self.builder.mstore(slot, self._to_operand(v))
 
     # ------------------------------------------------------------------
     # Self / context
@@ -427,15 +429,15 @@ class Program:
 
     def self_addr(self) -> Value:
         """EVM ``ADDRESS`` — the running program's own address."""
-        return self._builder.address()
+        return self.builder.address()
 
     def gas_left(self) -> Value:
         """EVM ``GAS`` — remaining gas."""
-        return self._builder.gas()
+        return self.builder.gas()
 
     def eth_balance(self, account: ValueLike) -> Value:
         """EVM ``BALANCE(account)`` — ETH balance of *account*."""
-        return self._builder.balance(self._to_operand(account))
+        return self.builder.balance(self._to_operand(account))
 
     def erc20_balance_of(self, token: ValueLike, account: ValueLike) -> Value:
         """ERC-20 ``token.balanceOf(account)`` via STATICCALL.
@@ -447,22 +449,22 @@ class Program:
         selector = 0x70A08231 << (28 * 8)  # left-align to byte 0..3 of a 32-byte word
         scratch = self._alloc(36)
         # mem[scratch] = selector word (bytes 0..3 hold the selector, 4..31 are zero)
-        self._builder.mstore(scratch, selector)
+        self.builder.mstore(scratch, selector)
         # mem[scratch+4] = account (right-aligned in a 32-byte word; MSTORE at
         # scratch+4 writes bytes scratch+4..scratch+36, with 12 leading zeros
         # then the 20-byte address).
-        self._builder.mstore(self._builder.add(scratch, 4), self._to_operand(account))
+        self.builder.mstore(self.builder.add(scratch, 4), self._to_operand(account))
         # STATICCALL(gas, token, scratch, 36, scratch, 32) — reuse scratch for retdata.
-        success = self._builder.staticcall(
-            self._builder.gas(),
+        success = self.builder.staticcall(
+            self.builder.gas(),
             self._to_operand(token),
             scratch,
             36,
             scratch,
             32,
         )
-        self._builder.assert_(success)
-        return self._builder.mload(scratch)
+        self.builder.assert_(success)
+        return self.builder.mload(scratch)
 
     # ------------------------------------------------------------------
     # Internal: memory + data-section helpers (Venom alloca)
@@ -481,16 +483,16 @@ class Program:
 
         label = IRLabel(f"pydefi_calldata_{self._data_section_counter}", is_symbol=True)
         self._data_section_counter += 1
-        self._ctx.append_data_section(label)
-        self._ctx.append_data_item(calldata)
+        self.ir_ctx.append_data_section(label)
+        self.ir_ctx.append_data_item(calldata)
 
         base = self._alloc(blen)
-        self._builder.codecopy(base, label, blen)
+        self.builder.codecopy(base, label, blen)
         return base, blen
 
     def _alloc(self, size: int) -> IRVariable:
         """Allocate *size* bytes (rounded up to 32) and return the base pointer."""
-        return self._builder.alloca((size + 31) & ~31)
+        return self.builder.alloca((size + 31) & ~31)
 
     # ------------------------------------------------------------------
     # External calls
@@ -530,11 +532,11 @@ class Program:
                         f"call_contract: patch offset {offset} out of bounds "
                         f"(calldata length {blen}, must satisfy 0 <= offset <= len-32)"
                     )
-                target_addr = self._builder.add(base_fp, offset)
-                self._builder.mstore(target_addr, self._to_operand(val))
+                target_addr = self.builder.add(base_fp, offset)
+                self.builder.mstore(target_addr, self._to_operand(val))
 
-        gas_op = self._builder.gas() if gas is None else self._to_operand(gas)
-        success = self._builder.call(
+        gas_op = self.builder.gas() if gas is None else self._to_operand(gas)
+        success = self.builder.call(
             gas_op,
             self._to_operand(to),
             self._to_operand(value),
@@ -612,8 +614,8 @@ class Program:
         if offset < 0:
             raise ValueError(f"returndata_word: offset must be non-negative, got {offset}")
         scratch = self._alloc(32)
-        self._builder.returndatacopy(scratch, offset, 32)
-        return self._builder.mload(scratch)
+        self.builder.returndatacopy(scratch, offset, 32)
+        return self.builder.mload(scratch)
 
     # ------------------------------------------------------------------
     # Assertions
@@ -626,9 +628,9 @@ class Program:
         invokes ``stdlib_revert_if`` for the Solidity ``Error(string)`` payload.
         """
         if not msg:
-            self._builder.assert_(self._to_operand(cond))
+            self.builder.assert_(self._to_operand(cond))
             return
-        cond_zero = self._builder.iszero(self._to_operand(cond))
+        cond_zero = self.builder.iszero(self._to_operand(cond))
         self._invoke_revert_if(cond_zero, msg)
 
     def assert_ge(self, a: ValueLike, b: ValueLike, msg: str = "") -> None:
@@ -636,8 +638,8 @@ class Program:
         if msg:
             self._invoke_assert_ge(a, b, msg)
             return
-        not_lt = self._builder.iszero(self._builder.lt(self._to_operand(a), self._to_operand(b)))
-        self._builder.assert_(not_lt)
+        not_lt = self.builder.iszero(self.builder.lt(self._to_operand(a), self._to_operand(b)))
+        self.builder.assert_(not_lt)
 
     def assert_le(self, a: ValueLike, b: ValueLike, msg: str = "") -> None:
         """Revert if ``a > b`` (i.e. require ``a <= b``) — ``assert_ge(b, a)``."""
@@ -645,21 +647,19 @@ class Program:
 
     def _invoke_revert_if(self, cond: ValueLike, msg: str) -> None:
         msg_len, msg_word = encode_msg(msg)
-        self._builder.invoke(
+        self.builder.invoke(
             IRLabel("stdlib_revert_if"),
             [self._to_operand(cond), IRLiteral(msg_len), IRLiteral(msg_word)],
             returns=0,
         )
-        self._uses_stdlib = True
 
     def _invoke_assert_ge(self, a: ValueLike, b: ValueLike, msg: str) -> None:
         msg_len, msg_word = encode_msg(msg)
-        self._builder.invoke(
+        self.builder.invoke(
             IRLabel("stdlib_assert_ge"),
             [self._to_operand(a), self._to_operand(b), IRLiteral(msg_len), IRLiteral(msg_word)],
             returns=0,
         )
-        self._uses_stdlib = True
 
     # ------------------------------------------------------------------
     # Termination
@@ -667,21 +667,21 @@ class Program:
 
     def stop(self) -> None:
         """Terminate the current block with ``STOP`` (halt, no return data)."""
-        self._builder.stop()
+        self.builder.stop()
 
     def return_(self, offset: ValueLike, length: ValueLike) -> None:
         """Terminate with ``RETURN(offset, length)`` — return memory slice."""
-        self._builder.return_(self._to_operand(offset), self._to_operand(length))
+        self.builder.return_(self._to_operand(offset), self._to_operand(length))
 
     def return_word(self, value: ValueLike) -> None:
         """Convenience: store *value* into a fresh slot and ``RETURN`` it (32 bytes)."""
-        slot = self._builder.alloca(32)
-        self._builder.mstore(slot, self._to_operand(value))
-        self._builder.return_(slot, IRLiteral(32))
+        slot = self.builder.alloca(32)
+        self.builder.mstore(slot, self._to_operand(value))
+        self.builder.return_(slot, IRLiteral(32))
 
     def revert(self, offset: ValueLike = 0, length: ValueLike = 0) -> None:
         """Terminate with ``REVERT(offset, length)`` — revert with memory slice."""
-        self._builder.revert(self._to_operand(offset), self._to_operand(length))
+        self.builder.revert(self._to_operand(offset), self._to_operand(length))
 
     # ------------------------------------------------------------------
     # Build
@@ -718,12 +718,8 @@ class Program:
                 offsets, ``jmp`` / ``jnz`` targets) is shifted by
                 *prefix_length* so it stays correct.
         """
-        if not self._builder.is_terminated():
-            self._builder.stop()
-
-        # lazy merge STDLIB only if a messaged assert invoked a helper
-        if self._uses_stdlib:
-            self._builder.merge(STDLIB.ctx)
+        if not self.builder.is_terminated():
+            self.builder.stop()
 
         if disable_constant_folding:
             flags = VenomOptimizationFlags(  # type: ignore[call-arg]
@@ -735,8 +731,8 @@ class Program:
             )
         else:
             flags = VenomOptimizationFlags(level=optimize)  # type: ignore[call-arg]
-        run_passes_on(self._ctx, flags, disable_mem_checks=True)  # type: ignore[misc]
-        asm = generate_assembly_experimental(self._ctx, optimize=optimize)  # type: ignore[misc]
+        run_passes_on(self.ir_ctx, flags, disable_mem_checks=True)  # type: ignore[misc]
+        asm = generate_assembly_experimental(self.ir_ctx, optimize=optimize)  # type: ignore[misc]
         bytecode, _ = generate_bytecode(asm)  # type: ignore[misc]
         if prefix_length:
             bytecode = _shift_label_pushes(asm, bytecode, prefix_length)
