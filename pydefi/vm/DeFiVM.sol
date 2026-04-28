@@ -24,7 +24,7 @@ pragma solidity ^0.8.24;
  * Memory conventions (inside programs)
  * -------------------------------------
  *  Programs execute in a fresh virtual memory context provided by the interpreter.
- *  The Python DSL (``pydefi.vm.program``) compiles programs through Venom IR,
+ *  The Python DSL (``pydefi.vm``) compiles programs through Venom IR,
  *  which allocates and packs all memory buffers automatically via ``alloca``;
  *  the DSL does not hand-manage ``memory[0x40]`` or use fixed register slots.
  *

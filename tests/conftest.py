@@ -2,25 +2,31 @@
 
 Provides two complementary EVM testing facilities:
 
-1. :func:`mini_evm` / :data:`RETURN_TOP` — stateless, single-shot executor
-   for quick bytecode tests (no contract setup needed).
+1. :func:`mini_evm` — stateless, single-shot executor for quick bytecode
+   tests (no contract setup needed).
 
 2. :class:`MiniEVMContext` — stateful EVM context backed by ethereum-execution
-   (execution-specs) Shanghai with real DeFiVM + Analog-Labs interpreter deployed.
+   (execution-specs) Cancun with real DeFiVM + Analog-Labs interpreter deployed.
    Contracts deployed via :meth:`~MiniEVMContext.deploy` persist across
    all subsequent calls.
 
 Usage::
 
+    from pydefi.vm import Program
+
     # Stateless
-    result = mini_evm(push_u256(3) + push_u256(5) + add() + RETURN_TOP)
+    p = Program()
+    p.return_word(p.add(p.const(3), p.const(5)))
+    result = mini_evm(p.build())
     assert int.from_bytes(result.output, "big") == 8
 
     # Stateful
     ctx = MiniEVMContext()
     token = ctx.deploy_mock_token()
     ctx.mint_token(token, ctx.program_executor, 500 * 10**18)
-    result = ctx.run_program(self_addr() + push_addr(token.hex()) + balance_of() + RETURN_TOP)
+    p = Program()
+    p.return_word(p.erc20_balance_of(token, p.self_addr()))
+    result = ctx.run_program(p.build())
     assert int.from_bytes(result.output, "big") == 500 * 10**18
 """
 
@@ -75,31 +81,8 @@ MINI_EVM_SENDER: bytes = b"\xaa" * 20
 MINI_EVM_RECEIVER: bytes = b"\xbb" * 20
 
 #: Initial ETH balance credited to :data:`MINI_EVM_SENDER` in the genesis
-#: state.  Tests can query this value via ``balance_of(0, SENDER_INT)``.
+#: state.  Tests can query this value via ``Program.eth_balance(...)``.
 MINI_EVM_SENDER_BALANCE: int = 10**21
-
-#: Bytecode snippet that stores the top-of-stack value at ``memory[0]`` and
-#: returns 32 bytes — effectively converting a ``uint256`` stack result into
-#: a 32-byte return value that :func:`mini_evm` exposes as ``result.output``.
-#:
-#: Append this to any program that leaves a ``uint256`` on the stack::
-#:
-#:     result = mini_evm(push_u256(42) + RETURN_TOP)
-#:     assert int.from_bytes(result.output, "big") == 42
-#:
-#: Opcodes: ``PUSH1 0x00  MSTORE  PUSH1 0x20  PUSH1 0x00  RETURN``
-RETURN_TOP: bytes = bytes(
-    [
-        0x60,
-        0x00,  # PUSH1 0x00   → offset for MSTORE
-        0x52,  # MSTORE        → mem[0] = TOS-value
-        0x60,
-        0x20,  # PUSH1 0x20   → size = 32
-        0x60,
-        0x00,  # PUSH1 0x00   → offset = 0
-        0xF3,  # RETURN
-    ]
-)
 
 # ---------------------------------------------------------------------------
 # Module-level EVM setup for mini_evm() (shared, read-only across calls)
@@ -139,9 +122,9 @@ class EVMResult:
 
     Attributes:
         output:   Return data produced by ``RETURN``, or revert data produced
-                  by ``REVERT``.  For a successful execution that ends with
-                  :data:`RETURN_TOP` appended, ``output`` holds the 32-byte
-                  big-endian encoding of the top-of-stack value.
+                  by ``REVERT``.  For a program built with
+                  :meth:`Program.return_word`, ``output`` holds the 32-byte
+                  big-endian encoding of the returned uint256.
         gas_used: Number of EVM gas units consumed.
         is_error: ``True`` if the computation ended with ``REVERT`` or ran
                   out of gas; ``False`` for a successful ``RETURN``.
@@ -664,13 +647,15 @@ def evm_ctx() -> MiniEVMContext:
     Tests that need to deploy contracts or set up token balances before
     running DeFiVM programs should use this fixture::
 
+        from pydefi.vm import Program
+
         def test_token_balance(evm_ctx):
             token = evm_ctx.deploy_mock_token()
             evm_ctx.mint_token(token, evm_ctx.program_executor, 1000 * 10**18)
 
-            result = evm_ctx.run_program(
-                self_addr() + push_addr(token.hex()) + balance_of() + RETURN_TOP
-            )
+            p = Program()
+            p.return_word(p.erc20_balance_of(token, p.self_addr()))
+            result = evm_ctx.run_program(p.build())
             assert not result.is_error
     """
     return MiniEVMContext()
