@@ -13,7 +13,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 
 from pydefi.types import ZERO_ADDRESS, Address, RouteAction, RouteDAG, RouteSplit, RouteSwap, SwapProtocol
-from pydefi.vm.program import Program, Value
+from pydefi.vm.context import Program, Value
 from pydefi.vm.swap import (
     _build_route_swap,
     _build_v2_quote,

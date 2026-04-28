@@ -71,7 +71,7 @@ pragma solidity ^0.8.24;
  * A Python program picks them up with ``stack_param`` and threads the SSA
  * values wherever they are needed::
  *
- *   from pydefi.vm.program import Program
+ *   from pydefi.vm import Program
  *
  *   prog = Program()
  *   amount_received = prog.stack_param()  # bottom (pushed first)

@@ -178,9 +178,11 @@ def mini_evm(
 
     Example::
 
-        from pydefi.vm.program import push_u256, mul
+        from pydefi.vm import Program
 
-        result = mini_evm(push_u256(6) + push_u256(7) + mul() + RETURN_TOP)
+        prog = Program()
+        prog.return_word(prog.mul(prog.const(6), prog.const(7)))
+        result = mini_evm(prog.build())
         assert not result.is_error
         assert int.from_bytes(result.output, "big") == 42
     """

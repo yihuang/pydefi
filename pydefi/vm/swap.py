@@ -16,7 +16,7 @@ from eth_contract.contract import ContractFunction
 from eth_utils import keccak
 
 from pydefi.types import Address, RouteDAG, RouteSwap, SwapProtocol, SwapRoute, SwapTransaction
-from pydefi.vm.program import Program, Value
+from pydefi.vm.context import Program, Value
 
 # ---------------------------------------------------------------------------
 # Pool function ABI signatures

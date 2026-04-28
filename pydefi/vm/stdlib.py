@@ -106,6 +106,14 @@ STDLIB_FUNCTIONS: dict[str, Callable[[ProgramContext], None]] = {
 
 
 def build_stdlib(ir_ctx: IRContext) -> None:
+    """Add stdlib helper functions to *ir_ctx* if not already present.
+
+    Idempotent — skips functions that have already been built into *ir_ctx*,
+    so it is safe to call multiple times (e.g. from ``ProgramContext.__init__``
+    *and* from a caller that pre-populates the stdlib for a shared context).
+    """
     for name, builder in STDLIB_FUNCTIONS.items():
+        if IRLabel(name, True) in ir_ctx.functions:
+            continue
         ctx = ProgramContext(ir_ctx, name, set_entry=False)
         builder(ctx)

@@ -14,9 +14,8 @@ Usage::
     bytecode = prog.build()
 """
 
-from pydefi.vm.context import ProgramContext
+from pydefi.vm.context import Program, ProgramContext, Value
 from pydefi.vm.dag import build_execution_program_for_dag, build_quote_program_for_dag
-from pydefi.vm.program import Program, Value
 from pydefi.vm.swap import (
     V2_AMOUNT_OUT_OFFSET,
     V3_AMOUNT_OUT_OFFSET,
