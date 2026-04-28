@@ -26,7 +26,7 @@ _TARGET: HexBytes = HexBytes("0x" + "de" * 20)
 def _build_call(calldata: bytes) -> bytes:
     """SSA program that calls _TARGET with *calldata* and returns the success flag."""
     p = Program()
-    success = p.call_contract(_TARGET, calldata)
+    success = p.call_raw(_TARGET, calldata)
     p.return_word(success)
     return p.build()
 

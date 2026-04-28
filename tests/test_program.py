@@ -278,7 +278,7 @@ class TestAssert:
 class TestCallContract:
     def test_call_returns_success_flag(self):
         p = Program()
-        success = p.call_contract(_TARGET, b"\x12\x34\x56\x78")
+        success = p.call_raw(_TARGET, b"\x12\x34\x56\x78")
         p.return_word(success)
         # mini_evm makes all calls succeed.
         assert _run_int(p) == 1
@@ -286,66 +286,66 @@ class TestCallContract:
     def test_call_with_explicit_gas(self):
         p = Program()
         # value=0 since mini_evm contract has no ETH balance to forward.
-        success = p.call_contract(_TARGET, b"\x12\x34", gas=50000)
+        success = p.call_raw(_TARGET, b"\x12\x34", gas=50000)
         p.return_word(success)
         assert _run_int(p) == 1
 
     def test_call_with_patches(self):
         p = Program()
         template = b"\x12\x34\x56\x78" + b"\x00" * 32
-        success = p.call_contract(_TARGET, template, patches={4: p.const(0xCAFEBABE)})
+        success = p.call_raw(_TARGET, template, patches={4: p.const(0xCAFEBABE)})
         p.return_word(success)
         assert _run_int(p) == 1
 
     def test_call_patch_offset_out_of_bounds(self):
         p = Program()
         with pytest.raises(ValueError, match="out of bounds"):
-            p.call_contract(_TARGET, b"\x12\x34", patches={100: p.const(0)})
+            p.call_raw(_TARGET, b"\x12\x34", patches={100: p.const(0)})
 
 
 # ---------------------------------------------------------------------------
-# call_contract_abi (ABI-encoded calldata builder)
+# call_contract (ABI-encoded calldata builder)
 # ---------------------------------------------------------------------------
 
 
 class TestCallContractAbi:
     def test_static_args(self):
         p = Program()
-        success = p.call_contract_abi(_TARGET, _TRANSFER_FN, _TARGET, 10**18)
+        success = p.call_contract(_TARGET, _TRANSFER_FN, _TARGET, 10**18)
         p.return_word(success)
         assert _run_int(p) == 1
 
     def test_no_args(self):
         p = Program()
-        success = p.call_contract_abi(_TARGET, _PING_FN)
+        success = p.call_contract(_TARGET, _PING_FN)
         p.return_word(success)
         assert _run_int(p) == 1
 
     def test_runtime_uint256_arg(self):
         p = Program()
         amount = p.const(0xDEADBEEF)
-        success = p.call_contract_abi(_TARGET, _SET_UINT_FN, amount)
+        success = p.call_contract(_TARGET, _SET_UINT_FN, amount)
         p.return_word(success)
         assert _run_int(p) == 1
 
     def test_runtime_address_arg(self):
         p = Program()
         addr = p.addr(_TARGET)
-        success = p.call_contract_abi(_TARGET, _PING_ADDR_FN, addr)
+        success = p.call_contract(_TARGET, _PING_ADDR_FN, addr)
         p.return_word(success)
         assert _run_int(p) == 1
 
     def test_mixed_static_and_runtime(self):
         p = Program()
         amount = p.const(7)
-        success = p.call_contract_abi(_TARGET, _TRANSFER_FN, _TARGET, amount)
+        success = p.call_contract(_TARGET, _TRANSFER_FN, _TARGET, amount)
         p.return_word(success)
         assert _run_int(p) == 1
 
     def test_arity_mismatch_rejected(self):
         p = Program()
         with pytest.raises(ValueError, match="expected 2"):
-            p.call_contract_abi(_TARGET, _TRANSFER_FN, _TARGET)
+            p.call_contract(_TARGET, _TRANSFER_FN, _TARGET)
 
 
 # ---------------------------------------------------------------------------
@@ -401,7 +401,7 @@ class TestReturndata:
         # mini_evm has empty returndata so RETURNDATACOPY would revert;
         # only verify the IR builds without error.
         p = Program()
-        success = p.call_contract(_TARGET, b"\x12\x34")
+        success = p.call_raw(_TARGET, b"\x12\x34")
         p.assert_(success)
         word = p.returndata_word(0)
         p.return_word(word)
@@ -501,7 +501,7 @@ def _build_codecopy_program() -> Program:
     exercises label-resolved PUSH_OFST for the data-section offset."""
     dense = bytes((i * 17 + 31) & 0xFF for i in range(612))
     p = Program()
-    p.return_word(p.call_contract(_TARGET, dense))
+    p.return_word(p.call_raw(_TARGET, dense))
     return p
 
 

@@ -2,13 +2,11 @@
 
 Usage::
 
+    from eth_contract.erc20 import ERC20
     from pydefi.vm import Program
 
     prog = Program()
-    success = prog.call_contract(
-        ROUTER,
-        ERC20.fns.approve(ROUTER, 10**18).data,
-    )
+    success = prog.call_contract(ROUTER, ERC20.fns.approve, ROUTER, 10**18)
     prog.assert_(success)
     prog.stop()
     bytecode = prog.build()

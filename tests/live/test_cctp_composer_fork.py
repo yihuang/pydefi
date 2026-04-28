@@ -56,7 +56,7 @@ def _compose_program(target_address: Address, target_calldata: bytes, *, value: 
     prog = Program()
     _amount = prog.stack_param()  # bottom of the two prologue PUSHes (pushed first)
     _source_domain = prog.stack_param()  # top of the two (pushed second)
-    success = prog.call_contract(target_address, target_calldata, value=value)
+    success = prog.call_raw(target_address, target_calldata, value=value)
     prog.assert_(success)
     prog.stop()
     return prog.build(prefix_length=_CCTP_PROLOGUE_LEN)

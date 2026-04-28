@@ -9,9 +9,9 @@ across:
  - ETH and ERC-20 balance introspection (eth_balance / erc20_balance_of)
  - External CALL with static calldata
  - Returndata access (returndata_word)
- - Runtime patching of calldata templates (``patches=`` kwarg)
+ - Runtime patching of calldata templates (``call_raw`` + ``patches=`` kwarg)
  - Chained calls (first call's output → second call's patched input)
- - High-level ABI builder (call_contract_abi) with Value handles as patches
+ - High-level ABI builder (``call_contract``) with runtime-value args
 
 Run with::
 
@@ -328,7 +328,7 @@ class TestDeFiVMFork:
         calldata = bytes(keccak(b"getFortyTwo()")[:4])
 
         prog = Program()
-        success = prog.call_contract(adapter, calldata)
+        success = prog.call_raw(adapter, calldata)
         prog.assert_(success)
         prog.stop()
         tx = await vm.functions.execute(prog.build()).transact({"from": deployer})
@@ -345,7 +345,7 @@ class TestDeFiVMFork:
         calldata = bytes(keccak(b"getFortyTwo()")[:4])
 
         prog = Program()
-        success = prog.call_contract(adapter, calldata)
+        success = prog.call_raw(adapter, calldata)
         prog.assert_(success)
         result = prog.returndata_word(0)
         prog.assert_(prog.eq(result, 42), "expected 42")
@@ -371,7 +371,7 @@ class TestDeFiVMFork:
         template = bytes(selector + b"\x00" * 32)
 
         prog = Program()
-        success = prog.call_contract(adapter, template, patches={4: 0xABCD})
+        success = prog.call_raw(adapter, template, patches={4: 0xABCD})
         prog.assert_(success)
         prog.stop()
         tx = await vm.functions.execute(prog.build()).transact({"from": deployer})
@@ -405,7 +405,7 @@ class TestDeFiVMFork:
         # right-aligned: 12 leading zeros then the 20-byte address.  Equivalent
         # to legacy patch_value(4 + 12, 20).
         prog = Program()
-        success = prog.call_contract(adapter, template, patches={4: prog.addr(adapter)})
+        success = prog.call_raw(adapter, template, patches={4: prog.addr(adapter)})
         prog.assert_(success)
         prog.stop()
         tx = await vm.functions.execute(prog.build()).transact({"from": deployer})
@@ -441,11 +441,11 @@ class TestDeFiVMFork:
 
         prog = Program()
         # Call 1: double(5) → retdata = 10
-        s1 = prog.call_contract(adapter, calldata1)
+        s1 = prog.call_raw(adapter, calldata1)
         prog.assert_(s1)
         amount = prog.returndata_word(0)
         # Call 2: double(amount) — patch template2 at offset 4 with `amount`
-        s2 = prog.call_contract(adapter, template2, patches={4: amount})
+        s2 = prog.call_raw(adapter, template2, patches={4: amount})
         prog.assert_(s2)
         # Final assertion: result == 20
         result = prog.returndata_word(0)
@@ -469,10 +469,10 @@ class TestDeFiVMFork:
         template2 = add_sel + (0).to_bytes(32, "big") + (3).to_bytes(32, "big")
 
         prog = Program()
-        s1 = prog.call_contract(adapter, calldata1)
+        s1 = prog.call_raw(adapter, calldata1)
         prog.assert_(s1)
         amount = prog.returndata_word(0)  # 14
-        s2 = prog.call_contract(adapter, template2, patches={4: amount})
+        s2 = prog.call_raw(adapter, template2, patches={4: amount})
         prog.assert_(s2)
         # addInputs(14, 3) == 17
         result = prog.returndata_word(0)
@@ -483,11 +483,11 @@ class TestDeFiVMFork:
         assert receipt["status"] == 1
 
     # ------------------------------------------------------------------
-    # call_contract_abi with Patch (high-level ABI builder)
+    # call_contract (high-level ABI builder) with runtime-value args
     # ------------------------------------------------------------------
 
-    async def test_call_contract_abi_patch_single_uint256(self, ctx):
-        """call_contract_abi with a Value handle for the uint256 arg auto-patches it."""
+    async def test_call_contract_runtime_uint256(self, ctx):
+        """call_contract with a Value handle for the uint256 arg encodes it at runtime."""
         w3 = ctx["w3"]
         vm = ctx["vm"]
         deployer = ctx["deployer"]
@@ -495,7 +495,7 @@ class TestDeFiVMFork:
 
         prog = Program()
         amount = prog.const(7)
-        success = prog.call_contract_abi(adapter, _DOUBLE_FN, amount)
+        success = prog.call_contract(adapter, _DOUBLE_FN, amount)
         prog.assert_(success)
         prog.assert_(prog.eq(prog.returndata_word(0), 14), "expected 14")
         prog.stop()
@@ -503,8 +503,8 @@ class TestDeFiVMFork:
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
 
-    async def test_call_contract_abi_patch_two_uint256_args(self, ctx):
-        """call_contract_abi with two Value args patches both calldata slots."""
+    async def test_call_contract_two_runtime_args(self, ctx):
+        """call_contract with two Value args encodes both at runtime."""
         w3 = ctx["w3"]
         vm = ctx["vm"]
         deployer = ctx["deployer"]
@@ -513,7 +513,7 @@ class TestDeFiVMFork:
         prog = Program()
         a = prog.const(6)
         b = prog.const(11)
-        success = prog.call_contract_abi(adapter, _ADD_INPUTS_FN, a, b)
+        success = prog.call_contract(adapter, _ADD_INPUTS_FN, a, b)
         prog.assert_(success)
         prog.assert_(prog.eq(prog.returndata_word(0), 17), "expected 17")
         prog.stop()
@@ -521,7 +521,7 @@ class TestDeFiVMFork:
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
 
-    async def test_call_contract_abi_patch_chained(self, ctx):
+    async def test_call_contract_chained(self, ctx):
         """Chain two calls: first uses a literal arg; second uses the first's result."""
         w3 = ctx["w3"]
         vm = ctx["vm"]
@@ -530,11 +530,11 @@ class TestDeFiVMFork:
 
         prog = Program()
         # Call 1: double(5) → 10  (constant arg)
-        s1 = prog.call_contract_abi(adapter, _DOUBLE_FN, 5)
+        s1 = prog.call_contract(adapter, _DOUBLE_FN, 5)
         prog.assert_(s1)
         amount = prog.returndata_word(0)
         # Call 2: double(amount) → 20  (runtime SSA value)
-        s2 = prog.call_contract_abi(adapter, _DOUBLE_FN, amount)
+        s2 = prog.call_contract(adapter, _DOUBLE_FN, amount)
         prog.assert_(s2)
         prog.assert_(prog.eq(prog.returndata_word(0), 20), "expected 20")
         prog.stop()
@@ -623,7 +623,7 @@ class TestApproveProxyFork:
         bal_vm_before = await token_a.functions.balanceOf(vm_address).call()
 
         prog = Program()
-        prog.call_contract(token_a_address, ERC20.fns.transfer(recipient, AMOUNT).data)
+        prog.call_raw(token_a_address, ERC20.fns.transfer(recipient, AMOUNT).data)
         prog.stop()
         program = prog.build()
         deposits = [{"token": token_a_address, "amount": AMOUNT}]
@@ -662,8 +662,8 @@ class TestApproveProxyFork:
         bal_b_recipient_before = await token_b.functions.balanceOf(recipient).call()
 
         prog = Program()
-        prog.call_contract(token_a_address, ERC20.fns.transfer(recipient, AMOUNT_A).data)
-        prog.call_contract(token_b_address, ERC20.fns.transfer(recipient, AMOUNT_B).data)
+        prog.call_raw(token_a_address, ERC20.fns.transfer(recipient, AMOUNT_A).data)
+        prog.call_raw(token_b_address, ERC20.fns.transfer(recipient, AMOUNT_B).data)
         prog.stop()
         program = prog.build()
         deposits = [
@@ -710,7 +710,7 @@ class TestApproveProxyFork:
         await w3.eth.get_transaction_receipt(tx)
 
         prog = Program()
-        prog.call_contract(token_a_address, ERC20.fns.transfer(recipient, DEPOSIT_AMOUNT).data)
+        prog.call_raw(token_a_address, ERC20.fns.transfer(recipient, DEPOSIT_AMOUNT).data)
         prog.stop()
         program = prog.build()
         deposits = [{"token": token_a_address, "amount": DEPOSIT_AMOUNT}]

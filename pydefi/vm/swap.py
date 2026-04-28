@@ -121,7 +121,7 @@ def _build_v3_pool_swap(prog: Program, amount_in: Value, hop: SwapHop) -> Value:
     sqrt_price_limit_x96 = hop.sqrt_price_limit_x96 or (_SQRT_PRICE_MIN if hop.zero_for_one else _SQRT_PRICE_MAX)
     callback_data = encode_v3_callback_data(hop.token_in)
 
-    success = prog.call_contract_abi(
+    success = prog.call_contract(
         hop.pool,
         _V3_POOL_SWAP_FN,
         hop.recipient,
@@ -142,7 +142,7 @@ def _build_v3_pool_swap(prog: Program, amount_in: Value, hop: SwapHop) -> Value:
 
 def _build_v2_compute_out(prog: Program, amount_in: Value, hop: SwapHop, fee_num: int) -> Value:
     """Compute V2 ``amountOut`` from ``getReserves()`` (no transfer)."""
-    success = prog.call_contract_abi(hop.pool, _V2_PAIR_GET_RESERVES_FN)
+    success = prog.call_contract(hop.pool, _V2_PAIR_GET_RESERVES_FN)
     prog.assert_(success)
 
     if hop.zero_for_one:
@@ -172,7 +172,7 @@ def _build_v2_quote(prog: Program, amount_in: Value, hop: SwapHop) -> Value:
 def _build_v3_quote(prog: Program, amount_in: Value, hop: SwapHop, quoter_address: Address) -> Value:
     """V3 pool quote — calls ``quoter.quoteExactInput`` (view-only)."""
     packed_path = encode_v3_path([hop.token_in, hop.token_out], [hop.fee_bps * 100])
-    success = prog.call_contract_abi(
+    success = prog.call_contract(
         quoter_address,
         _V3_QUOTER_QUOTE_EXACT_INPUT_FN,
         packed_path,
@@ -190,7 +190,7 @@ def _build_v2_direct_swap(prog: Program, amount_in: Value, hop: SwapHop) -> Valu
     amount_out = _build_v2_compute_out(prog, amount_in, hop, 10000 - hop.fee_bps)
 
     # Transfer amount_in to the pool.
-    transfer_success = prog.call_contract_abi(
+    transfer_success = prog.call_contract(
         hop.token_in,
         _ERC20_TRANSFER_FN,
         hop.pool,
@@ -201,7 +201,7 @@ def _build_v2_direct_swap(prog: Program, amount_in: Value, hop: SwapHop) -> Valu
     # Call pool.swap(amount0Out, amount1Out, to, data).
     if hop.zero_for_one:
         # token0 in, token1 out: amount0Out=0, amount1Out=amount_out
-        swap_success = prog.call_contract_abi(
+        swap_success = prog.call_contract(
             hop.pool,
             _V2_PAIR_SWAP_FN,
             0,
@@ -210,7 +210,7 @@ def _build_v2_direct_swap(prog: Program, amount_in: Value, hop: SwapHop) -> Valu
             b"",
         )
     else:
-        swap_success = prog.call_contract_abi(
+        swap_success = prog.call_contract(
             hop.pool,
             _V2_PAIR_SWAP_FN,
             amount_out,

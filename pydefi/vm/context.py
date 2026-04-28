@@ -7,18 +7,18 @@ allocator generates DUP / SWAP / POP automatically.  Quick example::
     from pydefi.vm import ProgramContext
 
     ctx = ProgramContext()
-    success = ctx.call_contract(ROUTER, calldata)
+    success = ctx.call_contract(ROUTER, ROUTER_FN, recipient, amount)
     ctx.assert_(success)
     ctx.stop()
     bytecode = ctx.build()
 
-Patched call (the calldata pattern)::
+Patched call (raw calldata + runtime overlay)::
 
     ctx = ProgramContext()
-    quote_ok = ctx.call_contract(QUOTER, quote_calldata)
+    quote_ok = ctx.call_raw(QUOTER, quote_calldata)
     ctx.assert_(quote_ok)
     amount = ctx.returndata_word(0)
-    swap_ok = ctx.call_contract(
+    swap_ok = ctx.call_raw(
         ROUTER,
         swap_template,
         patches={36: amount},  # write amount into the calldata at offset 36
@@ -612,13 +612,66 @@ class ProgramContext(VenomCodegenContext):
     def call_contract(
         self,
         to: ValueLike,
+        fn: ContractFunction | str,
+        *args: object,
+        value: ValueLike = 0,
+        gas: ValueLike | None = None,
+    ) -> Value:
+        """Emit a CALL with calldata built from a :class:`ContractFunction`.
+
+        *fn* may also be a human-readable signature string
+        (``"transfer(address,uint256)"`` or ``"function transfer(...)"``);
+        it will be converted to a :class:`ContractFunction` internally.
+        Prefer hoisting a :class:`ContractFunction` to module scope to avoid
+        re-parsing on every call.
+
+        Each arg in *args* may be a plain Python constant (``int``, address
+        ``bytes``/``str``, ``bool``, nested ``tuple``/``list``) or a runtime
+        :class:`Value` (``IRVariable``/``IRLiteral``); both are encoded
+        uniformly by :meth:`abi_encode`.
+
+        For raw pre-encoded calldata + ``patches`` overlays, use
+        :meth:`call_raw` instead.
+
+        Returns:
+            A :class:`Value` holding the CALL success flag.
+        """
+        if isinstance(fn, str):
+            normalised = fn if fn.lstrip().startswith("function ") else "function " + fn
+            fn = ContractFunction.from_abi(normalised)
+        param_types = [abi_to_vyper(t) for t in fn.input_types]
+        if len(args) != len(param_types):
+            raise ValueError(
+                f"call_contract: expected {len(param_types)} argument(s) for {fn.signature!r}, got {len(args)}"
+            )
+
+        buf_val = self.abi_encode(list(args), param_types, method_id=bytes(fn.selector))
+
+        # buf_val points to a Bytes buffer: [length_word][selector + abi data].
+        buf_ptr = buf_val.operand
+        blen = self.builder.mload(buf_ptr)
+        base = self.builder.add(buf_ptr, IRLiteral(32))
+        gas_op = self.builder.gas() if gas is None else self._to_operand(gas)
+        return self.builder.call(
+            gas_op,
+            self._to_operand(to),
+            self._to_operand(value),
+            base,
+            blen,
+            0,
+            0,
+        )
+
+    def call_raw(
+        self,
+        to: ValueLike,
         calldata: bytes,
         *,
         value: ValueLike = 0,
         gas: ValueLike | None = None,
         patches: Mapping[int, ValueLike] | None = None,
     ) -> Value:
-        """Emit a CALL with static calldata and optional runtime patches.
+        """Emit a CALL with pre-encoded calldata and optional runtime patches.
 
         Args:
             to:        Target contract address.
@@ -640,7 +693,7 @@ class ProgramContext(VenomCodegenContext):
             for offset, val in patches.items():
                 if not 0 <= offset <= blen - 32:
                     raise ValueError(
-                        f"call_contract: patch offset {offset} out of bounds "
+                        f"call_raw: patch offset {offset} out of bounds "
                         f"(calldata length {blen}, must satisfy 0 <= offset <= len-32)"
                     )
                 target_addr = self.builder.add(base_fp, offset)
@@ -657,56 +710,6 @@ class ProgramContext(VenomCodegenContext):
             0,
         )
         return success
-
-    def call_contract_abi(
-        self,
-        to: ValueLike,
-        fn: ContractFunction | str,
-        *args: object,
-        value: ValueLike = 0,
-        gas: ValueLike | None = None,
-    ) -> Value:
-        """Emit a CALL with calldata built from a :class:`ContractFunction`.
-
-        *fn* may also be a human-readable signature string
-        (``"transfer(address,uint256)"`` or ``"function transfer(...)"``);
-        it will be converted to a :class:`ContractFunction` internally.
-        Prefer hoisting a :class:`ContractFunction` to module scope to avoid
-        re-parsing on every call.
-
-        Each arg in *args* may be a plain Python constant (``int``, address
-        ``bytes``/``str``, ``bool``, nested ``tuple``/``list``) or a runtime
-        :class:`Value` (``IRVariable``/``IRLiteral``); both are encoded
-        uniformly by :meth:`abi_encode`.
-
-        Returns:
-            A :class:`Value` holding the CALL success flag.
-        """
-        if isinstance(fn, str):
-            normalised = fn if fn.lstrip().startswith("function ") else "function " + fn
-            fn = ContractFunction.from_abi(normalised)
-        param_types = [abi_to_vyper(t) for t in fn.input_types]
-        if len(args) != len(param_types):
-            raise ValueError(
-                f"call_contract_abi: expected {len(param_types)} argument(s) for {fn.signature!r}, got {len(args)}"
-            )
-
-        buf_val = self.abi_encode(list(args), param_types, method_id=bytes(fn.selector))
-
-        # buf_val points to a Bytes buffer: [length_word][selector + abi data].
-        buf_ptr = buf_val.operand
-        blen = self.builder.mload(buf_ptr)
-        base = self.builder.add(buf_ptr, IRLiteral(32))
-        gas_op = self.builder.gas() if gas is None else self._to_operand(gas)
-        return self.builder.call(
-            gas_op,
-            self._to_operand(to),
-            self._to_operand(value),
-            base,
-            blen,
-            0,
-            0,
-        )
 
     # ------------------------------------------------------------------
     # Returndata

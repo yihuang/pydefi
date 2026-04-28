@@ -65,7 +65,7 @@ def _compose_single_call(target_address: Address, calldata: bytes, *, value: int
     propagates a revert to the outer ``lzCompose`` / ``receiveAndExecute``.
     """
     prog, _from_val, _amount_val = _start_program()
-    success = prog.call_contract(target_address, calldata, value=value)
+    success = prog.call_raw(target_address, calldata, value=value)
     prog.assert_(success)
     prog.stop()
     return prog.build(prefix_length=_OFT_PROLOGUE_LEN)
@@ -75,7 +75,7 @@ def _compose_multi_call(calls: Sequence[tuple[Address, bytes]]) -> bytes:
     """Build a compose program that issues N external calls in sequence."""
     prog, _from_val, _amount_val = _start_program()
     for target, calldata in calls:
-        success = prog.call_contract(target, calldata)
+        success = prog.call_raw(target, calldata)
         prog.assert_(success)
     prog.stop()
     return prog.build(prefix_length=_OFT_PROLOGUE_LEN)
@@ -564,7 +564,7 @@ class TestOFTComposerFork:
         # Patch amountLD (stored in R1 by the prologue) into offset 68 of the
         # calldata buffer before calling target.execute().
         prog, _from_val, amount_val = _start_program()
-        success = prog.call_contract(target_address, template, patches={68: amount_val})
+        success = prog.call_raw(target_address, template, patches={68: amount_val})
         prog.assert_(success)
         prog.stop()
         program = prog.build(prefix_length=_OFT_PROLOGUE_LEN)
@@ -612,7 +612,7 @@ class TestOFTComposerFork:
         # 12 zero bytes then the 20-byte address — equivalent to the legacy
         # patch_value(80, 20) which used mstore_off = 80 - 12 = 68.
         prog, from_val, _amount_val = _start_program()
-        success = prog.call_contract(target_address, template, patches={68: from_val})
+        success = prog.call_raw(target_address, template, patches={68: from_val})
         prog.assert_(success)
         prog.stop()
         program = prog.build(prefix_length=_OFT_PROLOGUE_LEN)
