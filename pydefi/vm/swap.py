@@ -12,27 +12,22 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from eth_abi import encode
-from eth_contract.contract import ContractFunction
+from eth_contract.erc20 import ERC20
 from eth_utils import keccak
 
+from pydefi.abi.amm import UNISWAP_V2_PAIR, UNISWAP_V3_POOL, UNISWAP_V3_QUOTER_V2
 from pydefi.types import Address, RouteDAG, RouteSwap, SwapProtocol, SwapRoute, SwapTransaction
 from pydefi.vm.context import Program, Value
 
 # ---------------------------------------------------------------------------
-# Pool function ABI signatures
+# Pool / quoter / token function ABI signatures (sourced from pydefi.abi)
 # ---------------------------------------------------------------------------
 
-_V3_POOL_SWAP_FN = ContractFunction.from_abi(
-    "function swap(address recipient, bool zeroForOne, int256 amountSpecified, uint160 sqrtPriceLimitX96, bytes data)"
-)
-_V2_PAIR_SWAP_FN = ContractFunction.from_abi(
-    "function swap(uint256 amount0Out, uint256 amount1Out, address to, bytes data)"
-)
-_V2_PAIR_GET_RESERVES_FN = ContractFunction.from_abi("function getReserves()")
-_V3_QUOTER_QUOTE_EXACT_INPUT_FN = ContractFunction.from_abi(
-    "function quoteExactInput(bytes path, uint256 amountIn) returns (uint256 amountOut)"
-)
-_ERC20_TRANSFER_FN = ContractFunction.from_abi("function transfer(address to, uint256 amount)")
+_V3_POOL_SWAP_FN = UNISWAP_V3_POOL.fns.swap
+_V2_PAIR_SWAP_FN = UNISWAP_V2_PAIR.fns.swap
+_V2_PAIR_GET_RESERVES_FN = UNISWAP_V2_PAIR.fns.getReserves
+_V3_QUOTER_QUOTE_EXACT_INPUT_FN = UNISWAP_V3_QUOTER_V2.fns.quoteExactInput
+_ERC20_TRANSFER_FN = ERC20.fns.transfer
 
 # V3 sqrtPriceLimitX96 boundaries (TickMath.MIN/MAX_SQRT_RATIO ± 1)
 _SQRT_PRICE_MIN: int = 4295128740

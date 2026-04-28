@@ -49,6 +49,7 @@ UNISWAP_V2_PAIR = Contract.from_abi(
         "function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast)",
         "function token0() external view returns (address)",
         "function token1() external view returns (address)",
+        "function swap(uint256 amount0Out, uint256 amount1Out, address to, bytes data)",
         "event Sync(uint112 reserve0, uint112 reserve1)",
     ]
 )
@@ -153,6 +154,7 @@ UNISWAP_V3_POOL = Contract.from_abi(
         "function fee() external view returns (uint24)",
         "function token0() external view returns (address)",
         "function token1() external view returns (address)",
+        "function swap(address recipient, bool zeroForOne, int256 amountSpecified, uint160 sqrtPriceLimitX96, bytes data) returns (int256 amount0, int256 amount1)",
         "event Swap(address indexed sender, address indexed recipient, int256 amount0, int256 amount1, uint160 sqrtPriceX96, uint128 liquidity, int24 tick)",
     ]
 )
