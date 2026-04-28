@@ -39,6 +39,7 @@ Two complementary interfaces are provided:
 
 from pydefi.vm.abi import emit_abi_encode, emit_abi_encode_packed
 from pydefi.vm.builder import Patch, PatchSpec, Program
+from pydefi.vm.context import ProgramContext
 from pydefi.vm.dag import build_execution_program_for_dag, build_quote_program_for_dag
 from pydefi.vm.program import (
     OP_ADD,
@@ -109,7 +110,7 @@ from pydefi.vm.program import (
     sub,
     swap,
 )
-from pydefi.vm.stdlib import STDLIB, encode_msg
+from pydefi.vm.stdlib import build_stdlib, encode_msg
 from pydefi.vm.swap import (
     V2_AMOUNT_OUT_OFFSET,
     V3_AMOUNT_OUT_OFFSET,
@@ -121,7 +122,6 @@ from pydefi.vm.swap import (
     swap_route_to_hops,
     v3_pool_swap_calldata,
 )
-from pydefi.vm.venom import ModuleBuilder
 
 __all__ = [
     # In-VM ABI encoding bytecode generators
@@ -129,11 +129,10 @@ __all__ = [
     "emit_abi_encode_packed",
     # Fluent builder
     "Program",
-    # Venom IR module builder
-    "ModuleBuilder",
-    # Venom IR stdlib module
-    "STDLIB",
+    # Venom IR program builder (high-level, typed)
+    "ProgramContext",
     "encode_msg",
+    "build_stdlib",
     # Patch type aliases and Patch class
     "Patch",
     "PatchSpec",
