@@ -76,9 +76,10 @@ interface IOFT {
 // IDeFiVM
 // ---------------------------------------------------------------------------
 
-/// @notice Minimal interface for calling DeFiVM.execute.
+/// @notice Minimal interface for staging params and executing a DeFiVM program.
 interface IDeFiVM {
-    function execute(bytes calldata program, bytes32[] calldata params) external payable;
+    function setParams(bytes32[] calldata params) external;
+    function execute(bytes calldata program) external payable;
 }
 
 // ---------------------------------------------------------------------------
@@ -219,19 +220,13 @@ contract OFTComposer {
         uint256 amountLD = uint256(bytes32(_message[12:44]));
         bytes calldata program = _message[44:];
 
-        // Pass the OFT parameters to the program via DeFiVM's transient
-        // storage channel:
-        //   params[0] = amountLD  → program reads via TLOAD(0)
-        //   params[1] = _from     → program reads via TLOAD(1)
-        bytes32[] memory params = new bytes32[](2);
-        params[0] = bytes32(amountLD);
-        params[1] = bytes32(uint256(uint160(_from)));
-
-        // Transfer the received OFT tokens from this composer to DeFiVM so the
-        // program can use them (e.g. approve a DEX and swap).
+        // Transfer the received OFT tokens from this composer to DeFiVM FIRST.
         // _from is the OFT *app* contract; call token() to get the underlying
         // ERC-20 address (for a native OFT token() returns address(this),
-        // for an OFT Adapter it returns the wrapped ERC-20).
+        // for an OFT Adapter it returns the wrapped ERC-20).  Doing the
+        // external calls before setParams closes the reentrancy window where
+        // a malicious _from could re-enter ``vm.setParams`` between our
+        // staging and ``execute``.
         if (amountLD > 0) {
             address token = IOFT(_from).token();
             (bool ok, bytes memory ret) = token.call(
@@ -240,8 +235,17 @@ contract OFTComposer {
             require(ok && (ret.length == 0 || abi.decode(ret, (bool))), "OFTComposer: token transfer failed");
         }
 
+        // Stage OFT parameters in DeFiVM's transient store, then execute
+        // immediately — no external call between these two.
+        //   slot 0 = amountLD  → program reads via TLOAD(0)
+        //   slot 1 = _from     → program reads via TLOAD(1)
+        bytes32[] memory params = new bytes32[](2);
+        params[0] = bytes32(amountLD);
+        params[1] = bytes32(uint256(uint160(_from)));
+        vm.setParams(params);
+
         // Execute via DeFiVM, forwarding any ETH received with this compose call.
-        vm.execute{value: msg.value}(program, params);
+        vm.execute{value: msg.value}(program);
 
         emit Composed(_from, _guid, amountLD);
     }

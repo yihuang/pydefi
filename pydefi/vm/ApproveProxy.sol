@@ -6,7 +6,8 @@ interface IERC20 {
 }
 
 interface IDeFiVM {
-    function execute(bytes calldata program, bytes32[] calldata params) external payable;
+    function setParams(bytes32[] calldata params) external;
+    function execute(bytes calldata program) external payable;
 }
 
 /**
@@ -83,7 +84,10 @@ contract ApproveProxy {
         for (uint256 i = 0; i < deposits.length; i++) {
             _safeTransferFrom(deposits[i].token, msg.sender, address(_vm), deposits[i].amount);
         }
-        _vm.execute{value: msg.value}(program, params);
+        if (params.length > 0) {
+            _vm.setParams(params);
+        }
+        _vm.execute{value: msg.value}(program);
     }
 
     /**

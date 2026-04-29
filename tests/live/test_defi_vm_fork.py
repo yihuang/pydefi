@@ -199,7 +199,7 @@ class TestDeFiVMFork:
         prog.builder.stop()
         program = prog.build(disable_constant_folding=True)
 
-        tx = await vm.functions.execute(program, []).transact({"from": deployer})
+        tx = await vm.functions.execute(program).transact({"from": deployer})
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
 
@@ -216,7 +216,7 @@ class TestDeFiVMFork:
         prog.assert_(0, "slippage exceeded")
         prog.builder.stop()
         with pytest.raises((ContractLogicError, Web3RPCError)):
-            await vm.functions.execute(prog.build(disable_constant_folding=True), []).transact({"from": deployer})
+            await vm.functions.execute(prog.build(disable_constant_folding=True)).transact({"from": deployer})
 
     async def test_assert_passes_when_nonzero(self, ctx):
         """assert_(nonzero, msg) does not revert."""
@@ -227,7 +227,7 @@ class TestDeFiVMFork:
         prog = Program()
         prog.assert_(1, "should not trigger")
         prog.builder.stop()
-        tx = await vm.functions.execute(prog.build(disable_constant_folding=True), []).transact({"from": deployer})
+        tx = await vm.functions.execute(prog.build(disable_constant_folding=True)).transact({"from": deployer})
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
 
@@ -240,7 +240,7 @@ class TestDeFiVMFork:
         prog = Program()
         prog.assert_ge(200, 100, "min not met")
         prog.builder.stop()
-        tx = await vm.functions.execute(prog.build(disable_constant_folding=True), []).transact({"from": deployer})
+        tx = await vm.functions.execute(prog.build(disable_constant_folding=True)).transact({"from": deployer})
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
 
@@ -253,7 +253,7 @@ class TestDeFiVMFork:
         prog.assert_ge(100, 200, "min not met")
         prog.builder.stop()
         with pytest.raises((ContractLogicError, Web3RPCError)):
-            await vm.functions.execute(prog.build(disable_constant_folding=True), []).transact({"from": deployer})
+            await vm.functions.execute(prog.build(disable_constant_folding=True)).transact({"from": deployer})
 
     async def test_assert_le_pass(self, ctx):
         """assert_le passes when a <= b."""
@@ -264,7 +264,7 @@ class TestDeFiVMFork:
         prog = Program()
         prog.assert_le(100, 200, "max exceeded")
         prog.builder.stop()
-        tx = await vm.functions.execute(prog.build(disable_constant_folding=True), []).transact({"from": deployer})
+        tx = await vm.functions.execute(prog.build(disable_constant_folding=True)).transact({"from": deployer})
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
 
@@ -281,7 +281,7 @@ class TestDeFiVMFork:
         prog = Program()
         _ = prog.eth_balance(prog.builder.address())
         prog.builder.stop()
-        tx = await vm.functions.execute(prog.build(), []).transact({"from": deployer})
+        tx = await vm.functions.execute(prog.build()).transact({"from": deployer})
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
 
@@ -294,7 +294,7 @@ class TestDeFiVMFork:
         prog = Program()
         _ = prog.erc20_balance_of(WETH.address, WHALE)
         prog.builder.stop()
-        tx = await vm.functions.execute(prog.build(), []).transact({"from": deployer})
+        tx = await vm.functions.execute(prog.build()).transact({"from": deployer})
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
 
@@ -310,7 +310,7 @@ class TestDeFiVMFork:
         delta = prog.sub(post, pre)  # saturating; == 0 since no transfer happened
         prog.assert_(prog.is_zero(delta), "expected zero delta")
         prog.builder.stop()
-        tx = await vm.functions.execute(prog.build(), []).transact({"from": deployer})
+        tx = await vm.functions.execute(prog.build()).transact({"from": deployer})
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
 
@@ -331,7 +331,7 @@ class TestDeFiVMFork:
         success = prog.call_raw(adapter, calldata)
         prog.assert_(success)
         prog.builder.stop()
-        tx = await vm.functions.execute(prog.build(), []).transact({"from": deployer})
+        tx = await vm.functions.execute(prog.build()).transact({"from": deployer})
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
 
@@ -350,7 +350,7 @@ class TestDeFiVMFork:
         result = prog.returndata_word(0)
         prog.assert_(prog.eq(result, 42), "expected 42")
         prog.builder.stop()
-        tx = await vm.functions.execute(prog.build(), []).transact({"from": deployer})
+        tx = await vm.functions.execute(prog.build()).transact({"from": deployer})
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
 
@@ -374,7 +374,7 @@ class TestDeFiVMFork:
         success = prog.call_raw(adapter, template, patches={4: 0xABCD})
         prog.assert_(success)
         prog.builder.stop()
-        tx = await vm.functions.execute(prog.build(), []).transact({"from": deployer})
+        tx = await vm.functions.execute(prog.build()).transact({"from": deployer})
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
 
@@ -408,7 +408,7 @@ class TestDeFiVMFork:
         success = prog.call_raw(adapter, template, patches={4: prog.addr(adapter)})
         prog.assert_(success)
         prog.builder.stop()
-        tx = await vm.functions.execute(prog.build(), []).transact({"from": deployer})
+        tx = await vm.functions.execute(prog.build()).transact({"from": deployer})
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
 
@@ -451,7 +451,7 @@ class TestDeFiVMFork:
         result = prog.returndata_word(0)
         prog.assert_(prog.eq(result, 20), "expected 20")
         prog.builder.stop()
-        tx = await vm.functions.execute(prog.build(), []).transact({"from": deployer})
+        tx = await vm.functions.execute(prog.build()).transact({"from": deployer})
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
 
@@ -478,7 +478,7 @@ class TestDeFiVMFork:
         result = prog.returndata_word(0)
         prog.assert_(prog.eq(result, 17), "expected 17")
         prog.builder.stop()
-        tx = await vm.functions.execute(prog.build(), []).transact({"from": deployer})
+        tx = await vm.functions.execute(prog.build()).transact({"from": deployer})
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
 
@@ -499,7 +499,7 @@ class TestDeFiVMFork:
         prog.assert_(success)
         prog.assert_(prog.eq(prog.returndata_word(0), 14), "expected 14")
         prog.builder.stop()
-        tx = await vm.functions.execute(prog.build(disable_constant_folding=True), []).transact({"from": deployer})
+        tx = await vm.functions.execute(prog.build(disable_constant_folding=True)).transact({"from": deployer})
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
 
@@ -517,7 +517,7 @@ class TestDeFiVMFork:
         prog.assert_(success)
         prog.assert_(prog.eq(prog.returndata_word(0), 17), "expected 17")
         prog.builder.stop()
-        tx = await vm.functions.execute(prog.build(disable_constant_folding=True), []).transact({"from": deployer})
+        tx = await vm.functions.execute(prog.build(disable_constant_folding=True)).transact({"from": deployer})
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
 
@@ -538,7 +538,7 @@ class TestDeFiVMFork:
         prog.assert_(s2)
         prog.assert_(prog.eq(prog.returndata_word(0), 20), "expected 20")
         prog.builder.stop()
-        tx = await vm.functions.execute(prog.build(), []).transact({"from": deployer})
+        tx = await vm.functions.execute(prog.build()).transact({"from": deployer})
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
 

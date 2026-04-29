@@ -80,9 +80,10 @@ pragma solidity ^0.8.24;
 // IDeFiVM
 // ---------------------------------------------------------------------------
 
-/// @notice Minimal interface for calling DeFiVM.execute.
+/// @notice Minimal interface for staging params and executing a DeFiVM program.
 interface IDeFiVM {
-    function execute(bytes calldata program, bytes32[] calldata params) external payable;
+    function setParams(bytes32[] calldata params) external;
+    function execute(bytes calldata program) external payable;
 }
 
 // ---------------------------------------------------------------------------
@@ -283,15 +284,11 @@ contract CCTPComposer {
         // Actual USDC minted = amount - feeExecuted (relayer fee deducted).
         uint256 amountReceived = amount - feeExecuted;
 
-        // Pass the bridged parameters to the program via DeFiVM's transient
-        // storage channel:
-        //   params[0] = amountReceived  → program reads via TLOAD(0)
-        //   params[1] = sourceDomain    → program reads via TLOAD(1)
-        bytes32[] memory params = new bytes32[](2);
-        params[0] = bytes32(amountReceived);
-        params[1] = bytes32(uint256(sourceDomain));
-
-        // Transfer the minted USDC from this composer to DeFiVM.
+        // Transfer the minted USDC from this composer to DeFiVM FIRST, so the
+        // following setParams + execute pair runs back-to-back with no
+        // intervening external call.  This closes the reentrancy window where
+        // a malicious token could re-enter ``vm.setParams`` and overwrite our
+        // staged values before ``execute`` consumes them.
         if (amountReceived > 0) {
             (bool tok, bytes memory ret) = usdc.call(
                 abi.encodeWithSignature("transfer(address,uint256)", address(vm), amountReceived)
@@ -299,8 +296,19 @@ contract CCTPComposer {
             require(tok && (ret.length == 0 || abi.decode(ret, (bool))), "CCTPComposer: usdc transfer failed");
         }
 
+        // Stage bridged parameters in DeFiVM's transient store, then execute
+        // immediately — no external call between these two so any reentrant
+        // setParams overwrite would have happened inside the transfer above
+        // and is itself overwritten here.
+        //   slot 0 = amountReceived  → program reads via TLOAD(0)
+        //   slot 1 = sourceDomain    → program reads via TLOAD(1)
+        bytes32[] memory params = new bytes32[](2);
+        params[0] = bytes32(amountReceived);
+        params[1] = bytes32(uint256(sourceDomain));
+        vm.setParams(params);
+
         // Execute via DeFiVM, forwarding any ETH received with this call.
-        vm.execute{value: msg.value}(program, params);
+        vm.execute{value: msg.value}(program);
 
         emit Composed(sourceDomain, nonce, amountReceived);
     }

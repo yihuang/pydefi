@@ -559,25 +559,38 @@ class MiniEVMContext:
     ) -> EVMResult:
         """Execute a DeFiVM program via the deployed :class:`DeFiVM` contract.
 
-        Calls ``DeFiVM.execute(bytecode, params)``, which DELEGATECALLs to the
+        Calls ``DeFiVM.execute(bytecode)``, which DELEGATECALLs to the
         Analog-Labs EVM interpreter.  ``address(this)`` inside the program
         equals :attr:`program_executor`.  Storage mutations persist and are
         visible to subsequent :meth:`call` and :meth:`run_program` calls.
+
+        If *params* is supplied, a separate ``DeFiVM.setParams`` call is
+        issued first to stage the values in transient slots ``[0, len)``;
+        the program then reads them via ``TLOAD(i)``.
 
         Args:
             bytecode:  EVM bytecode to execute.
             sender:    ``msg.sender`` for the call; defaults to :attr:`deployer`.
             value:     ETH value (in wei) forwarded to the execution.
             gas:       Gas limit (default :data:`_CTX_DEFAULT_GAS`).
-            params:    Optional list of 32-byte values exposed to the program
-                       via DeFiVM's transient-storage parameter channel
-                       (``TLOAD(i)`` reads ``params[i]``).  Defaults to ``[]``.
+            params:    Optional list of 32-byte values to stage via
+                       ``setParams`` before ``execute``.  Defaults to ``None``
+                       (no setParams call).
 
         Returns:
             :class:`EVMResult` with ``.output``, ``.gas_used``, ``.is_error``.
         """
         effective_sender = sender if sender is not None else self.deployer
-        execute_calldata = _DeFiVM.fns.execute(bytecode, params or []).data
+        if params:
+            set_params_calldata = _DeFiVM.fns.setParams(params).data
+            self._apply_computation(
+                to=self.program_executor,
+                sender=effective_sender,
+                calldata=set_params_calldata,
+                value=0,
+                gas=gas,
+            )
+        execute_calldata = _DeFiVM.fns.execute(bytecode).data
         comp = self._apply_computation(
             to=self.program_executor,
             sender=effective_sender,

@@ -111,32 +111,51 @@ contract DeFiVM {
     // -------------------------------------------------------------------------
 
     /**
-     * @notice Execute a DeFiVM program atomically via DELEGATECALL to a
-     *         pre-deployed EVM interpreter.  Any revert undoes all side-effects.
-     * @param program  Raw EVM bytecode to execute.
-     * @param params   Runtime parameters (max ``MAX_PARAMS``): ``params[i]`` is
-     *                 written to transient slot ``i``; the program reads it
-     *                 with ``TLOAD(i)``.  Slots ``[params.length, MAX_PARAMS)``
-     *                 are zeroed before the program runs, so a smaller second
-     *                 ``execute`` in the same tx cannot observe stale upper
-     *                 params from an earlier call.  Cleanup is bounded by the
-     *                 constant ``MAX_PARAMS`` and cannot be influenced by the
-     *                 delegate-called program.
+     * @notice Stage runtime parameters in DeFiVM's transient storage so the
+     *         next ``execute`` call (same tx, same caller chain) can read
+     *         them via ``TLOAD(i)``.
+     * @param params Up to ``MAX_PARAMS`` 32-byte values.  ``params[i]`` is
+     *               written to transient slot ``i``; slots
+     *               ``[params.length, MAX_PARAMS)`` are zeroed so a shorter
+     *               call cannot observe stale upper slots from an earlier
+     *               ``setParams`` in this tx.  Cleanup is bounded by the
+     *               constant ``MAX_PARAMS``.
+     *
+     * Typical usage: a composer regular-calls ``setParams([...])`` then
+     * ``execute(program)`` in the same tx.  Both run with ``address(this)
+     * == DeFiVM`` so they share DeFiVM's transient namespace.
      */
-    function execute(bytes calldata program, bytes32[] calldata params) external payable {
+    function setParams(bytes32[] calldata params) external {
         require(params.length <= MAX_PARAMS, "DeFiVM: too many params");
         assembly {
             let n := params.length
-            // Write new params at slots [0, n).
             for { let i := 0 } lt(i, n) { i := add(i, 1) } {
                 tstore(i, calldataload(add(params.offset, mul(i, 32))))
             }
-            // Zero slots [n, MAX_PARAMS) so the program sees only the supplied
-            // params (regardless of any previous execute in this tx).
             for { let i := n } lt(i, MAX_PARAMS) { i := add(i, 1) } {
                 tstore(i, 0)
             }
         }
+    }
+
+    /**
+     * @notice Execute a DeFiVM program atomically via DELEGATECALL to a
+     *         pre-deployed EVM interpreter.  Any revert undoes all side-effects.
+     * @param program  Raw EVM bytecode to execute.
+     *
+     * Programs read parameters via ``TLOAD(i)``.  Slots are populated by
+     * the most recent :func:`setParams` call in the *same transaction*; if
+     * no ``setParams`` ran in this tx the slots are zero (transient storage
+     * is tx-scoped under EIP-1153 and starts cleared each tx).
+     *
+     * IMPORTANT: ``setParams`` is permissionless, so callers must invoke
+     * ``setParams`` and ``execute`` back-to-back in their own call frame
+     * with no intervening external calls — otherwise a reentrant or
+     * concurrent caller could overwrite the staged params before this
+     * ``execute`` consumes them.  See the composer contracts in
+     * ``pydefi/bridge/`` for the recommended ordering.
+     */
+    function execute(bytes calldata program) external payable {
         address interpreter = INTERPRETER;
         assembly {
             calldatacopy(0, program.offset, program.length)
