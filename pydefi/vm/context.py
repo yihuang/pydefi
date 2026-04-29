@@ -313,21 +313,20 @@ class ProgramContext(VenomCodegenContext):
     # ------------------------------------------------------------------
 
     def stack_param(self) -> Value:
-        """Consume a value that was already on the EVM stack when the program started.
+        """Declare a parameter supplied by the caller before the program starts.
 
         Used when the caller (e.g. the CCTP / OFT composer prologue in
-        ``DeFiVM.sol``) pushes values onto the stack before dispatching to
-        the user program.  Each call consumes one pre-existing stack slot
-        in **Venom ``param`` order**: the first call returns the *deepest*
-        slot (the value pushed first by the prologue), the second call
-        returns the slot above it, and so on — last call returns TOS.
-        Callers must therefore request ``stack_param()`` values in the same
-        order the prologue pushed them.
+        ``DeFiVM.sol``) supplies values to the user program before
+        dispatching to it.  Each call declares one parameter in **Venom
+        ``param`` order**: the first call returns the first parameter the
+        prologue supplied, the second call returns the second, and so on.
+        Callers must therefore request ``stack_param()`` values in the
+        same order the prologue supplied them.
 
-        Lowers to Venom's ``param`` instruction which emits no bytecode —
-        it's a dataflow marker telling Venom's stack allocator that the
-        variable is already on the stack.  Must be called before emitting
-        any other value-producing instruction in the entry basic block.
+        Lowers to Venom's ``param`` instruction (no bytecode emitted) — a
+        dataflow marker; how the variable is materialised is up to the
+        Venom allocator.  Must be called before emitting any other
+        value-producing instruction in the entry basic block.
         """
         return self.builder.param()
 
