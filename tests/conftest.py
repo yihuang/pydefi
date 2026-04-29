@@ -564,24 +564,21 @@ class MiniEVMContext:
         equals :attr:`program_executor`.  Storage mutations persist and are
         visible to subsequent :meth:`call` and :meth:`run_program` calls.
 
-        If *params* is supplied, a separate ``DeFiVM.setParams`` call is
-        issued first to stage the values in transient slots ``[0, len)``;
-        the program then reads them via ``TLOAD(i)``.
-
         Args:
             bytecode:  EVM bytecode to execute.
             sender:    ``msg.sender`` for the call; defaults to :attr:`deployer`.
             value:     ETH value (in wei) forwarded to the execution.
             gas:       Gas limit (default :data:`_CTX_DEFAULT_GAS`).
-            params:    Optional list of 32-byte values to stage via
-                       ``setParams`` before ``execute``.  Defaults to ``None``
-                       (no setParams call).
+            params:    If not ``None``, ``setParams`` is called first with
+                       this list (empty list clears slots).  ``None`` skips
+                       the call so the program inherits any transient state
+                       from earlier in the tx.  Program reads via ``TLOAD(i)``.
 
         Returns:
             :class:`EVMResult` with ``.output``, ``.gas_used``, ``.is_error``.
         """
         effective_sender = sender if sender is not None else self.deployer
-        if params:
+        if params is not None:
             set_params_calldata = _DeFiVM.fns.setParams(params).data
             self._apply_computation(
                 to=self.program_executor,

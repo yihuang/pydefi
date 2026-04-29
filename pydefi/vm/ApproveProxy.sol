@@ -84,9 +84,9 @@ contract ApproveProxy {
         for (uint256 i = 0; i < deposits.length; i++) {
             _safeTransferFrom(deposits[i].token, msg.sender, address(_vm), deposits[i].amount);
         }
-        if (params.length > 0) {
-            _vm.setParams(params);
-        }
+        // Always call setParams (empty array clears slots) so an earlier
+        // same-tx setParams cannot leak into this execute.
+        _vm.setParams(params);
         _vm.execute{value: msg.value}(program);
     }
 
