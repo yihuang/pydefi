@@ -48,7 +48,7 @@ def build_execution_program_for_dag(
     )
     if min_final_out > 0:
         prog.assert_ge(final_out, min_final_out, "slippage: out too low")
-    prog.stop()
+    prog.builder.stop()
     return prog
 
 

@@ -9,7 +9,7 @@ allocator generates DUP / SWAP / POP automatically.  Quick example::
     ctx = ProgramContext()
     success = ctx.call_contract(ROUTER, ROUTER_FN, recipient, amount)
     ctx.assert_(success)
-    ctx.stop()
+    ctx.builder.stop()
     bytecode = ctx.build()
 
 Patched call (raw calldata + runtime overlay)::
@@ -24,7 +24,7 @@ Patched call (raw calldata + runtime overlay)::
         patches={36: amount},  # write amount into the calldata at offset 36
     )
     ctx.assert_(swap_ok)
-    ctx.stop()
+    ctx.builder.stop()
     bytecode = ctx.build()
 
 Design notes
@@ -41,8 +41,8 @@ Venom resolves the data-section label to its absolute byte position in
 the compiled output, so no post-processing patches are needed.
 
 **Termination.**  A ``ProgramContext`` is "open" until the user calls one
-of :meth:`stop`, :meth:`return_`, :meth:`return_word`, :meth:`revert`, or
-a control-flow primitive that terminates the current BB.  :meth:`build`
+of ``builder.stop()``, :meth:`return_`, :meth:`return_word`, :meth:`revert`,
+or a control-flow primitive that terminates the current BB.  :meth:`build`
 adds an implicit ``stop`` if the current BB is still open.
 """
 
@@ -407,14 +407,6 @@ class ProgramContext(VenomCodegenContext):
     # Self / context
     # ------------------------------------------------------------------
 
-    def self_addr(self) -> Operand:
-        """EVM ``ADDRESS`` — the running program's own address."""
-        return self.builder.address()
-
-    def gas_left(self) -> Operand:
-        """EVM ``GAS`` — remaining gas."""
-        return self.builder.gas()
-
     def eth_balance(self, account: ValueLike) -> Operand:
         """EVM ``BALANCE(account)`` — ETH balance of *account*."""
         return self.builder.balance(self._to_operand(account))
@@ -756,10 +748,6 @@ class ProgramContext(VenomCodegenContext):
     # ------------------------------------------------------------------
     # Termination
     # ------------------------------------------------------------------
-
-    def stop(self) -> None:
-        """Terminate the current block with ``STOP`` (halt, no return data)."""
-        self.builder.stop()
 
     def return_(self, offset: ValueLike, length: ValueLike) -> None:
         """Terminate with ``RETURN(offset, length)`` — return memory slice."""

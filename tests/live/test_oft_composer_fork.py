@@ -67,7 +67,7 @@ def _compose_single_call(target_address: Address, calldata: bytes, *, value: int
     prog, _from_val, _amount_val = _start_program()
     success = prog.call_raw(target_address, calldata, value=value)
     prog.assert_(success)
-    prog.stop()
+    prog.builder.stop()
     return prog.build(prefix_length=_OFT_PROLOGUE_LEN)
 
 
@@ -77,14 +77,14 @@ def _compose_multi_call(calls: Sequence[tuple[Address, bytes]]) -> bytes:
     for target, calldata in calls:
         success = prog.call_raw(target, calldata)
         prog.assert_(success)
-    prog.stop()
+    prog.builder.stop()
     return prog.build(prefix_length=_OFT_PROLOGUE_LEN)
 
 
 def _compose_noop() -> bytes:
     """Build a minimal no-op compose program (prologue stores only)."""
     prog, _from_val, _amount_val = _start_program()
-    prog.stop()
+    prog.builder.stop()
     return prog.build(prefix_length=_OFT_PROLOGUE_LEN)
 
 
@@ -566,7 +566,7 @@ class TestOFTComposerFork:
         prog, _from_val, amount_val = _start_program()
         success = prog.call_raw(target_address, template, patches={68: amount_val})
         prog.assert_(success)
-        prog.stop()
+        prog.builder.stop()
         program = prog.build(prefix_length=_OFT_PROLOGUE_LEN)
         message = make_compose_message(nonce=5, src_eid=30101, amount_ld=amount_ld, program=program)
 
@@ -614,7 +614,7 @@ class TestOFTComposerFork:
         prog, from_val, _amount_val = _start_program()
         success = prog.call_raw(target_address, template, patches={68: from_val})
         prog.assert_(success)
-        prog.stop()
+        prog.builder.stop()
         program = prog.build(prefix_length=_OFT_PROLOGUE_LEN)
         amount_ld = 10**18
         message = make_compose_message(nonce=6, src_eid=30101, amount_ld=amount_ld, program=program)

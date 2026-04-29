@@ -25,7 +25,7 @@ Usage::
     token = ctx.deploy_mock_token()
     ctx.mint_token(token, ctx.program_executor, 500 * 10**18)
     p = Program()
-    p.return_word(p.erc20_balance_of(token, p.self_addr()))
+    p.return_word(p.erc20_balance_of(token, p.builder.address()))
     result = ctx.run_program(p.build())
     assert int.from_bytes(result.output, "big") == 500 * 10**18
 """
@@ -654,7 +654,7 @@ def evm_ctx() -> MiniEVMContext:
             evm_ctx.mint_token(token, evm_ctx.program_executor, 1000 * 10**18)
 
             p = Program()
-            p.return_word(p.erc20_balance_of(token, p.self_addr()))
+            p.return_word(p.erc20_balance_of(token, p.builder.address()))
             result = evm_ctx.run_program(p.build())
             assert not result.is_error
     """

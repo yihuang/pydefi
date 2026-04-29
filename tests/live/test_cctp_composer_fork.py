@@ -58,7 +58,7 @@ def _compose_program(target_address: Address, target_calldata: bytes, *, value: 
     _source_domain = prog.builder.param()  # top of the two (pushed second)
     success = prog.call_raw(target_address, target_calldata, value=value)
     prog.assert_(success)
-    prog.stop()
+    prog.builder.stop()
     return prog.build(prefix_length=_CCTP_PROLOGUE_LEN)
 
 

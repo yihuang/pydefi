@@ -8,7 +8,7 @@ Usage::
     prog = Program()
     success = prog.call_contract(token, ERC20.fns.approve, ROUTER, 10**18)
     prog.assert_(success)
-    prog.stop()
+    prog.builder.stop()
     bytecode = prog.build()
 """
 

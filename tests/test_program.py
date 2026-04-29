@@ -197,14 +197,14 @@ class TestAssert:
     def test_assert_revert_no_msg(self):
         p = Program()
         p.assert_(p.const(0))
-        p.stop()
+        p.builder.stop()
         out = _run_assert_revert(p, disable_constant_folding=True)
         assert out == b""
 
     def test_assert_revert_with_msg(self):
         p = Program()
         p.assert_(p.const(0), "oops")
-        p.stop()
+        p.builder.stop()
         out = _run_assert_revert(p, disable_constant_folding=True)
         # Solidity Error(string) ABI: selector(4) + offset(32) + length(32) + msg
         assert out[:4] == bytes.fromhex("08c379a0")
@@ -225,7 +225,7 @@ class TestAssert:
     def test_assert_ge_fail(self):
         p = Program()
         p.assert_ge(p.const(3), p.const(10), "below min")
-        p.stop()
+        p.builder.stop()
         out = _run_assert_revert(p, disable_constant_folding=True)
         length = int.from_bytes(out[36:68], "big")
         assert out[68 : 68 + length] == b"below min"
@@ -239,14 +239,14 @@ class TestAssert:
     def test_assert_le_fail(self):
         p = Program()
         p.assert_le(p.const(10), p.const(3))
-        p.stop()
+        p.builder.stop()
         _ = _run_assert_revert(p, disable_constant_folding=True)
 
     def test_assert_le_fail_with_msg(self):
         """assert_le(a, b, msg) must revert with the Error(string) payload."""
         p = Program()
         p.assert_le(p.const(10), p.const(3), "above max")
-        p.stop()
+        p.builder.stop()
         out = _run_assert_revert(p, disable_constant_folding=True)
         assert out[:4] == bytes.fromhex("08c379a0")
         length = int.from_bytes(out[36:68], "big")
@@ -427,7 +427,7 @@ class TestTermination:
 
     def test_explicit_stop(self):
         p = Program()
-        p.stop()
+        p.builder.stop()
         result = mini_evm(p.build())
         assert not result.is_error
 

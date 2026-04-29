@@ -196,7 +196,7 @@ class TestDeFiVMFork:
         slot = prog.alloc_slot()
         prog.store_slot(slot, 0xDEADBEEF)
         _ = prog.load_slot(slot)  # side-effect check: program compiles and runs
-        prog.stop()
+        prog.builder.stop()
         program = prog.build(disable_constant_folding=True)
 
         tx = await vm.functions.execute(program).transact({"from": deployer})
@@ -214,7 +214,7 @@ class TestDeFiVMFork:
 
         prog = Program()
         prog.assert_(0, "slippage exceeded")
-        prog.stop()
+        prog.builder.stop()
         with pytest.raises((ContractLogicError, Web3RPCError)):
             await vm.functions.execute(prog.build(disable_constant_folding=True)).transact({"from": deployer})
 
@@ -226,7 +226,7 @@ class TestDeFiVMFork:
 
         prog = Program()
         prog.assert_(1, "should not trigger")
-        prog.stop()
+        prog.builder.stop()
         tx = await vm.functions.execute(prog.build(disable_constant_folding=True)).transact({"from": deployer})
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
@@ -239,7 +239,7 @@ class TestDeFiVMFork:
 
         prog = Program()
         prog.assert_ge(200, 100, "min not met")
-        prog.stop()
+        prog.builder.stop()
         tx = await vm.functions.execute(prog.build(disable_constant_folding=True)).transact({"from": deployer})
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
@@ -251,7 +251,7 @@ class TestDeFiVMFork:
 
         prog = Program()
         prog.assert_ge(100, 200, "min not met")
-        prog.stop()
+        prog.builder.stop()
         with pytest.raises((ContractLogicError, Web3RPCError)):
             await vm.functions.execute(prog.build(disable_constant_folding=True)).transact({"from": deployer})
 
@@ -263,7 +263,7 @@ class TestDeFiVMFork:
 
         prog = Program()
         prog.assert_le(100, 200, "max exceeded")
-        prog.stop()
+        prog.builder.stop()
         tx = await vm.functions.execute(prog.build(disable_constant_folding=True)).transact({"from": deployer})
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
@@ -279,8 +279,8 @@ class TestDeFiVMFork:
         deployer = ctx["deployer"]
 
         prog = Program()
-        _ = prog.eth_balance(prog.self_addr())
-        prog.stop()
+        _ = prog.eth_balance(prog.builder.address())
+        prog.builder.stop()
         tx = await vm.functions.execute(prog.build()).transact({"from": deployer})
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
@@ -293,7 +293,7 @@ class TestDeFiVMFork:
 
         prog = Program()
         _ = prog.erc20_balance_of(WETH.address, WHALE)
-        prog.stop()
+        prog.builder.stop()
         tx = await vm.functions.execute(prog.build()).transact({"from": deployer})
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
@@ -309,7 +309,7 @@ class TestDeFiVMFork:
         post = prog.erc20_balance_of(WETH.address, WHALE)
         delta = prog.sub(post, pre)  # saturating; == 0 since no transfer happened
         prog.assert_(prog.is_zero(delta), "expected zero delta")
-        prog.stop()
+        prog.builder.stop()
         tx = await vm.functions.execute(prog.build()).transact({"from": deployer})
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
@@ -330,7 +330,7 @@ class TestDeFiVMFork:
         prog = Program()
         success = prog.call_raw(adapter, calldata)
         prog.assert_(success)
-        prog.stop()
+        prog.builder.stop()
         tx = await vm.functions.execute(prog.build()).transact({"from": deployer})
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
@@ -349,7 +349,7 @@ class TestDeFiVMFork:
         prog.assert_(success)
         result = prog.returndata_word(0)
         prog.assert_(prog.eq(result, 42), "expected 42")
-        prog.stop()
+        prog.builder.stop()
         tx = await vm.functions.execute(prog.build()).transact({"from": deployer})
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
@@ -373,7 +373,7 @@ class TestDeFiVMFork:
         prog = Program()
         success = prog.call_raw(adapter, template, patches={4: 0xABCD})
         prog.assert_(success)
-        prog.stop()
+        prog.builder.stop()
         tx = await vm.functions.execute(prog.build()).transact({"from": deployer})
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
@@ -407,7 +407,7 @@ class TestDeFiVMFork:
         prog = Program()
         success = prog.call_raw(adapter, template, patches={4: prog.addr(adapter)})
         prog.assert_(success)
-        prog.stop()
+        prog.builder.stop()
         tx = await vm.functions.execute(prog.build()).transact({"from": deployer})
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
@@ -450,7 +450,7 @@ class TestDeFiVMFork:
         # Final assertion: result == 20
         result = prog.returndata_word(0)
         prog.assert_(prog.eq(result, 20), "expected 20")
-        prog.stop()
+        prog.builder.stop()
         tx = await vm.functions.execute(prog.build()).transact({"from": deployer})
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
@@ -477,7 +477,7 @@ class TestDeFiVMFork:
         # addInputs(14, 3) == 17
         result = prog.returndata_word(0)
         prog.assert_(prog.eq(result, 17), "expected 17")
-        prog.stop()
+        prog.builder.stop()
         tx = await vm.functions.execute(prog.build()).transact({"from": deployer})
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
@@ -498,7 +498,7 @@ class TestDeFiVMFork:
         success = prog.call_contract(adapter, _DOUBLE_FN, amount)
         prog.assert_(success)
         prog.assert_(prog.eq(prog.returndata_word(0), 14), "expected 14")
-        prog.stop()
+        prog.builder.stop()
         tx = await vm.functions.execute(prog.build(disable_constant_folding=True)).transact({"from": deployer})
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
@@ -516,7 +516,7 @@ class TestDeFiVMFork:
         success = prog.call_contract(adapter, _ADD_INPUTS_FN, a, b)
         prog.assert_(success)
         prog.assert_(prog.eq(prog.returndata_word(0), 17), "expected 17")
-        prog.stop()
+        prog.builder.stop()
         tx = await vm.functions.execute(prog.build(disable_constant_folding=True)).transact({"from": deployer})
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
@@ -537,7 +537,7 @@ class TestDeFiVMFork:
         s2 = prog.call_contract(adapter, _DOUBLE_FN, amount)
         prog.assert_(s2)
         prog.assert_(prog.eq(prog.returndata_word(0), 20), "expected 20")
-        prog.stop()
+        prog.builder.stop()
         tx = await vm.functions.execute(prog.build()).transact({"from": deployer})
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
@@ -624,7 +624,7 @@ class TestApproveProxyFork:
 
         prog = Program()
         prog.call_raw(token_a_address, ERC20.fns.transfer(recipient, AMOUNT).data)
-        prog.stop()
+        prog.builder.stop()
         program = prog.build()
         deposits = [{"token": token_a_address, "amount": AMOUNT}]
 
@@ -664,7 +664,7 @@ class TestApproveProxyFork:
         prog = Program()
         prog.call_raw(token_a_address, ERC20.fns.transfer(recipient, AMOUNT_A).data)
         prog.call_raw(token_b_address, ERC20.fns.transfer(recipient, AMOUNT_B).data)
-        prog.stop()
+        prog.builder.stop()
         program = prog.build()
         deposits = [
             {"token": token_a_address, "amount": AMOUNT_A},
@@ -711,7 +711,7 @@ class TestApproveProxyFork:
 
         prog = Program()
         prog.call_raw(token_a_address, ERC20.fns.transfer(recipient, DEPOSIT_AMOUNT).data)
-        prog.stop()
+        prog.builder.stop()
         program = prog.build()
         deposits = [{"token": token_a_address, "amount": DEPOSIT_AMOUNT}]
 
