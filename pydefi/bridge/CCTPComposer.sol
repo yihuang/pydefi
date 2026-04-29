@@ -57,25 +57,22 @@ pragma solidity ^0.8.24;
  *
  * Minimum message length: 376 bytes (header=148 + fixed BurnMessageV2=228).
  *
- * DeFiVM stack layout after prologue
- * -----------------------------------
- * Before executing the user program, CCTPComposer prepends two PUSH
- * instructions so the bridged parameters are already on the stack::
+ * Parameters passed to the program (transient storage)
+ * -----------------------------------------------------
+ * Bridged parameters are exposed via DeFiVM's EIP-1153 transient-storage
+ * channel; the program reads them with ``TLOAD(slot)``::
  *
- *   PUSH_U256 <amountReceived>  ; pushed first  → stack[0] (bottom)
- *   PUSH_U256 <sourceDomain>    ; pushed second → stack[1] (top)
+ *   slot 0 = amountReceived  (= amount - feeExecuted, USDC minted to this contract)
+ *   slot 1 = sourceDomain    (CCTP domain ID of the source chain)
  *
- * where ``amountReceived = amount - feeExecuted`` (the actual USDC minted
- * to this contract after the relayer fee is deducted).
- *
- * A Python program picks them up with ``stack_param`` and threads the SSA
- * values wherever they are needed::
+ * A Python program reads them via the Venom builder::
  *
  *   from pydefi.vm import Program
+ *   from vyper.venom.basicblock import IRLiteral
  *
  *   prog = Program()
- *   amount_received = prog.stack_param()  # bottom (pushed first)
- *   source_domain   = prog.stack_param()  # top    (pushed second)
+ *   amount_received = prog.builder.tload(IRLiteral(0))
+ *   source_domain   = prog.builder.tload(IRLiteral(1))
  *   ; ... use amount_received / source_domain anywhere later ...
  */
 
@@ -85,7 +82,7 @@ pragma solidity ^0.8.24;
 
 /// @notice Minimal interface for calling DeFiVM.execute.
 interface IDeFiVM {
-    function execute(bytes calldata program) external payable;
+    function execute(bytes calldata program, bytes32[] calldata params) external payable;
 }
 
 // ---------------------------------------------------------------------------
@@ -93,9 +90,6 @@ interface IDeFiVM {
 // ---------------------------------------------------------------------------
 
 contract CCTPComposer {
-    // DeFiVM PUSH opcode — raw EVM PUSH32: opcode + 32-byte immediate.
-    uint8 private constant OP_PUSH_U256 = 0x7F;
-
     // -----------------------------------------------------------------------
     // CCTP v2 message offsets
     // -----------------------------------------------------------------------
@@ -253,15 +247,14 @@ contract CCTPComposer {
      *    ``hookData`` (= the DeFiVM program) from the CCTP v2 message.
      * 3. Call ``MessageTransmitterV2.receiveMessage(message, attestation)`` to
      *    mint ``amount - feeExecuted`` USDC to this contract.
-     * 4. Build a DeFiVM prologue that pushes the bridged parameters onto the
-     *    stack before the user program runs.
+     * 4. Stage bridged parameters in DeFiVM's transient-storage channel.
      * 5. Transfer the minted USDC to the DeFiVM contract.
-     * 6. Execute the combined program via DeFiVM, forwarding any ETH supplied
-     *    with this call.
+     * 6. Execute the program via DeFiVM, forwarding any ETH supplied with
+     *    this call.
      *
-     * Stack layout after prologue (bottom to top):
-     *   stack[0] = amountReceived  (USDC received = amount - feeExecuted, 6 dec.)
-     *   stack[1] = sourceDomain    (CCTP domain ID of the source chain)
+     * Transient-storage layout exposed to the program:
+     *   slot 0 = amountReceived  (USDC received = amount - feeExecuted, 6 dec.)
+     *   slot 1 = sourceDomain    (CCTP domain ID of the source chain)
      *
      * @param message      Raw CCTP v2 message bytes (``MessageSent`` event data).
      * @param attestation  Circle attestation bytes for the message.
@@ -290,19 +283,13 @@ contract CCTPComposer {
         // Actual USDC minted = amount - feeExecuted (relayer fee deducted).
         uint256 amountReceived = amount - feeExecuted;
 
-        // Build a prologue that pushes the CCTP transfer parameters onto the
-        // DeFiVM stack before the user program runs:
-        //
-        //   PUSH_U256 <amountReceived>  (1B opcode + 32B value = 33B)
-        //   PUSH_U256 <sourceDomain>    (1B opcode + 32B value = 33B)
-        //
-        // After the prologue the initial stack layout is:
-        //   stack[0] = amountReceived  (pushed first, bottom)
-        //   stack[1] = sourceDomain    (pushed second, top)
-        bytes memory fullProgram = bytes.concat(
-            abi.encodePacked(OP_PUSH_U256, bytes32(amountReceived), OP_PUSH_U256, bytes32(uint256(sourceDomain))),
-            program
-        );
+        // Pass the bridged parameters to the program via DeFiVM's transient
+        // storage channel:
+        //   params[0] = amountReceived  → program reads via TLOAD(0)
+        //   params[1] = sourceDomain    → program reads via TLOAD(1)
+        bytes32[] memory params = new bytes32[](2);
+        params[0] = bytes32(amountReceived);
+        params[1] = bytes32(uint256(sourceDomain));
 
         // Transfer the minted USDC from this composer to DeFiVM.
         if (amountReceived > 0) {
@@ -313,7 +300,7 @@ contract CCTPComposer {
         }
 
         // Execute via DeFiVM, forwarding any ETH received with this call.
-        vm.execute{value: msg.value}(fullProgram);
+        vm.execute{value: msg.value}(program, params);
 
         emit Composed(sourceDomain, nonce, amountReceived);
     }

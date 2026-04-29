@@ -12,9 +12,9 @@ pragma solidity ^0.8.24;
  *    ``composeMsg`` in their OFT ``send`` call.
  * 2. After the OFT tokens arrive, the LayerZero EndpointV2 calls ``lzCompose``.
  * 3. ``lzCompose`` validates the caller (must be the authorised endpoint), then
- *    transfers the OFT tokens from the composer to DeFiVM, prepends two PUSH
- *    instructions for the OFT parameters and forwards the combined program to
- *    the DeFiVM contract for execution.
+ *    transfers the OFT tokens from the composer to DeFiVM and forwards the
+ *    program to DeFiVM, passing the OFT parameters via the transient-storage
+ *    parameter channel.
  *
  * Security notes
  * --------------
@@ -35,20 +35,20 @@ pragma solidity ^0.8.24;
  *
  * The custom payload (bytes 44+) is raw DeFiVM bytecode.
  *
- * Before executing, OFTComposer prepends two PUSH instructions so the DeFiVM
- * program starts with the OFT transfer parameters already on the stack::
+ * The OFT parameters are exposed to the program via DeFiVM's EIP-1153
+ * transient-storage channel; the program reads them with ``TLOAD(slot)``::
  *
- *   PUSH32 <amountLD>   ; 0x7F opcode + 32B → stack[0] (bottom)
- *   PUSH20 <_from>      ; 0x73 opcode + 20B → stack[1] (top)
+ *   slot 0 = amountLD  (uint256 amount delivered by the OFT, in local decimals)
+ *   slot 1 = _from     (address of the OFT app contract, right-aligned in 32B)
  *
- * A Python program picks them up with ``stack_param`` and threads the SSA
- * values wherever they are needed::
+ * A Python program reads them via the Venom builder::
  *
  *   from pydefi.vm import Program
+ *   from vyper.venom.basicblock import IRLiteral
  *
  *   prog = Program()
- *   amount_ld = prog.stack_param()  # bottom (pushed first)
- *   from_addr = prog.stack_param()  # top    (pushed second)
+ *   amount_ld = prog.builder.tload(IRLiteral(0))
+ *   from_addr = prog.builder.tload(IRLiteral(1))
  *   ; ... use amount_ld / from_addr anywhere later ...
  *
  *   message = (
@@ -78,7 +78,7 @@ interface IOFT {
 
 /// @notice Minimal interface for calling DeFiVM.execute.
 interface IDeFiVM {
-    function execute(bytes calldata program) external payable;
+    function execute(bytes calldata program, bytes32[] calldata params) external payable;
 }
 
 // ---------------------------------------------------------------------------
@@ -86,10 +86,6 @@ interface IDeFiVM {
 // ---------------------------------------------------------------------------
 
 contract OFTComposer {
-    // DeFiVM PUSH opcodes — raw EVM bytecode opcodes used to build the prologue.
-    uint8 private constant OP_PUSH_U256 = 0x7F; // EVM PUSH32: opcode + 32-byte immediate
-    uint8 private constant OP_PUSH_ADDR = 0x73; // EVM PUSH20: opcode + 20-byte immediate
-
     // -----------------------------------------------------------------------
     // Errors
     // -----------------------------------------------------------------------
@@ -221,24 +217,15 @@ contract OFTComposer {
         //   bytes 12–43 : uint256 amountLD
         //   bytes 44+   : DeFiVM program bytecode
         uint256 amountLD = uint256(bytes32(_message[12:44]));
+        bytes calldata program = _message[44:];
 
-        // Build a prologue that pushes the OFT parameters onto the DeFiVM stack
-        // before the user program runs:
-        //
-        //   PUSH32 <amountLD>  (0x7F opcode + 32B value = 33B)
-        //   PUSH20 <_from>     (0x73 opcode + 20B value = 21B)
-        //
-        // After the prologue, the initial stack layout is:
-        //   stack[0] = amountLD  (pushed first, bottom)
-        //   stack[1] = _from     (pushed second, top)
-        //
-        // The program typically starts with:
-        //   STORE_REG 0  ; R0 = _from
-        //   STORE_REG 1  ; R1 = amountLD
-        bytes memory program = bytes.concat(
-            abi.encodePacked(OP_PUSH_U256, bytes32(amountLD), OP_PUSH_ADDR, bytes20(_from)),
-            _message[44:]
-        );
+        // Pass the OFT parameters to the program via DeFiVM's transient
+        // storage channel:
+        //   params[0] = amountLD  → program reads via TLOAD(0)
+        //   params[1] = _from     → program reads via TLOAD(1)
+        bytes32[] memory params = new bytes32[](2);
+        params[0] = bytes32(amountLD);
+        params[1] = bytes32(uint256(uint160(_from)));
 
         // Transfer the received OFT tokens from this composer to DeFiVM so the
         // program can use them (e.g. approve a DEX and swap).
@@ -254,7 +241,7 @@ contract OFTComposer {
         }
 
         // Execute via DeFiVM, forwarding any ETH received with this compose call.
-        vm.execute{value: msg.value}(program);
+        vm.execute{value: msg.value}(program, params);
 
         emit Composed(_from, _guid, amountLD);
     }

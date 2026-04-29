@@ -19,8 +19,11 @@ def ensure_solc(version: str = "0.8.24") -> None:
         solcx.install_solc(version, show_progress=False)
 
 
-def compile_sol_file(path: Path, contract_name: str) -> dict:
-    """Compile a Solidity file and return ABI + bytecode for *contract_name*."""
+def compile_sol_file(path: Path, contract_name: str, *, evm_version: str = "cancun") -> dict:
+    """Compile a Solidity file and return ABI + bytecode for *contract_name*.
+
+    Defaults to ``cancun`` so DeFiVM's TSTORE/TLOAD parameter channel compiles.
+    """
     ensure_solc("0.8.24")
     result = solcx.compile_files(
         [str(path)],
@@ -28,21 +31,24 @@ def compile_sol_file(path: Path, contract_name: str) -> dict:
         solc_version="0.8.24",
         optimize=True,
         optimize_runs=200,
+        evm_version=evm_version,
     )
     key = next(k for k in result if k.endswith(f":{contract_name}"))
     return result[key]
 
 
-def compile_sol_source(source: str, contract_name: str, *, evm_version: str = "default") -> dict:
-    """Compile an inline Solidity source string and return ABI + bytecode."""
+def compile_sol_source(source: str, contract_name: str, *, evm_version: str = "cancun") -> dict:
+    """Compile an inline Solidity source string and return ABI + bytecode.
+
+    Defaults to ``cancun`` so DeFiVM's TSTORE/TLOAD parameter channel compiles.
+    """
     ensure_solc("0.8.24")
-    kwargs: dict = {
-        "output_values": ["abi", "bin"],
-        "solc_version": "0.8.24",
-    }
-    if evm_version != "default":
-        kwargs["evm_version"] = evm_version
-    result = solcx.compile_source(source, **kwargs)
+    result = solcx.compile_source(
+        source,
+        output_values=["abi", "bin"],
+        solc_version="0.8.24",
+        evm_version=evm_version,
+    )
     return result[f"<stdin>:{contract_name}"]
 
 

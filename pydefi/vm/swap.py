@@ -263,7 +263,7 @@ def _build_route_swap(prog: Program, amount_in: Operand, action: RouteSwap, reci
 # High-level transaction builder
 # ---------------------------------------------------------------------------
 
-_EXECUTE_SELECTOR: bytes = keccak(text="execute(bytes)")[:4]
+_EXECUTE_SELECTOR: bytes = keccak(text="execute(bytes,bytes32[])")[:4]
 
 
 def build_swap_transaction(
@@ -273,8 +273,17 @@ def build_swap_transaction(
     recipient: str,
     *,
     min_final_out: int = 0,
+    params: list[bytes] | None = None,
 ) -> SwapTransaction:
-    """Compile a :class:`~pydefi.types.RouteDAG` into a DeFiVM ``execute(bytes)`` transaction."""
+    """Compile a :class:`~pydefi.types.RouteDAG` into a DeFiVM
+    ``execute(bytes,bytes32[])`` transaction.
+
+    Args:
+        params: Optional list of 32-byte values exposed to the program via
+            DeFiVM's transient-storage parameter channel (``TLOAD(i)``
+            reads ``params[i]``).  Defaults to ``[]`` for swaps that don't
+            need runtime parameters.
+    """
     from pydefi.vm.dag import build_execution_program_for_dag
 
     program = build_execution_program_for_dag(
@@ -284,7 +293,12 @@ def build_swap_transaction(
         recipient=recipient,
         min_final_out=min_final_out,
     )
-    calldata = _EXECUTE_SELECTOR + encode(["bytes"], [bytes(program)])
+    if params is None:
+        params = []
+    for p in params:
+        if len(p) != 32:
+            raise ValueError(f"build_swap_transaction: each param must be 32 bytes, got {len(p)}")
+    calldata = _EXECUTE_SELECTOR + encode(["bytes", "bytes32[]"], [bytes(program), params])
     return SwapTransaction(to=vm_address, data=calldata)
 
 

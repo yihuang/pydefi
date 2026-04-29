@@ -64,6 +64,11 @@ contract DeFiVM {
     /// @dev Well-known Analog-Labs EVM interpreter.
     address private constant DEFAULT_INTERPRETER = 0x0000000000001e3F4F615cd5e20c681Cf7d85e8D;
 
+    /// @dev Hard cap on transient-storage parameter slots.  ``execute`` reverts
+    ///      if ``params.length`` exceeds this, and always zeros slots ``[0, MAX_PARAMS)``
+    ///      around the program so cleanup is bounded regardless of program behavior.
+    uint256 private constant MAX_PARAMS = 32;
+
     /// @dev Address of the EVM interpreter used for DELEGATECALL execution.
     address private immutable INTERPRETER;
 
@@ -106,14 +111,32 @@ contract DeFiVM {
     // -------------------------------------------------------------------------
 
     /**
-     * @notice Execute a DeFiVM program atomically.
+     * @notice Execute a DeFiVM program atomically via DELEGATECALL to a
+     *         pre-deployed EVM interpreter.  Any revert undoes all side-effects.
      * @param program  Raw EVM bytecode to execute.
-     *
-     * Delegates to a pre-deployed EVM interpreter via DELEGATECALL so the program
-     * runs in DeFiVM's execution context.  Every opcode executes on the native EVM
-     * stack — no emulation overhead.  Any revert undoes all side-effects.
+     * @param params   Runtime parameters (max ``MAX_PARAMS``): ``params[i]`` is
+     *                 written to transient slot ``i``; the program reads it
+     *                 with ``TLOAD(i)``.  Slots ``[params.length, MAX_PARAMS)``
+     *                 are zeroed before the program runs, so a smaller second
+     *                 ``execute`` in the same tx cannot observe stale upper
+     *                 params from an earlier call.  Cleanup is bounded by the
+     *                 constant ``MAX_PARAMS`` and cannot be influenced by the
+     *                 delegate-called program.
      */
-    function execute(bytes calldata program) external payable {
+    function execute(bytes calldata program, bytes32[] calldata params) external payable {
+        require(params.length <= MAX_PARAMS, "DeFiVM: too many params");
+        assembly {
+            let n := params.length
+            // Write new params at slots [0, n).
+            for { let i := 0 } lt(i, n) { i := add(i, 1) } {
+                tstore(i, calldataload(add(params.offset, mul(i, 32))))
+            }
+            // Zero slots [n, MAX_PARAMS) so the program sees only the supplied
+            // params (regardless of any previous execute in this tx).
+            for { let i := n } lt(i, MAX_PARAMS) { i := add(i, 1) } {
+                tstore(i, 0)
+            }
+        }
         address interpreter = INTERPRETER;
         assembly {
             calldatacopy(0, program.offset, program.length)

@@ -28,6 +28,7 @@ import pytest
 import solcx
 from eth_contract import Contract
 from hexbytes import HexBytes
+from vyper.venom.basicblock import IRLiteral
 from web3 import AsyncWeb3, Web3
 from web3.exceptions import ContractLogicError, Web3RPCError
 
@@ -35,26 +36,18 @@ from pydefi.types import Address
 from pydefi.vm import Program
 from tests.live.sol_utils import compile_sol_file, deploy, ensure_solc
 
-#: Byte length of the OFTComposer.sol stack-push prologue: ``PUSH32 amountLD``
-#: (33B) + ``PUSH20 _from`` (21B) = 54 bytes.  Note: differs from CCTP (66B,
-#: two PUSH32s) because OFT uses PUSH20 for the address.  See CCTP equivalent
-#: for the rationale behind ``Program.build(prefix_length=...)``.
-_OFT_PROLOGUE_LEN = 54
-
 
 def _start_program() -> tuple[Program, "object", "object"]:
-    """Start a compose program and consume the two prologue stack params.
+    """Start a compose program and read the two transient-storage params.
 
-    The OFTComposer prologue pushes ``amountLD`` then ``_from`` onto the stack
-    (so ``_from`` is at TOS).  Venom's ``param`` returns them in push
-    order (deepest first), so the first call returns ``amountLD`` and the
-    second returns ``_from``.
+    The OFTComposer stages OFT parameters in DeFiVM's transient store:
+    slot 0 = amountLD, slot 1 = _from.  The program reads them via TLOAD.
 
     Returns ``(prog, from_val, amount_val)``.
     """
     prog = Program()
-    amount_val = prog.builder.param()  # bottom = amountLD (pushed first)
-    from_val = prog.builder.param()  # top = _from (pushed second)
+    amount_val = prog.builder.tload(IRLiteral(0))  # amountLD
+    from_val = prog.builder.tload(IRLiteral(1))  # _from
     return prog, from_val, amount_val
 
 
@@ -68,7 +61,7 @@ def _compose_single_call(target_address: Address, calldata: bytes, *, value: int
     success = prog.call_raw(target_address, calldata, value=value)
     prog.assert_(success)
     prog.builder.stop()
-    return prog.build(prefix_length=_OFT_PROLOGUE_LEN)
+    return prog.build()
 
 
 def _compose_multi_call(calls: Sequence[tuple[Address, bytes]]) -> bytes:
@@ -78,14 +71,14 @@ def _compose_multi_call(calls: Sequence[tuple[Address, bytes]]) -> bytes:
         success = prog.call_raw(target, calldata)
         prog.assert_(success)
     prog.builder.stop()
-    return prog.build(prefix_length=_OFT_PROLOGUE_LEN)
+    return prog.build()
 
 
 def _compose_noop() -> bytes:
     """Build a minimal no-op compose program (prologue stores only)."""
     prog, _from_val, _amount_val = _start_program()
     prog.builder.stop()
-    return prog.build(prefix_length=_OFT_PROLOGUE_LEN)
+    return prog.build()
 
 
 # ---------------------------------------------------------------------------
@@ -567,7 +560,7 @@ class TestOFTComposerFork:
         success = prog.call_raw(target_address, template, patches={68: amount_val})
         prog.assert_(success)
         prog.builder.stop()
-        program = prog.build(prefix_length=_OFT_PROLOGUE_LEN)
+        program = prog.build()
         message = make_compose_message(nonce=5, src_eid=30101, amount_ld=amount_ld, program=program)
 
         # Simulate OFT bridge: mint tokens to the composer before lzCompose is called.
@@ -615,7 +608,7 @@ class TestOFTComposerFork:
         success = prog.call_raw(target_address, template, patches={68: from_val})
         prog.assert_(success)
         prog.builder.stop()
-        program = prog.build(prefix_length=_OFT_PROLOGUE_LEN)
+        program = prog.build()
         amount_ld = 10**18
         message = make_compose_message(nonce=6, src_eid=30101, amount_ld=amount_ld, program=program)
 

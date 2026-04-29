@@ -37,7 +37,6 @@ from pathlib import Path
 from typing import Optional
 
 import pytest
-from eth_contract.contract import Contract
 from eth_contract.erc20 import ERC20
 from eth_contract.utils import get_initcode
 from eth_keys import keys
@@ -62,6 +61,7 @@ from ethereum.forks.cancun.vm.interpreter import process_create_message, process
 from ethereum_types.bytes import Bytes0, Bytes20, Bytes32
 from ethereum_types.numeric import U64, U256, Uint
 
+from pydefi.abi.vm import DeFiVM as _DeFiVM
 from tests.live.sol_utils import (
     MOCK_TOKEN_SOL,
     compile_interpreter_sync,
@@ -259,10 +259,9 @@ def _get_interpreter_bin() -> bytes:
 
 
 # ---------------------------------------------------------------------------
-# DeFiVM contract binding (for ABI-encoding execute() calls)
+# DeFiVM contract binding
 # ---------------------------------------------------------------------------
-
-_DeFiVM: Contract = Contract.from_abi(["function execute(bytes calldata program) external payable"])
+# Reuses the canonical ABI from ``pydefi.abi.vm`` (imported as ``_DeFiVM``).
 
 #: Path to the real DeFiVM.sol (relative to repo root).
 _DEFI_VM_SOL_PATH = Path(__file__).parent.parent / "pydefi" / "vm" / "DeFiVM.sol"
@@ -556,10 +555,11 @@ class MiniEVMContext:
         sender: Optional[bytes] = None,
         value: int = 0,
         gas: int = _CTX_DEFAULT_GAS,
+        params: Optional[list[bytes]] = None,
     ) -> EVMResult:
         """Execute a DeFiVM program via the deployed :class:`DeFiVM` contract.
 
-        Calls ``DeFiVM.execute(bytecode)``, which DELEGATECALLs to the
+        Calls ``DeFiVM.execute(bytecode, params)``, which DELEGATECALLs to the
         Analog-Labs EVM interpreter.  ``address(this)`` inside the program
         equals :attr:`program_executor`.  Storage mutations persist and are
         visible to subsequent :meth:`call` and :meth:`run_program` calls.
@@ -569,12 +569,15 @@ class MiniEVMContext:
             sender:    ``msg.sender`` for the call; defaults to :attr:`deployer`.
             value:     ETH value (in wei) forwarded to the execution.
             gas:       Gas limit (default :data:`_CTX_DEFAULT_GAS`).
+            params:    Optional list of 32-byte values exposed to the program
+                       via DeFiVM's transient-storage parameter channel
+                       (``TLOAD(i)`` reads ``params[i]``).  Defaults to ``[]``.
 
         Returns:
             :class:`EVMResult` with ``.output``, ``.gas_used``, ``.is_error``.
         """
         effective_sender = sender if sender is not None else self.deployer
-        execute_calldata = _DeFiVM.fns.execute(bytecode).data
+        execute_calldata = _DeFiVM.fns.execute(bytecode, params or []).data
         comp = self._apply_computation(
             to=self.program_executor,
             sender=effective_sender,

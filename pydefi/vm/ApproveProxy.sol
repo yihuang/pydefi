@@ -6,7 +6,7 @@ interface IERC20 {
 }
 
 interface IDeFiVM {
-    function execute(bytes calldata program) external payable;
+    function execute(bytes calldata program, bytes32[] calldata params) external payable;
 }
 
 /**
@@ -36,8 +36,10 @@ interface IDeFiVM {
  * Usage
  * -----
  * 1. User: ``token.approve(approveProxy, amount)``  — once per token/session.
- * 2. User: ``approveProxy.execute{value: v}(program, deposits)``
- *           where ``deposits`` lists the tokens and amounts to pull into DeFiVM.
+ * 2. User: ``approveProxy.execute{value: v}(program, deposits, params)``
+ *           where ``deposits`` lists the tokens and amounts to pull into
+ *           DeFiVM and ``params`` is forwarded to DeFiVM's transient-storage
+ *           parameter channel (the program reads via ``TLOAD(i)``).
  * 3. DeFiVM program operates on the deposited tokens (e.g. calls
  *    ``token.transfer(recipient, amount)`` from the VM's balance).
  */
@@ -69,13 +71,19 @@ contract ApproveProxy {
      * @param program  Raw EVM bytecode to execute (forwarded to DeFiVM).
      * @param deposits List of ERC-20 tokens and amounts to deposit into DeFiVM
      *                 before program execution.  May be empty.
+     * @param params   Runtime parameters forwarded to DeFiVM's transient-storage
+     *                 parameter channel.  May be empty.
      */
-    function execute(bytes calldata program, Deposit[] calldata deposits) external payable {
+    function execute(
+        bytes calldata program,
+        Deposit[] calldata deposits,
+        bytes32[] calldata params
+    ) external payable {
         IDeFiVM _vm = IDeFiVM(vm);
         for (uint256 i = 0; i < deposits.length; i++) {
             _safeTransferFrom(deposits[i].token, msg.sender, address(_vm), deposits[i].amount);
         }
-        _vm.execute{value: msg.value}(program);
+        _vm.execute{value: msg.value}(program, params);
     }
 
     /**

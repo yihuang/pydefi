@@ -710,7 +710,7 @@ class TestDAGProgramFork:
             min_final_out=1,
         ).build()
 
-        tx = await vm.functions.execute(bytecode).transact({"from": deployer})
+        tx = await vm.functions.execute(bytecode, []).transact({"from": deployer})
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
 
@@ -762,7 +762,7 @@ class TestDAGProgramFork:
         exec_bytecode = build_execution_program_for_dag(
             dag, amount_in=amount_in, vm_address=vm_address, recipient=deployer
         ).build()
-        tx = await vm.functions.execute(exec_bytecode).transact({"from": deployer})
+        tx = await vm.functions.execute(exec_bytecode, []).transact({"from": deployer})
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
         actual_out = (await ERC20.fns.balanceOf(deployer).call(w3, to=DAI_ADDR)) - bal_before
@@ -819,7 +819,7 @@ class TestDAGProgramFork:
         exec_bytecode = build_execution_program_for_dag(
             dag, amount_in=amount_in, vm_address=vm_address, recipient=deployer
         ).build()
-        tx = await vm.functions.execute(exec_bytecode).transact({"from": deployer})
+        tx = await vm.functions.execute(exec_bytecode, []).transact({"from": deployer})
         receipt = await w3.eth.get_transaction_receipt(tx)
         assert receipt["status"] == 1
         actual_out = (await ERC20.fns.balanceOf(deployer).call(w3, to=USDC_ADDR)) - bal_before

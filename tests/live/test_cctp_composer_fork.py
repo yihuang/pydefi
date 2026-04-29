@@ -27,6 +27,7 @@ import pytest
 import solcx
 from eth_contract import Contract
 from hexbytes import HexBytes
+from vyper.venom.basicblock import IRLiteral
 from web3 import AsyncWeb3, Web3
 from web3.exceptions import ContractLogicError, Web3RPCError
 
@@ -34,32 +35,24 @@ from pydefi.types import ZERO_ADDRESS, Address, Hash
 from pydefi.vm import Program
 from tests.live.sol_utils import compile_sol_file, deploy, ensure_solc
 
-#: Byte length of the composer's stack-push prologue.  CCTPComposer.sol prepends
-#: ``PUSH32 amountReceived`` (33B) + ``PUSH32 sourceDomain`` (33B) before our
-#: program runs.  Pass this to ``Program.build(prefix_length=...)`` so absolute
-#: label references inside the SSA-compiled program shift to match the runtime
-#: position of the embedded program.
-_CCTP_PROLOGUE_LEN = 66
-
 
 def _compose_program(target_address: Address, target_calldata: bytes, *, value: int = 0) -> bytes:
     """Build the DeFiVM program embedded as CCTP hookData.
 
-    The composer prologue leaves two values on the EVM stack before dispatch.
-    Venom's ``param`` returns them in push order (deepest first), so the
-    first call returns ``amountReceived`` and the second returns
-    ``sourceDomain``.
+    The composer stages bridged parameters in DeFiVM's transient store:
+    slot 0 = amountReceived, slot 1 = sourceDomain.  The program reads them
+    via TLOAD when needed.
 
     On CALL failure the outer ``receiveAndExecute`` reverts (matching legacy
     ``call(require_success=True)``).
     """
     prog = Program()
-    _amount = prog.builder.param()  # bottom of the two prologue PUSHes (pushed first)
-    _source_domain = prog.builder.param()  # top of the two (pushed second)
+    _amount = prog.builder.tload(IRLiteral(0))  # amountReceived
+    _source_domain = prog.builder.tload(IRLiteral(1))  # sourceDomain
     success = prog.call_raw(target_address, target_calldata, value=value)
     prog.assert_(success)
     prog.builder.stop()
-    return prog.build(prefix_length=_CCTP_PROLOGUE_LEN)
+    return prog.build()
 
 
 # ---------------------------------------------------------------------------

@@ -62,16 +62,6 @@ from vyper.codegen_venom.value import VyperValue
 from vyper.compiler.phases import generate_bytecode
 from vyper.compiler.settings import OptimizationLevel, VenomOptimizationFlags
 from vyper.evm.assembler.core import assembly_to_evm
-from vyper.evm.assembler.instructions import (
-    CONST,
-    DATA_ITEM,
-    PUSH_OFST,
-    PUSHLABEL,
-    DataHeader,
-)
-from vyper.evm.assembler.instructions import Label as _AsmLabel
-from vyper.evm.assembler.symbols import SYMBOL_SIZE
-from vyper.evm.opcodes import OPCODES
 from vyper.semantics.data_locations import DataLocation
 from vyper.semantics.types import BytesT, TupleT, VyperType
 from vyper.semantics.types.module import ModuleT
@@ -116,79 +106,6 @@ _DUMMY_MODULE_T: ModuleT = ModuleT(_dummy_ast)
 
 
 # ---------------------------------------------------------------------------
-# Internal helpers — assembly / bytecode post-processing
-# ---------------------------------------------------------------------------
-
-
-def _asm_item_size(item: object) -> int:
-    """Byte size that *item* contributes when assembled to EVM bytecode.
-
-    Mirrors :func:`vyper.evm.assembler.core._assembly_to_evm` for the asm item
-    types Venom emits.  Used to walk the asm list and locate byte positions of
-    label-resolved PUSH_OFST / PUSHLABEL instructions when post-processing the
-    bytecode.
-    """
-    if item == "DEBUG" or isinstance(item, (CONST, DataHeader)):
-        return 0
-    if isinstance(item, PUSHLABEL):
-        return 1 + SYMBOL_SIZE
-    if isinstance(item, _AsmLabel):
-        return 1  # JUMPDEST
-    if isinstance(item, PUSH_OFST):
-        if isinstance(item.label, _AsmLabel):
-            return 1 + SYMBOL_SIZE
-        raise NotImplementedError(f"_asm_item_size: CONSTREF PUSH_OFST not supported: {item!r}")
-    if isinstance(item, int):
-        return 1
-    if isinstance(item, str):
-        up = item.upper()
-        if up.startswith("PUSH") and up != "PUSH":
-            return 1
-        if up.startswith("DUP") or up.startswith("SWAP"):
-            return 1
-        if up in OPCODES:
-            return 1
-        raise ValueError(f"_asm_item_size: unrecognised asm string item: {item!r}")
-    if isinstance(item, DATA_ITEM):
-        if isinstance(item.data, bytes):
-            return len(item.data)
-        if isinstance(item.data, _AsmLabel):
-            return SYMBOL_SIZE
-        raise ValueError(f"_asm_item_size: unrecognised DATA_ITEM payload: {item.data!r}")
-    raise ValueError(f"_asm_item_size: unknown asm item type: {type(item).__name__}")
-
-
-def _shift_label_pushes(asm: list, bytecode: bytes, shift: int) -> bytes:
-    """Add *shift* to every label-resolved ``PUSH_OFST`` / ``PUSHLABEL`` immediate.
-
-    Used when the compiled program will be embedded inside a larger bytecode
-    buffer at runtime — e.g. CCTP / OFT composer contracts prepend a 66-byte
-    PUSH32 prologue before our program runs.  Venom resolves data-section and
-    jump-target labels to absolute byte offsets at compile time; if the
-    program is then shifted, those references read / jump to the wrong place.
-    Adding *shift* to each one keeps them correct.
-    """
-    if shift == 0:
-        return bytecode
-    buf = bytearray(bytecode)
-    pos = 0
-    for item in asm:
-        size = _asm_item_size(item)
-        if isinstance(item, (PUSH_OFST, PUSHLABEL)) and isinstance(getattr(item, "label", None), _AsmLabel):
-            imm_pos = pos + 1  # immediate sits after the 1-byte PUSH<SYMBOL_SIZE> opcode
-            current = int.from_bytes(buf[imm_pos : imm_pos + SYMBOL_SIZE], "big")
-            shifted = current + shift
-            if shifted >> (SYMBOL_SIZE * 8) != 0:
-                raise ValueError(
-                    f"_shift_label_pushes: shifted offset {shifted} does not fit in "
-                    f"{SYMBOL_SIZE} bytes (label={item.label!r}, shift={shift})"
-                )
-            buf[imm_pos : imm_pos + SYMBOL_SIZE] = shifted.to_bytes(SYMBOL_SIZE, "big")
-        pos += size
-    return bytes(buf)
-
-
-# ---------------------------------------------------------------------------
 # ProgramContext
 # ---------------------------------------------------------------------------
 
@@ -204,8 +121,8 @@ class ProgramContext(VenomCodegenContext):
     * Pythonic SSA helpers — :meth:`const`, :meth:`add`, :meth:`call_contract`,
       :meth:`assert_`, :meth:`return_word`, …
     * ABI helpers — :meth:`abi_encode`, :meth:`abi_decode`
-    * Bytecode emission — :meth:`build` (with ``prefix_length`` shift) and
-      :meth:`compile` (no shift, used by stdlib / abi tests)
+    * Bytecode emission — :meth:`build` and :meth:`compile` (the latter used
+      by stdlib / abi tests)
 
     Methods either:
 
@@ -772,7 +689,6 @@ class ProgramContext(VenomCodegenContext):
         *,
         optimize: OptimizationLevel = OptimizationLevel.GAS,
         disable_constant_folding: bool = False,
-        prefix_length: int = 0,
     ) -> bytes:
         """Compile the accumulated IR via Venom and return EVM bytecode.
 
@@ -790,13 +706,6 @@ class ProgramContext(VenomCodegenContext):
                 proves the assertion will fail.  Real programs whose
                 conditions depend on call returndata or other runtime data
                 are unaffected.
-            prefix_length: When the compiled program will be embedded at
-                byte offset *prefix_length* of a larger bytecode buffer at
-                runtime (e.g. the CCTP / OFT composer prepends a 66-byte
-                ``PUSH32`` prologue before our program), every absolute
-                label reference Venom resolved (``CODECOPY`` data-section
-                offsets, ``jmp`` / ``jnz`` targets) is shifted by
-                *prefix_length* so it stays correct.
         """
         if not self.builder.is_terminated():
             self.builder.stop()
@@ -814,18 +723,16 @@ class ProgramContext(VenomCodegenContext):
         run_passes_on(self._ir_ctx, flags, disable_mem_checks=True)
         asm = generate_assembly_experimental(self._ir_ctx, optimize=optimize)
         bytecode, _ = generate_bytecode(asm)
-        if prefix_length:
-            bytecode = _shift_label_pushes(asm, bytecode, prefix_length)
         return bytecode
 
     def compile(
         self,
         flags: VenomOptimizationFlags | None = None,
     ) -> bytes:
-        """Compile via VenomCompiler.generate_evm_assembly (no prefix-shift).
+        """Compile via VenomCompiler.generate_evm_assembly.
 
-        Used by stdlib / abi tests that don't need the optimisation flags or
-        ``prefix_length`` shift exposed by :meth:`build`.
+        Used by stdlib / abi tests that don't need the full optimisation
+        flag surface exposed by :meth:`build`.
         """
         if flags is None:
             flags = VenomOptimizationFlags()
