@@ -5,8 +5,6 @@ These utilities are used by multiple fork test files to avoid duplication.
 
 from __future__ import annotations
 
-import sys
-import traceback
 from pathlib import Path
 
 import solcx
@@ -15,35 +13,10 @@ from web3 import AsyncWeb3
 from pydefi.types import Address
 
 
-def _dbg(msg: str) -> None:
-    print(f"[solc-debug] {msg}", file=sys.stderr, flush=True)
-
-
 def ensure_solc(version: str = "0.8.24") -> None:
     """Install *version* of solc once (no-op if already installed)."""
-    try:
-        installed = solcx.get_installed_solc_versions()
-    except Exception as e:
-        _dbg(f"get_installed_solc_versions FAILED: {type(e).__name__}: {e}")
-        traceback.print_exc(file=sys.stderr)
-        raise
-    _dbg(
-        f"ensure_solc: requested={version} installed={[str(v) for v in installed]} folder={solcx.get_solcx_install_folder()}"
-    )
-    if version not in installed:
-        _dbg(f"ensure_solc: installing {version}")
-        try:
-            solcx.install_solc(version, show_progress=False)
-        except Exception as e:
-            _dbg(f"install_solc({version}) FAILED: {type(e).__name__}: {e}")
-            traceback.print_exc(file=sys.stderr)
-            raise
-        _dbg(f"ensure_solc: installed {version}")
-    try:
-        active = solcx.get_solc_version()
-        _dbg(f"ensure_solc: active solc version = {active}")
-    except Exception as e:
-        _dbg(f"get_solc_version (no-op probe) failed: {type(e).__name__}: {e}")
+    if version not in solcx.get_installed_solc_versions():
+        solcx.install_solc(version, show_progress=False)
 
 
 def compile_sol_file(path: Path, contract_name: str, *, evm_version: str = "cancun") -> dict:

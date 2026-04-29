@@ -21,8 +21,6 @@ Run with::
 
 from __future__ import annotations
 
-import sys
-import traceback
 from pathlib import Path
 
 import pytest
@@ -36,10 +34,6 @@ from web3.exceptions import ContractLogicError, Web3RPCError
 from pydefi.types import ZERO_ADDRESS, Address, Hash
 from pydefi.vm import Program
 from tests.live.sol_utils import compile_sol_file, deploy, ensure_solc
-
-
-def _dbg(msg: str) -> None:
-    print(f"[cctp-debug] {msg}", file=sys.stderr, flush=True)
 
 
 def _compose_program(target_address: Address, target_calldata: bytes, *, value: int = 0) -> bytes:
@@ -284,49 +278,20 @@ def make_cctp_v2_message(
 
 
 def _compile_cctp_composer() -> dict:
-    _dbg(f"compile_cctp_composer: {SOL_FILE}")
-    try:
-        out = compile_sol_file(SOL_FILE, "CCTPComposer")
-        _dbg("compile_cctp_composer: ok")
-        return out
-    except Exception as e:
-        _dbg(f"compile_cctp_composer FAILED: {type(e).__name__}: {e}")
-        traceback.print_exc(file=sys.stderr)
-        raise
+    return compile_sol_file(SOL_FILE, "CCTPComposer")
 
 
 def _compile_defi_vm() -> dict:
-    _dbg(f"compile_defi_vm: {DEFI_VM_SOL_FILE}")
-    try:
-        out = compile_sol_file(DEFI_VM_SOL_FILE, "DeFiVM")
-        _dbg("compile_defi_vm: ok")
-        return out
-    except Exception as e:
-        _dbg(f"compile_defi_vm FAILED: {type(e).__name__}: {e}")
-        traceback.print_exc(file=sys.stderr)
-        raise
+    return compile_sol_file(DEFI_VM_SOL_FILE, "DeFiVM")
 
 
 def _compile_mock_contracts() -> dict[str, dict]:
-    _dbg("compile_mock_contracts: ensure_solc 0.8.24")
-    try:
-        ensure_solc("0.8.24")
-    except Exception as e:
-        _dbg(f"ensure_solc FAILED: {type(e).__name__}: {e}")
-        traceback.print_exc(file=sys.stderr)
-        raise
-    _dbg("compile_mock_contracts: solcx.compile_source")
-    try:
-        result = solcx.compile_source(
-            _MOCK_CONTRACTS_SOL,
-            output_values=["abi", "bin"],
-            solc_version="0.8.24",
-        )
-    except Exception as e:
-        _dbg(f"compile_mock_contracts FAILED: {type(e).__name__}: {e}")
-        traceback.print_exc(file=sys.stderr)
-        raise
-    _dbg(f"compile_mock_contracts: ok keys={list(result.keys())}")
+    ensure_solc("0.8.24")
+    result = solcx.compile_source(
+        _MOCK_CONTRACTS_SOL,
+        output_values=["abi", "bin"],
+        solc_version="0.8.24",
+    )
     return {
         "MockUSDC": result["<stdin>:MockUSDC"],
         "MockMessageTransmitterV2": result["<stdin>:MockMessageTransmitterV2"],
@@ -336,17 +301,7 @@ def _compile_mock_contracts() -> dict[str, dict]:
 
 
 async def _deploy(w3: AsyncWeb3, compiled: dict, deployer: Address, *args) -> Address:
-    label = compiled.get("_label", "<unknown>") if isinstance(compiled, dict) else "<unknown>"
-    _dbg(f"_deploy: {label} from {deployer}")
-    try:
-        addr = await deploy(w3, compiled, deployer, *args)
-    except Exception as e:
-        _dbg(f"_deploy FAILED ({label}): {type(e).__name__}: {e}")
-        traceback.print_exc(file=sys.stderr)
-        raise
-    addr_hex = f"0x{addr.hex()}" if hasattr(addr, "hex") else str(addr)
-    _dbg(f"_deploy: {label} -> {addr_hex}")
-    return addr
+    return await deploy(w3, compiled, deployer, *args)
 
 
 # ---------------------------------------------------------------------------
@@ -382,24 +337,9 @@ def compiled_defi_vm():
 @pytest.fixture(scope="module")
 async def ctx(cctp_fork_w3, compiled_cctp_composer, compiled_mocks, compiled_defi_vm, interpreter_addr):
     """Deploy CCTPComposer, DeFiVM, and mock contracts once; return shared context."""
-    _dbg("ctx fixture: starting")
     w3 = cctp_fork_w3
-    try:
-        accounts = await w3.eth.accounts
-    except Exception as e:
-        _dbg(f"ctx: w3.eth.accounts FAILED: {type(e).__name__}: {e}")
-        traceback.print_exc(file=sys.stderr)
-        raise
+    accounts = await w3.eth.accounts
     deployer = accounts[0]
-    _dbg(f"ctx: deployer={deployer} interpreter_addr=0x{interpreter_addr.hex()}")
-
-    # Tag compiled artefacts so _deploy can log a meaningful label.
-    compiled_mocks["MockUSDC"].setdefault("_label", "MockUSDC")
-    compiled_mocks["MockMessageTransmitterV2"].setdefault("_label", "MockMessageTransmitterV2")
-    compiled_mocks["MockTarget"].setdefault("_label", "MockTarget")
-    compiled_mocks["RevertingTarget"].setdefault("_label", "RevertingTarget")
-    compiled_defi_vm.setdefault("_label", "DeFiVM")
-    compiled_cctp_composer.setdefault("_label", "CCTPComposer")
 
     # Deploy mock USDC token.
     usdc_address = await _deploy(w3, compiled_mocks["MockUSDC"], deployer)
@@ -430,7 +370,6 @@ async def ctx(cctp_fork_w3, compiled_cctp_composer, compiled_mocks, compiled_def
     # Deploy mock targets.
     target_address = await _deploy(w3, compiled_mocks["MockTarget"], deployer)
     reverting_address = await _deploy(w3, compiled_mocks["RevertingTarget"], deployer)
-    _dbg("ctx fixture: all deployments succeeded")
 
     target = Contract(abi=compiled_mocks["MockTarget"]["abi"], tx={"to": Web3.to_checksum_address(target_address)})
 

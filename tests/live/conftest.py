@@ -30,9 +30,7 @@ import asyncio
 import os
 import socket
 import subprocess
-import sys
 import time
-import traceback
 
 import aiohttp
 import pytest
@@ -43,19 +41,6 @@ from pydefi.rpc import get_w3
 from pydefi.types import Address, ChainId
 from tests.addrs import INTERPRETER_ADDR
 from tests.live.sol_utils import compile_interpreter_sync
-
-
-def _dbg(msg: str) -> None:
-    """Force-flushed stderr log so CI captures fixture-time diagnostics."""
-    print(f"[fork-debug] {msg}", file=sys.stderr, flush=True)
-
-
-def _scrub(text: str) -> str:
-    """Redact the configured RPC URL from a string before logging it."""
-    if ETH_RPC_URL and text:
-        return text.replace(ETH_RPC_URL, "<ETH_RPC_URL>")
-    return text
-
 
 # ---------------------------------------------------------------------------
 # Public RPC
@@ -77,37 +62,16 @@ async def _ensure_interpreter(w3: AsyncWeb3, deployer: str) -> Address:
     well-known address.  Otherwise compiles and deploys a fresh copy of
     ``Interpreter.sol`` so tests can run on any fork network.
     """
-    _dbg(f"_ensure_interpreter: checking code at 0x{INTERPRETER_ADDR.hex()}")
-    try:
-        code = await w3.eth.get_code(INTERPRETER_ADDR)
-    except Exception as e:
-        _dbg(f"_ensure_interpreter: get_code failed: {type(e).__name__}: {e}")
-        traceback.print_exc(file=sys.stderr)
-        raise
-    _dbg(f"_ensure_interpreter: code length = {len(code) if code else 0}")
+    code = await w3.eth.get_code(INTERPRETER_ADDR)
     if code and len(code) > 1:
         return INTERPRETER_ADDR
 
-    _dbg("_ensure_interpreter: compiling Interpreter.sol")
-    try:
-        compiled = await asyncio.to_thread(compile_interpreter_sync)
-    except Exception as e:
-        _dbg(f"_ensure_interpreter: compile failed: {type(e).__name__}: {e}")
-        traceback.print_exc(file=sys.stderr)
-        raise
+    compiled = await asyncio.to_thread(compile_interpreter_sync)
     key = "<stdin>:Interpreter"
-    _dbg("_ensure_interpreter: deploying Interpreter.sol")
-    try:
-        contract = w3.eth.contract(abi=compiled[key]["abi"], bytecode=compiled[key]["bin"])
-        tx_hash = await contract.constructor().transact({"from": deployer})
-        receipt = await w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60, poll_latency=0.1)
-    except Exception as e:
-        _dbg(f"_ensure_interpreter: deploy failed: {type(e).__name__}: {e}")
-        traceback.print_exc(file=sys.stderr)
-        raise
-    addr = Address(receipt["contractAddress"])
-    _dbg(f"_ensure_interpreter: deployed at 0x{addr.hex()}")
-    return addr
+    contract = w3.eth.contract(abi=compiled[key]["abi"], bytecode=compiled[key]["bin"])
+    tx_hash = await contract.constructor().transact({"from": deployer})
+    receipt = await w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60, poll_latency=0.1)
+    return Address(receipt["contractAddress"])
 
 
 # ---------------------------------------------------------------------------
@@ -124,15 +88,8 @@ async def interpreter_addr(fork_w3_module) -> Address:
     ``Interpreter.sol`` is compiled with py-solcx and deployed so that fork
     tests run on any network without needing a mainnet fork.
     """
-    _dbg("interpreter_addr fixture: fetching accounts")
-    try:
-        accounts = await fork_w3_module.eth.accounts
-    except Exception as e:
-        _dbg(f"interpreter_addr: accounts failed: {type(e).__name__}: {e}")
-        traceback.print_exc(file=sys.stderr)
-        raise
+    accounts = await fork_w3_module.eth.accounts
     deployer = accounts[0]
-    _dbg(f"interpreter_addr fixture: deployer={deployer}")
     return await _ensure_interpreter(fork_w3_module, deployer)
 
 
@@ -245,15 +202,11 @@ async def fork_w3_module():
     an entire test module to avoid per-test process startup costs."""
     import shutil
 
-    _dbg(f"fork_w3_module: ETH_RPC_URL set={bool(ETH_RPC_URL)} len={len(ETH_RPC_URL) if ETH_RPC_URL else 0}")
-    anvil_path = shutil.which("anvil")
-    _dbg(f"fork_w3_module: anvil path = {anvil_path}")
-    if anvil_path is None:
+    if shutil.which("anvil") is None:
         pytest.skip("anvil not found on PATH — install Foundry to run fork tests")
 
     port = _free_port()
     url = f"http://127.0.0.1:{port}"
-    _dbg(f"fork_w3_module: launching anvil on port {port}")
 
     proc = subprocess.Popen(
         [
@@ -262,28 +215,21 @@ async def fork_w3_module():
             ETH_RPC_URL,
             "--port",
             str(port),
+            "--silent",
         ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
 
     w3 = AsyncWeb3(AsyncWeb3.AsyncHTTPProvider(url))
     deadline = time.monotonic() + 30
-    last_err: Exception | None = None
     while time.monotonic() < deadline:
-        if proc.poll() is not None:
-            out = _scrub(proc.stdout.read() if proc.stdout else "")
-            _dbg(f"fork_w3_module: anvil exited early rc={proc.returncode}\n{out}")
-            pytest.fail(f"anvil exited rc={proc.returncode}: {out[-2000:]}")
         try:
             await w3.eth.chain_id
             break
-        except Exception as e:  # noqa: BLE001 — expected during startup
-            last_err = e
+        except Exception:  # noqa: BLE001 — expected during startup
             await asyncio.sleep(0.25)
     else:
-        _dbg(f"fork_w3_module: anvil never became ready; last error: {type(last_err).__name__}: {last_err}")
         proc.terminate()
         try:
             proc.wait(timeout=10)
@@ -293,21 +239,7 @@ async def fork_w3_module():
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 pass
-        out = ""
-        if proc.stdout is not None:
-            try:
-                out = proc.stdout.read() or ""
-            except Exception:
-                pass
-        _dbg(f"fork_w3_module: anvil stdout/stderr tail:\n{_scrub(out)[-4000:]}")
         pytest.fail("Anvil did not start within 60 seconds")
-
-    try:
-        chain_id = await w3.eth.chain_id
-        block = await w3.eth.block_number
-        _dbg(f"fork_w3_module: ready chain_id={chain_id} block={block}")
-    except Exception as e:
-        _dbg(f"fork_w3_module: post-ready probe failed: {type(e).__name__}: {e}")
 
     w3.codec = codec
     yield w3
