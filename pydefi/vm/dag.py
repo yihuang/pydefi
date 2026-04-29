@@ -3,8 +3,8 @@
 Walks a :class:`pydefi.types.RouteDAG` action tree and emits SSA IR into
 :class:`pydefi.vm.Program` for execution and quote programs.
 
-Each ``_build_*`` helper takes a ``Program`` plus ``amount_in: Value`` and
-returns ``amount_out: Value`` — values flow through Python rather than the
+Each ``_build_*`` helper takes a ``Program`` plus ``amount_in: Operand`` and
+returns ``amount_out: Operand`` — values flow through Python rather than the
 implicit EVM stack, so multi-leg splits become plain Python ``for`` loops.
 """
 
@@ -13,7 +13,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 
 from pydefi.types import ZERO_ADDRESS, Address, RouteAction, RouteDAG, RouteSplit, RouteSwap, SwapProtocol
-from pydefi.vm.context import Program, Value
+from pydefi.vm.context import Operand, Program
 from pydefi.vm.swap import (
     _build_route_swap,
     _build_v2_quote,
@@ -84,12 +84,12 @@ def build_quote_program_for_dag(
 
 def _build_dag_actions(
     prog: Program,
-    amount_in: Value,
+    amount_in: Operand,
     actions: Sequence[RouteAction],
     *,
     vm_address: str,
     terminal_recipient: str,
-) -> Value:
+) -> Operand:
     """Walk *actions* sequentially, threading the running amount through each."""
     current = amount_in
     last_index = len(actions) - 1
@@ -113,11 +113,11 @@ def _build_dag_actions(
 
 def _build_dag_quote_actions(
     prog: Program,
-    amount_in: Value,
+    amount_in: Operand,
     actions: Sequence[RouteAction],
     *,
     quoter_address: str | None,
-) -> Value:
+) -> Operand:
     current = amount_in
     for action in actions:
         if isinstance(action, RouteSwap):
@@ -142,15 +142,15 @@ def _build_dag_quote_actions(
 
 def _build_split(
     prog: Program,
-    total_in: Value,
+    total_in: Operand,
     split: RouteSplit,
-    build_leg: Callable[[Program, Value, Sequence[RouteAction]], Value],
-) -> Value:
+    build_leg: Callable[[Program, Operand, Sequence[RouteAction]], Operand],
+) -> Operand:
     """Compute a split: route fractions of *total_in* through each leg, sum the outputs.
 
     *build_leg* is a callback ``(prog, amount_in, actions) -> amount_out`` that
     emits IR for one leg's action list into *prog* and returns the leg's
-    output amount as a :class:`Value`.
+    output amount as a :class:`Operand`.
     """
     if len(split.legs) == 1:
         # Fast path: single leg gets the full input.
@@ -159,7 +159,7 @@ def _build_split(
     # Runtime guard: each leg computes total_in * fraction_bps, which must fit in uint256.
     prog.assert_le(total_in, _MAX_TOTAL_IN_FOR_SPLIT, "split: total_in overflow guard")
 
-    accum: Value = prog.const(0)
+    accum: Operand = prog.const(0)
     for leg in split.legs:
         leg_amount = prog.div(prog.mul(total_in, leg.fraction_bps), _BPS_DENOMINATOR)
         leg_out = build_leg(prog, leg_amount, leg.actions)

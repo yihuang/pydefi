@@ -8,8 +8,8 @@ from hexbytes import HexBytes
 
 from pydefi.types import BasePool, RouteDAG, SwapProtocol, Token
 from pydefi.vm import (
+    Operand,
     Program,
-    Value,
     build_execution_program_for_dag,
     build_quote_program_for_dag,
 )
@@ -49,7 +49,7 @@ def _run_assert_revert(prog: Program, **build_kwargs) -> bytes:
 class TestArithmetic:
     def test_const_returns_value(self):
         v = Program().const(42)
-        assert isinstance(v, Value)
+        assert isinstance(v, Operand)
 
     def test_add(self):
         p = Program()

@@ -1,6 +1,6 @@
 """DeFiVM ProgramContext — SSA-style builder over Vyper's Venom IR.
 
-A Pythonic value-flow API: methods that produce values return :class:`Value`
+A Pythonic value-flow API: methods that produce values return :class:`Operand`
 handles that the user threads through subsequent calls, and Venom's stack
 allocator generates DUP / SWAP / POP automatically.  Quick example::
 
@@ -90,17 +90,16 @@ if TYPE_CHECKING:
 # Public types
 # ---------------------------------------------------------------------------
 
-#: Handle to an SSA value (an EVM word produced at runtime).
-#:
-#: Returned by methods on :class:`ProgramContext` (e.g. :meth:`const`,
-#: :meth:`add`, :meth:`call_contract`).  Pass these handles as arguments
-#: to other ``ProgramContext`` methods to build a value-flow graph that
-#: Venom compiles to EVM bytecode.
-Value = Union[IRVariable, IRLiteral]
+#: A Venom operand — SSA handle (``IRVariable`` / ``IRLiteral``) or a plain
+#: ``int`` literal that Venom accepts directly.  Returned by value-producing
+#: methods on :class:`ProgramContext` and passed between internal helpers.
+Operand = Union[IRVariable, IRLiteral, int]
 
-#: Anything acceptable in a ``Value`` slot — runtime SSA handle, plain ``int``
-#: literal, or 20-byte ``bytes`` address (interpreted as big-endian uint256).
-ValueLike = Union[Value, int, bytes]
+#: Anything callers may pass in an :data:`Operand` slot — an :data:`Operand`,
+#: or 20-byte ``bytes`` interpreted as a big-endian address.  Coerced to
+#: :data:`Operand` once at the public-method boundary via
+#: :meth:`ProgramContext._to_operand`.
+ValueLike = Union[Operand, bytes]
 
 
 # ---------------------------------------------------------------------------
@@ -210,13 +209,13 @@ class ProgramContext(VenomCodegenContext):
 
     Methods either:
 
-    * **Produce a value** — return a :class:`Value` handle.  Examples:
+    * **Produce a value** — return a :class:`Operand` handle.  Examples:
       :meth:`const`, :meth:`add`, :meth:`call_contract`, :meth:`load_slot`.
     * **Have a side effect** — return ``None``.  Examples: :meth:`store_slot`,
       :meth:`assert_`, :meth:`stop`.
 
     Wherever a method takes a ``ValueLike`` argument, you may pass a
-    :class:`Value` returned by another method, a Python ``int`` (auto-wrapped
+    :class:`Operand` returned by another method, a Python ``int`` (auto-wrapped
     as a constant), or 20 raw bytes (interpreted as a big-endian address).
     """
 
@@ -268,10 +267,10 @@ class ProgramContext(VenomCodegenContext):
     # Operand coercion
     # ------------------------------------------------------------------
 
-    def _to_operand(self, v: ValueLike) -> Union[IRVariable, IRLiteral, int]:
+    def _to_operand(self, v: ValueLike) -> Operand:
         """Coerce a :class:`ValueLike` into something acceptable as a Venom operand.
 
-        * :class:`Value` (``IRVariable`` / ``IRLiteral``) → returned as-is.
+        * :class:`Operand` (``IRVariable`` / ``IRLiteral``) → returned as-is.
         * ``int``            → Venom accepts plain ``int`` literals directly.
         * ``bytes`` (len 20) → big-endian ``int`` (an EVM address).
         """
@@ -294,16 +293,16 @@ class ProgramContext(VenomCodegenContext):
     # Constants
     # ------------------------------------------------------------------
 
-    def const(self, n: int) -> Value:
-        """Return a :class:`Value` wrapping the constant uint256 *n*."""
+    def const(self, n: int) -> Operand:
+        """Return a :class:`Operand` wrapping the constant uint256 *n*."""
         if n < 0:
             raise ValueError(f"const: value must be non-negative, got {n}")
         if n >= 1 << 256:
             raise ValueError(f"const: value {n} does not fit in uint256")
         return IRLiteral(n)
 
-    def addr(self, a: "Address") -> Value:
-        """Return a :class:`Value` for a 20-byte EVM address."""
+    def addr(self, a: "Address") -> Operand:
+        """Return a :class:`Operand` for a 20-byte EVM address."""
         if len(a) != 20:
             raise ValueError(f"addr: address must be 20 bytes, got {len(a)}")
         return IRLiteral(int.from_bytes(bytes(a), "big"))
@@ -312,7 +311,7 @@ class ProgramContext(VenomCodegenContext):
     # Arithmetic
     # ------------------------------------------------------------------
 
-    def stack_param(self) -> Value:
+    def stack_param(self) -> Operand:
         """Declare a parameter supplied by the caller before the program starts.
 
         Used when the caller (e.g. the CCTP / OFT composer prologue in
@@ -330,11 +329,11 @@ class ProgramContext(VenomCodegenContext):
         """
         return self.builder.param()
 
-    def add(self, a: ValueLike, b: ValueLike) -> Value:
+    def add(self, a: ValueLike, b: ValueLike) -> Operand:
         """Wrapping uint256 ``a + b``."""
         return self.builder.add(self._to_operand(a), self._to_operand(b))
 
-    def sub(self, a: ValueLike, b: ValueLike) -> Value:
+    def sub(self, a: ValueLike, b: ValueLike) -> Operand:
         """Saturating ``max(a - b, 0)``.
 
         Implemented as ``(a - b) * (a >= b)`` since EVM SUB wraps modulo 2^256.
@@ -347,15 +346,15 @@ class ProgramContext(VenomCodegenContext):
         not_underflow = self.builder.iszero(self.builder.lt(a_op, b_op))
         return self.builder.mul(raw_diff, not_underflow)
 
-    def mul(self, a: ValueLike, b: ValueLike) -> Value:
+    def mul(self, a: ValueLike, b: ValueLike) -> Operand:
         """Wrapping uint256 ``a * b``."""
         return self.builder.mul(self._to_operand(a), self._to_operand(b))
 
-    def div(self, a: ValueLike, b: ValueLike) -> Value:
+    def div(self, a: ValueLike, b: ValueLike) -> Operand:
         """Unsigned ``a // b``; EVM DIV returns 0 when ``b == 0``."""
         return self.builder.div(self._to_operand(a), self._to_operand(b))
 
-    def mod(self, a: ValueLike, b: ValueLike) -> Value:
+    def mod(self, a: ValueLike, b: ValueLike) -> Operand:
         """Unsigned ``a % b``; EVM MOD returns 0 when ``b == 0``."""
         return self.builder.mod(self._to_operand(a), self._to_operand(b))
 
@@ -363,19 +362,19 @@ class ProgramContext(VenomCodegenContext):
     # Comparison / boolean
     # ------------------------------------------------------------------
 
-    def lt(self, a: ValueLike, b: ValueLike) -> Value:
+    def lt(self, a: ValueLike, b: ValueLike) -> Operand:
         """Unsigned ``1 if a < b else 0``."""
         return self.builder.lt(self._to_operand(a), self._to_operand(b))
 
-    def gt(self, a: ValueLike, b: ValueLike) -> Value:
+    def gt(self, a: ValueLike, b: ValueLike) -> Operand:
         """Unsigned ``1 if a > b else 0``."""
         return self.builder.gt(self._to_operand(a), self._to_operand(b))
 
-    def eq(self, a: ValueLike, b: ValueLike) -> Value:
+    def eq(self, a: ValueLike, b: ValueLike) -> Operand:
         """``1 if a == b else 0``."""
         return self.builder.eq(self._to_operand(a), self._to_operand(b))
 
-    def is_zero(self, a: ValueLike) -> Value:
+    def is_zero(self, a: ValueLike) -> Operand:
         """``1 if a == 0 else 0``."""
         return self.builder.iszero(self._to_operand(a))
 
@@ -383,23 +382,23 @@ class ProgramContext(VenomCodegenContext):
     # Bitwise
     # ------------------------------------------------------------------
 
-    def bit_and(self, a: ValueLike, b: ValueLike) -> Value:
+    def bit_and(self, a: ValueLike, b: ValueLike) -> Operand:
         return self.builder.and_(self._to_operand(a), self._to_operand(b))
 
-    def bit_or(self, a: ValueLike, b: ValueLike) -> Value:
+    def bit_or(self, a: ValueLike, b: ValueLike) -> Operand:
         return self.builder.or_(self._to_operand(a), self._to_operand(b))
 
-    def bit_xor(self, a: ValueLike, b: ValueLike) -> Value:
+    def bit_xor(self, a: ValueLike, b: ValueLike) -> Operand:
         return self.builder.xor(self._to_operand(a), self._to_operand(b))
 
-    def bit_not(self, a: ValueLike) -> Value:
+    def bit_not(self, a: ValueLike) -> Operand:
         return self.builder.not_(self._to_operand(a))
 
-    def shl(self, value: ValueLike, shift: ValueLike) -> Value:
+    def shl(self, value: ValueLike, shift: ValueLike) -> Operand:
         """``value << shift`` (Venom signature: ``shl(bits, val)``)."""
         return self.builder.shl(self._to_operand(shift), self._to_operand(value))
 
-    def shr(self, value: ValueLike, shift: ValueLike) -> Value:
+    def shr(self, value: ValueLike, shift: ValueLike) -> Operand:
         """``value >> shift`` (Venom signature: ``shr(bits, val)``)."""
         return self.builder.shr(self._to_operand(shift), self._to_operand(value))
 
@@ -414,7 +413,7 @@ class ProgramContext(VenomCodegenContext):
         """
         return self.builder.alloca(32)
 
-    def load_slot(self, slot: IRVariable) -> Value:
+    def load_slot(self, slot: IRVariable) -> Operand:
         """Load the 32-byte word stored at *slot*."""
         return self.builder.mload(slot)
 
@@ -426,19 +425,19 @@ class ProgramContext(VenomCodegenContext):
     # Self / context
     # ------------------------------------------------------------------
 
-    def self_addr(self) -> Value:
+    def self_addr(self) -> Operand:
         """EVM ``ADDRESS`` — the running program's own address."""
         return self.builder.address()
 
-    def gas_left(self) -> Value:
+    def gas_left(self) -> Operand:
         """EVM ``GAS`` — remaining gas."""
         return self.builder.gas()
 
-    def eth_balance(self, account: ValueLike) -> Value:
+    def eth_balance(self, account: ValueLike) -> Operand:
         """EVM ``BALANCE(account)`` — ETH balance of *account*."""
         return self.builder.balance(self._to_operand(account))
 
-    def erc20_balance_of(self, token: ValueLike, account: ValueLike) -> Value:
+    def erc20_balance_of(self, token: ValueLike, account: ValueLike) -> Operand:
         """ERC-20 ``token.balanceOf(account)`` via STATICCALL.
 
         Reverts if the staticcall fails.  Use :meth:`eth_balance` for native
@@ -615,7 +614,7 @@ class ProgramContext(VenomCodegenContext):
         *args: object,
         value: ValueLike = 0,
         gas: ValueLike | None = None,
-    ) -> Value:
+    ) -> Operand:
         """Emit a CALL with calldata built from a :class:`ContractFunction`.
 
         *fn* may also be a human-readable signature string
@@ -626,14 +625,14 @@ class ProgramContext(VenomCodegenContext):
 
         Each arg in *args* may be a plain Python constant (``int``, address
         ``bytes``/``str``, ``bool``, nested ``tuple``/``list``) or a runtime
-        :class:`Value` (``IRVariable``/``IRLiteral``); both are encoded
+        :class:`Operand` (``IRVariable``/``IRLiteral``); both are encoded
         uniformly by :meth:`abi_encode`.
 
         For raw pre-encoded calldata + ``patches`` overlays, use
         :meth:`call_raw` instead.
 
         Returns:
-            A :class:`Value` holding the CALL success flag.
+            A :class:`Operand` holding the CALL success flag.
         """
         if isinstance(fn, str):
             normalised = fn if fn.lstrip().startswith("function ") else "function " + fn
@@ -669,7 +668,7 @@ class ProgramContext(VenomCodegenContext):
         value: ValueLike = 0,
         gas: ValueLike | None = None,
         patches: Mapping[int, ValueLike] | None = None,
-    ) -> Value:
+    ) -> Operand:
         """Emit a CALL with pre-encoded calldata and optional runtime patches.
 
         Args:
@@ -683,7 +682,7 @@ class ProgramContext(VenomCodegenContext):
                        calldata buffer at the given offset before CALL.
 
         Returns:
-            A :class:`Value` holding the CALL success flag (1 on success,
+            A :class:`Operand` holding the CALL success flag (1 on success,
             0 on failure).  Use :meth:`assert_` to revert on failure.
         """
         base_fp, blen = self._alloc_calldata(calldata)
@@ -714,7 +713,7 @@ class ProgramContext(VenomCodegenContext):
     # Returndata
     # ------------------------------------------------------------------
 
-    def returndata_word(self, offset: int = 0) -> Value:
+    def returndata_word(self, offset: int = 0) -> Operand:
         """Read 32 bytes from the last call's returndata at *offset*."""
         if offset < 0:
             raise ValueError(f"returndata_word: offset must be non-negative, got {offset}")
@@ -740,33 +739,35 @@ class ProgramContext(VenomCodegenContext):
 
     def assert_ge(self, a: ValueLike, b: ValueLike, msg: str = "") -> None:
         """Revert if ``a < b`` (i.e. require ``a >= b``)."""
+        a_op = self._to_operand(a)
+        b_op = self._to_operand(b)
         if msg:
-            self._invoke_assert_ge(a, b, msg)
+            self._invoke_assert_ge(a_op, b_op, msg)
             return
-        not_lt = self.builder.iszero(self.builder.lt(self._to_operand(a), self._to_operand(b)))
+        not_lt = self.builder.iszero(self.builder.lt(a_op, b_op))
         self.builder.assert_(not_lt)
 
     def assert_le(self, a: ValueLike, b: ValueLike, msg: str = "") -> None:
         """Revert if ``a > b`` (i.e. require ``a <= b``) — ``assert_ge(b, a)``."""
         self.assert_ge(b, a, msg)
 
-    def _invoke_revert_if(self, cond: ValueLike, msg: str) -> None:
+    def _invoke_revert_if(self, cond: Operand, msg: str) -> None:
         from pydefi.vm.stdlib import encode_msg
 
         msg_len, msg_word = encode_msg(msg)
         self.builder.invoke(
             IRLabel("stdlib_revert_if"),
-            [self._to_operand(cond), IRLiteral(msg_len), IRLiteral(msg_word)],
+            [cond, IRLiteral(msg_len), IRLiteral(msg_word)],
             returns=0,
         )
 
-    def _invoke_assert_ge(self, a: ValueLike, b: ValueLike, msg: str) -> None:
+    def _invoke_assert_ge(self, a: Operand, b: Operand, msg: str) -> None:
         from pydefi.vm.stdlib import encode_msg
 
         msg_len, msg_word = encode_msg(msg)
         self.builder.invoke(
             IRLabel("stdlib_assert_ge"),
-            [self._to_operand(a), self._to_operand(b), IRLiteral(msg_len), IRLiteral(msg_word)],
+            [a, b, IRLiteral(msg_len), IRLiteral(msg_word)],
             returns=0,
         )
 

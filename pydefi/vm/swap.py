@@ -2,7 +2,7 @@
 
 V2 / V3 hops (quote and execution) emitted as SSA IR over
 :class:`pydefi.vm.Program`.  Each ``_build_*`` helper takes a
-:class:`Value` representing ``amount_in`` and returns a :class:`Value` for
+:class:`Operand` representing ``amount_in`` and returns a :class:`Operand` for
 ``amount_out``, threading the result through subsequent calls in plain
 Python instead of via an implicit EVM stack contract.
 """
@@ -17,7 +17,7 @@ from eth_utils import keccak
 
 from pydefi.abi.amm import UNISWAP_V2_PAIR, UNISWAP_V3_POOL, UNISWAP_V3_QUOTER_V2
 from pydefi.types import Address, RouteDAG, RouteSwap, SwapProtocol, SwapRoute, SwapTransaction
-from pydefi.vm.context import Program, Value
+from pydefi.vm.context import Operand, Program
 
 # ---------------------------------------------------------------------------
 # Pool / quoter / token function ABI signatures (sourced from pydefi.abi)
@@ -111,8 +111,8 @@ class SwapHop:
 # ---------------------------------------------------------------------------
 
 
-def _build_v3_pool_swap(prog: Program, amount_in: Value, hop: SwapHop) -> Value:
-    """V3 pool direct swap. Returns ``amount_out`` as an SSA :class:`Value`."""
+def _build_v3_pool_swap(prog: Program, amount_in: Operand, hop: SwapHop) -> Operand:
+    """V3 pool direct swap. Returns ``amount_out`` as an SSA :class:`Operand`."""
     sqrt_price_limit_x96 = hop.sqrt_price_limit_x96 or (_SQRT_PRICE_MIN if hop.zero_for_one else _SQRT_PRICE_MAX)
     callback_data = encode_v3_callback_data(hop.token_in)
 
@@ -135,7 +135,7 @@ def _build_v3_pool_swap(prog: Program, amount_in: Value, hop: SwapHop) -> Value:
     return prog.add(prog.bit_not(raw_delta), 1)
 
 
-def _build_v2_compute_out(prog: Program, amount_in: Value, hop: SwapHop, fee_num: int) -> Value:
+def _build_v2_compute_out(prog: Program, amount_in: Operand, hop: SwapHop, fee_num: int) -> Operand:
     """Compute V2 ``amountOut`` from ``getReserves()`` (no transfer)."""
     success = prog.call_contract(hop.pool, _V2_PAIR_GET_RESERVES_FN)
     prog.assert_(success)
@@ -157,14 +157,14 @@ def _build_v2_compute_out(prog: Program, amount_in: Value, hop: SwapHop, fee_num
     return prog.div(numerator, denominator)
 
 
-def _build_v2_quote(prog: Program, amount_in: Value, hop: SwapHop) -> Value:
+def _build_v2_quote(prog: Program, amount_in: Operand, hop: SwapHop) -> Operand:
     """V2 pair quote — view-only."""
     if not 0 <= hop.fee_bps < 10000:
         raise ValueError(f"hop.fee_bps must be in basis points within [0, 10000), got {hop.fee_bps}")
     return _build_v2_compute_out(prog, amount_in, hop, 10000 - hop.fee_bps)
 
 
-def _build_v3_quote(prog: Program, amount_in: Value, hop: SwapHop, quoter_address: Address) -> Value:
+def _build_v3_quote(prog: Program, amount_in: Operand, hop: SwapHop, quoter_address: Address) -> Operand:
     """V3 pool quote — calls ``quoter.quoteExactInput`` (view-only)."""
     packed_path = encode_v3_path([hop.token_in, hop.token_out], [hop.fee_bps * 100])
     success = prog.call_contract(
@@ -177,8 +177,8 @@ def _build_v3_quote(prog: Program, amount_in: Value, hop: SwapHop, quoter_addres
     return prog.returndata_word(0)
 
 
-def _build_v2_direct_swap(prog: Program, amount_in: Value, hop: SwapHop) -> Value:
-    """V2 pair direct swap.  Returns ``amount_out`` as an SSA :class:`Value`."""
+def _build_v2_direct_swap(prog: Program, amount_in: Operand, hop: SwapHop) -> Operand:
+    """V2 pair direct swap.  Returns ``amount_out`` as an SSA :class:`Operand`."""
     if not 0 <= hop.fee_bps < 10000:
         raise ValueError(f"hop.fee_bps must be in basis points within [0, 10000), got {hop.fee_bps}")
 
@@ -252,7 +252,7 @@ def _swap_hop_from_route_swap(swap_action: RouteSwap, *, recipient: Address) -> 
     )
 
 
-def _build_route_swap(prog: Program, amount_in: Value, action: RouteSwap, recipient: Address) -> Value:
+def _build_route_swap(prog: Program, amount_in: Operand, action: RouteSwap, recipient: Address) -> Operand:
     hop = _swap_hop_from_route_swap(action, recipient=recipient)
     if hop.protocol == SwapProtocol.UNISWAP_V3:
         return _build_v3_pool_swap(prog, amount_in, hop)
