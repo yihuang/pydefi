@@ -259,7 +259,7 @@ class TestAssert:
 
         def size(n: int, opt: OptimizationLevel) -> int:
             p = Program()
-            cond = p.stack_param()  # runtime value — SCCP can't elide
+            cond = p.builder.param()  # runtime value — SCCP can't elide
             for _ in range(n):
                 p.assert_(cond, "msg")
             p.return_word(p.const(7))

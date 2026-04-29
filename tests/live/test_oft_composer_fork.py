@@ -46,15 +46,15 @@ def _start_program() -> tuple[Program, "object", "object"]:
     """Start a compose program and consume the two prologue stack params.
 
     The OFTComposer prologue pushes ``amountLD`` then ``_from`` onto the stack
-    (so ``_from`` is at TOS).  Venom's ``stack_param`` returns them in push
+    (so ``_from`` is at TOS).  Venom's ``param`` returns them in push
     order (deepest first), so the first call returns ``amountLD`` and the
     second returns ``_from``.
 
     Returns ``(prog, from_val, amount_val)``.
     """
     prog = Program()
-    amount_val = prog.stack_param()  # bottom = amountLD (pushed first)
-    from_val = prog.stack_param()  # top = _from (pushed second)
+    amount_val = prog.builder.param()  # bottom = amountLD (pushed first)
+    from_val = prog.builder.param()  # top = _from (pushed second)
     return prog, from_val, amount_val
 
 

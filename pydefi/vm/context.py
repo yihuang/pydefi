@@ -301,33 +301,15 @@ class ProgramContext(VenomCodegenContext):
             raise ValueError(f"const: value {n} does not fit in uint256")
         return IRLiteral(n)
 
-    def addr(self, a: "Address") -> Operand:
+    def addr(self, a: Address) -> Operand:
         """Return a :class:`Operand` for a 20-byte EVM address."""
         if len(a) != 20:
             raise ValueError(f"addr: address must be 20 bytes, got {len(a)}")
-        return IRLiteral(int.from_bytes(bytes(a), "big"))
+        return IRLiteral(int.from_bytes(a, "big"))
 
     # ------------------------------------------------------------------
     # Arithmetic
     # ------------------------------------------------------------------
-
-    def stack_param(self) -> Operand:
-        """Declare a parameter supplied by the caller before the program starts.
-
-        Used when the caller (e.g. the CCTP / OFT composer prologue in
-        ``DeFiVM.sol``) supplies values to the user program before
-        dispatching to it.  Each call declares one parameter in **Venom
-        ``param`` order**: the first call returns the first parameter the
-        prologue supplied, the second call returns the second, and so on.
-        Callers must therefore request ``stack_param()`` values in the
-        same order the prologue supplied them.
-
-        Lowers to Venom's ``param`` instruction (no bytecode emitted) — a
-        dataflow marker; how the variable is materialised is up to the
-        Venom allocator.  Must be called before emitting any other
-        value-producing instruction in the entry basic block.
-        """
-        return self.builder.param()
 
     def add(self, a: ValueLike, b: ValueLike) -> Operand:
         """Wrapping uint256 ``a + b``."""
@@ -800,7 +782,7 @@ class ProgramContext(VenomCodegenContext):
     def build(
         self,
         *,
-        optimize: OptimizationLevel = OptimizationLevel.GAS,  # type: ignore[valid-type]
+        optimize: OptimizationLevel = OptimizationLevel.GAS,
         disable_constant_folding: bool = False,
         prefix_length: int = 0,
     ) -> bytes:
@@ -832,7 +814,7 @@ class ProgramContext(VenomCodegenContext):
             self.builder.stop()
 
         if disable_constant_folding:
-            flags = VenomOptimizationFlags(  # type: ignore[call-arg]
+            flags = VenomOptimizationFlags(
                 level=optimize,
                 disable_sccp=True,
                 disable_algebraic_optimization=True,
@@ -840,10 +822,10 @@ class ProgramContext(VenomCodegenContext):
                 disable_branch_optimization=True,
             )
         else:
-            flags = VenomOptimizationFlags(level=optimize)  # type: ignore[call-arg]
-        run_passes_on(self._ir_ctx, flags, disable_mem_checks=True)  # type: ignore[misc]
-        asm = generate_assembly_experimental(self._ir_ctx, optimize=optimize)  # type: ignore[misc]
-        bytecode, _ = generate_bytecode(asm)  # type: ignore[misc]
+            flags = VenomOptimizationFlags(level=optimize)
+        run_passes_on(self._ir_ctx, flags, disable_mem_checks=True)
+        asm = generate_assembly_experimental(self._ir_ctx, optimize=optimize)
+        bytecode, _ = generate_bytecode(asm)
         if prefix_length:
             bytecode = _shift_label_pushes(asm, bytecode, prefix_length)
         return bytecode

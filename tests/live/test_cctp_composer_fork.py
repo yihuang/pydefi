@@ -46,7 +46,7 @@ def _compose_program(target_address: Address, target_calldata: bytes, *, value: 
     """Build the DeFiVM program embedded as CCTP hookData.
 
     The composer prologue leaves two values on the EVM stack before dispatch.
-    Venom's ``stack_param`` returns them in push order (deepest first), so the
+    Venom's ``param`` returns them in push order (deepest first), so the
     first call returns ``amountReceived`` and the second returns
     ``sourceDomain``.
 
@@ -54,8 +54,8 @@ def _compose_program(target_address: Address, target_calldata: bytes, *, value: 
     ``call(require_success=True)``).
     """
     prog = Program()
-    _amount = prog.stack_param()  # bottom of the two prologue PUSHes (pushed first)
-    _source_domain = prog.stack_param()  # top of the two (pushed second)
+    _amount = prog.builder.param()  # bottom of the two prologue PUSHes (pushed first)
+    _source_domain = prog.builder.param()  # top of the two (pushed second)
     success = prog.call_raw(target_address, target_calldata, value=value)
     prog.assert_(success)
     prog.stop()
