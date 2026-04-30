@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
+import "../vm/DEXCallbackRouter.sol";
+import "../vm/InterpreterRunner.sol";
+import "../vm/TransientReentrancyGuard.sol";
+
 /**
  * @title CCTPComposer
  * @notice Circle CCTP v2 compose receiver that mints USDC via CCTP v2 and then
@@ -57,10 +61,19 @@ pragma solidity ^0.8.24;
  *
  * Minimum message length: 376 bytes (header=148 + fixed BurnMessageV2=228).
  *
- * Parameters passed to the program (transient storage)
- * -----------------------------------------------------
- * Bridged parameters are exposed via DeFiVM's EIP-1153 transient-storage
- * channel; the program reads them with ``TLOAD(slot)``::
+ * Execution model
+ * ---------------
+ * The composer DELEGATECALLs a pre-deployed EVM interpreter (Analog-Labs by
+ * default) directly with the program as calldata.  The program runs in this
+ * composer's context, so:
+ *
+ *   • ``address(this)`` inside the program == this composer's address.
+ *   • External CALLs originate from this composer.
+ *   • Transient storage operations (TSTORE / TLOAD) read/write this
+ *     composer's transient namespace.
+ *
+ * Bridged parameters are staged in this composer's transient slots before
+ * the DELEGATECALL; the program reads them with ``TLOAD(slot)``::
  *
  *   slot 0 = amountReceived  (= amount - feeExecuted, USDC minted to this contract)
  *   slot 1 = sourceDomain    (CCTP domain ID of the source chain)
@@ -74,23 +87,21 @@ pragma solidity ^0.8.24;
  *   amount_received = prog.builder.tload(IRLiteral(0))
  *   source_domain   = prog.builder.tload(IRLiteral(1))
  *   ; ... use amount_received / source_domain anywhere later ...
+ *
+ * Reentrancy
+ * ----------
+ * ``receiveAndExecute`` is guarded by ``TransientReentrancyGuard`` — the
+ * limitation documented there still applies: the program runs in this
+ * composer's context and can ``TSTORE`` the lock slot, so the guard is
+ * defense-in-depth against external re-entry, not a sandbox against the
+ * program itself.
  */
-
-// ---------------------------------------------------------------------------
-// IDeFiVM
-// ---------------------------------------------------------------------------
-
-/// @notice Minimal interface for staging params and executing a DeFiVM program.
-interface IDeFiVM {
-    function setParams(bytes32[] calldata params) external;
-    function execute(bytes calldata program) external payable;
-}
 
 // ---------------------------------------------------------------------------
 // CCTPComposer
 // ---------------------------------------------------------------------------
 
-contract CCTPComposer {
+contract CCTPComposer is DEXCallbackRouter, TransientReentrancyGuard, InterpreterRunner {
     // -----------------------------------------------------------------------
     // CCTP v2 message offsets
     // -----------------------------------------------------------------------
@@ -164,9 +175,6 @@ contract CCTPComposer {
     /// @notice The USDC token contract address on this chain.
     address public immutable usdc;
 
-    /// @notice The DeFiVM contract used to execute compose programs.
-    IDeFiVM public immutable vm;
-
     /// @notice Owner address — may rescue stuck funds and transfer ownership.
     address public owner;
 
@@ -177,13 +185,17 @@ contract CCTPComposer {
     /**
      * @param _messageTransmitter  The Circle CCTP v2 ``MessageTransmitterV2`` address.
      * @param _usdc                USDC token address on this chain.
-     * @param _vm                  The DeFiVM contract address.
+     * @param _interpreter         EVM interpreter to DELEGATECALL (see
+     *                             :class:`InterpreterRunner`); pass
+     *                             ``address(0)`` for the well-known
+     *                             pre-deployed Analog-Labs interpreter.
      * @param _owner               Address that may call rescue functions and transfer ownership.
      */
-    constructor(address _messageTransmitter, address _usdc, address _vm, address _owner) {
+    constructor(address _messageTransmitter, address _usdc, address _interpreter, address _owner)
+        InterpreterRunner(_interpreter)
+    {
         messageTransmitter = _messageTransmitter;
         usdc = _usdc;
-        vm = IDeFiVM(_vm);
         owner = _owner;
     }
 
@@ -248,10 +260,14 @@ contract CCTPComposer {
      *    ``hookData`` (= the DeFiVM program) from the CCTP v2 message.
      * 3. Call ``MessageTransmitterV2.receiveMessage(message, attestation)`` to
      *    mint ``amount - feeExecuted`` USDC to this contract.
-     * 4. Stage bridged parameters in DeFiVM's transient-storage channel.
-     * 5. Transfer the minted USDC to the DeFiVM contract.
-     * 6. Execute the program via DeFiVM, forwarding any ETH supplied with
-     *    this call.
+     * 4. Stage bridged parameters in this composer's transient-storage slots
+     *    (slot 0 = amountReceived, slot 1 = sourceDomain).
+     * 5. DELEGATECALL the EVM interpreter with the program as calldata.  The
+     *    program runs in this composer's context — USDC stays here and the
+     *    program reads params via ``TLOAD`` from this contract's transient
+     *    namespace.
+     * 6. Clear the staged param slots so a subsequent compose call in the
+     *    same tx starts clean.
      *
      * Transient-storage layout exposed to the program:
      *   slot 0 = amountReceived  (USDC received = amount - feeExecuted, 6 dec.)
@@ -260,8 +276,11 @@ contract CCTPComposer {
      * @param message      Raw CCTP v2 message bytes (``MessageSent`` event data).
      * @param attestation  Circle attestation bytes for the message.
      */
-    function receiveAndExecute(bytes calldata message, bytes calldata attestation) external payable {
-        // Validate minimum message length.
+    function receiveAndExecute(bytes calldata message, bytes calldata attestation)
+        external
+        payable
+        nonReentrant
+    {
         require(message.length >= MIN_MESSAGE_LENGTH, "CCTPComposer: message too short");
 
         // Decode bridged parameters from the CCTP v2 message.
@@ -271,7 +290,7 @@ contract CCTPComposer {
         uint256 feeExecuted = uint256(bytes32(message[FEE_EXECUTED_OFFSET:FEE_EXECUTED_OFFSET + 32]));
 
         // The DeFiVM program is embedded as hookData in the BurnMessageV2 body.
-        bytes memory program = message[HOOK_DATA_OFFSET:];
+        bytes calldata program = message[HOOK_DATA_OFFSET:];
 
         // Mint USDC to this contract by processing the CCTP v2 message.
         // MessageTransmitterV2 enforces that mintRecipient == address(this)
@@ -284,31 +303,18 @@ contract CCTPComposer {
         // Actual USDC minted = amount - feeExecuted (relayer fee deducted).
         uint256 amountReceived = amount - feeExecuted;
 
-        // Transfer the minted USDC from this composer to DeFiVM FIRST, so the
-        // following setParams + execute pair runs back-to-back with no
-        // intervening external call.  This closes the reentrancy window where
-        // a malicious token could re-enter ``vm.setParams`` and overwrite our
-        // staged values before ``execute`` consumes them.
-        if (amountReceived > 0) {
-            (bool tok, bytes memory ret) = usdc.call(
-                abi.encodeWithSignature("transfer(address,uint256)", address(vm), amountReceived)
-            );
-            require(tok && (ret.length == 0 || abi.decode(ret, (bool))), "CCTPComposer: usdc transfer failed");
+        // Stage bridged params in our own transient storage, then DELEGATECALL
+        // the interpreter so the program runs in this composer's context and
+        // reads them via TLOAD.
+        assembly {
+            tstore(0, amountReceived)
+            tstore(1, sourceDomain)
         }
-
-        // Stage bridged parameters in DeFiVM's transient store, then execute
-        // immediately — no external call between these two so any reentrant
-        // setParams overwrite would have happened inside the transfer above
-        // and is itself overwritten here.
-        //   slot 0 = amountReceived  → program reads via TLOAD(0)
-        //   slot 1 = sourceDomain    → program reads via TLOAD(1)
-        bytes32[] memory params = new bytes32[](2);
-        params[0] = bytes32(amountReceived);
-        params[1] = bytes32(uint256(sourceDomain));
-        vm.setParams(params);
-
-        // Execute via DeFiVM, forwarding any ETH received with this call.
-        vm.execute{value: msg.value}(program);
+        _runProgram(program);
+        assembly {
+            tstore(0, 0)
+            tstore(1, 0)
+        }
 
         emit Composed(sourceDomain, nonce, amountReceived);
     }

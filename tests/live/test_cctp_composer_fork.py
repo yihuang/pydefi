@@ -33,7 +33,7 @@ from web3.exceptions import ContractLogicError, Web3RPCError
 
 from pydefi.types import ZERO_ADDRESS, Address, Hash
 from pydefi.vm import Program
-from tests.live.sol_utils import compile_sol_file, deploy, ensure_solc
+from tests.live.sol_utils import compile_sol_file, deploy, deploy_mock_v3_pool, ensure_solc
 
 
 def _compose_program(target_address: Address, target_calldata: bytes, *, value: int = 0) -> bytes:
@@ -347,17 +347,18 @@ async def ctx(cctp_fork_w3, compiled_cctp_composer, compiled_mocks, compiled_def
     # Deploy mock MessageTransmitterV2 (mints USDC on receiveMessage).
     transmitter_address = await _deploy(w3, compiled_mocks["MockMessageTransmitterV2"], deployer, usdc_address)
 
-    # Deploy DeFiVM.
+    # Deploy DeFiVM (kept for tests that exercise DeFiVM.execute directly).
     vm_address = await _deploy(w3, compiled_defi_vm, deployer, interpreter_addr)
 
-    # Deploy CCTPComposer.
+    # Deploy CCTPComposer.  Composer DELEGATECALLs the interpreter directly,
+    # so it takes the interpreter address (not the VM address).
     composer_address = await _deploy(
         w3,
         compiled_cctp_composer,
         deployer,
         transmitter_address,  # _messageTransmitter
         usdc_address,  # _usdc
-        vm_address,  # _vm
+        interpreter_addr,  # _interpreter
         deployer,  # _owner
     )
 
@@ -426,11 +427,12 @@ class TestCCTPComposerBasic:
     """Basic receiveAndExecute flow tests."""
 
     async def test_receive_and_execute_basic_call(self, ctx):
-        """receiveAndExecute mints USDC and executes the DeFiVM program from hookData.
+        """receiveAndExecute mints USDC and executes the program from hookData.
 
-        The program (embedded as hookData in the CCTP v2 message) calls
-        MockTarget.execute() — verifies the full pipeline:
-        CCTP mint → token transfer to DeFiVM → program execution.
+        Composer DELEGATECALLs the interpreter directly, so the program runs
+        in the composer's context.  The minted USDC stays at the composer
+        unless the program explicitly transfers it elsewhere — this program
+        only calls MockTarget.execute() and does not move USDC.
         """
         w3 = ctx["w3"]
         composer = ctx["composer"]
@@ -438,9 +440,7 @@ class TestCCTPComposerBasic:
         deployer = ctx["deployer"]
         target = ctx["target"]
         target_address = ctx["target_address"]
-        vm_address = ctx["vm_address"]
         usdc = ctx["usdc"]
-        ctx["usdc_address"]
 
         amount = 1000 * 10**6  # 1000 USDC
 
@@ -452,7 +452,7 @@ class TestCCTPComposerBasic:
         )
 
         pre_call_count = await target.fns.callCount().call(w3)
-        pre_vm = await usdc.fns.balanceOf(vm_address).call(w3)
+        pre_composer = await usdc.fns.balanceOf(composer_address).call(w3)
 
         tx = await composer.fns.receiveAndExecute(message, attestation).transact(w3, deployer)
         receipt = tx
@@ -461,22 +461,18 @@ class TestCCTPComposerBasic:
         # Verify target was called.
         assert await target.fns.callCount().call(w3) == pre_call_count + 1
 
-        # Composer transferred tokens to DeFiVM; composer has zero residual USDC.
-        assert await usdc.fns.balanceOf(composer_address).call(w3) == 0
-        # DeFiVM gained exactly amount USDC (program did not spend them).
-        assert await usdc.fns.balanceOf(vm_address).call(w3) == pre_vm + amount
+        # USDC stays at the composer (program did not transfer it).
+        assert await usdc.fns.balanceOf(composer_address).call(w3) == pre_composer + amount
 
     async def test_fee_deduction(self, ctx):
-        """amountReceived = amount - feeExecuted; that is what the prologue pushes."""
+        """amountReceived = amount - feeExecuted; staged in transient slot 0."""
         w3 = ctx["w3"]
         composer = ctx["composer"]
         composer_address = ctx["composer_address"]
         deployer = ctx["deployer"]
         target = ctx["target"]
         target_address = ctx["target_address"]
-        vm_address = ctx["vm_address"]
         usdc = ctx["usdc"]
-        ctx["usdc_address"]
 
         amount = 1000 * 10**6  # 1000 USDC
         fee = 1 * 10**6  # 1 USDC relayer fee
@@ -489,15 +485,13 @@ class TestCCTPComposerBasic:
             HexBytes(composer_address), amount, hook_data=HexBytes(program), nonce=2, fee_executed=fee
         )
 
-        pre_vm = await usdc.fns.balanceOf(vm_address).call(w3)
+        pre_composer = await usdc.fns.balanceOf(composer_address).call(w3)
         tx = await composer.fns.receiveAndExecute(message, attestation).transact(w3, deployer)
         receipt = tx
         assert receipt["status"] == 1
 
-        # DeFiVM received only amountReceived = amount - fee.
-        assert await usdc.fns.balanceOf(vm_address).call(w3) == pre_vm + expected_received
-        # Composer has nothing left.
-        assert await usdc.fns.balanceOf(composer_address).call(w3) == 0
+        # Composer received only amountReceived = amount - fee.
+        assert await usdc.fns.balanceOf(composer_address).call(w3) == pre_composer + expected_received
 
     async def test_receive_and_execute_with_eth_value(self, ctx):
         """receiveAndExecute forwards ETH to the DeFiVM sub-call."""
@@ -582,21 +576,19 @@ class TestCCTPComposerBasic:
         assert bytes(evt["args"]["nonce"]) == nonce_bytes32
         assert evt["args"]["amountReceived"] == expected_received
 
-    async def test_usdc_transferred_to_vm_then_spent(self, ctx):
-        """receiveAndExecute transfers minted USDC from composer to DeFiVM, then program spends it."""
+    async def test_usdc_held_by_composer_then_spent(self, ctx):
+        """Program runs in composer context, transfers minted USDC to recipient."""
         w3 = ctx["w3"]
         composer = ctx["composer"]
         composer_address = ctx["composer_address"]
         deployer = ctx["deployer"]
         usdc = ctx["usdc"]
         usdc_address = ctx["usdc_address"]
-        vm_address = ctx["vm_address"]
 
         amount = 300 * 10**6
         fresh_recipient = w3.eth.account.create().address
 
         pre_composer = await usdc.fns.balanceOf(composer_address).call(w3)
-        pre_vm = await usdc.fns.balanceOf(vm_address).call(w3)
 
         transfer_calldata = usdc.fns.transfer(fresh_recipient, amount).data
         program = _compose_program(usdc_address, transfer_calldata)
@@ -609,9 +601,48 @@ class TestCCTPComposerBasic:
         receipt = tx
         assert receipt["status"] == 1
 
+        # Recipient received amount; composer net delta is zero (received then sent).
         assert await usdc.fns.balanceOf(fresh_recipient).call(w3) == amount
         assert await usdc.fns.balanceOf(composer_address).call(w3) == pre_composer
-        assert await usdc.fns.balanceOf(vm_address).call(w3) == pre_vm
+
+    async def test_v3_swap_callback_routed_through_composer(self, ctx):
+        """Regression: program runs in composer context and triggers a V3 swap;
+        the pool callbacks back into the composer, whose inherited
+        ``DEXCallbackRouter.fallback`` must dispatch ``uniswapV3SwapCallback``
+        and pay ``amountIn`` of ``tokenIn`` to the pool.
+        """
+        w3 = ctx["w3"]
+        composer = ctx["composer"]
+        composer_address = ctx["composer_address"]
+        deployer = ctx["deployer"]
+        usdc = ctx["usdc"]
+        usdc_address = ctx["usdc_address"]
+
+        token1_address = await _deploy(w3, ctx["compiled_mocks"]["MockUSDC"], deployer)
+        pool_address, pool_abi = await deploy_mock_v3_pool(w3, deployer, usdc_address, token1_address)
+        pool = Contract(abi=pool_abi, tx={"to": Web3.to_checksum_address(pool_address)})
+
+        from eth_abi.abi import encode as abi_encode
+
+        amount_in = 100 * 10**6  # USDC
+        callback_data = abi_encode(["address"], [usdc_address])
+        swap_calldata = pool.fns.swap(composer_address, True, amount_in, 0, callback_data).data
+        program = _compose_program(pool_address, swap_calldata)
+
+        message, attestation = _make_message_and_attestation(
+            HexBytes(composer_address), amount_in, hook_data=HexBytes(program), nonce=7
+        )
+
+        pre_composer_usdc = await usdc.fns.balanceOf(composer_address).call(w3)
+        pre_pool_usdc = await usdc.fns.balanceOf(pool_address).call(w3)
+
+        tx = await composer.fns.receiveAndExecute(message, attestation).transact(w3, deployer)
+        assert tx["status"] == 1
+
+        # Composer received `amount_in` (CCTP mint) and paid it back via the
+        # V3 callback; pool received exactly `amount_in` of USDC.
+        assert await usdc.fns.balanceOf(composer_address).call(w3) == pre_composer_usdc
+        assert await usdc.fns.balanceOf(pool_address).call(w3) == pre_pool_usdc + amount_in
 
 
 @pytest.mark.fork

@@ -279,10 +279,9 @@ def build_swap_transaction(
 
     The DAG self-contains its inputs, so no transient-storage parameters are
     needed.  Programs that require runtime parameters should be invoked via
-    a composer (CCTP/OFT/ApproveProxy) that calls ``DeFiVM.setParams`` and
-    ``DeFiVM.execute`` in the same transaction back-to-back — transient
-    storage is tx-scoped under EIP-1153, so values do not survive across
-    transactions.
+    a composer (CCTP/OFT/ApproveProxy) that DELEGATECALLs the EVM interpreter
+    after staging params in its own transient slots — transient storage is
+    tx-scoped under EIP-1153, so values do not survive across transactions.
     """
     from pydefi.vm.dag import build_execution_program_for_dag
 

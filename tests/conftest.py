@@ -226,6 +226,29 @@ _CTX_GAS_PRICE: int = 10**9
 #: ERC-20 calls; lower it explicitly when testing gas-bounded behaviour.
 _CTX_DEFAULT_GAS: int = 3_000_000
 
+
+def _tstore_preamble(params: list[bytes]) -> bytes:
+    """EVM bytecode that TSTORE's each param into transient slot ``i``.
+
+    Used by :meth:`MiniEVMContext.run_program` to stage params in transient
+    storage so the program can read them via ``TLOAD(i)``.  Slot indices
+    must fit in 1 byte (``< 256``), which is plenty for the test surface.
+    """
+    if len(params) > 255:
+        raise ValueError("too many params for inline TSTORE preamble")
+    code = b""
+    for i, p in enumerate(params):
+        if not isinstance(p, (bytes, bytearray)):
+            raise TypeError(f"param {i}: expected bytes, got {type(p).__name__}")
+        word = bytes(p).rjust(32, b"\x00") if len(p) < 32 else bytes(p)
+        if len(word) != 32:
+            raise ValueError(f"param {i}: expected ≤32 bytes, got {len(p)}")
+        code += b"\x7f" + word  # PUSH32 value
+        code += b"\x60" + bytes([i])  # PUSH1 i
+        code += b"\x5d"  # TSTORE
+    return code
+
+
 # Cached compiled MockToken bytecode (creation code only).
 # Uses MOCK_TOKEN_SOL from tests.live.sol_utils to avoid duplication.
 _mock_token_bin: Optional[bytes] = None
@@ -569,24 +592,22 @@ class MiniEVMContext:
             sender:    ``msg.sender`` for the call; defaults to :attr:`deployer`.
             value:     ETH value (in wei) forwarded to the execution.
             gas:       Gas limit (default :data:`_CTX_DEFAULT_GAS`).
-            params:    If not ``None``, ``setParams`` is called first with
-                       this list (empty list clears slots).  ``None`` skips
-                       the call so the program inherits any transient state
-                       from earlier in the tx.  Program reads via ``TLOAD(i)``.
+            params:    If not ``None``, an inline TSTORE preamble is
+                       prepended to ``bytecode`` that writes each value to
+                       transient slot ``i``.  ``None`` skips the preamble so
+                       the program inherits any transient state from earlier
+                       in the tx.  Program reads via ``TLOAD(i)``.
 
         Returns:
             :class:`EVMResult` with ``.output``, ``.gas_used``, ``.is_error``.
         """
         effective_sender = sender if sender is not None else self.deployer
         if params is not None:
-            set_params_calldata = _DeFiVM.fns.setParams(params).data
-            self._apply_computation(
-                to=self.program_executor,
-                sender=effective_sender,
-                calldata=set_params_calldata,
-                value=0,
-                gas=gas,
-            )
+            # Prepend an inline TSTORE preamble that writes each param into
+            # the executor's transient slots before the actual program runs.
+            # Both run inside the same DELEGATECALL frame, so TLOAD(i) in
+            # the program reads what was just TSTORE'd.
+            bytecode = _tstore_preamble(params) + bytecode
         execute_calldata = _DeFiVM.fns.execute(bytecode).data
         comp = self._apply_computation(
             to=self.program_executor,
