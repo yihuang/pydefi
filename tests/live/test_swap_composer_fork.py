@@ -479,7 +479,7 @@ class TestDeFiVMCallbacks:
             data,
             repay_amount,
         ).transact({"from": deployer})
-        receipt = await w3.eth.get_transaction_receipt(tx)
+        receipt = await w3.eth.wait_for_transaction_receipt(tx, timeout=60, poll_latency=0.1)
         assert receipt["status"] == 1, "V3 callback repayment failed"
 
     async def test_v3_callback_uses_amount1delta(self, ctx):
@@ -503,7 +503,7 @@ class TestDeFiVMCallbacks:
             data,
             repay_amount,
         ).transact({"from": deployer})
-        receipt = await w3.eth.get_transaction_receipt(tx)
+        receipt = await w3.eth.wait_for_transaction_receipt(tx, timeout=60, poll_latency=0.1)
         assert receipt["status"] == 1
 
     async def test_algebra_callback_repays_pool(self, ctx):
@@ -527,7 +527,7 @@ class TestDeFiVMCallbacks:
             data,
             repay_amount,
         ).transact({"from": deployer})
-        receipt = await w3.eth.get_transaction_receipt(tx)
+        receipt = await w3.eth.wait_for_transaction_receipt(tx, timeout=60, poll_latency=0.1)
         assert receipt["status"] == 1
 
     async def test_v2_callback_repays_pool(self, ctx):
@@ -711,7 +711,7 @@ class TestDAGProgramFork:
         ).build()
 
         tx = await vm.functions.execute(bytecode).transact({"from": deployer})
-        receipt = await w3.eth.get_transaction_receipt(tx)
+        receipt = await w3.eth.wait_for_transaction_receipt(tx, timeout=60, poll_latency=0.1)
         assert receipt["status"] == 1
 
         bal_after = await token0.functions.balanceOf(deployer).call()
@@ -763,7 +763,7 @@ class TestDAGProgramFork:
             dag, amount_in=amount_in, vm_address=vm_address, recipient=deployer
         ).build()
         tx = await vm.functions.execute(exec_bytecode).transact({"from": deployer})
-        receipt = await w3.eth.get_transaction_receipt(tx)
+        receipt = await w3.eth.wait_for_transaction_receipt(tx, timeout=60, poll_latency=0.1)
         assert receipt["status"] == 1
         actual_out = (await ERC20.fns.balanceOf(deployer).call(w3, to=DAI_ADDR)) - bal_before
 
@@ -820,7 +820,7 @@ class TestDAGProgramFork:
             dag, amount_in=amount_in, vm_address=vm_address, recipient=deployer
         ).build()
         tx = await vm.functions.execute(exec_bytecode).transact({"from": deployer})
-        receipt = await w3.eth.get_transaction_receipt(tx)
+        receipt = await w3.eth.wait_for_transaction_receipt(tx, timeout=60, poll_latency=0.1)
         assert receipt["status"] == 1
         actual_out = (await ERC20.fns.balanceOf(deployer).call(w3, to=USDC_ADDR)) - bal_before
 

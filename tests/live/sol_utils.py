@@ -50,7 +50,7 @@ async def deploy(w3: AsyncWeb3, compiled: dict, deployer: Address, *args) -> Add
     """Deploy a contract and return its address."""
     contract = w3.eth.contract(abi=compiled["abi"], bytecode=compiled["bin"])
     tx_hash = await contract.constructor(*args).transact({"from": deployer})
-    receipt = await w3.eth.get_transaction_receipt(tx_hash)
+    receipt = await w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60, poll_latency=0.1)
     return Address(receipt["contractAddress"])
 
 

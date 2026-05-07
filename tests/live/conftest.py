@@ -70,7 +70,7 @@ async def _ensure_interpreter(w3: AsyncWeb3, deployer: str) -> Address:
     key = "<stdin>:Interpreter"
     contract = w3.eth.contract(abi=compiled[key]["abi"], bytecode=compiled[key]["bin"])
     tx_hash = await contract.constructor().transact({"from": deployer})
-    receipt = await w3.eth.get_transaction_receipt(tx_hash)
+    receipt = await w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60, poll_latency=0.1)
     return Address(receipt["contractAddress"])
 
 

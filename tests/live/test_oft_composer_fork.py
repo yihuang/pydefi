@@ -782,7 +782,8 @@ class TestOFTComposerFork:
 
         eth_amount = 5 * 10**16  # 0.05 ETH
 
-        await w3.eth.send_transaction({"from": deployer, "to": composer_address, "value": eth_amount})
+        tx_hash = await w3.eth.send_transaction({"from": deployer, "to": composer_address, "value": eth_amount})
+        await w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60, poll_latency=0.1)
 
         before_composer = await w3.eth.get_balance(composer_address)
         assert before_composer >= eth_amount
