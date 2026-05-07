@@ -109,8 +109,8 @@ async def eth_w3() -> AsyncWeb3:
 
 @pytest.fixture(autouse=True)
 def _throttle_live_requests(request: pytest.FixtureRequest) -> None:
-    """Insert a small delay before each live test to avoid rate-limiting on free RPCs."""
-    if request.node.get_closest_marker("live"):
+    """Insert a small delay before each live or fork test to avoid rate-limiting on free RPCs."""
+    if any(request.node.get_closest_marker(m) for m in ("live", "fork")):
         time.sleep(1)
 
 
