@@ -81,7 +81,7 @@ def test_inherited_new_variable():
     ctx = ProgramContext()
     v = ctx.new_variable("x", UINT256_T)
     assert v.name == "x"
-    assert str(v.typ) == "uint256"
+    assert str(v.value.typ) == "uint256"
     assert not v.value.is_stack_value
 
 
