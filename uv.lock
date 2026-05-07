@@ -1798,7 +1798,7 @@ requires-dist = [
     { name = "requests", specifier = ">=2.31.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.4.0" },
     { name = "sqlmodel", specifier = ">=0.0.38" },
-    { name = "vyper", git = "https://github.com/vyperlang/vyper.git?rev=master" },
+    { name = "vyper", git = "https://github.com/vyperlang/vyper.git?rev=bdf00d314d335565be40bd064975b514e19b7029" },
     { name = "web3", specifier = ">=7.0.0" },
 ]
 provides-extras = ["indexer", "dev"]
@@ -2238,7 +2238,7 @@ wheels = [
 [[package]]
 name = "vyper"
 version = "0.4.4"
-source = { git = "https://github.com/vyperlang/vyper.git?rev=master#5ea0f3862020e590232d1c309fd12a110fdb06fd" }
+source = { git = "https://github.com/vyperlang/vyper.git?rev=bdf00d314d335565be40bd064975b514e19b7029#bdf00d314d335565be40bd064975b514e19b7029" }
 dependencies = [
     { name = "cbor2" },
     { name = "immutables" },
