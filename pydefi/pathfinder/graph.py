@@ -18,6 +18,25 @@ from pydefi.types import Address, BasePool, Token
 
 
 @dataclass
+class ReserveOverlay:
+    """Per-call diff over pool state during sequenced split routing.
+
+    A per-invocation overlay scopes state changes to one routing call so the
+    shared :class:`PoolGraph` stays untouched. Both directions of a
+    bidirectional pool see the same entry because the overlay is keyed by
+    ``pool_address``.
+
+    ``v2_deltas`` holds signed ``(Δtoken0, Δtoken1)`` deltas for CPMM pools;
+    ``v3_sqrt_price`` holds the running ``sqrtPriceX96`` left by prior swaps
+    for V3 pools (liquidity assumed constant within the active tick), used as
+    the starting price for the next quote.
+    """
+
+    v2_deltas: dict[Address, tuple[int, int]] = field(default_factory=dict)
+    v3_sqrt_price: dict[Address, int] = field(default_factory=dict)
+
+
+@dataclass
 class PoolEdge(BasePool):
     """A directed edge in the liquidity pool graph.
 
@@ -58,24 +77,42 @@ class PoolEdge(BasePool):
         adj_out = Decimal(self.reserve_out) / Decimal(10**self.token_out.decimals)
         return adj_out / adj_in
 
-    def amount_out(self, amount_in: int) -> int:
-        """Estimate the output amount for *amount_in* using the constant-product formula.
+    def amount_out(self, amount_in: int, overlay: ReserveOverlay | None = None) -> int:
+        """Estimate ``amount_out`` via the constant-product formula.
 
-        Args:
-            amount_in: Raw input amount.
-
-        Returns:
-            Estimated raw output amount (0 if reserves are unavailable).
+        *overlay*, if given, layers pending swap deltas on top of stored reserves.
         """
-        if self.reserve_in == 0 or self.reserve_out == 0:
+        eff_in, eff_out = self._effective_reserves(overlay)
+        if eff_in <= 0 or eff_out <= 0:
             return 0
         fee_factor = 10_000 - self.fee_bps
         amount_in_with_fee = amount_in * fee_factor
-        numerator = amount_in_with_fee * self.reserve_out
-        denominator = self.reserve_in * 10_000 + amount_in_with_fee
+        numerator = amount_in_with_fee * eff_out
+        denominator = eff_in * 10_000 + amount_in_with_fee
         if denominator == 0:
             return 0
         return numerator // denominator
+
+    def record_swap(self, overlay: ReserveOverlay, amount_in: int, amount_out: int) -> None:
+        """Record this swap's effect on *overlay* for subsequent quotes.
+
+        Deltas are oriented via ``extra['is_token0_in']`` (default ``True``) so
+        both directions of a pool stay consistent.
+        """
+        if amount_in <= 0 or amount_out <= 0:
+            return
+        d0, d1 = (amount_in, -amount_out) if self.extra.get("is_token0_in", True) else (-amount_out, amount_in)
+        cur0, cur1 = overlay.v2_deltas.get(self.pool_address, (0, 0))
+        overlay.v2_deltas[self.pool_address] = (cur0 + d0, cur1 + d1)
+
+    def _effective_reserves(self, overlay: ReserveOverlay | None) -> tuple[int, int]:
+        """Apply ``overlay`` to ``(reserve_in, reserve_out)`` for this direction."""
+        if overlay is None:
+            return self.reserve_in, self.reserve_out
+        d0, d1 = overlay.v2_deltas.get(self.pool_address, (0, 0))
+        if self.extra.get("is_token0_in", True):
+            return self.reserve_in + d0, self.reserve_out + d1
+        return self.reserve_in + d1, self.reserve_out + d0
 
     def zero_for_one(self, token_out: Address) -> bool:
         """Return ``True`` if this edge sends token0 into the pool (zeroForOne direction).
@@ -242,66 +279,72 @@ class V3PoolEdge(PoolEdge):
                 return Decimal(0)
             return (Decimal(1) / price_raw) * adj
 
-    def amount_out(self, amount_in: int) -> int:
-        """Estimate output using the V3 concentrated liquidity formula.
+    def amount_out(self, amount_in: int, overlay: ReserveOverlay | None = None) -> int:
+        """Estimate output via Uniswap V3 ``sqrtPrice`` math (single-tick approximation).
 
-        This uses the exact Uniswap V3 ``sqrtPrice`` math for a **single-tick
-        approximation** — it assumes all liquidity ``L`` is available at the
-        current price and that no tick boundaries are crossed during the swap.
-
-        **Accuracy vs trade size:**  For swaps that are small relative to
-        ``L * sqrtP / Q96`` (roughly the depth of the current tick range), the
-        estimate is very close to the true on-chain result.  For large swaps
-        that would move the price across one or more tick boundaries, the
-        formula overestimates the output because it ignores the reduced
-        liquidity (and potentially zero liquidity) beyond the current tick.
-        In practice this is fine for **pathfinding** — the router is comparing
-        routes to pick the best one, not producing the definitive execution
-        quote.  For the precise execution quote, always call
-        :meth:`~pydefi.amm.uniswap_v3.UniswapV3.quote_exact_input_single`
-        (backed by the on-chain QuoterV2 which simulates full tick traversal).
-
-        Args:
-            amount_in: Raw input amount.
-
-        Returns:
-            Estimated raw output amount (0 if pool state is unavailable).
+        Tick-crossing trades are overestimated; for the definitive on-chain
+        quote use :meth:`~pydefi.amm.uniswap_v3.UniswapV3.quote_exact_input_single`.
+        *overlay*, if given, supplies the starting ``sqrtPriceX96`` (the pool
+        state left by prior in-flight swaps) instead of the edge's stored value.
         """
-        if self.sqrt_price_x96 == 0 or self.liquidity == 0 or amount_in <= 0:
+        if self.liquidity == 0 or amount_in <= 0:
             return 0
-
-        Q96 = self._Q96
-        sqrtP = self.sqrt_price_x96
-        L = self.liquidity
-
-        # Deduct fee from input (fee_bps is in basis points, e.g. 30 = 0.3%)
+        sqrtP = self._effective_sqrt_price(overlay)
+        if sqrtP == 0:
+            return 0
         amount_in_net = amount_in * (10_000 - self.fee_bps) // 10_000
         if amount_in_net <= 0:
             return 0
+        new_sqrtP = self._new_sqrt_price(sqrtP, amount_in_net)
+        if new_sqrtP == 0:
+            return 0
+        return self._output_from_sqrt_delta(sqrtP, new_sqrtP)
 
+    def record_swap(self, overlay: ReserveOverlay, amount_in: int, amount_out: int) -> None:
+        """Record the swap's effect on V3 ``sqrtPriceX96``; liquidity is held constant."""
+        if amount_in <= 0 or self.liquidity == 0:
+            return
+        sqrtP = self._effective_sqrt_price(overlay)
+        if sqrtP == 0:
+            return
+        amount_in_net = amount_in * (10_000 - self.fee_bps) // 10_000
+        if amount_in_net <= 0:
+            return
+        new_sqrtP = self._new_sqrt_price(sqrtP, amount_in_net)
+        if new_sqrtP == 0:
+            return
+        overlay.v3_sqrt_price[self.pool_address] = new_sqrtP
+
+    def _effective_sqrt_price(self, overlay: ReserveOverlay | None) -> int:
+        if overlay is None:
+            return self.sqrt_price_x96
+        return overlay.v3_sqrt_price.get(self.pool_address, self.sqrt_price_x96)
+
+    def _new_sqrt_price(self, sqrtP: int, amount_in_net: int) -> int:
+        """Return the post-swap ``sqrtPriceX96`` (0 on degenerate inputs)."""
+        Q96 = self._Q96
+        L = self.liquidity
         if self.is_token0_in:
-            # Swapping token0 → token1 (price decreases):
-            # new_sqrtP = sqrtP * L * Q96 / (L * Q96 + amount_in_net * sqrtP)
             denom = L * Q96 + amount_in_net * sqrtP
             if denom <= 0:
                 return 0
-            new_sqrtP = sqrtP * L * Q96 // denom
-            # Δy = L * (sqrtP - new_sqrtP) / Q96
+            return sqrtP * L * Q96 // denom
+        return sqrtP + amount_in_net * Q96 // L
+
+    def _output_from_sqrt_delta(self, sqrtP: int, new_sqrtP: int) -> int:
+        """Translate a ``sqrtPriceX96`` delta into the swap's output amount."""
+        Q96 = self._Q96
+        L = self.liquidity
+        if self.is_token0_in:
             if sqrtP <= new_sqrtP:
                 return 0
             return L * (sqrtP - new_sqrtP) // Q96
-        else:
-            # Swapping token1 → token0 (price increases):
-            # new_sqrtP = sqrtP + amount_in_net * Q96 / L
-            new_sqrtP = sqrtP + amount_in_net * Q96 // L
-            # Δx = L * Q96 * (new_sqrtP - sqrtP) / (sqrtP * new_sqrtP)
-            if new_sqrtP <= sqrtP:
-                return 0
-            numerator = L * Q96 * (new_sqrtP - sqrtP)
-            denominator = sqrtP * new_sqrtP
-            if denominator == 0:
-                return 0
-            return numerator // denominator
+        if new_sqrtP <= sqrtP:
+            return 0
+        denom = sqrtP * new_sqrtP
+        if denom == 0:
+            return 0
+        return L * Q96 * (new_sqrtP - sqrtP) // denom
 
     def estimate_price_impact(self, amount_in: int) -> Decimal:
         """Estimate price impact using V3 current-tick virtual reserves.

@@ -1110,7 +1110,7 @@ _WETH_DEPOSIT = ContractFunction.from_abi("function deposit() external payable")
 class TestBuildSwapTransactionFork:
     """Fork tests for build_swap_transaction(RouteDAG) end-to-end.
 
-    Exercises the full path: find_best_split → RouteDAG →
+    Exercises the full path: find_optimal_split → RouteDAG →
     build_swap_transaction → vm.execute() on a mainnet fork with real V3 pools.
     Unlike TestQuoteFork (which quotes each leg via QuoterV2), these tests
     execute the compiled swap program and verify non-zero token output.
@@ -1119,8 +1119,8 @@ class TestBuildSwapTransactionFork:
     async def test_split_route_build_and_execute(self, ctx) -> None:
         """build_swap_transaction(RouteDAG) executes a 2-leg split on a mainnet fork.
 
-        Uses fee-equalized synthetic liquidity to force find_best_split into a
-        2-leg split DAG, compiles it via build_swap_transaction, and executes
+        Uses fee-equalized synthetic liquidity to force find_optimal_split into
+        a 2-leg split DAG, compiles it via build_swap_transaction, and executes
         against real V3 pools, verifying the deployer receives non-zero USDC.
         """
         w3 = ctx["w3"]
@@ -1146,7 +1146,7 @@ class TestBuildSwapTransactionFork:
                 )
             )
 
-        dag = Router(graph).find_best_split(TokenAmount(WETH, amount_in), USDC, step_bps=1000)
+        dag = Router(graph).find_optimal_split(TokenAmount(WETH, amount_in), USDC)
         assert len(Router.dag_leg_weights(dag)) >= 1, "expected at least one leg in split DAG"
 
         # min_final_out=0: actual output verified by balance check below.

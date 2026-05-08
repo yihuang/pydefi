@@ -65,7 +65,7 @@ def build_quote_program_for_dag(
     *,
     amount_in: int,
     min_final_out: int = 0,
-    quoter_address: str | None = None,
+    quoter_address: Address | None = None,
 ) -> Program:
     """Build a quote/simulation program from a :class:`RouteDAG`.
 
@@ -215,7 +215,7 @@ def _build_split_frame(
 def _build_dag_quote_actions(
     actions: Sequence[RouteAction],
     *,
-    quoter_address: str | None,
+    quoter_address: Address | None,
 ) -> list[Program]:
     segments: list[Program] = []
     for action in actions:

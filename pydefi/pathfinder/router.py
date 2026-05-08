@@ -17,7 +17,9 @@ from __future__ import annotations
 from decimal import Decimal
 
 from pydefi.exceptions import NoRouteFoundError
+from pydefi.pathfinder.asgm import asgm_optimize
 from pydefi.pathfinder.graph import PoolEdge, PoolGraph
+from pydefi.pathfinder.multipath import MultiEdgePath, _distribute_int, merge_and_expand
 from pydefi.types import MAX_BPS, Address, RouteDAG, RouteSplit, RouteSwap, SwapRoute, SwapStep, Token, TokenAmount
 
 
@@ -374,75 +376,85 @@ class Router:
             raise ValueError("internal Router error: missing DAG representation")
         return [route.dag for route in routes if route.dag is not None]
 
-    def find_best_split(
+    def find_optimal_split(
         self,
         amount_in: TokenAmount,
         token_out: Token,
-        max_splits: int = 2,
-        step_bps: int = 1000,
+        *,
+        candidates: int = 4,
         max_hops: int | None = None,
     ) -> RouteDAG:
-        """Find the N-way allocation of *amount_in* across routes that maximises output.
+        """Optimal multi-edge allocation via PRIME's two-stage routing.
 
-        Distributes the input across up to *max_splits* diverse candidate routes
-        to maximise aggregate output — the same strategy used by Uniswap Smart
-        Path and UniRoute.  All weight vectors from 1-way up to *max_splits*-way
-        are evaluated in a single pass by :meth:`_best_n_way_split`.
-
-        Algorithm
-        ---------
-        1. Discover up to *max_splits* diverse candidate routes via
-           :meth:`_find_top_routes` (one per distinct first-hop pool).
-        2. Enumerate every weight vector ``(w_0, …, w_{n-1})`` where each
-           ``w_i`` is a non-negative multiple of *step_bps* and
-           ``sum(w_i) == 10 000``.
-        3. Evaluate each allocation off-chain via :meth:`_follow_route`.
-        4. Return the best allocation as a :class:`~pydefi.types.RouteDAG`.
-
-        A single-leg result (no split improves on the best route) is returned
-        as a linear DAG without a :class:`~pydefi.types.RouteSplit` node.
-
-        .. note::
-            Search cost is ``C(k+n-1, n-1)`` (stars-and-bars) where
-            ``k = MAX_BPS // step_bps`` and ``n = max_splits``.  At the
-            default ``step_bps=1000`` (k=10): 2-way → 11 evals, 3-way → 66,
-            4-way → 286.
-
-        Args:
-            amount_in: Total input amount.
-            token_out: Desired output token.
-            step_bps: Weight granularity in basis points (default ``1000`` = 10%).
-            max_splits: Maximum number of split legs to consider (default ``2``).
-            max_hops: Forwarded to :meth:`_find_top_routes`.
-
-        Returns:
-            A :class:`~pydefi.types.RouteDAG` — linear when a single route
-            wins, split/merge when multiple legs improve output.
+        Discovers top-*candidates* diverse routes, runs
+        :func:`~pydefi.pathfinder.multipath.merge_and_expand` to collapse
+        same-token-sequence candidates into multi-edge paths, then jointly
+        optimises ``(W_p, w_e)`` via
+        :func:`~pydefi.pathfinder.asgm.asgm_optimize`. Returns a
+        :class:`RouteDAG` with nested splits for multi-edge hops and a
+        top-level split when more than one path is active.
 
         Raises:
             :class:`~pydefi.exceptions.NoRouteFoundError`: If no route exists.
-            :class:`ValueError`: If *max_splits* < 1.
+            :class:`ValueError`: If *candidates* < 1.
         """
-        if max_splits < 1:
-            raise ValueError("max_splits must be >= 1")
-        routes = self._find_top_routes(amount_in, token_out, top_n=max_splits, max_hops=max_hops)
+        if candidates < 1:
+            raise ValueError("candidates must be >= 1")
+        routes = self._find_top_routes(amount_in, token_out, top_n=candidates, max_hops=max_hops)
         edge_index: dict[tuple[Address, Address], PoolEdge] = {
             (edge.pool_address, edge.token_in.address): edge for edge in self.graph
         }
-        legs = self._best_n_way_split(routes, amount_in, edge_index, step_bps)
+        candidate_edges: list[list[PoolEdge]] = [
+            [edge_index[(s.pool_address, s.token_in.address)] for s in r.steps if s.pool_address is not None]
+            for r in routes
+        ]
+        candidate_edges = [edges for edges in candidate_edges if edges]
+        if not candidate_edges:
+            raise NoRouteFoundError(f"No route found from {amount_in.token.symbol} to {token_out.symbol}")
 
-        if len(legs) == 1:
-            _, edges = legs[0]
-            return self._edges_to_dag(amount_in.token, edges)
+        multipaths = merge_and_expand(candidate_edges, self.graph)
+        weights = asgm_optimize(multipaths, amount_in.amount)
+        active = [(p, w) for p, w in zip(multipaths, weights) if w.path_weight > 1e-6]
+        if not active:
+            active = [(multipaths[0], weights[0])]
+            active[0][1].path_weight = 1.0
 
         dag = RouteDAG().from_token(amount_in.token)
+        if len(active) == 1:
+            self._emit_path_to_dag(active[0][0], active[0][1].intra_hop_weights, dag)
+            return dag
+
+        leg_bps = _distribute_int(MAX_BPS, [w.path_weight for _, w in active])
         dag.split()
-        for weight_bps, edges in legs:
-            dag.leg(weight_bps)
-            for edge in edges:
-                dag.swap(edge.token_out, edge)
+        for (path, w), bps in zip(active, leg_bps):
+            if bps == 0:
+                continue
+            dag.leg(bps)
+            self._emit_path_to_dag(path, w.intra_hop_weights, dag)
         dag.merge()
         return dag
+
+    @staticmethod
+    def _emit_path_to_dag(
+        path: MultiEdgePath,
+        intra_hop_weights: list[list[float]],
+        dag: RouteDAG,
+    ) -> None:
+        """Append *path*'s actions to *dag*, nesting a split for multi-edge hops."""
+        for bundle, ws in zip(path.hops, intra_hop_weights):
+            if len(bundle) == 1:
+                dag.swap(bundle[0].token_out, bundle[0])
+                continue
+            edge_bps = _distribute_int(MAX_BPS, ws)
+            non_zero = [(e, b) for e, b in zip(bundle, edge_bps) if b > 0]
+            if len(non_zero) == 1:
+                dag.swap(non_zero[0][0].token_out, non_zero[0][0])
+                continue
+            dag.split()
+            for edge, b in non_zero:
+                dag.leg(b)
+                dag.swap(edge.token_out, edge)
+            dag.merge()
 
     def _find_top_routes(
         self,
@@ -551,83 +563,6 @@ class Router:
             )
         return routes
 
-    def _follow_route(
-        self,
-        route: SwapRoute,
-        raw_amount: int,
-        edge_index: dict[tuple[Address, Address], PoolEdge],
-    ) -> int:
-        """Walk each step of *route* at *raw_amount* and return the output amount."""
-        current = raw_amount
-        for step in route.steps:
-            key = (step.pool_address, step.token_in.address)
-            edge = edge_index.get(key)
-            if edge is None:
-                return 0
-            current = edge.amount_out(current)
-            if current <= 0:
-                return 0
-        return current
-
-    def _best_n_way_split(
-        self,
-        routes: list[SwapRoute],
-        amount_in: TokenAmount,
-        edge_index: dict[tuple[Address, Address], PoolEdge],
-        step_bps: int,
-    ) -> list[tuple[int, list[PoolEdge]]]:
-        """Return the best N-way weight allocation across *routes* at *step_bps* granularity.
-
-        Enumerates every weight vector ``(w_0, …, w_{n-1})`` where each ``w_i``
-        is a non-negative multiple of *step_bps* and the vector sums to
-        ``MAX_BPS``.  Degenerate single-leg vectors are included, so the
-        result is always at least as good as any one route alone.
-
-        Integer-division rounding is corrected by adding the leftover to the
-        last leg with a non-zero weight so leg amounts sum exactly to
-        ``amount_in.amount``.
-
-        Returns:
-            List of ``(weight_bps, edges)`` pairs for legs with ``weight_bps > 0``,
-            ordered by the original route ranking.
-        """
-        total = amount_in.amount
-        n = len(routes)
-        best_legs: list[tuple[int, list[PoolEdge]]] = []
-        best_total: int = 0
-
-        # Pre-build per-route edge lists once to avoid repeated dict lookups.
-        route_edges: list[list[PoolEdge]] = []
-        for route in routes:
-            edges = [
-                edge_index[(step.pool_address, step.token_in.address)]
-                for step in route.steps
-                if step.pool_address is not None
-            ]
-            route_edges.append(edges)
-
-        def _enumerate(idx: int, remaining_bps: int, weights: list[int]) -> None:
-            nonlocal best_legs, best_total
-            if idx == n - 1:
-                weights.append(remaining_bps)
-                amts: list[int] = [total * w // MAX_BPS for w in weights]
-                last_nz = max(i for i in range(n) if weights[i] > 0)
-                amts[last_nz] += total - sum(amts)
-                outs = [self._follow_route(routes[i], amts[i], edge_index) if amts[i] > 0 else 0 for i in range(n)]
-                combined = sum(outs)
-                if combined > best_total:
-                    best_total = combined
-                    best_legs = [(weights[i], route_edges[i]) for i in range(n) if weights[i] > 0]
-                weights.pop()
-                return
-            for w in range(0, remaining_bps + 1, step_bps):
-                weights.append(w)
-                _enumerate(idx + 1, remaining_bps - w, weights)
-                weights.pop()
-
-        _enumerate(0, MAX_BPS, [])
-        return best_legs
-
     def simulate(self, dag: RouteDAG, amount_in: int) -> int:
         """Simulate the output amount for *dag* at *amount_in* using off-chain edge math.
 
@@ -684,18 +619,12 @@ class Router:
         * :class:`~pydefi.pathfinder.graph.V3PoolEdge`: uses virtual reserves
           derived from ``sqrtPriceX96`` / ``liquidity``.
 
+        Per-hop impact and forward amount propagation both read base pool
+        state — the metric is reporting-only and stays internally consistent.
+
         If a hop returns ``Decimal('NaN')`` (impact unestimable) and no other
         hop yields a positive estimate, the cumulative result is
         ``Decimal('NaN')`` to signal "impact unknown" rather than "zero impact".
-
-        Args:
-            edges: Ordered pool edges in the route.
-            amount_in: Input amount at the first hop.
-
-        Returns:
-            Estimated cumulative price impact in ``[0, 1]``, or
-            ``Decimal('NaN')`` if the entire path consists of pools where
-            impact cannot be estimated.
         """
         total_impact = Decimal(0)
         current_amount = amount_in
@@ -706,8 +635,6 @@ class Router:
                 has_unestimated_hop = True
             else:
                 total_impact += hop_impact
-            # Always propagate the simulated amount forward so that later hops
-            # use the correct intermediate amount.
             current_amount = edge.amount_out(current_amount)
         if has_unestimated_hop and total_impact == Decimal(0):
             return Decimal("NaN")

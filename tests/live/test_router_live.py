@@ -236,6 +236,17 @@ class TestRouterLive:
         for step in route.steps:
             assert step.fee == 30, f"Expected V2 fee=30 (0.3% in bps), got fee={step.fee}"
 
+    async def test_optimal_split_weth_to_usdc(self, eth_w3):
+        """find_optimal_split returns a valid DAG with sensible output on live V2 reserves."""
+        g = await self._build_v2_graph(eth_w3)
+        router = Router(g)
+        amount_in = TokenAmount.from_human(WETH, "1")
+        dag = router.find_optimal_split(amount_in, USDC, candidates=4)
+        assert dag is not None
+        out = router.simulate(dag, amount_in.amount)
+        # Sanity: 1 WETH should be worth between $500 and $10 000.
+        assert 500 * 10**6 < out < 10_000 * 10**6, f"optimal WETH→USDC out of expected range: {out / 10**6:.2f} USDC"
+
     async def test_dag_nested_split_on_empty_leg_live(self, eth_w3):
         """Nested split from an empty active leg should compile with live pool edges."""
         g = await self._build_v2_graph(eth_w3)
