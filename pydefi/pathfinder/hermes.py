@@ -147,6 +147,10 @@ class HermesRouter:
     peo_index: dict[V, int]  # v -> position in π
     chordal_neighbors: dict[V, set[V]]  # undirected adjacency in Ĝ
     dpc_weights: dict[V, dict[V, float]]  # d*[u][v]
+    # witness[u][v] = vk if d*[u][v] was relaxed through vk; absent if the
+    # entry came directly from an original graph edge. Drives shortcut
+    # expansion in :meth:`shortest_path`.
+    dpc_witness: dict[V, dict[V, V]]
 
     @classmethod
     def build(cls, graph: nx.DiGraph) -> HermesRouter:
@@ -158,7 +162,7 @@ class HermesRouter:
         directed pair.
         """
         if graph.number_of_nodes() == 0:
-            return cls(graph, 0, [], [], {}, {}, {})
+            return cls(graph, 0, [], [], {}, {}, {}, {})
         undirected = graph.to_undirected(as_view=False)
         # NetworkX's tree-decomp solver doesn't tolerate self-loops.
         undirected.remove_edges_from(nx.selfloop_edges(undirected))
@@ -166,7 +170,7 @@ class HermesRouter:
         bags = [frozenset(b) for b in tree.nodes()]
         chordal_neighbors, peo = _chordal_completion_and_peo(tree)
         peo_index = {v: i for i, v in enumerate(peo)}
-        dpc = _enforce_dpc(graph, chordal_neighbors, peo, peo_index)
+        dpc, witness = _enforce_dpc(graph, chordal_neighbors, peo, peo_index)
         return cls(
             graph=graph,
             treewidth=tw,
@@ -175,6 +179,7 @@ class HermesRouter:
             peo_index=peo_index,
             chordal_neighbors=chordal_neighbors,
             dpc_weights=dpc,
+            dpc_witness=witness,
         )
 
     def update_weight(self, u: V, v: V, new_weight: float) -> None:
@@ -186,7 +191,7 @@ class HermesRouter:
         if not self.graph.has_edge(u, v):
             raise ValueError(f"edge ({u!r}, {v!r}) not in graph")
         self.graph[u][v]["weight"] = new_weight
-        self.dpc_weights = _enforce_dpc(self.graph, self.chordal_neighbors, self.peo, self.peo_index)
+        self.dpc_weights, self.dpc_witness = _enforce_dpc(self.graph, self.chordal_neighbors, self.peo, self.peo_index)
 
     def update_weights(self, updates: dict[tuple[V, V], float]) -> None:
         """Apply multiple edge-weight updates and re-enforce DPC once.
@@ -199,7 +204,7 @@ class HermesRouter:
         for (u, v), w in updates.items():
             if self.graph.has_edge(u, v):
                 self.graph[u][v]["weight"] = w
-        self.dpc_weights = _enforce_dpc(self.graph, self.chordal_neighbors, self.peo, self.peo_index)
+        self.dpc_weights, self.dpc_witness = _enforce_dpc(self.graph, self.chordal_neighbors, self.peo, self.peo_index)
 
     def query(self, source: V) -> dict[V, float]:
         """Single-source shortest paths from *source* (Algorithm 4).
@@ -212,25 +217,54 @@ class HermesRouter:
         return _query_sssp(self.peo, self.peo_index, self.chordal_neighbors, self.dpc_weights, source)
 
     def shortest_path(self, source: V, target: V) -> list[V] | None:
-        """Reconstruct the optimal node-sequence ``[source, ..., target]``.
+        """Reconstruct the optimal ``[source, ..., target]`` node sequence.
 
-        Delegates to NetworkX Bellman-Ford on the original graph (DPC's
-        chordal-completion shortcuts can't be walked back to a single
-        original edge); falls back to unweighted BFS on negative-cycle
-        subgraphs.
+        Walks DPC parent pointers and expands chordal shortcuts back to
+        original edges (O(path-length)). BF/BFS fallback only fires if the
+        parent walk fails — typically a corrupted witness chain on real
+        DEX data with negative cycles.
         """
         if source not in self.peo_index or target not in self.peo_index:
             return None
+        if source == target:
+            return [source]
+
+        dist, parent = _query_sssp_with_parents(
+            self.peo, self.peo_index, self.chordal_neighbors, self.dpc_weights, source
+        )
+        if math.isfinite(dist.get(target, math.inf)):
+            chain: list[V] = [target]
+            cur = target
+            seen: set[V] = {target}
+            while cur != source:
+                p = parent.get(cur)
+                if p is None or p in seen:
+                    chain = []
+                    break
+                chain.append(p)
+                seen.add(p)
+                cur = p
+            if chain and chain[-1] == source:
+                chain.reverse()
+                expanded: list[V] = [source]
+                ok = True
+                for i in range(len(chain) - 1):
+                    if not _expand_chordal_edge(chain[i], chain[i + 1], self.graph, self.dpc_witness, expanded):
+                        ok = False
+                        break
+                if ok:
+                    return expanded
+
+        # Fallback: parent walk failed or chordal expansion bottomed out
+        # against a missing original edge. This shouldn't happen on a clean
+        # graph; real DEX data with abundant negative cycles can produce
+        # witness chains that don't terminate cleanly. Defer to BF/BFS so
+        # the caller still gets *some* path.
         try:
             return nx.bellman_ford_path(self.graph, source, target, weight="weight")
         except (nx.NetworkXNoPath, nx.NodeNotFound):
             return None
         except nx.NetworkXUnbounded:
-            # Real DEX data often has negative cycles (arbitrages or testnet
-            # price quirks). Bellman-Ford refuses; fall back to unweighted BFS
-            # which always finds *some* path. Optimality of the candidate set
-            # is recovered downstream by ASGM re-quoting amount_out at the
-            # actual trade size.
             try:
                 return nx.shortest_path(self.graph, source, target)
             except (nx.NetworkXNoPath, nx.NodeNotFound):
@@ -377,7 +411,7 @@ def _enforce_dpc(
     chordal_neighbors: dict[V, set[V]],
     peo: list[V],
     peo_index: dict[V, int],
-) -> dict[V, dict[V, float]]:
+) -> tuple[dict[V, dict[V, float]], dict[V, dict[V, V]]]:
     """Backward PEO walk that fills in d*(u, v) for every chordal-completion edge.
 
     For each ``v_k`` (from late to early in π), every pair ``(v_i, v_j)`` of
@@ -385,9 +419,15 @@ def _enforce_dpc(
     through ``v_k`` is cheaper, ``d*[v_i][v_j]`` is relaxed. Original directed
     edges seed the table; pairs without a chordal edge between them (i.e. fill-
     ins outside any bag) are not initialised but get filled in by relaxation.
+
+    Returns ``(dpc, witness)``. ``witness[u][v] = vk`` records which vertex
+    realised the relaxation of ``d*[u][v]``; if ``(u, v)`` is absent from
+    ``witness`` the entry corresponds to an original graph edge and needs no
+    expansion.
     """
     # Initialise d*[u][v] from original edge weights; default ∞.
     dpc: dict[V, dict[V, float]] = {v: {} for v in peo}
+    witness: dict[V, dict[V, V]] = {v: {} for v in peo}
     for u, v, data in graph.edges(data=True):
         w = data.get("weight", 1.0)
         # Collapse parallel/self edges by min weight.
@@ -396,6 +436,7 @@ def _enforce_dpc(
         cur = dpc[u].get(v, math.inf)
         if w < cur:
             dpc[u][v] = w
+            witness[u].pop(v, None)  # original edge; no shortcut to expand
 
     n = len(peo)
     # Walk PEO backward.
@@ -418,7 +459,8 @@ def _enforce_dpc(
                 cand = d_vi_vk + d_vk_vj
                 if cand < dpc[vi].get(vj, math.inf):
                     dpc[vi][vj] = cand
-    return dpc
+                    witness[vi][vj] = vk
+    return dpc, witness
 
 
 # ---------------------------------------------------------------------------
@@ -434,8 +476,26 @@ def _query_sssp(
     source: V,
 ) -> dict[V, float]:
     """Two-pass scan over the PEO; relaxes only earlier-PEO then later-PEO neighbors."""
+    dist, _ = _query_sssp_with_parents(peo, peo_index, chordal_neighbors, dpc, source)
+    return {v: d for v, d in dist.items() if d != math.inf}
+
+
+def _query_sssp_with_parents(
+    peo: list[V],
+    peo_index: dict[V, int],
+    chordal_neighbors: dict[V, set[V]],
+    dpc: dict[V, dict[V, float]],
+    source: V,
+) -> tuple[dict[V, float], dict[V, V]]:
+    """Bitonic two-pass scan returning ``(dist, parent)``.
+
+    ``parent[v]`` is the *chordal-completion* predecessor that produced
+    ``dist[v]``; the (parent, v) pair may be a fill-in shortcut and must be
+    expanded via :func:`_expand_chordal_edge` to recover original edges.
+    """
     n = len(peo)
     dist: dict[V, float] = {v: math.inf for v in peo}
+    parent: dict[V, V] = {}
     dist[source] = 0.0
     src_idx = peo_index[source]
 
@@ -454,6 +514,7 @@ def _query_sssp(
                 cand = dist[vk] + w
                 if cand < dist[vj]:
                     dist[vj] = cand
+                    parent[vj] = vk
 
     # Forward pass: from start to end, relaxing edges to *later-PEO* neighbors.
     for k in range(n):
@@ -469,5 +530,38 @@ def _query_sssp(
                 cand = dist[vk] + w
                 if cand < dist[vj]:
                     dist[vj] = cand
+                    parent[vj] = vk
 
-    return {v: d for v, d in dist.items() if d != math.inf}
+    return dist, parent
+
+
+def _expand_chordal_edge(
+    u: V,
+    v: V,
+    graph: nx.DiGraph,
+    witness: dict[V, dict[V, V]],
+    out: list[V],
+    seen: set[tuple[V, V]] | None = None,
+) -> bool:
+    """Append original edges for ``u → … → v`` to *out* (excluding ``u``).
+
+    Original edge: append ``v``. Shortcut via witness ``w``: recurse on
+    ``(u, w)`` then ``(w, v)``. Returns ``False`` on missing original
+    edge or witness cycle (the *seen* set prevents recursion blowup).
+    """
+    if seen is None:
+        seen = set()
+    pair = (u, v)
+    if pair in seen:
+        return False
+    seen.add(pair)
+    w = witness.get(u, {}).get(v)
+    if w is None:
+        if not graph.has_edge(u, v):
+            return False
+        out.append(v)
+        return True
+    # Shortcut: u → w → v, expand both halves.
+    if not _expand_chordal_edge(u, w, graph, witness, out, seen):
+        return False
+    return _expand_chordal_edge(w, v, graph, witness, out, seen)

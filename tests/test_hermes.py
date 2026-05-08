@@ -364,6 +364,47 @@ class TestShortestPathReconstruction:
         router = HermesRouter.build(g)
         assert router.shortest_path(1, 1) == [1]
 
+    def test_uses_parent_pointers_not_bf_fallback(self, monkeypatch):
+        """On a clean graph, shortest_path must NOT delegate to nx.bellman_ford_path."""
+        g = nx.DiGraph()
+        g.add_edge(1, 2, weight=1.0)
+        g.add_edge(2, 3, weight=1.0)
+        g.add_edge(1, 3, weight=10.0)
+        router = HermesRouter.build(g)
+
+        called = {"bf": 0}
+
+        def _spy(*_a, **_kw):
+            called["bf"] += 1
+            raise AssertionError("BF fallback was triggered on a clean graph")
+
+        monkeypatch.setattr(nx, "bellman_ford_path", _spy)
+        assert router.shortest_path(1, 3) == [1, 2, 3]
+        assert called["bf"] == 0
+
+    def test_chordal_shortcut_expansion(self):
+        """Reconstructed path must use only original edges, not fill-ins."""
+        g = nx.DiGraph()
+        # 4-cycle structure forces tree-decomposition to introduce a fill-in.
+        for u, v in [("a", "b"), ("b", "c"), ("c", "d"), ("d", "a"), ("a", "d"), ("d", "b")]:
+            g.add_edge(u, v, weight=1.0)
+        path = HermesRouter.build(g).shortest_path("a", "c")
+        assert path is not None
+        for u, v in zip(path[:-1], path[1:]):
+            assert g.has_edge(u, v), f"non-original edge in path: ({u}, {v})"
+
+    def test_cyclic_witness_chain_returns_false_not_recursion_error(self):
+        """Cyclic witness chain must return False, not blow the stack."""
+        from pydefi.pathfinder.hermes import _expand_chordal_edge
+
+        g = nx.DiGraph()
+        g.add_edge("a", "b", weight=1.0)
+        g.add_edge("b", "c", weight=1.0)
+        g.add_edge("a", "c", weight=10.0)
+        # Every shortcut descends into another shortcut; nothing bottoms out.
+        witness = {"a": {"c": "b", "b": "c"}, "b": {"c": "a"}}
+        assert _expand_chordal_edge("a", "c", g, witness, []) is False
+
 
 def _three_token_two_path_graph():
     """WETH → USDC direct, plus WETH → DAI → USDC: lets top_k find diverse first-hops."""
