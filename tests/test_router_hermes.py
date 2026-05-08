@@ -121,3 +121,43 @@ def test_hermes_default_remains_hop_dp():
     fix = core_periphery_fixture(n_periphery=10, seed=0)
     r = Router(fix.pool_graph)
     assert r.candidate_solver == "hop_dp"
+
+
+# ---------------------------------------------------------------------------
+# weight_mode plumbing — Hermes can rank by amount_out instead of spot
+# ---------------------------------------------------------------------------
+
+
+def test_amount_out_mode_requires_positive_probe():
+    fix = core_periphery_fixture(n_periphery=5, seed=0)
+    with pytest.raises(ValueError, match="probe_amount"):
+        Router(fix.pool_graph, candidate_solver="hermes", weight_mode="amount_out")
+
+
+@pytest.mark.parametrize(
+    "router_kwargs,expected",
+    [
+        ({}, {"weight": "spot", "probe_amount": 0}),
+        (
+            {"weight_mode": "amount_out", "probe_amount": 10**18},
+            {"weight": "amount_out", "probe_amount": 10**18},
+        ),
+    ],
+    ids=["spot_default", "amount_out_with_probe"],
+)
+def test_router_propagates_weight_mode_kwargs_to_from_pool_graph(monkeypatch, router_kwargs, expected):
+    """Spy-asserts kwargs reach from_pool_graph — end-output tests can pass even when plumbing breaks."""
+    from pydefi.pathfinder import router as router_mod
+
+    fix = core_periphery_fixture(n_periphery=5, seed=0)
+    captured: dict = {}
+    real = router_mod.from_pool_graph
+
+    def _spy(graph, *, weight="spot", probe_amount=0):
+        captured["weight"] = weight
+        captured["probe_amount"] = probe_amount
+        return real(graph, weight=weight, probe_amount=probe_amount)
+
+    monkeypatch.setattr(router_mod, "from_pool_graph", _spy)
+    Router(fix.pool_graph, candidate_solver="hermes", **router_kwargs)._ensure_hermes()
+    assert captured == expected

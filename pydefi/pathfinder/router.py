@@ -20,7 +20,7 @@ from typing import Literal
 from pydefi.exceptions import NoRouteFoundError
 from pydefi.pathfinder.asgm import asgm_optimize
 from pydefi.pathfinder.graph import PoolEdge, PoolGraph
-from pydefi.pathfinder.hermes import HermesRouter, from_pool_graph
+from pydefi.pathfinder.hermes import HermesRouter, WeightMode, from_pool_graph
 from pydefi.pathfinder.multipath import MultiEdgePath, _distribute_int, merge_and_expand
 from pydefi.types import MAX_BPS, Address, RouteDAG, RouteSplit, RouteSwap, SwapRoute, SwapStep, Token, TokenAmount
 
@@ -43,6 +43,12 @@ class Router:
             from :mod:`pydefi.pathfinder.hermes` — recommended for large
             graphs (≥ 1k tokens) or when ``max_hops`` would exclude
             economically meaningful long-tail routes.
+        weight_mode: Hermes edge weights. ``"spot"`` (default) uses
+            post-fee marginal rate; ``"amount_out"`` bakes finite-input
+            slippage into the seed via ``edge.amount_out(probe_amount)`` —
+            better ranking for large trades.
+        probe_amount: Probe input size (raw units) for ``weight_mode=
+            "amount_out"``. Required > 0 in that mode; ignored otherwise.
     """
 
     def __init__(
@@ -51,10 +57,16 @@ class Router:
         max_hops: int = 3,
         *,
         candidate_solver: CandidateSolver = "hop_dp",
+        weight_mode: WeightMode = "spot",
+        probe_amount: int = 0,
     ) -> None:
+        if weight_mode == "amount_out" and probe_amount <= 0:
+            raise ValueError("probe_amount must be > 0 when weight_mode='amount_out'")
         self.graph = graph
         self.max_hops = max_hops
         self.candidate_solver: CandidateSolver = candidate_solver
+        self.weight_mode: WeightMode = weight_mode
+        self.probe_amount = probe_amount
         # Lazy-built Hermes router; reset whenever the graph signature changes
         # (we don't track that yet — callers must build a new Router after
         # mutating PoolGraph).
@@ -62,7 +74,8 @@ class Router:
 
     def _ensure_hermes(self) -> HermesRouter:
         if self._hermes is None:
-            self._hermes = HermesRouter.build(from_pool_graph(self.graph))
+            nx_graph = from_pool_graph(self.graph, weight=self.weight_mode, probe_amount=self.probe_amount)
+            self._hermes = HermesRouter.build(nx_graph)
         return self._hermes
 
     def find_best_route(
