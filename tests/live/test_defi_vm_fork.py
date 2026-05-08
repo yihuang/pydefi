@@ -18,6 +18,7 @@ Run with::
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -1086,11 +1087,12 @@ class TestApproveProxyFork:
 
 
 async def _v3_pool_edge(w3, pool_address: Address, token_in, token_out) -> V3PoolEdge:
-    pool = UNISWAP_V3_POOL(to=POOL_WETH_USDC_500)
-    token0_addr = await pool.fns.token0().call(w3)
-    slot0 = await pool.fns.slot0().call(w3)
-    liquidity = await pool.fns.liquidity().call(w3)
-    fee = await pool.fns.fee().call(w3)
+    token0_addr, slot0, liquidity, fee = await asyncio.gather(
+        UNISWAP_V3_POOL.fns.token0().call(w3, to=pool_address),
+        UNISWAP_V3_POOL.fns.slot0().call(w3, to=pool_address),
+        UNISWAP_V3_POOL.fns.liquidity().call(w3, to=pool_address),
+        UNISWAP_V3_POOL.fns.fee().call(w3, to=pool_address),
+    )
     return V3PoolEdge(
         token_in=token_in,
         token_out=token_out,
