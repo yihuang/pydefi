@@ -20,6 +20,7 @@ dependencies = [
     "sqlmodel>=0.0.38",
     "base58>=2.1.0",
     "vyper @ git+https://github.com/vyperlang/vyper.git@bdf00d314d335565be40bd064975b514e19b7029",
+    "networkx>=3.6.1",
 ]
 
 [project.optional-dependencies]

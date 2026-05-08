@@ -15,12 +15,16 @@ making simple DP relaxation both correct and safe.
 from __future__ import annotations
 
 from decimal import Decimal
+from typing import Literal
 
 from pydefi.exceptions import NoRouteFoundError
 from pydefi.pathfinder.asgm import asgm_optimize
 from pydefi.pathfinder.graph import PoolEdge, PoolGraph
+from pydefi.pathfinder.hermes import HermesRouter, from_pool_graph
 from pydefi.pathfinder.multipath import MultiEdgePath, _distribute_int, merge_and_expand
 from pydefi.types import MAX_BPS, Address, RouteDAG, RouteSplit, RouteSwap, SwapRoute, SwapStep, Token, TokenAmount
+
+CandidateSolver = Literal["hop_dp", "hermes"]
 
 
 class Router:
@@ -31,12 +35,35 @@ class Router:
 
     Args:
         graph: The pool graph to search.
-        max_hops: Maximum number of swap hops allowed (default ``3``).
+        max_hops: Maximum number of swap hops allowed (default ``3``). Ignored
+            when ``candidate_solver == "hermes"`` since Hermes has no hop cap.
+        candidate_solver: Which top-K candidate-discovery strategy
+            :meth:`find_optimal_split` uses. ``"hop_dp"`` (default) is the
+            hop-bounded DP; ``"hermes"`` is the treewidth-parameterized SSSP
+            from :mod:`pydefi.pathfinder.hermes` — recommended for large
+            graphs (≥ 1k tokens) or when ``max_hops`` would exclude
+            economically meaningful long-tail routes.
     """
 
-    def __init__(self, graph: PoolGraph, max_hops: int = 3) -> None:
+    def __init__(
+        self,
+        graph: PoolGraph,
+        max_hops: int = 3,
+        *,
+        candidate_solver: CandidateSolver = "hop_dp",
+    ) -> None:
         self.graph = graph
         self.max_hops = max_hops
+        self.candidate_solver: CandidateSolver = candidate_solver
+        # Lazy-built Hermes router; reset whenever the graph signature changes
+        # (we don't track that yet — callers must build a new Router after
+        # mutating PoolGraph).
+        self._hermes: HermesRouter | None = None
+
+    def _ensure_hermes(self) -> HermesRouter:
+        if self._hermes is None:
+            self._hermes = HermesRouter.build(from_pool_graph(self.graph))
+        return self._hermes
 
     def find_best_route(
         self,
@@ -465,15 +492,19 @@ class Router:
     ) -> list[SwapRoute]:
         """Find the top-*n* diverse routes by output, deduplicated by first-hop pool.
 
-        Similar to :meth:`find_best_route` but tracks the best *top_n* paths
-        at each ``(token, hop)`` state, then deduplicates by first-hop pool
-        address so each returned route starts through a genuinely different pool.
+        Dispatches based on ``self.candidate_solver``:
+
+        * ``"hop_dp"`` (default): hop-bounded DP that tracks the best *top_n*
+          paths at each ``(token, hop)`` state, then deduplicates by first-hop
+          pool. Capped at ``max_hops`` (default 3).
+        * ``"hermes"``: Hermes treewidth-parameterized SSSP plus iterative
+          first-hop masking. No hop cap; ``max_hops`` is ignored.
 
         Args:
             amount_in: Exact input amount.
             token_out: Desired output token.
             top_n: Maximum number of diverse routes to return.
-            max_hops: Maximum hop depth. Defaults to ``self.max_hops``.
+            max_hops: Maximum hop depth (``"hop_dp"`` only). Defaults to ``self.max_hops``.
 
         Returns:
             List of :class:`~pydefi.types.SwapRoute` sorted by output descending.
@@ -482,6 +513,8 @@ class Router:
         Raises:
             :class:`~pydefi.exceptions.NoRouteFoundError`: If no path exists.
         """
+        if self.candidate_solver == "hermes":
+            return self._find_top_routes_hermes(amount_in, token_out, top_n)
         effective_max_hops = self.max_hops if max_hops is None else max_hops
         src = amount_in.token
         dst_addr: Address = token_out.address
@@ -561,6 +594,81 @@ class Router:
                     price_impact=self._estimate_price_impact(final_path, amount_in.amount),
                 )
             )
+        return routes
+
+    def _find_top_routes_hermes(
+        self,
+        amount_in: TokenAmount,
+        token_out: Token,
+        top_n: int,
+    ) -> list[SwapRoute]:
+        """Hermes-backed candidate discovery: top-K via SSSP + iterative pool masking.
+
+        Returns :class:`SwapRoute` objects whose ``amount_out`` is computed by
+        actually walking each path's edges with ``edge.amount_out`` — Hermes
+        only ranks by ``-log(spot rate)``, so we re-quote at the requested
+        input size before ASGM consumes the candidates.
+        """
+        src = amount_in.token
+        dst_addr: Address = token_out.address
+        if src.address == dst_addr:
+            raise ValueError("token_in and token_out must be different")
+
+        hermes = self._ensure_hermes()
+        node_paths = hermes.top_k_paths(src.address, dst_addr, top_n)
+        if not node_paths:
+            raise NoRouteFoundError(f"No route found from {src.symbol} to {token_out.symbol}")
+
+        # Each Hermes path is a list of token addresses. Walk the *original*
+        # PoolGraph edges underneath (recovered from edge_data['edge']) and
+        # quote amount_out at the actual input size.
+        routes: list[SwapRoute] = []
+        # The first iteration's HermesRouter holds the canonical graph; later
+        # iterations run on masked subgraphs — but every path returned uses
+        # only edges present in the *original* graph, so re-walk via self.graph.
+        for path in node_paths:
+            edges_along: list[PoolEdge] = []
+            cur_amount = amount_in.amount
+            ok = True
+            for u_addr, v_addr in zip(path, path[1:]):
+                u_token = hermes.graph.nodes[u_addr]
+                v_token = hermes.graph.nodes[v_addr]
+                # The chosen PoolEdge for (u, v) was stashed at adapter time.
+                edge_data = hermes.graph.get_edge_data(u_addr, v_addr)
+                if edge_data is None or "edge" not in edge_data:
+                    ok = False
+                    break
+                edge = edge_data["edge"]
+                edges_along.append(edge)
+                cur_amount = edge.amount_out(cur_amount)
+                if cur_amount <= 0:
+                    ok = False
+                    break
+                # Suppress unused-var lint.
+                del u_token, v_token
+            if not ok or not edges_along:
+                continue
+            steps = [
+                SwapStep(
+                    token_in=e.token_in,
+                    token_out=e.token_out,
+                    pool_address=e.pool_address,
+                    protocol=e.protocol,
+                    fee=e.fee_bps,
+                )
+                for e in edges_along
+            ]
+            routes.append(
+                SwapRoute(
+                    steps=steps,
+                    amount_in=amount_in,
+                    amount_out=TokenAmount(token=token_out, amount=cur_amount),
+                    price_impact=self._estimate_price_impact(edges_along, amount_in.amount),
+                )
+            )
+        # Sort by amount_out descending (Hermes ordered by -log(rate); finite-
+        # input quoting can shuffle near-tied routes).
+        routes.sort(key=lambda r: r.amount_out.amount, reverse=True)
         return routes
 
     def simulate(self, dag: RouteDAG, amount_in: int) -> int:

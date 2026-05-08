@@ -1,6 +1,5 @@
 """Tests for pydefi.pathfinder — graph and router."""
 
-import math
 from decimal import Decimal
 
 import pytest
@@ -11,6 +10,7 @@ from pydefi.pathfinder.graph import PoolEdge, PoolGraph, ReserveOverlay, V3PoolE
 from pydefi.pathfinder.multipath import MultiEdgePath, PathWeights, merge_and_expand
 from pydefi.pathfinder.router import Router
 from pydefi.types import Address, ChainId, RouteDAG, RouteSplit, RouteSwap, Token, TokenAmount
+from tests._fixtures import make_v3_edge
 from tests.addrs import DAI, USDC, WETH
 
 # ---------------------------------------------------------------------------
@@ -161,48 +161,15 @@ class TestPoolEdge:
 # ---------------------------------------------------------------------------
 
 
-def _make_v3_edge(
-    token_in,
-    token_out,
-    pool_address,
-    is_token0_in: bool,
-    price_usdc_per_weth: float = 2000.0,
-    fee_bps: int = 30,
-):
-    """Build a V3PoolEdge with a synthetic sqrtPriceX96 at the given USDC/WETH price."""
-    # P_raw = price_raw_token1_per_token0 (in smallest units)
-    if is_token0_in:
-        # token_in = WETH (token0), token_out = USDC (token1)
-        P_raw = price_usdc_per_weth * (10**token_out.decimals) / (10**token_in.decimals)
-    else:
-        # token_in = USDC (token1), token_out = WETH (token0)
-        # P_raw is still defined as token1/token0 for the underlying pool
-        P_raw = price_usdc_per_weth * (10**token_in.decimals) / (10**token_out.decimals)
-    sqrtP_real = math.sqrt(P_raw)
-    Q96 = 2**96
-    sqrt_price_x96 = int(sqrtP_real * Q96)
-    liquidity = 5 * 10**22  # large pool
-    return V3PoolEdge(
-        token_in=token_in,
-        token_out=token_out,
-        pool_address=pool_address,
-        protocol="UniswapV3",
-        fee_bps=fee_bps,
-        sqrt_price_x96=sqrt_price_x96,
-        liquidity=liquidity,
-        is_token0_in=is_token0_in,
-    )
-
-
 class TestV3PoolEdge:
     def test_spot_price_token0_in(self):
         """Spot price should be ~2000 USDC/WETH when WETH is token0."""
-        edge = _make_v3_edge(WETH, USDC, POOL_A, is_token0_in=True)
+        edge = make_v3_edge(WETH, USDC, POOL_A, is_token0_in=True)
         assert abs(edge.spot_price - Decimal("2000")) < Decimal("1")
 
     def test_spot_price_token1_in(self):
         """Spot price should be ~1/2000 WETH/USDC when USDC is token1 in."""
-        edge = _make_v3_edge(USDC, WETH, POOL_A, is_token0_in=False)
+        edge = make_v3_edge(USDC, WETH, POOL_A, is_token0_in=False)
         assert abs(edge.spot_price - Decimal("1") / Decimal("2000")) < Decimal("0.001")
 
     def test_spot_price_zero_sqrt_price(self):
@@ -218,13 +185,13 @@ class TestV3PoolEdge:
 
     def test_amount_out_token0_in(self):
         """Swapping 1 WETH should yield ~1994 USDC (after 0.3% fee at $2000)."""
-        edge = _make_v3_edge(WETH, USDC, POOL_A, is_token0_in=True)
+        edge = make_v3_edge(WETH, USDC, POOL_A, is_token0_in=True)
         out = edge.amount_out(10**18)
         assert 1_990 * 10**6 < out < 1_998 * 10**6, f"Got {out / 10**6:.2f} USDC"
 
     def test_amount_out_token1_in(self):
         """Swapping 2000 USDC should yield ~0.997 WETH (after 0.3% fee)."""
-        edge = _make_v3_edge(USDC, WETH, POOL_A, is_token0_in=False)
+        edge = make_v3_edge(USDC, WETH, POOL_A, is_token0_in=False)
         out = edge.amount_out(2000 * 10**6)
         assert int(0.994 * 10**18) < out < int(0.998 * 10**18), f"Got {out / 10**18:.6f} WETH"
 
@@ -251,21 +218,21 @@ class TestV3PoolEdge:
         assert edge.amount_out(10**18) == 0
 
     def test_log_weight_finite(self):
-        edge = _make_v3_edge(WETH, USDC, POOL_A, is_token0_in=True)
+        edge = make_v3_edge(WETH, USDC, POOL_A, is_token0_in=True)
         weight = edge.log_weight(10**18)
         assert weight < float("inf")
         assert weight > 0  # fee causes loss
 
     def test_estimate_price_impact_token0_in(self):
         """V3 price impact should be a sensible positive fraction."""
-        edge = _make_v3_edge(WETH, USDC, POOL_A, is_token0_in=True)
+        edge = make_v3_edge(WETH, USDC, POOL_A, is_token0_in=True)
         impact = edge.estimate_price_impact(10**18)  # 1 WETH
         assert not impact.is_nan()
         assert Decimal(0) < impact < Decimal(1)
 
     def test_estimate_price_impact_token1_in(self):
         """V3 price impact should be sensible for token1→token0 direction."""
-        edge = _make_v3_edge(USDC, WETH, POOL_A, is_token0_in=False)
+        edge = make_v3_edge(USDC, WETH, POOL_A, is_token0_in=False)
         impact = edge.estimate_price_impact(2000 * 10**6)  # 2000 USDC
         assert not impact.is_nan()
         assert Decimal(0) < impact < Decimal(1)
@@ -295,8 +262,8 @@ class TestV3PoolEdge:
     def test_v3_edge_in_router(self):
         """Router should find a route through a V3 pool edge."""
         g = PoolGraph()
-        edge_in = _make_v3_edge(WETH, USDC, POOL_A, is_token0_in=True)
-        edge_out = _make_v3_edge(USDC, WETH, POOL_A, is_token0_in=False)
+        edge_in = make_v3_edge(WETH, USDC, POOL_A, is_token0_in=True)
+        edge_out = make_v3_edge(USDC, WETH, POOL_A, is_token0_in=False)
         g.add_pool(edge_in)
         g.add_pool(edge_out)
         router = Router(g)
@@ -829,30 +796,6 @@ def _v2_weth_usdc_edge(*, is_token0_in: bool = True) -> PoolEdge:
     )
 
 
-def _two_pool_graph(*, deep: bool = True) -> PoolGraph:
-    """WETH↔USDC via two parallel V2 pools (deep=True ⇒ similar depth)."""
-    g = PoolGraph()
-    g.add_bidirectional_pool(
-        WETH,
-        USDC,
-        POOL_A,
-        "UniswapV2",
-        reserve_a=1_000 * 10**18,
-        reserve_b=2_000_000 * 10**6,
-        fee_bps=30,
-    )
-    g.add_bidirectional_pool(
-        WETH,
-        USDC,
-        POOL_B,
-        "UniswapV2",
-        reserve_a=1_000 * 10**18 if deep else 50 * 10**18,
-        reserve_b=2_000_000 * 10**6 if deep else 100_000 * 10**6,
-        fee_bps=30,
-    )
-    return g
-
-
 class TestReserveOverlay:
     def test_empty(self):
         ov = ReserveOverlay()
@@ -960,7 +903,7 @@ class TestPoolEdgeOverlay:
 
 class TestV3PoolEdgeOverlay:
     def test_record_swap_advances_sqrt_price(self):
-        edge = _make_v3_edge(WETH, USDC, POOL_B, is_token0_in=True, fee_bps=5)
+        edge = make_v3_edge(WETH, USDC, POOL_B, is_token0_in=True, fee_bps=5)
         ov = ReserveOverlay()
         x = 10**18
         edge.record_swap(ov, x, edge.amount_out(x))
@@ -968,7 +911,7 @@ class TestV3PoolEdgeOverlay:
         assert 0 < ov.v3_sqrt_price[POOL_B] < edge.sqrt_price_x96
 
     def test_overlay_decreases_subsequent_output(self):
-        edge = _make_v3_edge(WETH, USDC, POOL_B, is_token0_in=True, fee_bps=5)
+        edge = make_v3_edge(WETH, USDC, POOL_B, is_token0_in=True, fee_bps=5)
         ov = ReserveOverlay()
         x = 10 * 10**18
         y1 = edge.amount_out(x)
@@ -977,8 +920,8 @@ class TestV3PoolEdgeOverlay:
         assert 0 < y2 < y1
 
     def test_overlay_couples_bidirectional_v3(self):
-        forward = _make_v3_edge(WETH, USDC, POOL_B, is_token0_in=True, fee_bps=5)
-        reverse = _make_v3_edge(USDC, WETH, POOL_B, is_token0_in=False, fee_bps=5)
+        forward = make_v3_edge(WETH, USDC, POOL_B, is_token0_in=True, fee_bps=5)
+        reverse = make_v3_edge(USDC, WETH, POOL_B, is_token0_in=False, fee_bps=5)
         ov = ReserveOverlay()
         x = 10**18
         forward.record_swap(ov, x, forward.amount_out(x))
@@ -1043,12 +986,10 @@ class TestMultiEdgePath:
         assert path.amount_out(0, ws) == 0
 
     def test_amount_out_tiny_input_through_50_50_bundle_conserves_input(self):
-        """1 wei split 50/50 must not be silently zeroed out (regression for
-        Findings.md High: floor-allocation dropped the entire hop input).
+        """1 wei split 50/50 across a 2-edge bundle must not be zeroed out.
 
-        Uses a tiny pool (reserves of magnitude ~10^3) so 1 wei produces a
-        nonzero amount_out — that's where the bug bites: with deep pools the
-        single-edge case also returns 0, masking the conservation issue.
+        Tiny reserves (~10^3) so single-edge amount_out > 0 — deep pools
+        return 0 and mask the floor-allocation bug.
         """
         e1 = _v2_pool_edge(WETH, USDC, POOL_A, reserve_in=1_000, reserve_out=2_000, fee_bps=0)
         e2 = _v2_pool_edge(WETH, USDC, POOL_B, reserve_in=1_000, reserve_out=2_000, fee_bps=0)
@@ -1225,9 +1166,7 @@ class TestASGM:
         assert asgm_optimize([], 10**18) == []
 
     def test_tiny_input_across_paths_conserves_amount_in(self):
-        """amount_in=2 with 3 paths must not silently allocate [0,0,0]
-        (regression for Findings.md Medium: floor distribution dropped
-        cross-path remainder)."""
+        """amount_in=2 with 3 paths must not silently allocate [0,0,0] under floor distribution."""
         e1 = _v2_pool_edge(WETH, USDC, POOL_A)
         e2 = _v2_pool_edge(WETH, USDC, POOL_B)
         e3 = _v2_pool_edge(WETH, USDC, POOL_C)
