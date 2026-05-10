@@ -9,32 +9,32 @@ Docs: https://docs.relay.link/
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 import aiohttp
 
+from pydefi._utils import encode_address
 from pydefi.bridge.base import BaseBridge
 from pydefi.exceptions import BridgeError
-from pydefi.types import BridgeQuote, Token, TokenAmount
+from pydefi.types import NATIVE_SENTINEL, Address, BridgeQuote, Token, TokenAmount
 
 _RELAY_API_BASE = "https://api.relay.link"
 
 # Relay uses the zero address for native ETH; the common EeeE... sentinel
 # must be normalized before being sent to the API.
 _RELAY_NATIVE = "0x0000000000000000000000000000000000000000"
-_EEEEE_SENTINEL = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
 
 
-def _relay_currency(token_address: str) -> str:
+def _relay_currency(token: Token) -> str:
     """Return the currency address that Relay's API expects.
 
     The Relay API uses the zero address for native ETH.  Convert the
-    common ``0xEeEe...EEeE`` sentinel to the zero address so the API
+    common ``0xEeEe...`` sentinel to the zero address so the API
     does not reject it with ``INVALID_INPUT_CURRENCY``.
     """
-    if token_address.lower() == _EEEEE_SENTINEL:
+    if token.address == NATIVE_SENTINEL:
         return _RELAY_NATIVE
-    return token_address
+    return token.encoded_address
 
 
 class Relay(BaseBridge):
@@ -64,7 +64,7 @@ class Relay(BaseBridge):
         token_in: Token,
         token_out: Token,
         amount_in: TokenAmount,
-        recipient: str,
+        recipient: Address,
         **kwargs: Any,
     ) -> dict[str, Any]:
         """Call the Relay ``/quote`` endpoint.
@@ -83,11 +83,11 @@ class Relay(BaseBridge):
             :class:`~pydefi.exceptions.BridgeError`: On API error.
         """
         payload: dict[str, Any] = {
-            "user": recipient,
+            "user": encode_address(recipient, self.src_chain_id),
             "originChainId": self.src_chain_id,
             "destinationChainId": self.dst_chain_id,
-            "originCurrency": _relay_currency(token_in.address),
-            "destinationCurrency": _relay_currency(token_out.address),
+            "originCurrency": _relay_currency(token_in),
+            "destinationCurrency": _relay_currency(token_out),
             "amount": str(amount_in.amount),
             "tradeType": "EXACT_INPUT",
             **kwargs,
@@ -106,7 +106,7 @@ class Relay(BaseBridge):
         token_in: Token,
         token_out: Token,
         amount_in: TokenAmount,
-        recipient: Optional[str] = None,
+        recipient: Address | None = None,
         **kwargs: Any,
     ) -> BridgeQuote:
         """Get a Relay bridge quote.
@@ -125,7 +125,7 @@ class Relay(BaseBridge):
         Raises:
             :class:`~pydefi.exceptions.BridgeError`: On API error.
         """
-        _recipient = recipient or ("0x" + "00" * 20)
+        _recipient: Address = recipient or Address(b"\x00" * 20)
         data = await self._request_quote(token_in, token_out, amount_in, _recipient, **kwargs)
 
         details = data.get("details", {})
@@ -158,7 +158,7 @@ class Relay(BaseBridge):
         token_in: Token,
         token_out: Token,
         amount_in: TokenAmount,
-        recipient: str,
+        recipient: Address,
         slippage_bps: int = 50,
         **kwargs: Any,
     ) -> dict[str, Any]:

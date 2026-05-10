@@ -12,26 +12,26 @@ from eth_contract import Contract
 from pydefi.exceptions import NoRouteFoundError
 from pydefi.pathfinder.graph import PoolGraph, V3PoolEdge
 from pydefi.pathfinder.router import Router
-from pydefi.types import TokenAmount
+from pydefi.types import RouteDAG, RouteSplit, TokenAmount
+from pydefi.vm import build_quote_program_for_dag
+from tests.addrs import (
+    DAI,
+    PAIR_USDC_DAI,
+    PAIR_USDC_USDT,
+    PAIR_WETH_DAI,
+    PAIR_WETH_USDC,
+    POOL_DAI_USDC_100,
+    POOL_WETH_USDC_500,
+    POOL_WETH_USDC_3000,
+    USDC,
+    USDT,
+    WETH,
+)
 
-from .conftest import DAI, USDC, USDT, WETH
-
-# ---------------------------------------------------------------------------
-# Well-known Uniswap V2 pair addresses (Ethereum mainnet)
-# ---------------------------------------------------------------------------
-
-PAIR_WETH_USDC = "0xB4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc"  # WETH/USDC
-PAIR_WETH_DAI = "0xA478c2975Ab1Ea89e8196811F51A7B7Ade33eB11"  # WETH/DAI
-PAIR_USDC_DAI = "0xAE461cA67B15dc8dc81CE7615e0320dA1A9aB8D5"  # USDC/DAI
-PAIR_USDC_USDT = "0x3041CbD36888bECc7bbCBc0045E3B1f144466f5f"  # USDC/USDT
-
-# ---------------------------------------------------------------------------
-# Well-known Uniswap V3 pool addresses (Ethereum mainnet)
-# ---------------------------------------------------------------------------
-
-POOL_V3_WETH_USDC_500 = "0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640"  # WETH/USDC 0.05%
-POOL_V3_WETH_USDC_3000 = "0x8ad599c3A0ff1De082011EFDDc58f1908eb6e6D8"  # WETH/USDC 0.3%
-POOL_V3_USDC_DAI_100 = "0x5777d92f208679DB4b9778590Fa3CAB3aC9e2168"  # USDC/DAI 0.01%
+# Local aliases matching names used in the test bodies below
+POOL_V3_WETH_USDC_500 = POOL_WETH_USDC_500
+POOL_V3_WETH_USDC_3000 = POOL_WETH_USDC_3000
+POOL_V3_USDC_DAI_100 = POOL_DAI_USDC_100
 
 _PAIR_ABI = [
     "function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast)",
@@ -221,16 +221,48 @@ class TestRouterLive:
         with pytest.raises(NoRouteFoundError):
             router.find_best_route(amount_in, USDC)
 
-    async def test_route_fee_in_correct_units(self, eth_w3):
-        """SwapStep.fee from router should be in hundredths of a basis-point."""
+    async def test_v2_route_fee_in_correct_units(self, eth_w3):
+        """SwapStep.fee for a V2 pool should be in basis points (base 10000).
+
+        The standard Uniswap V2 pool has fee_bps=30 (0.3%). PoolEdge.fee returns
+        fee_bps directly, so SwapStep.fee is always in bps regardless of protocol.
+        """
         g = await self._build_v2_graph(eth_w3)
         router = Router(g)
         amount_in = TokenAmount.from_human(WETH, "1")
         route = router.find_best_route(amount_in, USDC)
 
-        # Uniswap V2 is 30 bps; in hundredths of a bp that is 3000
+        # V2 fee_bps=30 (0.3%)
         for step in route.steps:
-            assert step.fee == 3000, f"Expected fee=3000 (30 bps in hundredths), got fee={step.fee}"
+            assert step.fee == 30, f"Expected V2 fee=30 (0.3% in bps), got fee={step.fee}"
+
+    async def test_dag_nested_split_on_empty_leg_live(self, eth_w3):
+        """Nested split from an empty active leg should compile with live pool edges."""
+        g = await self._build_v2_graph(eth_w3)
+        edge_weth_usdc = next(edge for edge in g.edges_from(WETH) if edge.token_out == USDC)
+        edge_weth_dai = next(edge for edge in g.edges_from(WETH) if edge.token_out == DAI)
+        edge_dai_usdc = next(edge for edge in g.edges_from(DAI) if edge.token_out == USDC)
+
+        dag = (
+            RouteDAG()
+            .from_token(WETH)
+            .split()
+            .leg(5000)
+            .split()
+            .leg(5000)
+            .swap(USDC, edge_weth_usdc)
+            .leg(5000)
+            .swap(DAI, edge_weth_dai)
+            .swap(USDC, edge_dai_usdc)
+            .merge()
+            .leg(5000)
+            .swap(USDC, edge_weth_usdc)
+            .merge()
+        )
+        payload = dag.to_dict()
+        assert isinstance(payload["actions"][0], RouteSplit)
+        bc = build_quote_program_for_dag(dag, amount_in=10**18).build()
+        assert len(bc) > 0
 
 
 @pytest.mark.live
@@ -283,6 +315,21 @@ class TestRouterV3Live:
         assert 500 * 10**18 < route.amount_out.amount < 10_000 * 10**18, (
             f"WETH→DAI (V3) out of expected range: {route.amount_out.human_amount} DAI"
         )
+
+    async def test_v3_route_fee_in_correct_units(self, eth_w3):
+        """SwapStep.fee for a V3 pool should be in basis points (base 10000).
+
+        fee_tier=500 (0.05%) is stored as fee_bps=5 (fee_tier // 100).
+        PoolEdge.fee returns fee_bps directly, so SwapStep.fee is always in bps.
+        """
+        g = await self._build_v3_graph(eth_w3)
+        router = Router(g)
+        amount_in = TokenAmount.from_human(WETH, "1")
+        route = router.find_best_route(amount_in, USDC)
+
+        # POOL_V3_WETH_USDC_500 has fee_tier=500 (0.05%); fee_bps=5
+        assert len(route.steps) == 1
+        assert route.steps[0].fee == 5, f"Expected V3 fee=5 (0.05% in bps), got fee={route.steps[0].fee}"
 
     async def test_mixed_v2_v3_graph(self, eth_w3):
         """Router should pick the best route across a mixed V2/V3 graph."""

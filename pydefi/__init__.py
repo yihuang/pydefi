@@ -47,6 +47,7 @@ Solana quick-start::
     )
 """
 
+from pydefi._utils import decode_address, encode_address
 from pydefi.exceptions import (
     AggregatorError,
     BridgeError,
@@ -74,8 +75,14 @@ from pydefi.simulate import (
     trace_transaction,
 )
 from pydefi.types import (
+    Address,
     BridgeQuote,
     ChainId,
+    Hash,
+    RouteDAG,
+    RouteSplit,
+    RouteSplitLeg,
+    RouteSwap,
     SwapRoute,
     SwapStep,
     SwapTransaction,
@@ -88,12 +95,21 @@ __version__ = "0.1.0"
 __all__ = [
     # Types
     "ChainId",
+    "Address",
+    "Hash",
     "Token",
     "TokenAmount",
+    "RouteSwap",
+    "RouteSplitLeg",
+    "RouteSplit",
+    "RouteDAG",
     "SwapStep",
     "SwapRoute",
     "SwapTransaction",
     "BridgeQuote",
+    # Address utilities
+    "encode_address",
+    "decode_address",
     # Pool data
     "PoolData",
     "BasePoolDataProvider",

@@ -19,23 +19,36 @@ Run with::
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
 import solcx
-from eth_abi import decode
+from eth_abi import decode as abi_decode
+from eth_contract import Contract
+from eth_contract.erc20 import ERC20
+from hexbytes import HexBytes
 from web3.exceptions import ContractLogicError, Web3RPCError
+from web3.types import Wei
 
+from pydefi.abi.amm import UNISWAP_V3_POOL
+from pydefi.abi.codec import codec
+from pydefi.pathfinder.graph import PoolEdge, V3PoolEdge
+from pydefi.types import Address, ChainId, RouteDAG, Token
+from pydefi.vm import build_execution_program_for_dag, build_quote_program_for_dag
 from pydefi.vm.swap import (
-    SplitLeg,
-    SwapHop,
-    SwapProtocol,
-    build_multi_hop_program,
-    build_split_program,
     encode_v2_callback_data,
     encode_v3_callback_data,
     encode_v3_path,
     v3_pool_swap_calldata,
+)
+from tests.addrs import (
+    DAI,
+    PAIR_WETH_DAI,
+    POOL_WETH_USDC_500,
+    UNISWAP_V3_QUOTER,
+    USDC,
+    WETH,
 )
 from tests.live.sol_utils import MOCK_TOKEN_SOL, compile_sol_file, compile_sol_source, deploy, ensure_solc
 
@@ -49,14 +62,11 @@ DEFI_VM_SOL_FILE = REPO_ROOT / "pydefi" / "vm" / "DeFiVM.sol"
 # Well-known mainnet addresses (for ABI/selector tests only; no live calls)
 # ---------------------------------------------------------------------------
 
-WETH_ADDR = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
-USDC_ADDR = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
-DAI_ADDR = "0x6B175474E89094C44Da98b954EedeAC495271d0F"
+WETH_ADDR: Address = WETH.address
+USDC_ADDR: Address = USDC.address
+DAI_ADDR: Address = DAI.address
 
-# Uniswap V3 SwapRouter (V1) — mainnet, used only for ABI calldata tests
-UNISWAP_V3_ROUTER = "0xE592427A0AEce92De3Edee1F18E0157C05861564"
-# Uniswap V2 Router02 — mainnet, used only for ABI calldata tests
-UNISWAP_V2_ROUTER = "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D"
+_WETH_DEPOSIT = Contract.from_abi(["function deposit() payable"])
 
 # ---------------------------------------------------------------------------
 # Mock pool contracts (inline Solidity)
@@ -269,6 +279,17 @@ contract MockV2Pair {
 }
 """
 
+MOCK_V2_PAIR = Contract.from_abi(
+    [
+        "function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast)",
+        "function token0() external view returns (address)",
+        "function token1() external view returns (address)",
+        "function swap(uint amount0Out, uint amount1Out, address to, bytes calldata data) external",
+        "function simulateFlashSwap(address callee, uint256 amountOut, bytes calldata data, uint256 repayAmount) external",
+        "function simulateAerodromeHook(address callee, uint256 amountOut, bytes calldata data, uint256 repayAmount) external",
+    ]
+)
+
 
 # ---------------------------------------------------------------------------
 # Module-scoped fixtures
@@ -373,8 +394,8 @@ class TestCallbackDataEncoding:
     def test_encode_v3_callback_data_roundtrip(self):
         """The encoded address can be decoded back."""
         data = encode_v3_callback_data(WETH_ADDR)
-        (decoded,) = decode(["address"], data)
-        assert decoded.lower() == WETH_ADDR.lower()
+        (decoded,) = codec.decode(["address"], data)
+        assert decoded == WETH_ADDR
 
     def test_encode_v2_callback_data_length(self):
         """encode_v2_callback_data returns 64 bytes (address + uint256)."""
@@ -385,8 +406,8 @@ class TestCallbackDataEncoding:
         """The encoded (tokenIn, amountOwed) can be decoded back."""
         amount_owed = 3_003_000
         data = encode_v2_callback_data(WETH_ADDR, amount_owed)
-        decoded_token, decoded_amount = decode(["address", "uint256"], data)
-        assert decoded_token.lower() == WETH_ADDR.lower()
+        decoded_token, decoded_amount = codec.decode(["address", "uint256"], data)
+        assert decoded_token == WETH_ADDR
         assert decoded_amount == amount_owed
 
 
@@ -398,7 +419,7 @@ class TestCalldataBuilders:
         from eth_utils import keccak
 
         calldata = v3_pool_swap_calldata(
-            recipient="0x1234567890123456789012345678901234567890",
+            recipient=Address("0x1234567890123456789012345678901234567890"),
             zero_for_one=True,
             amount_in=10**18,
             sqrt_price_limit_x96=0,
@@ -417,62 +438,6 @@ class TestCalldataBuilders:
         """encode_v3_path raises ValueError when fees length is wrong."""
         with pytest.raises(ValueError, match="encode_v3_path"):
             encode_v3_path([WETH_ADDR, USDC_ADDR], fees=[500, 3000])
-
-    def test_build_multi_hop_program_empty_raises(self):
-        """build_multi_hop_program raises ValueError for empty hops list."""
-        with pytest.raises(ValueError, match="hops list must not be empty"):
-            build_multi_hop_program([])
-
-    def test_build_multi_hop_program_single_hop_v3(self):
-        """build_multi_hop_program compiles without error for a single V3 hop."""
-        hops = [
-            SwapHop(
-                protocol=SwapProtocol.UNISWAP_V3,
-                pool="0x1234567890123456789012345678901234567890",
-                token_in=WETH_ADDR,
-                token_out=USDC_ADDR,
-                fee=500,
-                amount_in=10**18,
-                amount_out_min=0,
-                recipient="0x1234567890123456789012345678901234567890",
-                zero_for_one=True,
-            )
-        ]
-        program = build_multi_hop_program(hops)
-        bytecode = program.build()
-        assert isinstance(bytecode, bytes)
-        assert len(bytecode) > 0
-
-    def test_build_multi_hop_program_two_hops_v3_v2(self):
-        """build_multi_hop_program compiles for a V3→V2 two-hop (direct pool calls)."""
-        hops = [
-            SwapHop(
-                protocol=SwapProtocol.UNISWAP_V3,
-                pool="0x1111111111111111111111111111111111111111",
-                token_in=WETH_ADDR,
-                token_out=USDC_ADDR,
-                fee=500,
-                amount_in=10**18,
-                amount_out_min=0,
-                recipient="0x2222222222222222222222222222222222222222",
-                zero_for_one=True,
-            ),
-            SwapHop(
-                protocol=SwapProtocol.UNISWAP_V2,
-                pool="0x3333333333333333333333333333333333333333",
-                token_in=USDC_ADDR,
-                token_out=DAI_ADDR,
-                fee=30,
-                amount_in=0,
-                amount_out_min=0,
-                recipient="0x4444444444444444444444444444444444444444",
-                zero_for_one=True,
-            ),
-        ]
-        program = build_multi_hop_program(hops, min_final_out=10**18)
-        bytecode = program.build()
-        assert isinstance(bytecode, bytes)
-        assert len(bytecode) > 0
 
 
 # ---------------------------------------------------------------------------
@@ -514,7 +479,7 @@ class TestDeFiVMCallbacks:
             data,
             repay_amount,
         ).transact({"from": deployer})
-        receipt = await w3.eth.get_transaction_receipt(tx)
+        receipt = await w3.eth.wait_for_transaction_receipt(tx, timeout=60, poll_latency=0.1)
         assert receipt["status"] == 1, "V3 callback repayment failed"
 
     async def test_v3_callback_uses_amount1delta(self, ctx):
@@ -538,7 +503,7 @@ class TestDeFiVMCallbacks:
             data,
             repay_amount,
         ).transact({"from": deployer})
-        receipt = await w3.eth.get_transaction_receipt(tx)
+        receipt = await w3.eth.wait_for_transaction_receipt(tx, timeout=60, poll_latency=0.1)
         assert receipt["status"] == 1
 
     async def test_algebra_callback_repays_pool(self, ctx):
@@ -562,7 +527,7 @@ class TestDeFiVMCallbacks:
             data,
             repay_amount,
         ).transact({"from": deployer})
-        receipt = await w3.eth.get_transaction_receipt(tx)
+        receipt = await w3.eth.wait_for_transaction_receipt(tx, timeout=60, poll_latency=0.1)
         assert receipt["status"] == 1
 
     async def test_v2_callback_repays_pool(self, ctx):
@@ -570,25 +535,23 @@ class TestDeFiVMCallbacks:
         w3 = ctx["w3"]
         deployer = ctx["deployer"]
         vm_address = ctx["vm_address"]
-        v2pair = ctx["v2pair"]
+        v2pair_address = ctx["v2pair_address"]
         # v2pair was deployed with pair.token0 = token1_address; simulateFlashSwap
         # mints and checks pair.token0, so we must repay with token1.
         token1_address = ctx["token1_address"]
-        token1 = ctx["token1"]
 
         flash_amount = 2_000_000
         amount_owed = 2_006_000
 
-        await token1.functions.mint(vm_address, amount_owed).transact({"from": deployer})
+        await ERC20.fns.mint(vm_address, amount_owed).transact(w3, deployer, to=token1_address)
         data = encode_v2_callback_data(token1_address, amount_owed)
 
-        tx = await v2pair.functions.simulateFlashSwap(
+        receipt = await MOCK_V2_PAIR.fns.simulateFlashSwap(
             vm_address,
             flash_amount,
             data,
             amount_owed,
-        ).transact({"from": deployer})
-        receipt = await w3.eth.get_transaction_receipt(tx)
+        ).transact(w3, deployer, to=v2pair_address)
         assert receipt["status"] == 1, "V2 callback repayment failed"
 
     async def test_aerodrome_hook_repays_pool(self, ctx):
@@ -596,25 +559,22 @@ class TestDeFiVMCallbacks:
         w3 = ctx["w3"]
         deployer = ctx["deployer"]
         vm_address = ctx["vm_address"]
-        v2pair = ctx["v2pair"]
         # v2pair was deployed with pair.token0 = token1_address; simulateAerodromeHook
         # mints and checks pair.token0, so we must repay with token1.
         token1_address = ctx["token1_address"]
-        token1 = ctx["token1"]
 
         flash_amount = 1_500_000
         amount_owed = 1_504_500
 
-        await token1.functions.mint(vm_address, amount_owed).transact({"from": deployer})
+        await ERC20.fns.mint(vm_address, amount_owed).transact(w3, deployer, to=token1_address)
         data = encode_v2_callback_data(token1_address, amount_owed)
 
-        tx = await v2pair.functions.simulateAerodromeHook(
+        receipt = await MOCK_V2_PAIR.fns.simulateAerodromeHook(
             vm_address,
             flash_amount,
             data,
             amount_owed,
-        ).transact({"from": deployer})
-        receipt = await w3.eth.get_transaction_receipt(tx)
+        ).transact(w3, deployer, to=ctx["v2pair_address"])
         assert receipt["status"] == 1
 
     async def test_unknown_selector_reverts(self, ctx):
@@ -631,217 +591,6 @@ class TestDeFiVMCallbacks:
                     "data": "0x" + calldata.hex(),
                 }
             )
-
-
-# ---------------------------------------------------------------------------
-# Fork tests: multi-hop swap composition calling pool contracts directly
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.fork
-class TestMultiHopSwapComposer:
-    """Fork tests for build_multi_hop_program() calling pool contracts directly."""
-
-    async def test_single_hop_v3_direct_pool_call(self, ctx):
-        """Single V3 pool swap via pool.swap() directly (no router).
-
-        Setup:
-          - MockV3Pool has rate 2:1 (token0→token1 = 2x token0 value in token1)
-          - Swap 1000 token0 → expects 2000 token1
-        """
-        w3 = ctx["w3"]
-        deployer = ctx["deployer"]
-        vm_address = ctx["vm_address"]
-        vm = ctx["vm"]
-        v3pool_address = ctx["v3pool_address"]
-        token0_address = ctx["token0_address"]
-        token1_address = ctx["token1_address"]
-        token0 = ctx["token0"]
-        token1 = ctx["token1"]
-
-        amount_in = 1000
-        # Mint token0 to VM (user deposit)
-        await token0.functions.mint(vm_address, amount_in).transact({"from": deployer})
-
-        hops = [
-            SwapHop(
-                protocol=SwapProtocol.UNISWAP_V3,
-                pool=v3pool_address,
-                token_in=token0_address,
-                token_out=token1_address,
-                fee=500,
-                amount_in=amount_in,
-                amount_out_min=0,
-                recipient=deployer,
-                zero_for_one=True,
-            )
-        ]
-        program = build_multi_hop_program(hops, min_final_out=1800)
-        bytecode = program.build()
-
-        tx = await vm.functions.execute(bytecode).transact({"from": deployer})
-        receipt = await w3.eth.get_transaction_receipt(tx)
-        assert receipt["status"] == 1, "V3 single-hop failed"
-
-        out_balance = await token1.functions.balanceOf(deployer).call()
-        assert out_balance >= 1800, f"Expected >= 1800, got {out_balance}"
-
-    async def test_single_hop_v2_direct_pair_call(self, ctx):
-        """Single V2 pair swap via pre-transfer + pair.swap() directly (no router).
-
-        Setup:
-          - MockV2Pair has reserves token0=1M, token1=3M
-          - Swap 1000 token1 → computed amountOut from reserves on-chain
-        """
-        w3 = ctx["w3"]
-        deployer = ctx["deployer"]
-        vm_address = ctx["vm_address"]
-        vm = ctx["vm"]
-        v2pair_address = ctx["v2pair_address"]
-        v2pair = ctx["v2pair"]
-        token1_address = ctx["token1_address"]  # token0 of pair
-        token0_address = ctx["token0_address"]  # token1 of pair
-        token1 = ctx["token1"]
-        token0 = ctx["token0"]
-
-        # MockV2Pair was deployed with token0=token1_address, token1=token0_address
-        # and reserves token0=RESERVE0=1M, token1=RESERVE1=3M
-        # Check actual pair token0
-        pair_token0 = await v2pair.functions.token0().call()
-        zero_for_one = pair_token0.lower() == token1_address.lower()
-
-        amount_in = 1000
-        await token1.functions.mint(vm_address, amount_in).transact({"from": deployer})
-
-        hops = [
-            SwapHop(
-                protocol=SwapProtocol.UNISWAP_V2,
-                pool=v2pair_address,
-                token_in=token1_address,
-                token_out=token0_address,
-                fee=30,
-                amount_in=amount_in,
-                amount_out_min=0,
-                recipient=deployer,
-                zero_for_one=zero_for_one,
-            )
-        ]
-        program = build_multi_hop_program(hops)
-        bytecode = program.build()
-
-        tx = await vm.functions.execute(bytecode).transact({"from": deployer})
-        receipt = await w3.eth.get_transaction_receipt(tx)
-        assert receipt["status"] == 1, "V2 single-hop failed"
-
-        # V2 formula: amountOut = amountIn * 997 * reserve1 / (reserve0 * 1000 + amountIn * 997)
-        reserve0, reserve1, _ = await v2pair.functions.getReserves().call()
-        # zero_for_one: amountIn reduces reserve0, amountOut comes from reserve1
-        if zero_for_one:
-            expected_approx = amount_in * 997 * reserve1 // (reserve0 * 1000 + amount_in * 997)
-        else:
-            expected_approx = amount_in * 997 * reserve0 // (reserve1 * 1000 + amount_in * 997)
-
-        out_balance = await token0.functions.balanceOf(deployer).call()
-        # Allow 1% slippage tolerance
-        assert out_balance >= expected_approx * 99 // 100, (
-            f"Expected ~{expected_approx} (allow 1% slack), got {out_balance}"
-        )
-
-    async def test_two_hop_v3_then_v2_direct_pool_calls(self, ctx):
-        """Two-hop swap token0→token1 (V3 pool) → token0 (V2 pair), calling pools directly.
-
-        Setup:
-          - V3 pool: 2x rate (1000 token0 → 2000 token1)
-          - V2 pair: compute from reserves
-          - Program chains the two hops with register patching at runtime
-        """
-        w3 = ctx["w3"]
-        deployer = ctx["deployer"]
-        vm_address = ctx["vm_address"]
-        vm = ctx["vm"]
-        v3pool_address = ctx["v3pool_address"]
-        v2pair_address = ctx["v2pair_address"]
-        v2pair = ctx["v2pair"]
-        token0_address = ctx["token0_address"]
-        token1_address = ctx["token1_address"]
-        token0 = ctx["token0"]
-
-        amount_in = 1000
-        await ctx["token0"].functions.mint(vm_address, amount_in).transact({"from": deployer})
-
-        # Determine direction for V2 pair
-        pair_token0 = await v2pair.functions.token0().call()
-        # V2 pair has token0=token1_address, token1=token0_address
-        # Hop 2: tokenIn=token1, tokenOut=token0
-        zero_for_one_v2 = pair_token0.lower() == token1_address.lower()
-
-        hops = [
-            SwapHop(
-                protocol=SwapProtocol.UNISWAP_V3,
-                pool=v3pool_address,
-                token_in=token0_address,
-                token_out=token1_address,
-                fee=500,
-                amount_in=amount_in,
-                amount_out_min=0,
-                recipient=vm_address,  # keep token1 in VM for next hop
-                zero_for_one=True,
-            ),
-            SwapHop(
-                protocol=SwapProtocol.UNISWAP_V2,
-                pool=v2pair_address,
-                token_in=token1_address,
-                token_out=token0_address,
-                fee=30,
-                amount_in=0,  # patched at runtime from register
-                amount_out_min=0,
-                recipient=deployer,
-                zero_for_one=zero_for_one_v2,
-            ),
-        ]
-        program = build_multi_hop_program(hops)
-        bytecode = program.build()
-
-        tx = await vm.functions.execute(bytecode).transact({"from": deployer})
-        receipt = await w3.eth.get_transaction_receipt(tx)
-        assert receipt["status"] == 1, "Two-hop swap failed"
-
-        # Verify we received some token0 back
-        out_balance = await token0.functions.balanceOf(deployer).call()
-        assert out_balance > 0, "No token0 received from two-hop swap"
-
-    async def test_slippage_check_reverts(self, ctx):
-        """build_multi_hop_program with min_final_out reverts when output is too low."""
-        deployer = ctx["deployer"]
-        vm_address = ctx["vm_address"]
-        vm = ctx["vm"]
-        v3pool_address = ctx["v3pool_address"]
-        token0_address = ctx["token0_address"]
-        token1_address = ctx["token1_address"]
-        token0 = ctx["token0"]
-
-        amount_in = 100
-        await token0.functions.mint(vm_address, amount_in).transact({"from": deployer})
-
-        hops = [
-            SwapHop(
-                protocol=SwapProtocol.UNISWAP_V3,
-                pool=v3pool_address,
-                token_in=token0_address,
-                token_out=token1_address,
-                fee=500,
-                amount_in=amount_in,
-                amount_out_min=0,
-                recipient=deployer,
-                zero_for_one=True,
-            )
-        ]
-        # Rate is 2x, so 100 in → 200 out. Demand 500 → should revert.
-        program = build_multi_hop_program(hops, min_final_out=500)
-        bytecode = program.build()
-
-        with pytest.raises((ContractLogicError, Web3RPCError)):
-            await vm.functions.execute(bytecode).transact({"from": deployer})
 
 
 # ---------------------------------------------------------------------------
@@ -898,270 +647,181 @@ async def split_ctx(ctx, compiled_pools):
     }
 
 
-# ---------------------------------------------------------------------------
-# Fork tests: split-trading swap composition
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.fork
-class TestSplitSwapComposer:
-    """Fork tests for build_split_program() — split routing across multiple pools."""
-
-    async def test_split_two_v3_pools_50_50(self, split_ctx):
-        """Split 50/50 across two V3 pools: each receives half the input.
-
-        Setup:
-          - Mint 2000 token0 to the VM.
-          - Split 50 % via v3pool (2x rate) and 50 % via v3pool_b (2x rate).
-          - Both legs send token1 to deployer.
-          - Expected: 2000 * 2 = 4000 token1 total.
-        """
-        w3 = split_ctx["w3"]
-        deployer = split_ctx["deployer"]
-        vm_address = split_ctx["vm_address"]
-        vm = split_ctx["vm"]
-        token0_address = split_ctx["token0_address"]
-        token1_address = split_ctx["token1_address"]
-        token0 = split_ctx["token0"]
-        token1 = split_ctx["token1"]
-        v3pool_address = split_ctx["v3pool_address"]
-        v3pool_b_address = split_ctx["v3pool_b_address"]
-
-        amount_in = 2000
-        await token0.functions.mint(vm_address, amount_in).transact({"from": deployer})
-
-        bal_before = await token1.functions.balanceOf(deployer).call()
-
-        legs = [
-            SplitLeg(
-                5000,
-                [
-                    SwapHop(
-                        protocol=SwapProtocol.UNISWAP_V3,
-                        pool=v3pool_address,
-                        token_in=token0_address,
-                        token_out=token1_address,
-                        fee=500,
-                        amount_in=0,
-                        amount_out_min=0,
-                        recipient=deployer,
-                        zero_for_one=True,
-                    )
-                ],
-            ),
-            SplitLeg(
-                5000,
-                [
-                    SwapHop(
-                        protocol=SwapProtocol.UNISWAP_V3,
-                        pool=v3pool_b_address,
-                        token_in=token0_address,
-                        token_out=token1_address,
-                        fee=500,
-                        amount_in=0,
-                        amount_out_min=0,
-                        recipient=deployer,
-                        zero_for_one=True,
-                    )
-                ],
-            ),
-        ]
-        program = build_split_program(amount_in=amount_in, legs=legs)
-        bytecode = program.build()
-
-        tx = await vm.functions.execute(bytecode).transact({"from": deployer})
-        receipt = await w3.eth.get_transaction_receipt(tx)
-        assert receipt["status"] == 1, "50/50 split swap failed"
-
-        bal_after = await token1.functions.balanceOf(deployer).call()
-        received = bal_after - bal_before
-        # Each leg: 2000 * 50% * rate 2x = 2000 total; both legs = 4000
-        assert received >= 3800, f"Expected >= 3800 token1, got {received}"
-
-    async def test_split_three_v3_pools_30_30_40(self, split_ctx):
-        """Split 30/30/40 % across three V3 pools — the canonical issue example.
-
-        All three legs route token0 → token1 at 2:1 rate; the recipient for
-        every leg is the deployer so the total received equals the accumulated
-        output of all three legs.
-        """
-        w3 = split_ctx["w3"]
-        deployer = split_ctx["deployer"]
-        vm_address = split_ctx["vm_address"]
-        vm = split_ctx["vm"]
-        token0_address = split_ctx["token0_address"]
-        token1_address = split_ctx["token1_address"]
-        token0 = split_ctx["token0"]
-        token1 = split_ctx["token1"]
-        v3pool_address = split_ctx["v3pool_address"]
-        v3pool_b_address = split_ctx["v3pool_b_address"]
-        v3pool_c_address = split_ctx["v3pool_c_address"]
-
-        amount_in = 10000
-        await token0.functions.mint(vm_address, amount_in).transact({"from": deployer})
-
-        bal_before = await token1.functions.balanceOf(deployer).call()
-
-        def _v3_hop(pool_addr):
-            return SwapHop(
-                protocol=SwapProtocol.UNISWAP_V3,
-                pool=pool_addr,
-                token_in=token0_address,
-                token_out=token1_address,
-                fee=500,
-                amount_in=0,
-                amount_out_min=0,
-                recipient=deployer,
-                zero_for_one=True,
-            )
-
-        legs = [
-            SplitLeg(3000, [_v3_hop(v3pool_address)]),
-            SplitLeg(3000, [_v3_hop(v3pool_b_address)]),
-            SplitLeg(4000, [_v3_hop(v3pool_c_address)]),
-        ]
-        program = build_split_program(amount_in=amount_in, legs=legs, min_final_out=18000)
-        bytecode = program.build()
-
-        tx = await vm.functions.execute(bytecode).transact({"from": deployer})
-        receipt = await w3.eth.get_transaction_receipt(tx)
-        assert receipt["status"] == 1, "30/30/40 split swap failed"
-
-        bal_after = await token1.functions.balanceOf(deployer).call()
-        received = bal_after - bal_before
-        # 10000 * 2 = 20000 total (each leg is 2x, fractions sum to 100 %)
-        assert received >= 18000, f"Expected >= 18000 token1, got {received}"
-
-    async def test_multi_hop_then_split(self, split_ctx):
-        """Chain build_multi_hop_program + build_split_program: the full issue scenario.
-
-        Flow:
-          1. build_multi_hop: swap token0 → token1 via v3pool (2x rate, output in reg 0).
-          2. build_split: split token1 50/50 → token2 via two pools (each 2x rate).
-
-        With 1000 token0 in: hop → 2000 token1 → split 50/50 → each pool
-        produces 1000 * 2 = 2000 token2; total = 4000 token2.
-        """
-        w3 = split_ctx["w3"]
-        deployer = split_ctx["deployer"]
-        vm_address = split_ctx["vm_address"]
-        vm = split_ctx["vm"]
-        token0_address = split_ctx["token0_address"]
-        token1_address = split_ctx["token1_address"]
-        token2_address = split_ctx["token2_address"]
-        token0 = split_ctx["token0"]
-        token2 = split_ctx["token2"]
-        v3pool_address = split_ctx["v3pool_address"]
-        v3pool_1to2_a_address = split_ctx["v3pool_1to2_a_address"]
-        v3pool_1to2_b_address = split_ctx["v3pool_1to2_b_address"]
+class TestDAGProgramFork:
+    async def test_execution_program_for_dag_runs_on_vm(self, ctx):
+        w3 = ctx["w3"]
+        deployer = ctx["deployer"]
+        vm_address = ctx["vm_address"]
+        vm = ctx["vm"]
+        token0 = ctx["token0"]
+        token0_address = ctx["token0_address"]
+        token1_address = ctx["token1_address"]
+        v3pool_address = ctx["v3pool_address"]
+        v2pair = ctx["v2pair"]
+        v2pair_address = ctx["v2pair_address"]
 
         amount_in = 1000
         await token0.functions.mint(vm_address, amount_in).transact({"from": deployer})
+        bal_before = await token0.functions.balanceOf(deployer).call()
 
-        bal_before = await token2.functions.balanceOf(deployer).call()
+        token0_meta = Token(chain_id=ChainId.ETHEREUM, address=token0_address, symbol="T0")
+        token1_meta = Token(chain_id=ChainId.ETHEREUM, address=token1_address, symbol="T1")
 
-        # Step 1: token0 → token1 (output stored in amount_reg by build_multi_hop)
-        first_hop = build_multi_hop_program(
-            [
-                SwapHop(
-                    protocol=SwapProtocol.UNISWAP_V3,
-                    pool=v3pool_address,
-                    token_in=token0_address,
-                    token_out=token1_address,
-                    fee=500,
-                    amount_in=amount_in,
-                    amount_out_min=0,
-                    recipient=vm_address,  # keep token1 in VM for the split
-                    zero_for_one=True,
-                )
-            ]
+        v3_edge = V3PoolEdge(
+            token_in=token0_meta,
+            token_out=token1_meta,
+            pool_address=v3pool_address,
+            protocol="UniswapV3",
+            fee_bps=30,
+            sqrt_price_x96=2**96,
+            liquidity=10**12,
+            is_token0_in=True,
         )
 
-        # Step 2: split token1 50/50 → token2 via two pools (amount_in=0 → reads from reg 0)
-        split = build_split_program(
-            amount_in=0,
-            legs=[
-                SplitLeg(
-                    5000,
-                    [
-                        SwapHop(
-                            protocol=SwapProtocol.UNISWAP_V3,
-                            pool=v3pool_1to2_a_address,
-                            token_in=token1_address,
-                            token_out=token2_address,
-                            fee=500,
-                            amount_in=0,
-                            amount_out_min=0,
-                            recipient=deployer,
-                            zero_for_one=True,
-                        )
-                    ],
-                ),
-                SplitLeg(
-                    5000,
-                    [
-                        SwapHop(
-                            protocol=SwapProtocol.UNISWAP_V3,
-                            pool=v3pool_1to2_b_address,
-                            token_in=token1_address,
-                            token_out=token2_address,
-                            fee=500,
-                            amount_in=0,
-                            amount_out_min=0,
-                            recipient=deployer,
-                            zero_for_one=True,
-                        )
-                    ],
-                ),
-            ],
-            min_final_out=3600,
+        pair_token0 = await v2pair.functions.token0().call()
+        v2_edge = PoolEdge(
+            token_in=token1_meta,
+            token_out=token0_meta,
+            pool_address=v2pair_address,
+            protocol="UniswapV2",
+            reserve_in=10**12,
+            reserve_out=10**12,
+            fee_bps=30,
+            extra={"is_token0_in": HexBytes(pair_token0) == token1_address},
         )
 
-        bytecode = (first_hop + split).build()
+        dag = (
+            RouteDAG()
+            .from_token(token0_meta)
+            .split()
+            .leg(5000)
+            .swap(token1_meta, v3_edge)
+            .leg(5000)
+            .swap(token1_meta, v3_edge)
+            .merge()
+            .swap(token0_meta, v2_edge)
+        )
+        bytecode = build_execution_program_for_dag(
+            dag,
+            amount_in=amount_in,
+            vm_address=vm_address,
+            recipient=deployer,
+            min_final_out=1,
+        ).build()
 
         tx = await vm.functions.execute(bytecode).transact({"from": deployer})
-        receipt = await w3.eth.get_transaction_receipt(tx)
-        assert receipt["status"] == 1, "Multi-hop + split swap failed"
+        receipt = await w3.eth.wait_for_transaction_receipt(tx, timeout=60, poll_latency=0.1)
+        assert receipt["status"] == 1
 
-        bal_after = await token2.functions.balanceOf(deployer).call()
-        received = bal_after - bal_before
-        # 1000 token0 → 2000 token1; split 50/50: 1000 + 1000 * 2x = 4000 token2
-        assert received >= 3600, f"Expected >= 3600 token2, got {received}"
+        bal_after = await token0.functions.balanceOf(deployer).call()
+        assert bal_after > bal_before
 
-    async def test_split_slippage_check_reverts(self, split_ctx):
-        """build_split_program with min_final_out too high reverts correctly."""
-        deployer = split_ctx["deployer"]
-        vm_address = split_ctx["vm_address"]
-        vm = split_ctx["vm"]
-        token0_address = split_ctx["token0_address"]
-        token1_address = split_ctx["token1_address"]
-        token0 = split_ctx["token0"]
-        v3pool_address = split_ctx["v3pool_address"]
-        v3pool_b_address = split_ctx["v3pool_b_address"]
+    async def test_quote_matches_execution_for_dag(self, ctx):
+        """Quote program output must equal actual execution output (V2 route, real mainnet pair).
 
-        amount_in = 100
-        await token0.functions.mint(vm_address, amount_in).transact({"from": deployer})
+        Wraps ETH → WETH and swaps via the real Uniswap V2 WETH/DAI pair on the
+        Anvil mainnet fork.  Both the quote and execution programs call
+        pair.getReserves() on-chain, so quoted_out == actual_out exactly.
+        """
+        w3 = ctx["w3"]
+        deployer = ctx["deployer"]
+        vm_address = ctx["vm_address"]
+        vm = ctx["vm"]
 
-        def _v3_hop(pool_addr):
-            return SwapHop(
-                protocol=SwapProtocol.UNISWAP_V3,
-                pool=pool_addr,
-                token_in=token0_address,
-                token_out=token1_address,
-                fee=500,
-                amount_in=0,
-                amount_out_min=0,
-                recipient=deployer,
-                zero_for_one=True,
-            )
+        amount_in = 10**15  # 0.001 WETH
 
-        legs = [
-            SplitLeg(5000, [_v3_hop(v3pool_address)]),
-            SplitLeg(5000, [_v3_hop(v3pool_b_address)]),
-        ]
-        # 100 token0 * 2x rate = 200 token1 total; demand 1000 → should revert
-        program = build_split_program(amount_in=amount_in, legs=legs, min_final_out=1000)
-        bytecode = program.build()
+        # Wrap ETH → WETH and transfer to DeFiVM so it can repay the pair.
+        await _WETH_DEPOSIT.fns.deposit().transact(w3, deployer, to=WETH_ADDR, value=Wei(amount_in))
+        await ERC20.fns.transfer(vm_address, amount_in).transact(w3, deployer, to=WETH_ADDR)
 
-        with pytest.raises((ContractLogicError, Web3RPCError)):
-            await vm.functions.execute(bytecode).transact({"from": deployer})
+        pair_token0 = await UNISWAP_V3_POOL.fns.token0().call(w3, to=PAIR_WETH_DAI)
+        is_weth_token0 = HexBytes(pair_token0) == WETH_ADDR
+
+        v2_edge = PoolEdge(
+            token_in=WETH,
+            token_out=DAI,
+            pool_address=PAIR_WETH_DAI,
+            protocol="UniswapV2",
+            reserve_in=1,  # not used: program reads getReserves() on-chain
+            reserve_out=1,
+            fee_bps=30,
+            extra={"is_token0_in": is_weth_token0},
+        )
+        dag = RouteDAG().from_token(WETH).swap(DAI, v2_edge)
+
+        # Quote via eth_call — no state change
+        quote_bytecode = build_quote_program_for_dag(dag, amount_in=amount_in).build()
+        call_data = vm.encode_abi("execute", [quote_bytecode])
+        raw = await w3.eth.call({"to": vm_address, "data": call_data})
+        (quoted_out,) = abi_decode(["uint256"], raw)
+        assert quoted_out > 0
+
+        # Execute and measure actual DAI received by deployer
+        bal_before = await ERC20.fns.balanceOf(deployer).call(w3, to=DAI_ADDR)
+        exec_bytecode = build_execution_program_for_dag(
+            dag, amount_in=amount_in, vm_address=vm_address, recipient=deployer
+        ).build()
+        tx = await vm.functions.execute(exec_bytecode).transact({"from": deployer})
+        receipt = await w3.eth.wait_for_transaction_receipt(tx, timeout=60, poll_latency=0.1)
+        assert receipt["status"] == 1
+        actual_out = (await ERC20.fns.balanceOf(deployer).call(w3, to=DAI_ADDR)) - bal_before
+
+        assert actual_out == quoted_out
+
+    async def test_quote_matches_execution_for_dag_v3(self, ctx):
+        """Quote program output must equal actual execution output (V3 route, real mainnet pool).
+
+        Wraps ETH → WETH and swaps via the real Uniswap V3 USDC/WETH 0.05% pool on the
+        Anvil mainnet fork.  The quote calls the real QuoterV2 which simulates the
+        identical pool.swap(), so quoted_out == actual_out exactly.
+        """
+        w3 = ctx["w3"]
+        deployer = ctx["deployer"]
+        vm_address = ctx["vm_address"]
+        vm = ctx["vm"]
+
+        amount_in = 10**15  # 0.001 WETH
+        # Wrap ETH → WETH and transfer to DeFiVM so it can repay the pool callback.
+        await _WETH_DEPOSIT.fns.deposit().transact(w3, deployer, to=WETH_ADDR, value=Wei(amount_in))
+        await ERC20.fns.transfer(vm_address, amount_in).transact(w3, deployer, to=WETH_ADDR)
+
+        # Read live pool state to populate V3PoolEdge.
+        slot0, liquidity, pool_token0 = await asyncio.gather(
+            UNISWAP_V3_POOL.fns.slot0().call(w3, to=POOL_WETH_USDC_500),
+            UNISWAP_V3_POOL.fns.liquidity().call(w3, to=POOL_WETH_USDC_500),
+            UNISWAP_V3_POOL.fns.token0().call(w3, to=POOL_WETH_USDC_500),
+        )
+        # POOL_WETH_USDC_500: token0=USDC (0xA0b8…), token1=WETH (0xC02a…)
+        is_weth_token0 = HexBytes(pool_token0) == WETH_ADDR
+
+        v3_edge = V3PoolEdge(
+            token_in=WETH,
+            token_out=USDC,
+            pool_address=POOL_WETH_USDC_500,
+            protocol="UniswapV3",
+            fee_bps=5,  # 0.05% pool → 500 fee tier → 5 bps
+            sqrt_price_x96=slot0[0],
+            liquidity=liquidity,
+            is_token0_in=is_weth_token0,
+        )
+        dag = RouteDAG().from_token(WETH).swap(USDC, v3_edge)
+
+        # Quote via eth_call using the real QuoterV2 — no state change
+        quote_bytecode = build_quote_program_for_dag(dag, amount_in=amount_in, quoter_address=UNISWAP_V3_QUOTER).build()
+        call_data = vm.encode_abi("execute", [quote_bytecode])
+        raw = await w3.eth.call({"to": vm_address, "data": call_data})
+        (quoted_out,) = abi_decode(["uint256"], raw)
+        assert quoted_out > 0
+
+        # Execute and measure actual USDC received by deployer
+        bal_before = await ERC20.fns.balanceOf(deployer).call(w3, to=USDC_ADDR)
+        exec_bytecode = build_execution_program_for_dag(
+            dag, amount_in=amount_in, vm_address=vm_address, recipient=deployer
+        ).build()
+        tx = await vm.functions.execute(exec_bytecode).transact({"from": deployer})
+        receipt = await w3.eth.wait_for_transaction_receipt(tx, timeout=60, poll_latency=0.1)
+        assert receipt["status"] == 1
+        actual_out = (await ERC20.fns.balanceOf(deployer).call(w3, to=USDC_ADDR)) - bal_before
+
+        assert actual_out == quoted_out

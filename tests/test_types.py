@@ -2,14 +2,21 @@
 
 from decimal import Decimal
 
+import pytest
+
 from pydefi.types import (
+    Address,
     BridgeQuote,
     ChainId,
+    RouteDAG,
+    RouteSplit,
+    RouteSwap,
     SwapRoute,
     SwapStep,
     Token,
     TokenAmount,
 )
+from tests.addrs import USDC, WETH
 
 # ---------------------------------------------------------------------------
 # Token tests
@@ -20,20 +27,20 @@ class TestToken:
     def setup_method(self):
         self.eth = Token(
             chain_id=ChainId.ETHEREUM,
-            address="0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+            address=WETH.address,
             symbol="WETH",
             decimals=18,
             name="Wrapped Ether",
         )
         self.usdc = Token(
             chain_id=ChainId.ETHEREUM,
-            address="0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+            address=USDC.address,
             symbol="USDC",
             decimals=6,
         )
         self.native = Token(
             chain_id=ChainId.ETHEREUM,
-            address="0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",
+            address=Address("0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"),
             symbol="ETH",
             decimals=18,
         )
@@ -52,7 +59,7 @@ class TestToken:
     def test_is_native_case_insensitive(self):
         upper = Token(
             chain_id=1,
-            address="0xEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE",
+            address=Address("0xEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE"),
             symbol="ETH",
         )
         assert upper.is_native()
@@ -60,7 +67,7 @@ class TestToken:
     def test_token_equality(self):
         eth2 = Token(
             chain_id=ChainId.ETHEREUM,
-            address="0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+            address=WETH.address,
             symbol="WETH",
             decimals=18,
             name="Wrapped Ether",
@@ -70,7 +77,7 @@ class TestToken:
     def test_token_inequality_different_chain(self):
         eth_arb = Token(
             chain_id=ChainId.ARBITRUM,
-            address="0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+            address=WETH.address,
             symbol="WETH",
             decimals=18,
         )
@@ -91,13 +98,13 @@ class TestTokenAmount:
     def setup_method(self):
         self.usdc = Token(
             chain_id=1,
-            address="0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+            address=USDC.address,
             symbol="USDC",
             decimals=6,
         )
         self.weth = Token(
             chain_id=1,
-            address="0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+            address=WETH.address,
             symbol="WETH",
             decimals=18,
         )
@@ -143,15 +150,15 @@ class TestTokenAmount:
 
 class TestSwapRoute:
     def setup_method(self):
-        self.weth = Token(chain_id=1, address="0x" + "C0" * 20, symbol="WETH", decimals=18)
-        self.usdc = Token(chain_id=1, address="0x" + "A0" * 20, symbol="USDC", decimals=6)
-        self.dai = Token(chain_id=1, address="0x" + "D0" * 20, symbol="DAI", decimals=18)
+        self.weth = Token(chain_id=1, address=Address("0x" + "C0" * 20), symbol="WETH", decimals=18)
+        self.usdc = Token(chain_id=1, address=Address("0x" + "A0" * 20), symbol="USDC", decimals=6)
+        self.dai = Token(chain_id=1, address=Address("0x" + "D0" * 20), symbol="DAI", decimals=18)
 
     def test_single_hop_route(self):
         step = SwapStep(
             token_in=self.weth,
             token_out=self.usdc,
-            pool_address="0x" + "11" * 20,
+            pool_address=Address("0x" + "11" * 20),
             protocol="UniswapV2",
             fee=3000,
         )
@@ -169,13 +176,13 @@ class TestSwapRoute:
         step1 = SwapStep(
             token_in=self.weth,
             token_out=self.dai,
-            pool_address="0x" + "11" * 20,
+            pool_address=Address("0x" + "11" * 20),
             protocol="UniswapV2",
         )
         step2 = SwapStep(
             token_in=self.dai,
             token_out=self.usdc,
-            pool_address="0x" + "22" * 20,
+            pool_address=Address("0x" + "22" * 20),
             protocol="Curve",
         )
         route = SwapRoute(
@@ -191,7 +198,7 @@ class TestSwapRoute:
         step = SwapStep(
             token_in=self.weth,
             token_out=self.usdc,
-            pool_address="0x" + "11" * 20,
+            pool_address=Address("0x" + "11" * 20),
             protocol="UniswapV2",
         )
         route = SwapRoute(
@@ -205,14 +212,140 @@ class TestSwapRoute:
 
 
 # ---------------------------------------------------------------------------
+# RouteDAG tests
+# ---------------------------------------------------------------------------
+
+
+class TestRouteDAG:
+    def setup_method(self):
+        self.token0 = Token(chain_id=1, address="0x" + "10" * 20, symbol="T0")
+        self.token1 = Token(chain_id=1, address="0x" + "11" * 20, symbol="T1")
+        self.token2 = Token(chain_id=1, address="0x" + "12" * 20, symbol="T2")
+        self.token3 = Token(chain_id=1, address="0x" + "13" * 20, symbol="T3")
+        self.token4 = Token(chain_id=1, address="0x" + "14" * 20, symbol="T4")
+
+    def test_split_merge_dag_construction(self):
+        dag = (
+            RouteDAG()
+            .from_token(self.token0)
+            .swap(self.token1, "pool1")
+            .split()
+            .leg(5000)
+            .swap(self.token2, "pool2")
+            .swap(self.token3, "pool3")
+            .leg(5000)
+            .swap(self.token3, "pool4")
+            .merge()
+            .swap(self.token4, "pool5")
+        )
+
+        payload = dag.to_dict()
+        assert payload["token_in"] == self.token0
+        assert len(payload["actions"]) == 3
+        assert isinstance(payload["actions"][0], RouteSwap)
+        assert isinstance(payload["actions"][1], RouteSplit)
+        assert isinstance(payload["actions"][2], RouteSwap)
+        assert [leg.fraction_bps for leg in payload["actions"][1].legs] == [5000, 5000]
+
+    def test_merge_requires_sum_exactly_10000(self):
+        # Two split() calls create two legs: 3000 + 3000 = 6000, which is invalid.
+        dag = (
+            RouteDAG()
+            .from_token(self.token0)
+            .split()
+            .leg(3000)
+            .swap(self.token1, "pool1")
+            .leg(3000)
+            .swap(self.token1, "pool2")
+        )
+        with pytest.raises(ValueError, match="fraction_bps"):
+            dag.merge()
+
+    def test_merge_requires_same_end_token(self):
+        dag = (
+            RouteDAG()
+            .from_token(self.token0)
+            .split()
+            .leg(5000)
+            .swap(self.token1, "pool1")
+            .leg(5000)
+            .swap(self.token2, "pool2")
+        )
+        with pytest.raises(ValueError, match="same token"):
+            dag.merge()
+
+    def test_to_dict_rejects_unmerged_split(self):
+        dag = RouteDAG().from_token(self.token0).split().leg(10000).swap(self.token1, "pool1")
+        with pytest.raises(ValueError, match="unmerged"):
+            dag.to_dict()
+
+    def test_nested_split_is_explicit_and_supported(self):
+        dag = (
+            RouteDAG()
+            .from_token(self.token0)
+            .split()
+            .leg(5000)
+            .swap(self.token1, "pool1")
+            .leg(5000)
+            .swap(self.token1, "pool_seed")
+            .split()
+            .leg(5000)
+            .swap(self.token1, "pool2")
+            .leg(5000)
+            .swap(self.token1, "pool3")
+            .merge()
+            .merge()
+        )
+
+        payload = dag.to_dict()
+        outer = payload["actions"][0]
+        assert isinstance(outer, RouteSplit)
+        assert len(outer.legs) == 2
+        assert isinstance(outer.legs[1].actions[0], RouteSwap)
+        nested = outer.legs[1].actions[1]
+        assert isinstance(nested, RouteSplit)
+        assert [leg.fraction_bps for leg in nested.legs] == [5000, 5000]
+
+    def test_nested_split_from_empty_active_leg(self):
+        dag = (
+            RouteDAG()
+            .from_token(self.token0)
+            .split()
+            .leg(5000)
+            .split()
+            .leg(5000)
+            .swap(self.token1, "pool1")
+            .leg(5000)
+            .swap(self.token1, "pool2")
+            .merge()
+            .leg(5000)
+            .swap(self.token1, "pool3")
+            .merge()
+        )
+
+        payload = dag.to_dict()
+        outer = payload["actions"][0]
+        assert isinstance(outer, RouteSplit)
+        assert isinstance(outer.legs[0].actions[0], RouteSplit)
+        nested = outer.legs[0].actions[0]
+        assert isinstance(nested, RouteSplit)
+        assert [leg.fraction_bps for leg in nested.legs] == [5000, 5000]
+
+    def test_swap_inside_split_requires_leg(self):
+        dag = RouteDAG().from_token(self.token0).split()
+        with pytest.raises(ValueError, match=r"leg\(\) must be called before swap\(\) inside split\(\)"):
+            dag.swap(self.token1, "pool1")
+
+
+# ---------------------------------------------------------------------------
 # BridgeQuote tests
 # ---------------------------------------------------------------------------
 
 
 class TestBridgeQuote:
     def setup_method(self):
-        self.usdc_eth = Token(chain_id=1, address="0x" + "A0" * 20, symbol="USDC", decimals=6)
-        self.usdc_arb = Token(chain_id=42161, address="0x" + "A1" * 20, symbol="USDC", decimals=6)
+        self.usdc_eth = Token(chain_id=1, address=Address("0x" + "A0" * 20), symbol="USDC", decimals=6)
+        self.usdc_arb = Token(chain_id=42161, address=Address("0x" + "A1" * 20), symbol="USDC", decimals=6)
 
     def test_bridge_quote_creation(self):
         amount_in = TokenAmount.from_human(self.usdc_eth, "1000")

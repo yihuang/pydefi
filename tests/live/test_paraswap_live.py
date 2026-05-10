@@ -9,8 +9,7 @@ import pytest
 
 from pydefi.aggregator.paraswap import ParaSwap
 from pydefi.types import TokenAmount
-
-from .conftest import USDC, WETH
+from tests.addrs import USDC, WETH
 
 MIN_USDC = 500 * 10**6
 MAX_USDC = 10_000 * 10**6

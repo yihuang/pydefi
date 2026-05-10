@@ -32,7 +32,7 @@ from enum import IntEnum
 from eth_abi import encode as abi_encode
 
 from pydefi.amm.uniswap_v3 import UniswapV3
-from pydefi.types import SwapTransaction, Token, TokenAmount
+from pydefi.types import Address, SwapTransaction, Token, TokenAmount
 
 # ---------------------------------------------------------------------------
 # Well-known Universal Router V2 deployment addresses
@@ -42,19 +42,19 @@ from pydefi.types import SwapTransaction, Token, TokenAmount
 # ---------------------------------------------------------------------------
 
 #: Mapping from chain ID to the canonical UniversalRouterV2 deployment address.
-UNIVERSAL_ROUTER_ADDRESSES: dict[int, str] = {
-    1: "0x66a9893cC07D91D95644AEDD05D03f95e1dBA8Af",  # Ethereum mainnet
-    10: "0x851116D9223fabED8E56C0E6b8Ad0c31d98B3507",  # Optimism
-    56: "0x1906c1d672b88cD1B9aC7593301cA990F94Eae07",  # BNB Chain
-    130: "0xEf740bf23aCaE26f6492B10de645D6B98dC8Eaf3",  # Unichain
-    137: "0x1095692A6237d83C6a72F3F5eFEdb9A670C49223",  # Polygon
-    480: "0x8ac7bEE993bb44dAb564Ea4bc9EA67Bf9Eb5e743",  # WorldChain
-    8453: "0x6fF5693b99212Da76ad316178A184AB56D299b43",  # Base
-    42161: "0xA51afAFe0263b40EdaEf0Df8781eA9aa03E381a3",  # Arbitrum One
-    43114: "0x4Dae2f939ACf50408e13d58534Ff8c2776d45265",  # Avalanche C-Chain (V1_2)
-    81457: "0xeAbBcB3E8E415306207ef514f660A3F820025BE3",  # Blast
-    7777777: "0x3315ef7cA28dB74aBADC6c44570efDF06b04B020",  # Zora
-    11155111: "0x3A9D48AB9751398BbFa63ad67599Bb04e4BdF98b",  # Sepolia (testnet)
+UNIVERSAL_ROUTER_ADDRESSES: dict[int, Address] = {
+    1: Address("0x66a9893cC07D91D95644AEDD05D03f95e1dBA8Af"),  # Ethereum mainnet
+    10: Address("0x851116D9223fabED8E56C0E6b8Ad0c31d98B3507"),  # Optimism
+    56: Address("0x1906c1d672b88cD1B9aC7593301cA990F94Eae07"),  # BNB Chain
+    130: Address("0xEf740bf23aCaE26f6492B10de645D6B98dC8Eaf3"),  # Unichain
+    137: Address("0x1095692A6237d83C6a72F3F5eFEdb9A670C49223"),  # Polygon
+    480: Address("0x8ac7bEE993bb44dAb564Ea4bc9EA67Bf9Eb5e743"),  # WorldChain
+    8453: Address("0x6fF5693b99212Da76ad316178A184AB56D299b43"),  # Base
+    42161: Address("0xA51afAFe0263b40EdaEf0Df8781eA9aa03E381a3"),  # Arbitrum One
+    43114: Address("0x4Dae2f939ACf50408e13d58534Ff8c2776d45265"),  # Avalanche C-Chain (V1_2)
+    81457: Address("0xeAbBcB3E8E415306207ef514f660A3F820025BE3"),  # Blast
+    7777777: Address("0x3315ef7cA28dB74aBADC6c44570efDF06b04B020"),  # Zora
+    11155111: Address("0x3A9D48AB9751398BbFa63ad67599Bb04e4BdF98b"),  # Sepolia (testnet)
 }
 
 # ---------------------------------------------------------------------------
@@ -298,9 +298,9 @@ class UniversalRouter:
     """
 
     #: Canonical Universal Router addresses keyed by chain ID.
-    KNOWN_ADDRESSES: dict[int, str] = UNIVERSAL_ROUTER_ADDRESSES
+    KNOWN_ADDRESSES: dict[int, Address] = UNIVERSAL_ROUTER_ADDRESSES
 
-    def __init__(self, router_address: str) -> None:
+    def __init__(self, router_address: Address) -> None:
         self.router_address = router_address
 
     # ------------------------------------------------------------------

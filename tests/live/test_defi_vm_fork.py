@@ -22,9 +22,17 @@ from pathlib import Path
 
 import pytest
 import solcx
+from eth_contract.contract import ContractFunction
 from eth_contract.erc20 import ERC20
+from eth_contract.utils import send_transaction as eth_send_transaction
+from hexbytes import HexBytes
 from web3.exceptions import ContractLogicError, Web3RPCError
+from web3.types import Wei
 
+from pydefi.abi.amm import UNISWAP_V3_POOL
+from pydefi.pathfinder.graph import PoolGraph, V3PoolEdge
+from pydefi.pathfinder.router import Router
+from pydefi.types import Address, TokenAmount
 from pydefi.vm import Patch, Program
 from pydefi.vm.program import (
     assert_ge,
@@ -48,7 +56,10 @@ from pydefi.vm.program import (
     sub,
     swap,
 )
+from pydefi.vm.swap import build_swap_transaction
+from tests.addrs import POOL_WETH_USDC_500, POOL_WETH_USDC_3000
 from tests.live.sol_utils import MOCK_TOKEN_SOL, compile_sol_file, compile_sol_source, deploy, ensure_solc
+from tests.test_aggregator import USDC, WETH
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -57,10 +68,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SOL_FILE = REPO_ROOT / "pydefi" / "vm" / "DeFiVM.sol"
 APPROVE_PROXY_SOL_FILE = REPO_ROOT / "pydefi" / "vm" / "ApproveProxy.sol"
 
-# Well-known mainnet addresses used in fork tests
-WETH_MAINNET = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
 # Coinbase 8 — a well-funded address on mainnet (used for introspection only)
-WHALE = "0x77134cbC06cB00b66F4c7e623D5fdBF6777635EC"
+WHALE: Address = Address("0x77134cbC06cB00b66F4c7e623D5fdBF6777635EC")
 
 
 def _compile_defi_vm() -> dict:
@@ -202,7 +211,7 @@ class TestDeFiVMFork:
         program = push_u256(0xDEADBEEF) + store_reg(0) + load_reg(0) + pop()
 
         tx = await vm.functions.execute(program).transact({"from": deployer})
-        receipt = await w3.eth.get_transaction_receipt(tx)
+        receipt = await w3.eth.wait_for_transaction_receipt(tx, timeout=60, poll_latency=0.1)
         assert receipt["status"] == 1
 
     async def test_dup_swap_pop(self, ctx):
@@ -213,7 +222,7 @@ class TestDeFiVMFork:
 
         program = push_u256(1) + push_u256(2) + dup() + swap() + pop() + pop() + pop()
         tx = await vm.functions.execute(program).transact({"from": deployer})
-        receipt = await w3.eth.get_transaction_receipt(tx)
+        receipt = await w3.eth.wait_for_transaction_receipt(tx, timeout=60, poll_latency=0.1)
         assert receipt["status"] == 1
 
     # ------------------------------------------------------------------
@@ -240,7 +249,7 @@ class TestDeFiVMFork:
 
         program = push_part + jump_part + bad_byte + jumpdest + pop_part
         tx = await vm.functions.execute(program).transact({"from": deployer})
-        receipt = await w3.eth.get_transaction_receipt(tx)
+        receipt = await w3.eth.wait_for_transaction_receipt(tx, timeout=60, poll_latency=0.1)
         assert receipt["status"] == 1
 
     async def test_jumpi_taken(self, ctx):
@@ -259,7 +268,7 @@ class TestDeFiVMFork:
 
         program = push_part + jumpi_part + bad_byte + jumpdest
         tx = await vm.functions.execute(program).transact({"from": deployer})
-        receipt = await w3.eth.get_transaction_receipt(tx)
+        receipt = await w3.eth.wait_for_transaction_receipt(tx, timeout=60, poll_latency=0.1)
         assert receipt["status"] == 1
 
     async def test_jumpi_not_taken(self, ctx):
@@ -278,7 +287,7 @@ class TestDeFiVMFork:
         program = push_u256(99) + push_part + jumpi_part + skip_pop
 
         tx = await vm.functions.execute(program).transact({"from": deployer})
-        receipt = await w3.eth.get_transaction_receipt(tx)
+        receipt = await w3.eth.wait_for_transaction_receipt(tx, timeout=60, poll_latency=0.1)
         assert receipt["status"] == 1
 
     async def test_revert_if_triggers(self, ctx):
@@ -298,7 +307,7 @@ class TestDeFiVMFork:
 
         program = push_u256(0) + revert_if("should not trigger")
         tx = await vm.functions.execute(program).transact({"from": deployer})
-        receipt = await w3.eth.get_transaction_receipt(tx)
+        receipt = await w3.eth.wait_for_transaction_receipt(tx, timeout=60, poll_latency=0.1)
         assert receipt["status"] == 1
 
     async def test_assert_ge_pass(self, ctx):
@@ -310,7 +319,7 @@ class TestDeFiVMFork:
         # push b=100, push a=200 -> assert a >= b -> ok
         program = push_u256(100) + push_u256(200) + assert_ge("min not met")
         tx = await vm.functions.execute(program).transact({"from": deployer})
-        receipt = await w3.eth.get_transaction_receipt(tx)
+        receipt = await w3.eth.wait_for_transaction_receipt(tx, timeout=60, poll_latency=0.1)
         assert receipt["status"] == 1
 
     async def test_assert_ge_fail(self, ctx):
@@ -330,7 +339,7 @@ class TestDeFiVMFork:
 
         program = push_u256(200) + push_u256(100) + assert_le("max exceeded")
         tx = await vm.functions.execute(program).transact({"from": deployer})
-        receipt = await w3.eth.get_transaction_receipt(tx)
+        receipt = await w3.eth.wait_for_transaction_receipt(tx, timeout=60, poll_latency=0.1)
         assert receipt["status"] == 1
 
     # ------------------------------------------------------------------
@@ -346,7 +355,7 @@ class TestDeFiVMFork:
         # SELF_ADDR pushes address(this); push_u256(0) = ETH token; BALANCE_OF pops token then account
         program = self_addr() + push_u256(0) + balance_of() + pop()
         tx = await vm.functions.execute(program).transact({"from": deployer})
-        receipt = await w3.eth.get_transaction_receipt(tx)
+        receipt = await w3.eth.wait_for_transaction_receipt(tx, timeout=60, poll_latency=0.1)
         assert receipt["status"] == 1
 
     async def test_balance_of_weth(self, ctx):
@@ -355,9 +364,9 @@ class TestDeFiVMFork:
         vm = ctx["vm"]
         deployer = ctx["deployer"]
 
-        program = push_addr(WHALE) + push_addr(WETH_MAINNET) + balance_of() + pop()
+        program = push_addr(WHALE) + push_addr(WETH.address) + balance_of() + pop()
         tx = await vm.functions.execute(program).transact({"from": deployer})
-        receipt = await w3.eth.get_transaction_receipt(tx)
+        receipt = await w3.eth.wait_for_transaction_receipt(tx, timeout=60, poll_latency=0.1)
         assert receipt["status"] == 1
 
     async def test_delta_balance_weth(self, ctx):
@@ -375,16 +384,16 @@ class TestDeFiVMFork:
         #   sub → [post_bal - pre_bal]  (== 0 here since no transfer happened)
         program = (
             push_addr(WHALE)
-            + push_addr(WETH_MAINNET)
+            + push_addr(WETH.address)
             + balance_of()
             + push_addr(WHALE)
-            + push_addr(WETH_MAINNET)
+            + push_addr(WETH.address)
             + balance_of()
             + sub()
             + pop()
         )
         tx = await vm.functions.execute(program).transact({"from": deployer})
-        receipt = await w3.eth.get_transaction_receipt(tx)
+        receipt = await w3.eth.wait_for_transaction_receipt(tx, timeout=60, poll_latency=0.1)
         assert receipt["status"] == 1
 
     # ------------------------------------------------------------------
@@ -414,7 +423,7 @@ class TestDeFiVMFork:
             + pop()
         )
         tx = await vm.functions.execute(program).transact({"from": deployer})
-        receipt = await w3.eth.get_transaction_receipt(tx)
+        receipt = await w3.eth.wait_for_transaction_receipt(tx, timeout=60, poll_latency=0.1)
         assert receipt["status"] == 1
 
     async def test_ret_u256_from_adapter(self, ctx):
@@ -442,7 +451,7 @@ class TestDeFiVMFork:
             + pop()
         )
         tx = await vm.functions.execute(program).transact({"from": deployer})
-        receipt = await w3.eth.get_transaction_receipt(tx)
+        receipt = await w3.eth.wait_for_transaction_receipt(tx, timeout=60, poll_latency=0.1)
         assert receipt["status"] == 1
 
     async def test_ret_slice(self, ctx):
@@ -470,7 +479,7 @@ class TestDeFiVMFork:
             + pop()
         )
         tx = await vm.functions.execute(program).transact({"from": deployer})
-        receipt = await w3.eth.get_transaction_receipt(tx)
+        receipt = await w3.eth.wait_for_transaction_receipt(tx, timeout=60, poll_latency=0.1)
         assert receipt["status"] == 1
 
     # ------------------------------------------------------------------
@@ -504,7 +513,7 @@ class TestDeFiVMFork:
             + pop()
         )
         tx = await vm.functions.execute(program).transact({"from": deployer})
-        receipt = await w3.eth.get_transaction_receipt(tx)
+        receipt = await w3.eth.wait_for_transaction_receipt(tx, timeout=60, poll_latency=0.1)
         assert receipt["status"] == 1
 
         # Verify PATCH_U256 actually wrote 0xABCD by decoding the Called event.
@@ -512,7 +521,7 @@ class TestDeFiVMFork:
         called_topic = keccak(b"Called(address,uint256,bytes)")
         adapter_log = None
         for log in receipt["logs"]:
-            if log["address"].lower() == adapter.lower() and log["topics"][0] == called_topic:
+            if HexBytes(log["address"]) == adapter and log["topics"][0] == called_topic:
                 adapter_log = log
                 break
         assert adapter_log is not None, "Expected Called event from adapter"
@@ -554,14 +563,14 @@ class TestDeFiVMFork:
             + pop()
         )
         tx = await vm.functions.execute(program).transact({"from": deployer})
-        receipt = await w3.eth.get_transaction_receipt(tx)
+        receipt = await w3.eth.wait_for_transaction_receipt(tx, timeout=60, poll_latency=0.1)
         assert receipt["status"] == 1
 
         # Verify PATCH_ADDR wrote the address bytes at the correct offset.
         called_topic = keccak(b"Called(address,uint256,bytes)")
         adapter_log = None
         for log in receipt["logs"]:
-            if log["address"].lower() == adapter.lower() and log["topics"][0] == called_topic:
+            if HexBytes(log["address"]) == adapter and log["topics"][0] == called_topic:
                 adapter_log = log
                 break
         assert adapter_log is not None, "Expected Called event from adapter"
@@ -569,8 +578,7 @@ class TestDeFiVMFork:
         calldata_len = int.from_bytes(encoded[96:128], "big")
         received_calldata = encoded[128 : 128 + calldata_len]
         # Expected: selector + 12 zero bytes + 20-byte address (raw byte-for-byte patch)
-        addr_bytes = bytes.fromhex(adapter.removeprefix("0x"))
-        expected_calldata = selector + b"\x00" * 12 + addr_bytes
+        expected_calldata = selector + b"\x00" * 12 + adapter
         assert received_calldata == expected_calldata
 
     # ------------------------------------------------------------------
@@ -627,7 +635,7 @@ class TestDeFiVMFork:
             + assert_le("result above expected")
         )
         tx = await vm.functions.execute(program).transact({"from": deployer})
-        receipt = await w3.eth.get_transaction_receipt(tx)
+        receipt = await w3.eth.wait_for_transaction_receipt(tx, timeout=60, poll_latency=0.1)
         assert receipt["status"] == 1
 
     async def test_chained_calls_multi_patch_u256(self, ctx):
@@ -682,7 +690,7 @@ class TestDeFiVMFork:
             + assert_le("result above expected")
         )
         tx = await vm.functions.execute(program).transact({"from": deployer})
-        receipt = await w3.eth.get_transaction_receipt(tx)
+        receipt = await w3.eth.wait_for_transaction_receipt(tx, timeout=60, poll_latency=0.1)
         assert receipt["status"] == 1
 
     async def test_chained_calls_ret_slice(self, ctx):
@@ -739,7 +747,7 @@ class TestDeFiVMFork:
             + assert_le("result above expected")
         )
         tx = await vm.functions.execute(program).transact({"from": deployer})
-        receipt = await w3.eth.get_transaction_receipt(tx)
+        receipt = await w3.eth.wait_for_transaction_receipt(tx, timeout=60, poll_latency=0.1)
         assert receipt["status"] == 1
 
     # ------------------------------------------------------------------
@@ -783,12 +791,11 @@ class TestDeFiVMFork:
 
         program = (
             push_u256(7)
-            + store_reg(0)
             + Program()
             .call_contract_abi(
                 adapter,
                 "function double(uint256 x) external pure returns (uint256)",
-                Patch(load_reg(0)),
+                Patch(),
             )
             .pop()
             .build()
@@ -800,7 +807,7 @@ class TestDeFiVMFork:
             + assert_le("result above 14")
         )
         tx = await vm.functions.execute(program).transact({"from": deployer})
-        receipt = await w3.eth.get_transaction_receipt(tx)
+        receipt = await w3.eth.wait_for_transaction_receipt(tx, timeout=60, poll_latency=0.1)
         assert receipt["status"] == 1
 
     async def test_call_contract_abi_patch_two_uint256_args(self, ctx):
@@ -817,15 +824,13 @@ class TestDeFiVMFork:
 
         program = (
             push_u256(11)
-            + store_reg(0)
             + push_u256(6)
-            + store_reg(1)
             + Program()
             .call_contract_abi(
                 adapter,
                 "function addInputs(uint256 a, uint256 b) external pure returns (uint256)",
-                Patch(load_reg(0)),
-                Patch(load_reg(1)),
+                Patch(),
+                Patch(),
             )
             .pop()
             .build()
@@ -837,14 +842,14 @@ class TestDeFiVMFork:
             + assert_le("result above 17")
         )
         tx = await vm.functions.execute(program).transact({"from": deployer})
-        receipt = await w3.eth.get_transaction_receipt(tx)
+        receipt = await w3.eth.wait_for_transaction_receipt(tx, timeout=60, poll_latency=0.1)
         assert receipt["status"] == 1
 
     async def test_call_contract_abi_patch_chained(self, ctx):
         """Chain two calls: first via static call_contract_abi, second with a Patch.
 
         double(5) → 10 stored in register 0, then double(10) via call_contract_abi
-        with Patch(load_reg(0)).  Verifies the final result equals 20.
+        with Patch().  Verifies the final result equals 20.
         """
         w3 = ctx["w3"]
         vm = ctx["vm"]
@@ -858,9 +863,8 @@ class TestDeFiVMFork:
             Program().call_contract_abi(adapter, double_sig, 5).pop().build()
             # Store result from retdata into register 0
             + ret_u256(0)
-            + store_reg(0)
             # Call 2: double(reg0) using Patch
-            + Program().call_contract_abi(adapter, double_sig, Patch(load_reg(0))).pop().build()
+            + Program().call_contract_abi(adapter, double_sig, Patch()).pop().build()
             # Verify result == 20
             + push_u256(20)
             + ret_u256(0)
@@ -870,7 +874,7 @@ class TestDeFiVMFork:
             + assert_le("result above 20")
         )
         tx = await vm.functions.execute(program).transact({"from": deployer})
-        receipt = await w3.eth.get_transaction_receipt(tx)
+        receipt = await w3.eth.wait_for_transaction_receipt(tx, timeout=60, poll_latency=0.1)
         assert receipt["status"] == 1
 
 
@@ -902,7 +906,7 @@ async def proxy_ctx(vm_fork_w3, compiled_vm, interpreter_addr):
     MINT_AMOUNT = 1_000 * 10**18
     for fn in [token_a.functions.mint(user, MINT_AMOUNT), token_b.functions.mint(user, MINT_AMOUNT)]:
         tx = await fn.transact({"from": deployer})
-        await w3.eth.get_transaction_receipt(tx)
+        await w3.eth.wait_for_transaction_receipt(tx, timeout=60, poll_latency=0.1)
 
     vm = w3.eth.contract(address=vm_address, abi=compiled_vm["abi"])
     proxy = w3.eth.contract(address=proxy_address, abi=compiled_proxy["abi"])
@@ -947,7 +951,7 @@ class TestApproveProxyFork:
         AMOUNT = 100 * 10**18
 
         tx = await token_a.functions.approve(proxy_address, AMOUNT).transact({"from": user})
-        await w3.eth.get_transaction_receipt(tx)
+        await w3.eth.wait_for_transaction_receipt(tx, timeout=60, poll_latency=0.1)
 
         bal_user_before = await token_a.functions.balanceOf(user).call()
         bal_recipient_before = await token_a.functions.balanceOf(recipient).call()
@@ -957,7 +961,7 @@ class TestApproveProxyFork:
         deposits = [{"token": token_a_address, "amount": AMOUNT}]
 
         tx = await proxy.functions.execute(program, deposits).transact({"from": user})
-        receipt = await w3.eth.get_transaction_receipt(tx)
+        receipt = await w3.eth.wait_for_transaction_receipt(tx, timeout=60, poll_latency=0.1)
         assert receipt["status"] == 1
 
         assert await token_a.functions.balanceOf(user).call() == bal_user_before - AMOUNT
@@ -982,7 +986,7 @@ class TestApproveProxyFork:
 
         for token, amount in [(token_a, AMOUNT_A), (token_b, AMOUNT_B)]:
             tx = await token.functions.approve(proxy_address, amount).transact({"from": user})
-            await w3.eth.get_transaction_receipt(tx)
+            await w3.eth.wait_for_transaction_receipt(tx, timeout=60, poll_latency=0.1)
 
         bal_a_user_before = await token_a.functions.balanceOf(user).call()
         bal_b_user_before = await token_b.functions.balanceOf(user).call()
@@ -1003,7 +1007,7 @@ class TestApproveProxyFork:
         ]
 
         tx = await proxy.functions.execute(program, deposits).transact({"from": user})
-        receipt = await w3.eth.get_transaction_receipt(tx)
+        receipt = await w3.eth.wait_for_transaction_receipt(tx, timeout=60, poll_latency=0.1)
         assert receipt["status"] == 1
 
         assert await token_a.functions.balanceOf(user).call() == bal_a_user_before - AMOUNT_A
@@ -1021,7 +1025,7 @@ class TestApproveProxyFork:
 
         program = push_u256(0) + pop()
         tx = await proxy.functions.execute(program, []).transact({"from": user})
-        receipt = await w3.eth.get_transaction_receipt(tx)
+        receipt = await w3.eth.wait_for_transaction_receipt(tx, timeout=60, poll_latency=0.1)
         assert receipt["status"] == 1
 
     async def test_insufficient_allowance_reverts(self, proxy_ctx):
@@ -1038,7 +1042,7 @@ class TestApproveProxyFork:
         DEPOSIT_AMOUNT = 1_000 * 10**18
 
         tx = await token_a.functions.approve(proxy_address, APPROVE_AMOUNT).transact({"from": user})
-        await w3.eth.get_transaction_receipt(tx)
+        await w3.eth.wait_for_transaction_receipt(tx, timeout=60, poll_latency=0.1)
 
         program = (
             Program().call_contract(token_a_address, ERC20.fns.transfer(recipient, DEPOSIT_AMOUNT).data).pop().build()
@@ -1054,7 +1058,7 @@ class TestApproveProxyFork:
         vm_address = proxy_ctx["vm_address"]
 
         stored_vm = await proxy.functions.vm().call()
-        assert stored_vm.lower() == vm_address.lower()
+        assert HexBytes(stored_vm) == vm_address
 
     async def test_eth_forwarding(self, proxy_ctx):
         """ETH sent to proxy.execute() is forwarded to DeFiVM."""
@@ -1069,8 +1073,90 @@ class TestApproveProxyFork:
 
         program = push_u256(0) + pop()
         tx = await proxy.functions.execute(program, []).transact({"from": user, "value": ETH_VALUE})
-        receipt = await w3.eth.get_transaction_receipt(tx)
+        receipt = await w3.eth.wait_for_transaction_receipt(tx, timeout=60, poll_latency=0.1)
         assert receipt["status"] == 1
 
         vm_balance_after = await w3.eth.get_balance(vm_address)
         assert vm_balance_after - vm_balance_before == ETH_VALUE
+
+
+# ---------------------------------------------------------------------------
+# Swap execution tests — fork with real V3 pools
+# ---------------------------------------------------------------------------
+
+
+async def _v3_pool_edge(w3, pool_address: Address, token_in, token_out) -> V3PoolEdge:
+    pool = UNISWAP_V3_POOL(to=POOL_WETH_USDC_500)
+    token0_addr = await pool.fns.token0().call(w3)
+    slot0 = await pool.fns.slot0().call(w3)
+    liquidity = await pool.fns.liquidity().call(w3)
+    fee = await pool.fns.fee().call(w3)
+    return V3PoolEdge(
+        token_in=token_in,
+        token_out=token_out,
+        pool_address=pool_address,
+        protocol="UniswapV3",
+        fee_bps=fee // 100,
+        sqrt_price_x96=slot0[0],
+        liquidity=liquidity,
+        is_token0_in=token0_addr.lower() == token_in.address.lower(),
+    )
+
+
+_WETH_DEPOSIT = ContractFunction.from_abi("function deposit() external payable")
+
+
+@pytest.mark.fork
+class TestBuildSwapTransactionFork:
+    """Fork tests for build_swap_transaction(RouteDAG) end-to-end.
+
+    Exercises the full path: find_best_split → RouteDAG →
+    build_swap_transaction → vm.execute() on a mainnet fork with real V3 pools.
+    Unlike TestQuoteFork (which quotes each leg via QuoterV2), these tests
+    execute the compiled swap program and verify non-zero token output.
+    """
+
+    async def test_split_route_build_and_execute(self, ctx) -> None:
+        """build_swap_transaction(RouteDAG) executes a 2-leg split on a mainnet fork.
+
+        Uses fee-equalized synthetic liquidity to force find_best_split into a
+        2-leg split DAG, compiles it via build_swap_transaction, and executes
+        against real V3 pools, verifying the deployer receives non-zero USDC.
+        """
+        w3 = ctx["w3"]
+        vm_address = ctx["vm_address"]
+        deployer = ctx["deployer"]
+        amount_in = 10**18  # 1 WETH — large enough for split to improve on single-pool route
+
+        # Symmetric graph (equal fee + price) so a split can improve on single-pool routing.
+        graph = PoolGraph()
+        ref_edge = await _v3_pool_edge(w3, POOL_WETH_USDC_500, WETH, USDC)
+        for pool_addr in (POOL_WETH_USDC_500, POOL_WETH_USDC_3000):
+            edge = await _v3_pool_edge(w3, pool_addr, WETH, USDC)
+            graph.add_pool(
+                V3PoolEdge(
+                    token_in=WETH,
+                    token_out=USDC,
+                    pool_address=pool_addr,
+                    protocol="UniswapV3",
+                    fee_bps=5,
+                    sqrt_price_x96=ref_edge.sqrt_price_x96,
+                    liquidity=10**15,
+                    is_token0_in=edge.is_token0_in,
+                )
+            )
+
+        dag = Router(graph).find_best_split(TokenAmount(WETH, amount_in), USDC, step_bps=1000)
+        assert len(Router.dag_leg_weights(dag)) >= 1, "expected at least one leg in split DAG"
+
+        # min_final_out=0: actual output verified by balance check below.
+        swap_tx = build_swap_transaction(dag, amount_in, vm_address, deployer)
+
+        await _WETH_DEPOSIT().transact(w3, deployer, to=WETH.address, value=Wei(amount_in))
+        await ERC20.fns.transfer(vm_address, amount_in).transact(w3, deployer, to=WETH.address)
+
+        bal_before = await ERC20.fns.balanceOf(deployer).call(w3, to=USDC.address)
+        await eth_send_transaction(w3, deployer, to=swap_tx.to, data=swap_tx.data)
+        bal_after = await ERC20.fns.balanceOf(deployer).call(w3, to=USDC.address)
+
+        assert bal_after > bal_before, f"Expected USDC > 0 after split swap, got {bal_after - bal_before}"

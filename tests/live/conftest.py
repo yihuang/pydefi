@@ -36,15 +36,17 @@ import aiohttp
 import pytest
 from web3 import AsyncWeb3
 
+from pydefi.abi.codec import codec
 from pydefi.rpc import get_w3
-from pydefi.types import ChainId, Token
+from pydefi.types import Address, ChainId
+from tests.addrs import INTERPRETER_ADDR
 from tests.live.sol_utils import compile_interpreter_sync
 
 # ---------------------------------------------------------------------------
 # Public RPC
 # ---------------------------------------------------------------------------
 
-ETH_RPC_URL = os.environ.get("ETH_RPC_URL", "https://eth.drpc.org")
+ETH_RPC_URL = os.environ.get("ETH_RPC_URL") or "https://eth.drpc.org"
 
 # ---------------------------------------------------------------------------
 # Solana public RPC (used for simulation and as the surfpool upstream)
@@ -52,47 +54,8 @@ ETH_RPC_URL = os.environ.get("ETH_RPC_URL", "https://eth.drpc.org")
 
 SOLANA_RPC_URL = os.environ.get("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com")
 
-# ---------------------------------------------------------------------------
-# Well-known Ethereum mainnet tokens
-# ---------------------------------------------------------------------------
 
-# vitalik.eth — a well-funded address useful as a test sender/whale.
-ETH_WHALE = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"
-
-WETH = Token(
-    chain_id=ChainId.ETHEREUM,
-    address="0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
-    symbol="WETH",
-    decimals=18,
-)
-USDC = Token(
-    chain_id=ChainId.ETHEREUM,
-    address="0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
-    symbol="USDC",
-    decimals=6,
-)
-DAI = Token(
-    chain_id=ChainId.ETHEREUM,
-    address="0x6B175474E89094C44Da98b954EedeAC495271d0F",
-    symbol="DAI",
-    decimals=18,
-)
-USDT = Token(
-    chain_id=ChainId.ETHEREUM,
-    address="0xdAC17F958D2ee523a2206206994597C13D831ec7",
-    symbol="USDT",
-    decimals=6,
-)
-
-# ---------------------------------------------------------------------------
-# Analog-Labs EVM interpreter (shared by all DeFiVM fork tests)
-# ---------------------------------------------------------------------------
-
-# Well-known mainnet address where the interpreter is pre-deployed via CREATE2.
-INTERPRETER_ADDR = "0x0000000000001e3F4F615cd5e20c681Cf7d85e8D"
-
-
-async def _ensure_interpreter(w3: AsyncWeb3, deployer: str) -> str:
+async def _ensure_interpreter(w3: AsyncWeb3, deployer: str) -> Address:
     """Return EVM interpreter address, compiling + deploying one if needed.
 
     If the Analog-Labs interpreter is pre-deployed on this fork, returns its
@@ -107,8 +70,8 @@ async def _ensure_interpreter(w3: AsyncWeb3, deployer: str) -> str:
     key = "<stdin>:Interpreter"
     contract = w3.eth.contract(abi=compiled[key]["abi"], bytecode=compiled[key]["bin"])
     tx_hash = await contract.constructor().transact({"from": deployer})
-    receipt = await w3.eth.get_transaction_receipt(tx_hash)
-    return receipt["contractAddress"]
+    receipt = await w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60, poll_latency=0.1)
+    return Address(receipt["contractAddress"])
 
 
 # ---------------------------------------------------------------------------
@@ -117,7 +80,7 @@ async def _ensure_interpreter(w3: AsyncWeb3, deployer: str) -> str:
 
 
 @pytest.fixture(scope="module")
-async def interpreter_addr(fork_w3_module) -> str:
+async def interpreter_addr(fork_w3_module) -> Address:
     """Return EVM interpreter address for this fork's Anvil instance.
 
     If the Analog-Labs interpreter is already deployed at its well-known
@@ -133,7 +96,14 @@ async def interpreter_addr(fork_w3_module) -> str:
 @pytest.fixture
 async def eth_w3() -> AsyncWeb3:
     """Return an :class:`~web3.AsyncWeb3` instance backed by public RPC endpoints
-    auto-discovered via chainlist.org, with automatic failover."""
+    auto-discovered via chainlist.org, with automatic failover.
+
+    Set the ``ETH_RPC_URL`` environment variable to use a specific endpoint
+    instead of the auto-discovered ones (useful for authenticated providers
+    such as Infura or Alchemy).
+    """
+    if "ETH_RPC_URL" in os.environ:
+        return AsyncWeb3(AsyncWeb3.AsyncHTTPProvider(ETH_RPC_URL))
     return await get_w3(ChainId.ETHEREUM)
 
 
@@ -212,6 +182,7 @@ async def fork_w3(request: pytest.FixtureRequest):
                 pass
         pytest.fail("Anvil did not start within 30 seconds")
 
+    w3.codec = codec
     yield w3
 
     proc.terminate()
@@ -268,8 +239,9 @@ async def fork_w3_module():
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 pass
-        pytest.fail("Anvil did not start within 30 seconds")
+        pytest.fail("Anvil did not start within 60 seconds")
 
+    w3.codec = codec
     yield w3
 
     proc.terminate()

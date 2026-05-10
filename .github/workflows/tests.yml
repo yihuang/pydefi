@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: ["**"]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   uv-sync:
     runs-on: ubuntu-latest
@@ -26,6 +30,39 @@ jobs:
       - name: Verify uv sync for dev dependencies
         run: uv sync --locked --extra dev
 
+  lint-fix:
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dev dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install ".[dev]"
+
+      - name: Format and lint (auto-fix)
+        run: |
+          ruff format .
+          ruff check --fix .
+
+      - name: Commit and push fixes
+        uses: stefanzweifel/git-auto-commit-action@v7.1.0
+        with:
+          commit_message: "style: auto-fix ruff format and lint"
+          branch: ${{ github.head_ref }}
+
   lint:
     runs-on: ubuntu-latest
     permissions:
@@ -44,10 +81,10 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install ".[dev]"
 
-      - name: Lint with ruff
+      - name: Lint (check)
         run: ruff check .
 
-      - name: Check formatting with ruff
+      - name: Format (check)
         run: ruff format --check .
 
   test:
@@ -92,7 +129,7 @@ jobs:
 
       - name: Run live integration tests
         env:
-          ETH_RPC_URL: https://eth.drpc.org
+          ETH_RPC_URL: ${{ secrets.ETH_RPC_URL }}
           JUPITER_API_KEY: ${{ secrets.JUPITER_API_KEY }}
           UNISWAP_API_KEY: ${{ secrets.UNISWAP_API_KEY }}
         run: pytest -m live -v --reruns 3 --reruns-delay 5
@@ -122,6 +159,7 @@ jobs:
 
       - name: Run fork transaction execution tests
         env:
-          ETH_RPC_URL: https://eth.drpc.org
-        run: pytest -m fork -v --reruns 2 --reruns-delay 5
-
+          ETH_RPC_URL: ${{ secrets.ETH_RPC_URL }}
+          JUPITER_API_KEY: ${{ secrets.JUPITER_API_KEY }}
+          UNISWAP_API_KEY: ${{ secrets.UNISWAP_API_KEY }}
+        run: pytest -m fork -v --reruns 3 --reruns-delay 10

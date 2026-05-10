@@ -15,17 +15,14 @@ from pydefi.exceptions import PoolDataError
 from pydefi.pathfinder.router import Router
 from pydefi.pool_data.geckoterminal import GeckoTerminal
 from pydefi.types import ChainId, TokenAmount
-
-from .conftest import USDC, WETH
+from tests.addrs import PAIR_WETH_USDC, POOL_WETH_USDC_500, USDC, WETH
 
 # ---------------------------------------------------------------------------
 # Well-known Ethereum mainnet pool addresses for spot checks
 # ---------------------------------------------------------------------------
 
-# Uniswap V2 WETH/USDC pair
-WETH_USDC_V2 = "0xB4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc"
-# Uniswap V3 WETH/USDC 0.05% pool
-WETH_USDC_V3 = "0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640"
+WETH_USDC_V2 = PAIR_WETH_USDC
+WETH_USDC_V3 = POOL_WETH_USDC_500
 
 # Sanity price bounds: 1 WETH should fetch between $500 and $10 000 in USDC
 MIN_USDC = 500 * 10**6  # 500 USDC (6 decimals)

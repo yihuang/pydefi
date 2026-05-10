@@ -5,12 +5,13 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from pydefi._utils import decode_address
 from pydefi.aggregator.base import AggregatorQuote
 from pydefi.aggregator.jupiter import _JUPITER_API_BASE, _JUPITER_SWAP_V2_BASE, Jupiter, JupiterSwapV2
 from pydefi.amm.base import BaseSolanaAMM
 from pydefi.amm.raydium import _RAYDIUM_API_BASE, Raydium
 from pydefi.exceptions import AggregatorError, InsufficientLiquidityError
-from pydefi.types import ChainId, SwapRoute, Token, TokenAmount
+from pydefi.types import Address, ChainId, SwapRoute, Token, TokenAmount
 
 # ---------------------------------------------------------------------------
 # Solana token fixtures
@@ -20,9 +21,9 @@ SOL_MINT = "So11111111111111111111111111111111111111112"
 USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 USDT_MINT = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
 
-SOL = Token(chain_id=ChainId.SOLANA, address=SOL_MINT, symbol="SOL", decimals=9)
-USDC = Token(chain_id=ChainId.SOLANA, address=USDC_MINT, symbol="USDC", decimals=6)
-USDT = Token(chain_id=ChainId.SOLANA, address=USDT_MINT, symbol="USDT", decimals=6)
+SOL = Token(chain_id=ChainId.SOLANA, address=decode_address(SOL_MINT, ChainId.SOLANA), symbol="SOL", decimals=9)
+USDC = Token(chain_id=ChainId.SOLANA, address=decode_address(USDC_MINT, ChainId.SOLANA), symbol="USDC", decimals=6)
+USDT = Token(chain_id=ChainId.SOLANA, address=decode_address(USDT_MINT, ChainId.SOLANA), symbol="USDT", decimals=6)
 
 
 # ---------------------------------------------------------------------------
@@ -148,7 +149,9 @@ class TestRaydium:
         assert route.token_out == USDC
         assert len(route.steps) == 1
         assert route.steps[0].protocol == "Raydium"
-        assert route.steps[0].pool_address == "58oQChx4yWmvKnami8n1LnxS7vQp5YCGLGjrQCZFdcxm"
+        assert route.steps[0].pool_address == decode_address(
+            "58oQChx4yWmvKnami8n1LnxS7vQp5YCGLGjrQCZFdcxm", ChainId.SOLANA
+        )
         assert route.amount_out.amount == 150_000_000
         assert route.price_impact == Decimal("0.0005")  # 0.05% / 100
 
@@ -171,7 +174,7 @@ class TestRaydium:
         with patch.object(raydium, "_get", new=AsyncMock(return_value=mock_response)):
             route = await raydium.build_swap_route(amount_in, USDC)
 
-        assert route.steps[0].pool_address == ""
+        assert route.steps[0].pool_address is None
 
     @pytest.mark.asyncio
     async def test_get_passes_slippage_bps(self):
@@ -383,7 +386,7 @@ class TestJupiter:
         assert route.token_out == USDC
         assert len(route.steps) == 1
         assert route.steps[0].protocol == "Jupiter"
-        assert route.steps[0].pool_address == ""
+        assert route.steps[0].pool_address is None
         assert route.amount_out.amount == 300_000_000
 
     @pytest.mark.asyncio
@@ -511,7 +514,7 @@ class TestStargateSolana:
             w3=None,
             src_chain_id=ChainId.ETHEREUM,
             dst_chain_id=ChainId.SOLANA,
-            router_address="0x8731d54E9D02c286767d56ac03e8037C07e01e98",
+            router_address=Address("0x8731d54E9D02c286767d56ac03e8037C07e01e98"),
         )
         assert sg._lz_chain_id(ChainId.SOLANA) == 30168
 

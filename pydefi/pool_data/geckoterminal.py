@@ -12,9 +12,10 @@ from typing import Any, Optional
 
 import aiohttp
 
+from pydefi._utils import decode_address, encode_address
 from pydefi.exceptions import PoolDataError
 from pydefi.pool_data.base import BasePoolDataProvider, PoolData
-from pydefi.types import ChainId, Token
+from pydefi.types import Address, ChainId, Token
 
 # GeckoTerminal network slugs keyed by EVM chain ID
 _CHAIN_TO_NETWORK: dict[int, str] = {
@@ -121,7 +122,7 @@ class GeckoTerminal(BasePoolDataProvider):
         decimals = int(attrs.get("decimals") or 18)
         return Token(
             chain_id=self.chain_id,
-            address=address,
+            address=decode_address(address, self.chain_id),
             symbol=attrs.get("symbol") or "???",
             decimals=decimals,
             name=attrs.get("name") or None,
@@ -304,7 +305,7 @@ class GeckoTerminal(BasePoolDataProvider):
             page += 1
         return pools
 
-    async def get_pools_for_tokens(self, token_addresses: list[str], limit: int = 100) -> list[PoolData]:
+    async def get_pools_for_tokens(self, token_addresses: list[Address], limit: int = 100) -> list[PoolData]:
         """Fetch pools that contain any of the given tokens (batch query).
 
         Uses the GeckoTerminal ``/tokens/multi/{addresses}/pools`` endpoint to
@@ -320,7 +321,7 @@ class GeckoTerminal(BasePoolDataProvider):
         sent to the API.
 
         Args:
-            token_addresses: List of ERC-20 token addresses to query.
+            token_addresses: List of ERC-20 token addresses to query (``Address``).
             limit: Maximum total number of pools to return.
 
         Returns:
@@ -334,10 +335,10 @@ class GeckoTerminal(BasePoolDataProvider):
         seen_input: set[str] = set()
         unique_addresses: list[str] = []
         for addr in token_addresses:
-            key = addr.lower()
+            key = encode_address(addr, self.chain_id)
             if key not in seen_input:
                 seen_input.add(key)
-                unique_addresses.append(addr.lower())
+                unique_addresses.append(key)
 
         # Chunk into batches of _MAX_ADDRESSES_PER_REQUEST
         chunks = [
@@ -384,21 +385,22 @@ class GeckoTerminal(BasePoolDataProvider):
                 page += 1
         return pools
 
-    async def get_pools_for_token(self, token_address: str, limit: int = 100) -> list[PoolData]:
+    async def get_pools_for_token(self, token_address: Address, limit: int = 100) -> list[PoolData]:
         """Fetch pools that contain a specific token.
 
         Args:
-            token_address: ERC-20 token address.
+            token_address: ERC-20 token address (str or bytes ``Address``).
             limit: Maximum number of pools to return.
 
         Returns:
             A list of up to *limit* :class:`PoolData` objects.
         """
+        addr_str = token_address.to_0x_hex()  # assume EVM address for now
         pools: list[PoolData] = []
         page = 1
         while len(pools) < limit:
             data = await self._get(
-                f"networks/{self._network}/tokens/{token_address.lower()}/pools",
+                f"networks/{self._network}/tokens/{addr_str}/pools",
                 params={
                     "include": "base_token,quote_token,dex",
                     "page": page,

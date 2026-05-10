@@ -11,7 +11,7 @@ from typing import Any
 from eth_contract import Contract
 from web3 import AsyncWeb3
 
-from pydefi.types import SwapRoute, Token, TokenAmount
+from pydefi.types import Address, SwapRoute, Token, TokenAmount
 
 
 class BaseAMM(ABC):
@@ -22,10 +22,10 @@ class BaseAMM(ABC):
 
     Args:
         w3: An :class:`~web3.AsyncWeb3` instance connected to the target chain.
-        router_address: Checksum address of the on-chain router/swap contract.
+        router_address: Address of the on-chain router/swap contract.
     """
 
-    def __init__(self, w3: AsyncWeb3, router_address: str) -> None:
+    def __init__(self, w3: AsyncWeb3, router_address: Address) -> None:
         self.w3 = w3
         self.router_address = router_address
 

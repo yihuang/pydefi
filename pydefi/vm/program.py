@@ -27,6 +27,8 @@ Usage example::
 
 from __future__ import annotations
 
+from pydefi.types import Address
+
 # ---------------------------------------------------------------------------
 # Opcode constants — single EVM opcode identifiers
 # ---------------------------------------------------------------------------
@@ -82,6 +84,7 @@ _DUP4: int = 0x83  # DUP4
 _DUP6: int = 0x85  # DUP6
 _SWAP2: int = 0x91  # SWAP2
 _SWAP3: int = 0x92  # SWAP3
+_OP_RETURN: int = 0xF3  # RETURN — end execution and return data from memory
 
 # ---------------------------------------------------------------------------
 # Stack instructions
@@ -95,12 +98,11 @@ def push_u256(n: int) -> bytes:
     return bytes([OP_PUSH_U256]) + n.to_bytes(32, "big")
 
 
-def push_addr(a: str) -> bytes:
+def push_addr(a: Address) -> bytes:
     """Emit PUSH20 — push a 20-byte Ethereum address onto the native EVM stack."""
-    raw = bytes.fromhex(a.removeprefix("0x"))
-    if len(raw) != 20:
+    if len(a) != 20:
         raise ValueError(f"push_addr: bad address length: {a!r}")
-    return bytes([OP_PUSH_ADDR]) + raw
+    return bytes([OP_PUSH_ADDR]) + a
 
 
 def gas_opcode() -> bytes:
@@ -202,6 +204,25 @@ def push_bytes(data: bytes) -> bytes:
 def dup() -> bytes:
     """Emit DUP1 — duplicate the top stack item."""
     return bytes([OP_DUP])
+
+
+def dup2() -> bytes:
+    """Emit DUP2 — duplicate the second stack item."""
+    return bytes([_DUP2])
+
+
+def dup_n(n: int) -> bytes:
+    """Emit DUPn — duplicate the stack item *n* positions from the top.
+
+    Args:
+        n: Stack depth (1 = TOS, 2 = second from top, …, 16 = sixteenth).
+
+    Raises:
+        ValueError: If *n* is not in the range 1..16.
+    """
+    if not 1 <= n <= 16:
+        raise ValueError(f"dup_n: depth must be 1..16, got {n}")
+    return bytes([0x7F + n])
 
 
 def swap() -> bytes:
@@ -645,3 +666,16 @@ def ret_slice(offset: int, length: int) -> bytes:
             OP_SWAP,  # SWAP1              → [fp=argsOffset, length=argsLen]
         ]
     )
+
+
+def return_tos() -> bytes:
+    """Store TOS at ``memory[0x00]`` and RETURN 32 bytes.
+
+    Terminal instruction for quote programs: pops TOS, writes it to
+    ``mem[0x00]``, and returns 32 bytes so ``eth_call`` returndata holds the
+    computed value.
+
+    Returns:
+        8-byte sequence: ``PUSH1 0x00 MSTORE PUSH1 0x20 PUSH1 0x00 RETURN``.
+    """
+    return bytes([_PUSH1, 0x00, OP_MSTORE, _PUSH1, 0x20, _PUSH1, 0x00, _OP_RETURN])
