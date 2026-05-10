@@ -6,7 +6,7 @@ import pytest
 
 from pydefi.exceptions import NoRouteFoundError
 from pydefi.pathfinder.asgm import asgm_optimize
-from pydefi.pathfinder.graph import PoolEdge, PoolGraph, ReserveOverlay, V3PoolEdge
+from pydefi.pathfinder.graph import PoolEdge, PoolGraph, ReserveOverlay, V3PoolEdge, merge_pool_graphs
 from pydefi.pathfinder.multipath import MultiEdgePath, PathWeights, merge_and_expand
 from pydefi.pathfinder.router import Router
 from pydefi.types import Address, ChainId, RouteDAG, RouteSplit, RouteSwap, Token, TokenAmount
@@ -162,58 +162,46 @@ class TestPoolEdge:
 
 
 class TestV3PoolEdge:
-    def test_spot_price_token0_in(self):
-        """Spot price should be ~2000 USDC/WETH when WETH is token0."""
-        edge = make_v3_edge(WETH, USDC, POOL_A, is_token0_in=True)
-        assert abs(edge.spot_price - Decimal("2000")) < Decimal("1")
-
-    def test_spot_price_token1_in(self):
-        """Spot price should be ~1/2000 WETH/USDC when USDC is token1 in."""
-        edge = make_v3_edge(USDC, WETH, POOL_A, is_token0_in=False)
-        assert abs(edge.spot_price - Decimal("1") / Decimal("2000")) < Decimal("0.001")
+    @pytest.mark.parametrize(
+        "tin,tout,is_token0_in,expected,tol",
+        [
+            (WETH, USDC, True, Decimal("2000"), Decimal("1")),
+            (USDC, WETH, False, Decimal("1") / Decimal("2000"), Decimal("0.001")),
+        ],
+        ids=["token0_in", "token1_in"],
+    )
+    def test_spot_price(self, tin, tout, is_token0_in, expected, tol):
+        edge = make_v3_edge(tin, tout, POOL_A, is_token0_in=is_token0_in)
+        assert abs(edge.spot_price - expected) < tol
 
     def test_spot_price_zero_sqrt_price(self):
         edge = V3PoolEdge(
-            token_in=WETH,
-            token_out=USDC,
-            pool_address=POOL_A,
-            protocol="UniswapV3",
-            sqrt_price_x96=0,
-            liquidity=10**22,
+            token_in=WETH, token_out=USDC, pool_address=POOL_A, protocol="UniswapV3",
+            sqrt_price_x96=0, liquidity=10**22,
         )
         assert edge.spot_price == Decimal(0)
 
-    def test_amount_out_token0_in(self):
-        """Swapping 1 WETH should yield ~1994 USDC (after 0.3% fee at $2000)."""
-        edge = make_v3_edge(WETH, USDC, POOL_A, is_token0_in=True)
-        out = edge.amount_out(10**18)
-        assert 1_990 * 10**6 < out < 1_998 * 10**6, f"Got {out / 10**6:.2f} USDC"
+    @pytest.mark.parametrize(
+        "tin,tout,is_token0_in,amount_in,lo,hi",
+        [
+            (WETH, USDC, True, 10**18, 1_990 * 10**6, 1_998 * 10**6),
+            (USDC, WETH, False, 2000 * 10**6, int(0.994 * 10**18), int(0.998 * 10**18)),
+        ],
+        ids=["token0_in_1WETH", "token1_in_2000USDC"],
+    )
+    def test_amount_out(self, tin, tout, is_token0_in, amount_in, lo, hi):
+        edge = make_v3_edge(tin, tout, POOL_A, is_token0_in=is_token0_in)
+        assert lo < edge.amount_out(amount_in) < hi
 
-    def test_amount_out_token1_in(self):
-        """Swapping 2000 USDC should yield ~0.997 WETH (after 0.3% fee)."""
-        edge = make_v3_edge(USDC, WETH, POOL_A, is_token0_in=False)
-        out = edge.amount_out(2000 * 10**6)
-        assert int(0.994 * 10**18) < out < int(0.998 * 10**18), f"Got {out / 10**18:.6f} WETH"
-
-    def test_amount_out_zero_liquidity(self):
+    @pytest.mark.parametrize(
+        "sqrt_price,liquidity",
+        [(10**20, 0), (0, 10**22)],
+        ids=["zero_liquidity", "zero_sqrt_price"],
+    )
+    def test_amount_out_degenerate_state_returns_zero(self, sqrt_price, liquidity):
         edge = V3PoolEdge(
-            token_in=WETH,
-            token_out=USDC,
-            pool_address=POOL_A,
-            protocol="UniswapV3",
-            sqrt_price_x96=10**20,
-            liquidity=0,
-        )
-        assert edge.amount_out(10**18) == 0
-
-    def test_amount_out_zero_sqrt_price(self):
-        edge = V3PoolEdge(
-            token_in=WETH,
-            token_out=USDC,
-            pool_address=POOL_A,
-            protocol="UniswapV3",
-            sqrt_price_x96=0,
-            liquidity=10**22,
+            token_in=WETH, token_out=USDC, pool_address=POOL_A, protocol="UniswapV3",
+            sqrt_price_x96=sqrt_price, liquidity=liquidity,
         )
         assert edge.amount_out(10**18) == 0
 
@@ -223,39 +211,29 @@ class TestV3PoolEdge:
         assert weight < float("inf")
         assert weight > 0  # fee causes loss
 
-    def test_estimate_price_impact_token0_in(self):
-        """V3 price impact should be a sensible positive fraction."""
-        edge = make_v3_edge(WETH, USDC, POOL_A, is_token0_in=True)
-        impact = edge.estimate_price_impact(10**18)  # 1 WETH
+    @pytest.mark.parametrize(
+        "tin,tout,is_token0_in,amount_in",
+        [
+            (WETH, USDC, True, 10**18),
+            (USDC, WETH, False, 2000 * 10**6),
+        ],
+        ids=["token0_in", "token1_in"],
+    )
+    def test_estimate_price_impact(self, tin, tout, is_token0_in, amount_in):
+        edge = make_v3_edge(tin, tout, POOL_A, is_token0_in=is_token0_in)
+        impact = edge.estimate_price_impact(amount_in)
         assert not impact.is_nan()
         assert Decimal(0) < impact < Decimal(1)
 
-    def test_estimate_price_impact_token1_in(self):
-        """V3 price impact should be sensible for token1→token0 direction."""
-        edge = make_v3_edge(USDC, WETH, POOL_A, is_token0_in=False)
-        impact = edge.estimate_price_impact(2000 * 10**6)  # 2000 USDC
-        assert not impact.is_nan()
-        assert Decimal(0) < impact < Decimal(1)
-
-    def test_estimate_price_impact_zero_liquidity(self):
+    @pytest.mark.parametrize(
+        "sqrt_price,liquidity",
+        [(10**20, 0), (0, 10**22)],
+        ids=["zero_liquidity", "zero_sqrt_price"],
+    )
+    def test_estimate_price_impact_degenerate_state_is_nan(self, sqrt_price, liquidity):
         edge = V3PoolEdge(
-            token_in=WETH,
-            token_out=USDC,
-            pool_address=POOL_A,
-            protocol="UniswapV3",
-            sqrt_price_x96=10**20,
-            liquidity=0,
-        )
-        assert edge.estimate_price_impact(10**18).is_nan()
-
-    def test_estimate_price_impact_zero_sqrt_price(self):
-        edge = V3PoolEdge(
-            token_in=WETH,
-            token_out=USDC,
-            pool_address=POOL_A,
-            protocol="UniswapV3",
-            sqrt_price_x96=0,
-            liquidity=10**22,
+            token_in=WETH, token_out=USDC, pool_address=POOL_A, protocol="UniswapV3",
+            sqrt_price_x96=sqrt_price, liquidity=liquidity,
         )
         assert edge.estimate_price_impact(10**18).is_nan()
 
@@ -361,6 +339,44 @@ class TestPoolGraph:
         g = self._make_graph()
         edges = list(g)
         assert len(edges) == 6
+
+
+# ---------------------------------------------------------------------------
+# merge_pool_graphs (aggregator-scope union)
+# ---------------------------------------------------------------------------
+
+
+class TestMergePoolGraphs:
+    def test_union_of_disjoint_graphs(self):
+        g1 = PoolGraph()
+        g1.add_bidirectional_pool(WETH, USDC, POOL_A, "UniswapV2", reserve_a=10**21, reserve_b=2 * 10**9, fee_bps=30)
+        g2 = PoolGraph()
+        g2.add_bidirectional_pool(WETH, DAI, POOL_B, "Sushiswap", reserve_a=10**21, reserve_b=10**21, fee_bps=30)
+
+        merged = merge_pool_graphs(g1, g2)
+        # Both pools' both directions present.
+        assert sum(1 for _ in merged) == 4
+        weth_neighbors = {e.token_out.address for e in merged.edges_from(WETH)}
+        assert weth_neighbors == {USDC.address, DAI.address}
+
+    def test_dedup_by_pool_address(self):
+        """Same pool registered in two DEX graphs collapses to one edge."""
+
+        g1 = PoolGraph()
+        g1.add_bidirectional_pool(WETH, USDC, POOL_A, "UniswapV2", reserve_a=10**21, reserve_b=2 * 10**9, fee_bps=30)
+        g2 = PoolGraph()
+        g2.add_bidirectional_pool(WETH, USDC, POOL_A, "Sushiswap", reserve_a=5 * 10**20, reserve_b=10**9, fee_bps=30)
+
+        merged = merge_pool_graphs(g1, g2)
+        # Only g1's edges survive (same (pool_address, token_in)).
+        edges = list(merged)
+        assert len(edges) == 2
+        # The surviving edge is from g1 (UniswapV2, deeper reserves).
+        assert all(e.protocol == "UniswapV2" for e in edges)
+
+    def test_empty_args(self):
+        merged = merge_pool_graphs()
+        assert sum(1 for _ in merged) == 0
 
 
 # ---------------------------------------------------------------------------

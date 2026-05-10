@@ -575,3 +575,32 @@ class PoolGraph:
     def __iter__(self) -> Iterator[PoolEdge]:
         for edges in self._adj.values():
             yield from edges
+
+
+def merge_pool_graphs(*graphs: PoolGraph) -> PoolGraph:
+    """Union multiple :class:`PoolGraph` instances into a single graph.
+
+    Edges are de-duplicated by ``(pool_address, token_in.address)`` so that
+    the same pool indexed under two DEX scopes is registered once. The
+    surviving edge is the one from the *first* graph in *graphs* — callers
+    that want a specific resolution policy (e.g. "prefer the deeper-state
+    edge") should normalise upstream before merging.
+
+    Aggregator-scope use case: build one :class:`PoolGraph` per DEX
+    (Uniswap, Sushiswap, Pancake, ...) and merge them into one graph that
+    :class:`~pydefi.pathfinder.router.Router` can route across, with
+    :class:`~pydefi.pathfinder.hermes.HermesRouter`'s tree-decomposition
+    structure naturally accommodating the larger node set (treewidth
+    typically stays small even with multi-DEX composition because each
+    DEX's blue-chip core overlaps with the others).
+    """
+    merged = PoolGraph()
+    seen: set[tuple[Address, Address]] = set()
+    for g in graphs:
+        for edge in g:
+            key = (edge.pool_address, edge.token_in.address)
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.add_pool(edge)
+    return merged
