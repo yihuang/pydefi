@@ -176,8 +176,12 @@ class TestV3PoolEdge:
 
     def test_spot_price_zero_sqrt_price(self):
         edge = V3PoolEdge(
-            token_in=WETH, token_out=USDC, pool_address=POOL_A, protocol="UniswapV3",
-            sqrt_price_x96=0, liquidity=10**22,
+            token_in=WETH,
+            token_out=USDC,
+            pool_address=POOL_A,
+            protocol="UniswapV3",
+            sqrt_price_x96=0,
+            liquidity=10**22,
         )
         assert edge.spot_price == Decimal(0)
 
@@ -200,8 +204,12 @@ class TestV3PoolEdge:
     )
     def test_amount_out_degenerate_state_returns_zero(self, sqrt_price, liquidity):
         edge = V3PoolEdge(
-            token_in=WETH, token_out=USDC, pool_address=POOL_A, protocol="UniswapV3",
-            sqrt_price_x96=sqrt_price, liquidity=liquidity,
+            token_in=WETH,
+            token_out=USDC,
+            pool_address=POOL_A,
+            protocol="UniswapV3",
+            sqrt_price_x96=sqrt_price,
+            liquidity=liquidity,
         )
         assert edge.amount_out(10**18) == 0
 
@@ -232,8 +240,12 @@ class TestV3PoolEdge:
     )
     def test_estimate_price_impact_degenerate_state_is_nan(self, sqrt_price, liquidity):
         edge = V3PoolEdge(
-            token_in=WETH, token_out=USDC, pool_address=POOL_A, protocol="UniswapV3",
-            sqrt_price_x96=sqrt_price, liquidity=liquidity,
+            token_in=WETH,
+            token_out=USDC,
+            pool_address=POOL_A,
+            protocol="UniswapV3",
+            sqrt_price_x96=sqrt_price,
+            liquidity=liquidity,
         )
         assert edge.estimate_price_impact(10**18).is_nan()
 
@@ -487,7 +499,7 @@ class TestRouter:
         g = self._make_graph()
         router = Router(g)
         amount_in = TokenAmount(token=WETH, amount=10**18)
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="must be different"):
             router.find_best_route(amount_in, WETH)
 
     def test_find_best_route_max_hops_respected(self):
@@ -798,17 +810,37 @@ class TestRouterSimulate:
 # ---------------------------------------------------------------------------
 
 
-def _v2_weth_usdc_edge(*, is_token0_in: bool = True) -> PoolEdge:
-    """A V2 WETH/USDC edge at $2000 with deep reserves."""
+def _v2_pool_edge(
+    token_in,
+    token_out,
+    pool_addr,
+    *,
+    reserve_in: int = 10**21,
+    reserve_out: int = 2 * 10**9,
+    fee_bps: int = 30,
+    is_token0_in: bool = True,
+) -> PoolEdge:
     return PoolEdge(
-        token_in=WETH,
-        token_out=USDC,
-        pool_address=POOL_A,
+        token_in=token_in,
+        token_out=token_out,
+        pool_address=pool_addr,
         protocol="UniswapV2",
+        reserve_in=reserve_in,
+        reserve_out=reserve_out,
+        fee_bps=fee_bps,
+        extra={"is_token0_in": is_token0_in},
+    )
+
+
+def _v2_weth_usdc_edge(*, is_token0_in: bool = True) -> PoolEdge:
+    """V2 WETH/USDC edge at $2000 with deep reserves."""
+    return _v2_pool_edge(
+        WETH,
+        USDC,
+        POOL_A,
         reserve_in=1_000 * 10**18,
         reserve_out=2_000_000 * 10**6,
-        fee_bps=30,
-        extra={"is_token0_in": is_token0_in},
+        is_token0_in=is_token0_in,
     )
 
 
@@ -948,19 +980,6 @@ class TestV3PoolEdgeOverlay:
 # ---------------------------------------------------------------------------
 # MultiEdgePath / merge_and_expand (PRIME §V)
 # ---------------------------------------------------------------------------
-
-
-def _v2_pool_edge(token_in, token_out, pool_addr, *, reserve_in=10**21, reserve_out=2 * 10**9, fee_bps=30):
-    return PoolEdge(
-        token_in=token_in,
-        token_out=token_out,
-        pool_address=pool_addr,
-        protocol="UniswapV2",
-        reserve_in=reserve_in,
-        reserve_out=reserve_out,
-        fee_bps=fee_bps,
-        extra={"is_token0_in": True},
-    )
 
 
 class TestMultiEdgePath:

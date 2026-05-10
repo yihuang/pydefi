@@ -37,15 +37,10 @@ def _random_pairs(tokens: list, n: int, seed: int) -> list:
     ],
 )
 def test_hermes_output_within_tolerance_of_hop_dp(n_periphery, n_pairs, seed):
-    """find_optimal_split with hermes solver must match hop_dp within 10%.
+    """hermes solver must stay within 15% of hop_dp on the canonical fixture.
 
-    Both solvers feed ASGM but with different candidate sets — Hermes ranks by
-    spot rate (decimal-normalised, so cycles close cleanly), hop_dp by quoted
-    amount_out at the actual trade size. For large trades the spot-vs-finite-
-    input ranking diverges materially; the test guards against catastrophic
-    regression rather than equivalence. Hermes is shipped as opt-in for
-    *correctness* (no hop cap, finds long-tail routes) — the perf+output
-    equivalence story is a Phase-5 follow-up.
+    Guards against catastrophic regression, not equivalence — spot-rate
+    ranking diverges from amount_out ranking at cross-decimal pairs above ~1× depth.
     """
     fix = core_periphery_fixture(n_periphery=n_periphery, seed=seed)
     pool_g = fix.pool_graph
@@ -56,9 +51,6 @@ def test_hermes_output_within_tolerance_of_hop_dp(n_periphery, n_pairs, seed):
     r_he = Router(pool_g, candidate_solver="hermes")
 
     for src, dst in _random_pairs(tokens, n_pairs, seed):
-        # Stay within the fixture's depth — 100× a token in a 20-pool graph
-        # forces ASGM into corner regimes where spot-vs-finite-input candidate
-        # ranking matters more than the test should care about.
         amt_in = TokenAmount(src, 10**src.decimals * rng.choice([1, 10]))
         try:
             dag_dp = r_dp.find_optimal_split(amt_in, dst)
@@ -71,16 +63,10 @@ def test_hermes_output_within_tolerance_of_hop_dp(n_periphery, n_pairs, seed):
         except (NoRouteFoundError, ValueError):
             out_he = None
 
-        if out_dp is None and out_he is None:
-            continue
         if out_dp is None:
-            # Hermes found something hop_dp couldn't — that's a strict gain, accept.
-            continue
+            continue  # hermes-only success is a strict gain
         if out_he is None:
             pytest.fail(f"hermes lost a route hop_dp had: {src.symbol}→{dst.symbol}")
-        # 15% tolerance — guard against catastrophic regression, not equivalence.
-        # Per-token spot ranking diverges from amount_out ranking at WBTC↔ALT
-        # cross-decimal pairs at >1× trade size; ~11% gaps observed.
         tolerance = max(10, (out_dp * 15) // 100)
         assert out_he + tolerance >= out_dp, (
             f"hermes regressed: {src.symbol}→{dst.symbol} amt={amt_in.amount}: "
@@ -146,17 +132,18 @@ def test_amount_out_mode_requires_positive_probe():
     ids=["spot_default", "amount_out_with_probe"],
 )
 def test_router_propagates_weight_mode_kwargs_to_from_pool_graph(monkeypatch, router_kwargs, expected):
-    """Spy-asserts kwargs reach from_pool_graph — end-output tests can pass even when plumbing breaks."""
+    """Spy-asserts kwargs reach from_pool_graph; end-output tests can hide a plumbing break."""
     from pydefi.pathfinder import router as router_mod
 
     fix = core_periphery_fixture(n_periphery=5, seed=0)
     captured: dict = {}
     real = router_mod.from_pool_graph
 
-    def _spy(graph, *, weight="spot", probe_amount=0):
-        captured["weight"] = weight
-        captured["probe_amount"] = probe_amount
-        return real(graph, weight=weight, probe_amount=probe_amount)
+    # Capture all kwargs so a future signature addition surfaces here instead
+    # of being silently dropped.
+    def _spy(graph, **kwargs):
+        captured.update(kwargs)
+        return real(graph, **kwargs)
 
     monkeypatch.setattr(router_mod, "from_pool_graph", _spy)
     Router(fix.pool_graph, candidate_solver="hermes", **router_kwargs)._ensure_hermes()

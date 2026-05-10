@@ -151,6 +151,12 @@ class HermesRouter:
     # entry came directly from an original graph edge. Drives shortcut
     # expansion in :meth:`shortest_path`.
     dpc_witness: dict[V, dict[V, V]]
+    # Cached dict-of-dict adjacency: ``adj_weights[u][v] = weight``. Built
+    # once at :meth:`build` from the NetworkX graph; mutated in place by
+    # :meth:`update_weight`/:meth:`update_weights` so :func:`_enforce_dpc`
+    # can re-seed without re-iterating the NetworkX edges view (~3× faster
+    # on the seed loop, dominates DPC cost on large graphs).
+    adj_weights: dict[V, dict[V, float]]
 
     @classmethod
     def build(cls, graph: nx.DiGraph) -> HermesRouter:
@@ -162,7 +168,7 @@ class HermesRouter:
         directed pair.
         """
         if graph.number_of_nodes() == 0:
-            return cls(graph, 0, [], [], {}, {}, {}, {})
+            return cls(graph, 0, [], [], {}, {}, {}, {}, {})
         undirected = graph.to_undirected(as_view=False)
         # NetworkX's tree-decomp solver doesn't tolerate self-loops.
         undirected.remove_edges_from(nx.selfloop_edges(undirected))
@@ -170,7 +176,8 @@ class HermesRouter:
         bags = [frozenset(b) for b in tree.nodes()]
         chordal_neighbors, peo = _chordal_completion_and_peo(tree)
         peo_index = {v: i for i, v in enumerate(peo)}
-        dpc, witness = _enforce_dpc(graph, chordal_neighbors, peo, peo_index)
+        adj_weights = _build_adj_weights(graph)
+        dpc, witness = _enforce_dpc(adj_weights, chordal_neighbors, peo, peo_index)
         return cls(
             graph=graph,
             treewidth=tw,
@@ -180,6 +187,7 @@ class HermesRouter:
             chordal_neighbors=chordal_neighbors,
             dpc_weights=dpc,
             dpc_witness=witness,
+            adj_weights=adj_weights,
         )
 
     def update_weight(self, u: V, v: V, new_weight: float) -> None:
@@ -187,24 +195,81 @@ class HermesRouter:
 
         Phases 1–2 stay valid (topology unchanged); only d* needs
         re-derivation. Cost: \\(O(N \\cdot \\text{tw}^2)\\).
+
+        Self-loops are silently dropped from DPC (matches
+        :func:`_build_adj_weights`); the graph weight is updated for
+        cosmetic consistency. Edges added directly to ``self.graph`` by
+        bypassing this API and :meth:`add_edge` are not in the
+        ``adj_weights`` cache and raise ``ValueError`` — use
+        :meth:`add_edge` to register topology changes.
         """
         if not self.graph.has_edge(u, v):
             raise ValueError(f"edge ({u!r}, {v!r}) not in graph")
         self.graph[u][v]["weight"] = new_weight
-        self.dpc_weights, self.dpc_witness = _enforce_dpc(self.graph, self.chordal_neighbors, self.peo, self.peo_index)
+        if u == v:
+            return  # self-loop: unroutable, kept out of DPC by invariant
+        if v not in self.adj_weights.get(u, {}):
+            raise ValueError(
+                f"edge ({u!r}, {v!r}) is in graph but not registered with the router; "
+                f"use add_edge() to register topology changes"
+            )
+        self.adj_weights[u][v] = new_weight
+        self.dpc_weights, self.dpc_witness = _enforce_dpc(
+            self.adj_weights, self.chordal_neighbors, self.peo, self.peo_index
+        )
 
     def update_weights(self, updates: dict[tuple[V, V], float]) -> None:
         """Apply multiple edge-weight updates and re-enforce DPC once.
 
-        Unknown edges are silently ignored. One DPC pass for the whole batch
-        instead of one per change.
+        Self-loops and edges not registered with the router (added via
+        external graph mutation) are silently skipped. One DPC pass for
+        the whole batch instead of one per change.
         """
         if not updates:
             return
         for (u, v), w in updates.items():
-            if self.graph.has_edge(u, v):
-                self.graph[u][v]["weight"] = w
-        self.dpc_weights, self.dpc_witness = _enforce_dpc(self.graph, self.chordal_neighbors, self.peo, self.peo_index)
+            if not self.graph.has_edge(u, v):
+                continue
+            self.graph[u][v]["weight"] = w
+            if u == v:
+                continue
+            if v not in self.adj_weights.get(u, {}):
+                continue
+            self.adj_weights[u][v] = w
+        self.dpc_weights, self.dpc_witness = _enforce_dpc(
+            self.adj_weights, self.chordal_neighbors, self.peo, self.peo_index
+        )
+
+    def add_edge(self, u: V, v: V, weight: float) -> bool:
+        """Add/update edge ``(u, v)``; return True iff only Phase 3 reran.
+
+        Paper §4.2 fast path: if the chordal completion already covers
+        ``(u, v)`` the topology is unchanged and we only re-enforce DPC.
+        Otherwise Phases 1-3 rebuild against the mutated graph.
+
+        Self-loops are no-ops (return True) — they're unroutable and
+        :func:`_build_adj_weights` filters them out anyway.
+        """
+        if u == v:
+            return True
+        self.graph.add_edge(u, v, weight=weight)
+        if u in self.peo_index and v in self.peo_index and v in self.chordal_neighbors.get(u, set()):
+            self.adj_weights.setdefault(u, {})[v] = weight
+            self.dpc_weights, self.dpc_witness = _enforce_dpc(
+                self.adj_weights, self.chordal_neighbors, self.peo, self.peo_index
+            )
+            return True
+        # Topology change — rebuild Phases 1-3 in place from the mutated graph.
+        rebuilt = HermesRouter.build(self.graph)
+        self.treewidth = rebuilt.treewidth
+        self.bags = rebuilt.bags
+        self.peo = rebuilt.peo
+        self.peo_index = rebuilt.peo_index
+        self.chordal_neighbors = rebuilt.chordal_neighbors
+        self.dpc_weights = rebuilt.dpc_weights
+        self.dpc_witness = rebuilt.dpc_witness
+        self.adj_weights = rebuilt.adj_weights
+        return False
 
     def query(self, source: V) -> dict[V, float]:
         """Single-source shortest paths from *source* (Algorithm 4).
@@ -215,6 +280,62 @@ class HermesRouter:
         if source not in self.peo_index:
             raise ValueError(f"source {source!r} not in graph")
         return _query_sssp(self.peo, self.peo_index, self.chordal_neighbors, self.dpc_weights, source)
+
+    def singular_vertices(self) -> set[V]:
+        """Vertices whose Bellman-Ford distance is unbounded below.
+
+        Paper §6 / arbitrage detection. On a ``-log(post-fee-rate)`` DEX
+        graph a negative cycle is a profitable closed loop after fees;
+        any vertex on the cycle, *or sharing an SCC with one*, has BF
+        shortest-path ``-inf`` (the cycle can be traversed arbitrarily
+        many times). This method returns that *closure*, which is the
+        ref repo's `_pre_singular_vertices ∪ SCC closure` semantics —
+        not strictly cycle members. A vertex ``w`` reachable from a
+        cycle and able to reach back is included even when no simple
+        cycle through ``w`` is itself negative.
+
+        For *strict* cycle membership, run a simple-cycle enumeration
+        on the seed-containing SCCs — Hermes' DPC table doesn't
+        preserve that information.
+
+        Algorithm:
+
+        1. Seeds via DPC: for each chordal-completion pair ``(u, v)``,
+           ``dpc[u][v] + dpc[v][u] < 0`` flags both as seeds. Treewidth
+           boundedness guarantees every original-graph cycle has a
+           chord, so every negative cycle surfaces through at least one
+           such pair.
+        2. Negative self-loops: explicit single-vertex check.
+        3. SCC closure: every vertex sharing an SCC with a seed.
+        """
+        seeds: set[V] = set()
+        for u in self.peo:
+            u_dpc = self.dpc_weights.get(u, {})
+            for v in self.chordal_neighbors.get(u, ()):
+                if u == v:
+                    continue
+                forward = u_dpc.get(v, math.inf)
+                if not math.isfinite(forward):
+                    continue
+                backward = self.dpc_weights.get(v, {}).get(u, math.inf)
+                if not math.isfinite(backward):
+                    continue
+                if forward + backward < 0:
+                    seeds.add(u)
+                    seeds.add(v)
+        # Negative self-loops: single-vertex cycles that the chordal-
+        # completion pair check skips (u == v branch above).
+        for v in self.graph.nodes():
+            if self.graph.has_edge(v, v) and self.graph[v][v].get("weight", 0.0) < 0:
+                seeds.add(v)
+        if not seeds:
+            return set()
+        singular: set[V] = set()
+        for scc in nx.strongly_connected_components(self.graph):
+            scc_set = set(scc)
+            if scc_set & seeds:
+                singular |= scc_set
+        return singular
 
     def shortest_path(self, source: V, target: V) -> list[V] | None:
         """Reconstruct the optimal ``[source, ..., target]`` node sequence.
@@ -406,8 +527,23 @@ def _chordal_completion_and_peo(tree: nx.Graph) -> tuple[dict[V, set[V]], list[V
 # ---------------------------------------------------------------------------
 
 
+def _build_adj_weights(graph: nx.DiGraph) -> dict[V, dict[V, float]]:
+    """Materialise a dict-of-dict ``adj[u][v] = weight`` view of *graph*.
+
+    Iterating the result is ~3× faster than ``graph.edges(data=True)`` for
+    the DPC seed loop on large graphs. Self-loops dropped (DPC can't use
+    them and NetworkX's tree-decomp solver rejects them).
+    """
+    adj: dict[V, dict[V, float]] = {u: {} for u in graph.nodes()}
+    for u, v, data in graph.edges(data=True):
+        if u == v:
+            continue
+        adj[u][v] = data.get("weight", 1.0)
+    return adj
+
+
 def _enforce_dpc(
-    graph: nx.DiGraph,
+    adj_weights: dict[V, dict[V, float]],
     chordal_neighbors: dict[V, set[V]],
     peo: list[V],
     peo_index: dict[V, int],
@@ -428,15 +564,16 @@ def _enforce_dpc(
     # Initialise d*[u][v] from original edge weights; default ∞.
     dpc: dict[V, dict[V, float]] = {v: {} for v in peo}
     witness: dict[V, dict[V, V]] = {v: {} for v in peo}
-    for u, v, data in graph.edges(data=True):
-        w = data.get("weight", 1.0)
-        # Collapse parallel/self edges by min weight.
-        if u == v:
+    for u, neighbors in adj_weights.items():
+        if u not in dpc:
             continue
-        cur = dpc[u].get(v, math.inf)
-        if w < cur:
-            dpc[u][v] = w
-            witness[u].pop(v, None)  # original edge; no shortcut to expand
+        u_dpc = dpc[u]
+        u_wit = witness[u]
+        for v, w in neighbors.items():
+            cur = u_dpc.get(v, math.inf)
+            if w < cur:
+                u_dpc[v] = w
+                u_wit.pop(v, None)  # original edge; no shortcut to expand
 
     n = len(peo)
     # Walk PEO backward.

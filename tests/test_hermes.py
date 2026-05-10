@@ -201,6 +201,129 @@ def test_update_weights_silently_ignores_unknown():
     assert router.query(1) == before
 
 
+def test_update_weight_external_graph_mutation_raises():
+    """External edge added to .graph (bypassing add_edge) must raise, not KeyError."""
+    router = HermesRouter.build(_diamond_graph())
+    router.graph.add_edge(99, 1, weight=2.0)
+    with pytest.raises(ValueError, match="not registered"):
+        router.update_weight(99, 1, 3.0)
+
+
+def test_update_weights_silently_skips_external_graph_mutation():
+    """update_weights tolerates external mutations without raising."""
+    router = HermesRouter.build(_diamond_graph())
+    router.graph.add_edge(99, 1, weight=2.0)  # bypass add_edge
+    # Mix of unregistered + known. Should not raise; known weight applies.
+    router.update_weights({(99, 1): 3.0, (1, 2): 5.0})
+    assert router.adj_weights[1][2] == 5.0
+
+
+def test_update_weight_self_loop_excluded_from_adj_weights():
+    """Self-loops are dropped at build time; update_weight must stay consistent."""
+    router = HermesRouter.build(_diamond_graph())
+    router.graph.add_edge(1, 1, weight=0.5)  # external self-loop
+    router.update_weight(1, 1, 0.5)
+    assert 1 not in router.adj_weights.get(1, {}), "self-loop leaked into adj_weights"
+
+
+def test_add_edge_self_loop_is_noop():
+    """add_edge(u, u) is unroutable; must not mutate state at all."""
+    router = HermesRouter.build(_diamond_graph())
+    n_edges_before = router.graph.number_of_edges()
+    n_nodes_before = router.graph.number_of_nodes()
+    assert router.add_edge(5, 5, weight=0.5) is True
+    assert router.graph.number_of_edges() == n_edges_before
+    assert router.graph.number_of_nodes() == n_nodes_before
+    assert 5 not in router.peo_index
+
+
+# ---------------------------------------------------------------------------
+# add_edge — paper §4.2 fast path when chordal completion already covers (u, v)
+# ---------------------------------------------------------------------------
+
+
+class TestAddEdge:
+    def test_fast_path_matches_fresh_build(self):
+        """Chord-covered edge: only Phase 3 reruns; result equals a fresh build."""
+        router = HermesRouter.build(_diamond_graph())
+        assert 3 in router.chordal_neighbors[2]  # precondition: (2, 3) is a chord
+
+        assert router.add_edge(2, 3, weight=0.5) is True
+
+        fresh = _diamond_graph()
+        fresh.add_edge(2, 3, weight=0.5)
+        assert router.query(1) == HermesRouter.build(fresh).query(1)
+
+    def test_slow_path_new_vertex(self):
+        router = HermesRouter.build(_diamond_graph())
+        assert router.add_edge(1, 99, weight=2.0) is False
+        assert 99 in router.peo_index
+        assert router.query(1)[99] == 2.0
+
+    def test_slow_path_new_chord(self):
+        # Path 1→2→3→4 is already chordal; (1, 3) is a brand-new chord.
+        g = nx.DiGraph()
+        g.add_edges_from([(1, 2, {"weight": 1.0}), (2, 3, {"weight": 1.0}), (3, 4, {"weight": 1.0})])
+        router = HermesRouter.build(g)
+        assert 3 not in router.chordal_neighbors.get(1, set())
+
+        assert router.add_edge(1, 3, weight=0.1) is False
+        assert router.query(1)[3] == 0.1
+
+
+# ---------------------------------------------------------------------------
+# singular_vertices — paper §6 arbitrage / negative-cycle detection
+# ---------------------------------------------------------------------------
+
+
+class TestSingularVertices:
+    def test_no_negative_cycle_returns_empty(self):
+        """Positive-weight graphs have no singular vertices."""
+        router = HermesRouter.build(_diamond_graph())
+        assert router.singular_vertices() == set()
+
+    def test_three_vertex_negative_cycle(self):
+        """A→B→C→A with negative round-trip flags all three as singular."""
+        g = nx.DiGraph()
+        # 3-cycle with total weight -0.5 (post-fee arbitrage style).
+        g.add_edge("A", "B", weight=-1.0)
+        g.add_edge("B", "C", weight=-1.0)
+        g.add_edge("C", "A", weight=1.5)
+        # D is one-way reachable from the cycle but doesn't reach back, so
+        # it's in its own SCC and stays out of the singular set.
+        g.add_edge("A", "D", weight=2.0)
+        router = HermesRouter.build(g)
+        s = router.singular_vertices()
+        assert {"A", "B", "C"} <= s
+        assert "D" not in s
+
+    def test_negative_self_loop_flagged(self):
+        """A vertex with a negative self-loop is itself a 1-cycle."""
+        g = nx.DiGraph()
+        g.add_edge(1, 2, weight=1.0)
+        g.add_edge(2, 1, weight=1.0)
+        g.add_edge(1, 1, weight=-0.1)  # negative self-loop on vertex 1
+        router = HermesRouter.build(g)
+        s = router.singular_vertices()
+        assert 1 in s
+
+    def test_scc_closure_propagates_to_reachable_in_same_component(self):
+        """Vertices in the same SCC as a singular pair are also flagged."""
+        g = nx.DiGraph()
+        # SCC: A↔B↔C with negative cycle A→B→A
+        g.add_edge("A", "B", weight=-2.0)
+        g.add_edge("B", "A", weight=1.0)  # A→B→A = -1 (negative cycle)
+        g.add_edge("B", "C", weight=1.0)
+        g.add_edge("C", "B", weight=1.0)  # C reachable to/from the neg cycle
+        # Disjoint positive component
+        g.add_edge("X", "Y", weight=1.0)
+        g.add_edge("Y", "X", weight=1.0)
+        router = HermesRouter.build(g)
+        s = router.singular_vertices()
+        assert {"A", "B", "C"} <= s
+        assert "X" not in s and "Y" not in s
+
+
 # ---------------------------------------------------------------------------
 # from_pool_graph adapter (Phase 1 of integration plan)
 # ---------------------------------------------------------------------------
@@ -287,14 +410,7 @@ class TestFromPoolGraph:
         assert -8 < we_uc_w < -7, f"unexpected weight {we_uc_w}"
 
     def test_one_bad_edge_does_not_disable_graph(self):
-        """A pool whose ``amount_out`` raises must be skipped, not propagate.
-
-        Regression for the Sepolia case: some V3 pools' sqrtPrice math
-        overflows on standard probe sizes; before the exception-safe wrap,
-        a single such pool aborted the whole ``from_pool_graph`` call,
-        leaving ``Router(candidate_solver='hermes')`` permanently broken on
-        any graph containing that pool.
-        """
+        """A pool whose ``amount_out`` raises must be skipped, not abort the build."""
 
         weth = make_token("WETH", 18, 0x11)
         usdc = make_token("USDC", 6, 0x22)
