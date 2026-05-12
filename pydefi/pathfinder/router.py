@@ -14,6 +14,7 @@ making simple DP relaxation both correct and safe.
 
 from __future__ import annotations
 
+import warnings
 from decimal import Decimal
 from typing import Literal
 
@@ -25,6 +26,19 @@ from pydefi.pathfinder.multipath import MultiEdgePath, _distribute_int, merge_an
 from pydefi.types import MAX_BPS, Address, RouteDAG, RouteSplit, RouteSwap, SwapRoute, SwapStep, Token, TokenAmount
 
 CandidateSolver = Literal["hop_dp", "hermes"]
+
+# Hermes ranks by ``-log(spot rate)`` over a parallel-pool-collapsed graph, so
+# its top-K can miss the path whose realized ``amount_out`` is best when one
+# pool's spot rate beats its actual depth at the requested size. Oversample
+# Yen's K, re-quote by realized output, then trim — recovers paths whose
+# realized rank is ≤ top_n but spot rank is between top_n and this multiple.
+# Cost: Yen scales O(k²·|E|·|V|), so 2× ≈ 4× candidate-fetch time.
+_HERMES_OVERSAMPLE = 2
+_HERMES_CAP_WARNING_TEXT = (
+    "Hermes candidate widening hit max_k before gathering top_n hop-valid paths; "
+    "results may be conservative under the current search budget"
+)
+_HERMES_CAP_WARNING_EMITTED = False
 
 
 class Router:
@@ -510,14 +524,19 @@ class Router:
         * ``"hop_dp"`` (default): hop-bounded DP that tracks the best *top_n*
           paths at each ``(token, hop)`` state, then deduplicates by first-hop
           pool. Capped at ``max_hops`` (default 3).
-        * ``"hermes"``: Hermes treewidth-parameterized SSSP plus iterative
-          first-hop masking. No hop cap; ``max_hops`` is ignored.
+        * ``"hermes"``: Hermes treewidth-parameterized Yen's K-shortest paths
+          over a graph where each token-pair collapses to its best-spot pool.
+          Oversamples by :data:`_HERMES_OVERSAMPLE`× and re-ranks by realized
+          ``amount_out`` so finite-input slippage shuffles in paths whose spot
+          rank exceeds *top_n*. Capped at ``max_hops`` for symmetry with
+          ``hop_dp`` — drops longer alternatives that ASGM would otherwise
+          give weight to.
 
         Args:
             amount_in: Exact input amount.
             token_out: Desired output token.
             top_n: Maximum number of diverse routes to return.
-            max_hops: Maximum hop depth (``"hop_dp"`` only). Defaults to ``self.max_hops``.
+            max_hops: Maximum hop depth. Defaults to ``self.max_hops``.
 
         Returns:
             List of :class:`~pydefi.types.SwapRoute` sorted by output descending.
@@ -527,7 +546,17 @@ class Router:
             :class:`~pydefi.exceptions.NoRouteFoundError`: If no path exists.
         """
         if self.candidate_solver == "hermes":
-            return self._find_top_routes_hermes(amount_in, token_out, top_n)
+            return self._find_top_routes_hermes(amount_in, token_out, top_n, max_hops)
+        return self._find_top_routes_hop_dp(amount_in, token_out, top_n, max_hops)
+
+    def _find_top_routes_hop_dp(
+        self,
+        amount_in: TokenAmount,
+        token_out: Token,
+        top_n: int,
+        max_hops: int | None = None,
+    ) -> list[SwapRoute]:
+        """Hop-bounded DP candidate discovery (see :meth:`_find_top_routes` for semantics)."""
         effective_max_hops = self.max_hops if max_hops is None else max_hops
         src = amount_in.token
         dst_addr: Address = token_out.address
@@ -614,21 +643,53 @@ class Router:
         amount_in: TokenAmount,
         token_out: Token,
         top_n: int,
+        max_hops: int | None = None,
     ) -> list[SwapRoute]:
-        """Hermes-backed candidate discovery: top-K via SSSP + iterative pool masking.
+        """Hermes-backed candidate discovery: oversample by spot rank, re-rank by realized output.
 
         Returns :class:`SwapRoute` objects whose ``amount_out`` is computed by
         actually walking each path's edges with ``edge.amount_out`` — Hermes
-        only ranks by ``-log(spot rate)``, so we re-quote at the requested
-        input size before ASGM consumes the candidates.
+        only ranks by ``-log(spot rate)``, so we fetch
+        :data:`_HERMES_OVERSAMPLE`× *top_n* paths, re-quote at the requested
+        input size, sort by realized output, and trim to *top_n* before ASGM
+        consumes the candidates. Paths exceeding *max_hops* edges are dropped
+        before re-ranking — keeps hermes' candidate hop-depth aligned with
+        hop_dp so ASGM doesn't dilute weight onto longer alternatives that
+        wouldn't be considered under the same cap. Widens ``k`` iteratively
+        when the initial sample contains too few hop-valid paths, greatly
+        reducing false ``NoRouteFoundError`` outcomes caused by an initial Yen
+        window that surfaces long alternatives before shorter hop-valid paths.
         """
         src = amount_in.token
         dst_addr: Address = token_out.address
         if src.address == dst_addr:
             raise ValueError("token_in and token_out must be different")
 
+        effective_max_hops = self.max_hops if max_hops is None else max_hops
         hermes = self._ensure_hermes()
-        node_paths = hermes.top_k_paths(src.address, dst_addr, top_n)
+        global _HERMES_CAP_WARNING_EMITTED
+        # Iteratively double ``k`` until top_n hop-valid candidates exist or
+        # Yen exhausts (returns fewer than asked). Bound keeps Yen's worst
+        # case O(k²·|E|·|V|) cost finite on pathological graphs.
+        k = top_n * _HERMES_OVERSAMPLE
+        max_k = top_n * _HERMES_OVERSAMPLE * 8
+        node_paths: list = []
+        hit_sampling_cap = False
+        while True:
+            candidates = hermes.top_k_paths(src.address, dst_addr, k)
+            # ``len(path) - 1`` is hop count (path is a node sequence; edge
+            # count = nodes - 1).
+            node_paths = [p for p in candidates if len(p) - 1 <= effective_max_hops]
+            if len(node_paths) >= top_n:
+                break
+            if len(candidates) < k or k >= max_k:
+                # Yen exhausted (fewer returned than asked) or hit the cap.
+                hit_sampling_cap = k >= max_k and len(candidates) >= k
+                break
+            k *= 2
+        if hit_sampling_cap and not _HERMES_CAP_WARNING_EMITTED:
+            warnings.warn(_HERMES_CAP_WARNING_TEXT, RuntimeWarning, stacklevel=2)
+            _HERMES_CAP_WARNING_EMITTED = True
         if not node_paths:
             raise NoRouteFoundError(f"No route found from {src.symbol} to {token_out.symbol}")
 
@@ -680,9 +741,9 @@ class Router:
                 )
             )
         # Sort by amount_out descending (Hermes ordered by -log(rate); finite-
-        # input quoting can shuffle near-tied routes).
+        # input quoting can shuffle near-tied routes) and trim the oversample.
         routes.sort(key=lambda r: r.amount_out.amount, reverse=True)
-        return routes
+        return routes[:top_n]
 
     def simulate(self, dag: RouteDAG, amount_in: int) -> int:
         """Simulate the output amount for *dag* at *amount_in* using off-chain edge math.

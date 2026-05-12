@@ -79,8 +79,12 @@ def test_hermes_output_within_tolerance_of_hop_dp(n_periphery, n_pairs, seed):
 # ---------------------------------------------------------------------------
 
 
-def test_hermes_routes_through_4_hop_bridge_when_hop_dp_fails():
-    """Multi-cluster: alt_a → alt_b is a 4-hop route; hop_cap=3 DP fails."""
+def test_hermes_routes_through_6_hop_bridge_when_hop_dp_fails():
+    """Multi-cluster: alt_a → alt_b is a 6-hop route; hop_cap=3 DP fails.
+
+    Both solvers honor ``max_hops`` (see _find_top_routes_hermes); the test
+    raises hermes' cap to 6 so the long-tail bridge is reachable.
+    """
     fix = multi_cluster_fixture(
         n_clusters=2,
         core_size_per_cluster=2,
@@ -96,7 +100,7 @@ def test_hermes_routes_through_4_hop_bridge_when_hop_dp_fails():
     with pytest.raises(NoRouteFoundError):
         r_dp.find_optimal_split(amt_in, dst)
 
-    r_he = Router(pool_g, candidate_solver="hermes")
+    r_he = Router(pool_g, max_hops=6, candidate_solver="hermes")
     dag = r_he.find_optimal_split(amt_in, dst)
     out = r_he.simulate(dag, amt_in.amount)
     assert out > 0
