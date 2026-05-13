@@ -49,14 +49,19 @@ class Router:
 
     Args:
         graph: The pool graph to search.
-        max_hops: Maximum number of swap hops allowed (default ``3``). Ignored
-            when ``candidate_solver == "hermes"`` since Hermes has no hop cap.
+        max_hops: Maximum number of swap hops allowed (default ``3``).
+            Enforced for both candidate solvers — ``"hermes"`` applies it as a
+            post-filter on Yen's K-shortest paths so its candidate hop-depth
+            stays aligned with ``"hop_dp"`` (prevents ASGM from diluting
+            weight onto longer alternatives that wouldn't be considered under
+            the same cap).
         candidate_solver: Which top-K candidate-discovery strategy
             :meth:`find_optimal_split` uses. ``"hop_dp"`` (default) is the
             hop-bounded DP; ``"hermes"`` is the treewidth-parameterized SSSP
             from :mod:`pydefi.pathfinder.hermes` — recommended for large
-            graphs (≥ 1k tokens) or when ``max_hops`` would exclude
-            economically meaningful long-tail routes.
+            graphs (≥ 1k tokens) where Yen's K-shortest-paths over a
+            collapsed-best-spot graph scales better than DP over the full
+            edge set.
         weight_mode: Hermes edge weights. ``"spot"`` (default) uses
             post-fee marginal rate; ``"amount_out"`` bakes finite-input
             slippage into the seed via ``edge.amount_out(probe_amount)`` —
