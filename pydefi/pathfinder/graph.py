@@ -82,6 +82,8 @@ class PoolEdge(BasePool):
 
         *overlay*, if given, layers pending swap deltas on top of stored reserves.
         """
+        if amount_in <= 0:
+            return 0
         eff_in, eff_out = self._effective_reserves(overlay)
         if eff_in <= 0 or eff_out <= 0:
             return 0

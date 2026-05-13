@@ -83,6 +83,20 @@ class TestPoolEdge:
         )
         assert edge.amount_out(10**18) == 0
 
+    @pytest.mark.parametrize("amount_in", [0, -1, -(10**15)])
+    def test_amount_out_non_positive_input_returns_zero(self, amount_in):
+        """Quote contract is non-negative; negative inputs must not produce a negative quote."""
+        edge = PoolEdge(
+            token_in=WETH,
+            token_out=USDC,
+            pool_address=POOL_A,
+            protocol="UniswapV2",
+            reserve_in=1_000 * 10**18,
+            reserve_out=2_000_000 * 10**6,
+            fee_bps=30,
+        )
+        assert edge.amount_out(amount_in) == 0
+
     def test_log_weight_finite(self):
         edge = PoolEdge(
             token_in=WETH,
