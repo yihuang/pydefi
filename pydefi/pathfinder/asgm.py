@@ -169,25 +169,19 @@ def _bundle_output(bundle: tuple, hop_input: int, ws: list[float]) -> int:
 
 
 def _bundle_marginal(bundle: tuple, hop_input: int, ws: list[float], idx: int) -> float:
-    """Finite-difference marginal of bundle output w.r.t. ``ws[idx]``."""
+    """Finite-difference marginal price of edge ``idx`` at its current share of *hop_input*.
+
+    Approximates ``f_e'(w_e · hop_input)`` per PRIME Algorithm 3 line 5 (inner
+    ASGM on edge weights), matching the per-coordinate marginal the outer loop
+    uses. Widen the perturbation so it crosses ≥1 wei even at small inputs.
+    """
     if hop_input <= 0:
         return 0.0
-    # Cap eps by the donor's own value, not by ``1 - ws[idx]``: when the
-    # remainder is split across many small coords (e.g. [0.999, 0.0005, 0.0005])
-    # the largest donor can still be < _MARGINAL_EPS and would otherwise go
-    # negative, corrupting _distribute_int.
-    other = max(range(len(ws)), key=lambda j: ws[j] if j != idx else -1.0)
-    if other == idx:
-        return 0.0
-    eps = min(_MARGINAL_EPS, ws[other])
-    if eps <= 0:
-        return 0.0
-    perturbed = list(ws)
-    perturbed[idx] += eps
-    perturbed[other] -= eps
-    return (_bundle_output(bundle, hop_input, perturbed) - _bundle_output(bundle, hop_input, ws)) / max(
-        1.0, eps * hop_input
-    )
+    eps_share = max(_MARGINAL_EPS, 1.0 / max(1, hop_input))
+    edge = bundle[idx]
+    x0 = int(ws[idx] * hop_input)
+    x1 = int((ws[idx] + eps_share) * hop_input)
+    return (edge.amount_out(x1) - edge.amount_out(x0)) / max(1, x1 - x0)
 
 
 def _simplex_ascent(
