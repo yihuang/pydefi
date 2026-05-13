@@ -1,25 +1,29 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
+import "../vm/InterpreterRunner.sol";
+
 /**
  * @title CCIPComposer
  * @notice Destination-chain CCIP receiver that executes a DeFiVM program
  *         attached to the inbound message after the Router delivers the
  *         bridged tokens.
  *
- * Flow: the Router calls ccipReceive(Any2EVMMessage) → this contract prepends
- * a two-PUSH DeFiVM prologue, transfers the received token to DeFiVM, and
- * forwards the combined program with msg.value attached.  Compose flows
- * expect exactly one entry in destTokenAmounts; multi-token programs should
- * subclass this receiver.
+ * Flow: the Router calls ccipReceive(Any2EVMMessage) → this contract stages
+ * the bridged parameters in transient storage and DELEGATECALLs the EVM
+ * interpreter with the program as calldata so the program runs in this
+ * composer's own context (any tokens delivered by the Router are already on
+ * this contract).  Compose flows expect exactly one entry in
+ * destTokenAmounts; multi-token programs should subclass this receiver.
  *
- * Stack after prologue (bottom → top):
- *     stack[0] = amountReceived       (tokens delivered to the composer)
- *     stack[1] = sourceChainSelector  (CCIP selector of the source chain)
+ * Transient storage layout (cleared on tx end by EIP-1153, and reset to 0
+ * after the program runs):
+ *     slot 0 = amountReceived       (tokens delivered to the composer)
+ *     slot 1 = sourceChainSelector  (CCIP selector of the source chain)
  *
- * A typical program therefore begins:
- *     STORE_REG 0   ; R0 = sourceChainSelector  (pops the top of stack)
- *     STORE_REG 1   ; R1 = amountReceived
+ * A typical program reads them via TLOAD:
+ *     amount_received = prog.builder.tload(IRLiteral(0))
+ *     source_selector = prog.builder.tload(IRLiteral(1))
  *
  * Source-side authorisation is opt-in via the (sourceChainSelector,
  * senderHash) allowlist; when allowlistEnabled is false any Router-delivered
@@ -43,14 +47,7 @@ struct Any2EVMMessage {
     EVMTokenAmount[] destTokenAmounts;   // minted to address(this)
 }
 
-interface IDeFiVM {
-    function execute(bytes calldata program) external payable;
-}
-
-contract CCIPComposer {
-    // EVM PUSH32 opcode: 1-byte op + 32-byte immediate.
-    uint8 private constant OP_PUSH_U256 = 0x7F;
-
+contract CCIPComposer is InterpreterRunner {
     error UnauthorizedRouter(address caller);
     error UnexpectedTokenCount(uint256 count);
     error UnauthorizedSender(uint64 sourceChainSelector, bytes32 senderHash);
@@ -68,8 +65,6 @@ contract CCIPComposer {
 
     /// @notice CCIP Router authorised to call ccipReceive.
     address public immutable router;
-    /// @notice DeFiVM contract that executes compose programs.
-    IDeFiVM public immutable vm;
     /// @notice Owner — may rescue funds, toggle the allowlist, and transfer ownership.
     address public owner;
     /// @notice Whether ccipReceive consults `allowedSender`.
@@ -79,18 +74,25 @@ contract CCIPComposer {
     mapping(uint64 sourceChainSelector => mapping(bytes32 senderHash => bool)) public allowedSender;
 
     /**
+     * @param _router            The CCIP Router authorised to call ccipReceive.
+     * @param _interpreter       EVM interpreter to DELEGATECALL (see
+     *                           :class:`InterpreterRunner`); pass
+     *                           ``address(0)`` for the well-known pre-deployed
+     *                           Analog-Labs interpreter.
+     * @param _owner             Address that may rescue funds, toggle the
+     *                           allowlist, and transfer ownership.
      * @param _allowlistEnabled  Pass `true` for production deployments that
-     *        forward real value — they start fail-closed and require the
-     *        owner to register trusted (selector, sender) pairs via
-     *        `setAllowed`.  Pass `false` for tests / dev.
-     * @dev   All address arguments must be non-zero.
+     *                           forward real value — they start fail-closed
+     *                           and require the owner to register trusted
+     *                           (selector, sender) pairs via `setAllowed`.
+     *                           Pass `false` for tests / dev.
      */
-    constructor(address _router, address _vm, address _owner, bool _allowlistEnabled) {
+    constructor(address _router, address _interpreter, address _owner, bool _allowlistEnabled)
+        InterpreterRunner(_interpreter)
+    {
         if (_router == address(0)) revert ZeroAddress();
-        if (_vm == address(0)) revert ZeroAddress();
         if (_owner == address(0)) revert ZeroAddress();
         router = _router;
-        vm = IDeFiVM(_vm);
         owner = _owner;
         allowlistEnabled = _allowlistEnabled;
         emit AllowlistEnabledChanged(_allowlistEnabled);
@@ -137,8 +139,9 @@ contract CCIPComposer {
         emit AllowedSenderChanged(_sourceChainSelector, senderHash, _allowed);
     }
 
-    /// @notice Authenticate the Router, prepend the DeFiVM prologue, hand the
-    ///         token to DeFiVM, and execute the program.
+    /// @notice Authenticate the Router, stage the bridged parameters in
+    ///         transient storage, and DELEGATECALL the interpreter to run the
+    ///         compose program in this composer's context.
     function ccipReceive(Any2EVMMessage calldata message) external payable {
         if (msg.sender != router) revert UnauthorizedRouter(msg.sender);
 
@@ -157,24 +160,20 @@ contract CCIPComposer {
         uint256 amountReceived = tokenAmount.amount;
         uint64 sourceSelector = message.sourceChainSelector;
 
-        // Stack after prologue, bottom → top: [amountReceived, sourceChainSelector].
-        // First STORE_REG pops sourceChainSelector (top); second pops amountReceived.
-        bytes memory program = bytes.concat(
-            abi.encodePacked(
-                OP_PUSH_U256, bytes32(amountReceived),
-                OP_PUSH_U256, bytes32(uint256(sourceSelector))
-            ),
-            message.data
-        );
-
-        if (amountReceived > 0) {
-            (bool ok, bytes memory ret) = tokenAmount.token.call(
-                abi.encodeWithSignature("transfer(address,uint256)", address(vm), amountReceived)
-            );
-            require(ok && (ret.length == 0 || abi.decode(ret, (bool))), "CCIPComposer: token transfer failed");
+        // Stage bridged parameters in transient storage; the program reads
+        // them via TLOAD.  Cleared after the program runs (transient storage
+        // is tx-scoped per EIP-1153, but we zero explicitly so a single tx
+        // delivering multiple compose messages sees a clean slate each time).
+        assembly {
+            tstore(0, amountReceived)
+            tstore(1, sourceSelector)
+        }
+        _runProgram(message.data);
+        assembly {
+            tstore(0, 0)
+            tstore(1, 0)
         }
 
-        vm.execute{value: msg.value}(program);
         emit Composed(sourceSelector, message.messageId, tokenAmount.token, amountReceived);
     }
 
