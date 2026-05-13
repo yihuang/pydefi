@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 from eth_abi import encode as abi_encode
-from web3 import AsyncWeb3, Web3
+from web3 import AsyncWeb3
 
 from pydefi._utils import address_to_bytes32
 from pydefi.abi.bridge import CCIP_ROUTER, CCIPEVM2AnyMessage, CCIPEVMTokenAmount
@@ -151,11 +151,11 @@ class CCIP(BaseBridge):
             data=data,
             tokenAmounts=[
                 CCIPEVMTokenAmount(
-                    token=Web3.to_checksum_address(bytes(token_in.address)),
+                    token=token_in.address,
                     amount=amount_in.amount,
                 )
             ],
-            feeToken=Web3.to_checksum_address(bytes(self.fee_token)),
+            feeToken=self.fee_token,
             extraArgs=extra_args,
         )
 
