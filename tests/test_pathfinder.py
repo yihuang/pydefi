@@ -5,7 +5,7 @@ from decimal import Decimal
 import pytest
 
 from pydefi.exceptions import NoRouteFoundError
-from pydefi.pathfinder.asgm import asgm_optimize
+from pydefi.pathfinder.asgm import _bundle_marginal, asgm_optimize
 from pydefi.pathfinder.graph import PoolEdge, PoolGraph, ReserveOverlay, V3PoolEdge, merge_pool_graphs
 from pydefi.pathfinder.multipath import MultiEdgePath, PathWeights, merge_and_expand
 from pydefi.pathfinder.router import Router
@@ -1229,6 +1229,34 @@ class TestASGM:
         assert w_e1 > 0 and w_e2 > 0
         assert w_e1 > w_e2, "deep pool should get larger intra-hop share"
         assert abs(w_e1 + w_e2 - 1.0) < 1e-6
+
+    def test_bundle_marginal_perturbation_stays_on_simplex(self, monkeypatch):
+        """Every perturbed weight vector fed to ``_bundle_output`` must remain a valid simplex."""
+        from pydefi.pathfinder import asgm as asgm_mod
+
+        e1 = _v2_pool_edge(WETH, USDC, POOL_A, reserve_in=10**22, reserve_out=2 * 10**10, fee_bps=30)
+        e2 = _v2_pool_edge(WETH, USDC, POOL_B, reserve_in=10**22, reserve_out=2 * 10**10, fee_bps=30)
+        e3 = _v2_pool_edge(WETH, USDC, POOL_C, reserve_in=10**22, reserve_out=2 * 10**10, fee_bps=30)
+        bundle = (e1, e2, e3)
+        ws = [0.999, 0.0005, 0.0005]
+        hop_input = 10**18
+
+        seen: list[list[float]] = []
+        real_bundle_output = asgm_mod._bundle_output
+
+        def spy(bundle_arg, hop_in, weights):
+            seen.append(list(weights))
+            return real_bundle_output(bundle_arg, hop_in, weights)
+
+        monkeypatch.setattr(asgm_mod, "_bundle_output", spy)
+
+        for idx in range(3):
+            _bundle_marginal(bundle, hop_input, ws, idx=idx)
+
+        assert seen, "expected _bundle_output to be invoked"
+        for vec in seen:
+            assert all(w >= 0 for w in vec), f"perturbed simplex has negative entry: {vec}"
+            assert abs(sum(vec) - 1.0) < 1e-9, f"perturbed simplex doesn't sum to 1: {vec}"
 
 
 # ---------------------------------------------------------------------------

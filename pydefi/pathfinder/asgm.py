@@ -172,15 +172,18 @@ def _bundle_marginal(bundle: tuple, hop_input: int, ws: list[float], idx: int) -
     """Finite-difference marginal of bundle output w.r.t. ``ws[idx]``."""
     if hop_input <= 0:
         return 0.0
-    eps = min(_MARGINAL_EPS, max(0.0, 1.0 - ws[idx]))
+    # Cap eps by the donor's own value, not by ``1 - ws[idx]``: when the
+    # remainder is split across many small coords (e.g. [0.999, 0.0005, 0.0005])
+    # the largest donor can still be < _MARGINAL_EPS and would otherwise go
+    # negative, corrupting _distribute_int.
+    other = max(range(len(ws)), key=lambda j: ws[j] if j != idx else -1.0)
+    if other == idx:
+        return 0.0
+    eps = min(_MARGINAL_EPS, ws[other])
     if eps <= 0:
         return 0.0
     perturbed = list(ws)
     perturbed[idx] += eps
-    # Renormalise so the perturbed weights still sum to 1 (subtract eps from
-    # the largest other entry — caller's _simplex_ascent re-normalises after
-    # any acceptance).
-    other = max(range(len(perturbed)), key=lambda j: perturbed[j] if j != idx else -1.0)
     perturbed[other] -= eps
     return (_bundle_output(bundle, hop_input, perturbed) - _bundle_output(bundle, hop_input, ws)) / max(
         1.0, eps * hop_input
