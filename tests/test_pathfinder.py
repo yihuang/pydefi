@@ -7,7 +7,7 @@ import pytest
 from pydefi.exceptions import NoRouteFoundError
 from pydefi.pathfinder.asgm import _bundle_marginal, asgm_optimize
 from pydefi.pathfinder.graph import PoolEdge, PoolGraph, ReserveOverlay, V3PoolEdge, merge_pool_graphs
-from pydefi.pathfinder.multipath import MultiEdgePath, PathWeights, merge_and_expand
+from pydefi.pathfinder.multipath import MultiEdgePath, PathWeights, _distribute_int, merge_and_expand
 from pydefi.pathfinder.router import Router
 from pydefi.types import Address, ChainId, RouteDAG, RouteSplit, RouteSwap, Token, TokenAmount
 from tests._fixtures import make_v3_edge
@@ -975,6 +975,49 @@ class TestV3PoolEdgeOverlay:
         forward.record_swap(ov, x, forward.amount_out(x))
         # Reverse edge sees the same overlayed sqrt_price (lower than baseline).
         assert reverse._effective_sqrt_price(ov) == ov.v3_sqrt_price[POOL_B] < reverse.sqrt_price_x96
+
+
+# ---------------------------------------------------------------------------
+# _distribute_int (largest-remainder apportionment)
+# ---------------------------------------------------------------------------
+
+
+class TestDistributeInt:
+    @pytest.mark.parametrize(
+        "weights,total",
+        [
+            ([1 / 3] * 3, 10**18),  # leftover would exceed n under naive float math
+            ([1 / 7] * 7, 10**18),
+            ([1 / 100] * 100, 10**18),
+            ([0.5, 0.5, 0.0001], 10**18),  # weights sum > 1
+            ([0.9999, 0.0001], 10**18),
+            ([1.0, 0.0, 0.0], 10**18),
+            ([0.5, 0.5], 10**30),  # past 2^53 float precision
+            ([0.5, 0.5], 1),
+            ([1 / 3] * 3, 10),
+        ],
+    )
+    def test_conserves_total_exactly(self, weights, total):
+        """Output must sum to ``total`` exactly across float-pathological inputs."""
+        result = _distribute_int(total, weights)
+        assert sum(result) == total
+        assert all(x >= 0 for x in result)
+
+    def test_zero_or_negative_total_returns_zeros(self):
+        assert _distribute_int(0, [0.5, 0.5]) == [0, 0]
+        assert _distribute_int(-1, [0.5, 0.5]) == [0, 0]
+
+    def test_empty_weights_returns_empty(self):
+        assert _distribute_int(100, []) == []
+
+    def test_all_zero_weights_returns_zeros(self):
+        assert _distribute_int(100, [0.0, 0.0]) == [0, 0]
+
+    def test_proportional_allocation(self):
+        """Allocations should respect the relative weight ordering."""
+        result = _distribute_int(10**18, [0.7, 0.2, 0.1])
+        assert result[0] > result[1] > result[2]
+        assert sum(result) == 10**18
 
 
 # ---------------------------------------------------------------------------

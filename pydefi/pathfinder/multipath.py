@@ -13,22 +13,31 @@ from dataclasses import dataclass, field
 from pydefi.pathfinder.graph import PoolEdge, PoolGraph
 from pydefi.types import Address
 
+_DISTRIBUTE_SCALE = 1 << 53  # float mantissa width — exact round-trip for w ∈ [0, 1]
+
 
 def _distribute_int(total: int, weights: list[float]) -> list[int]:
     """Allocate ``total`` across simplex *weights* with exact integer conservation.
 
-    Largest-remainder (Hamilton) apportionment: floor by weight, then hand
-    leftover units to the largest fractional-remainder entries. Conserves
-    ``total`` even when every floor rounds to 0.
+    Largest-remainder (Hamilton) apportionment in integer arithmetic: scale
+    the float weights into integers, then floor by ``total * w_int // sum``
+    and hand the leftover units to the largest integer-remainder entries.
+    Conserves ``total`` exactly — even when ``total > 2^53`` (float precision
+    drops by integer ULPs there) or the float weights drift from sum=1 (e.g.
+    ``[1/3]*3 ≈ 0.999…``).
     """
     if total <= 0 or not weights:
         return [0] * len(weights)
-    floats = [total * w for w in weights]
-    floors = [int(f) for f in floats]
+    int_weights = [max(0, round(w * _DISTRIBUTE_SCALE)) for w in weights]
+    s = sum(int_weights)
+    if s <= 0:
+        return [0] * len(weights)
+    numerators = [total * iw for iw in int_weights]
+    floors = [n // s for n in numerators]
+    remainders = [n % s for n in numerators]
     leftover = total - sum(floors)
     if leftover > 0:
-        # Distribute leftover to entries with largest fractional remainder.
-        order = sorted(range(len(weights)), key=lambda i: floats[i] - floors[i], reverse=True)
+        order = sorted(range(len(weights)), key=lambda i: remainders[i], reverse=True)
         for i in order[:leftover]:
             floors[i] += 1
     return floors
