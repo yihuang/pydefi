@@ -1428,6 +1428,32 @@ class TestRankBridgeQuotes:
         assert ranked[1].fee_unranked is True
         assert ranked[1].effective_amount_out == 100_000_000  # not penalised
 
+    def test_ccip_with_fee_in_token_in_is_not_treated_as_netted(self):
+        """CCIP fee in token_in (e.g. USDC-as-fee bridging USDC) has
+        amount_out == amount_in but a separate non-zero fee — the fast-path
+        must not fire.
+        """
+        q = BridgeQuote(
+            token_in=USDC_ETH,
+            token_out=USDC_ARB,
+            amount_in=TokenAmount(USDC_ETH, 100_000_000),
+            amount_out=TokenAmount(USDC_ARB, 100_000_000),  # CCIP is 1:1
+            bridge_fee=TokenAmount(USDC_ETH, 500_000),  # 0.5 USDC fee on top
+            estimated_time_seconds=600,
+            protocol="CCIP",
+        )
+
+        # Without a converter the quote is unrankable, not silently fee-free.
+        unranked = rank_bridge_quotes([q])[0]
+        assert unranked.fee_unranked is True
+        assert unranked.fee_in_token_out_units == 0
+
+        # With a converter the fee is subtracted from amount_out.
+        ranked = rank_bridge_quotes([q], fee_converter=lambda r: r.bridge_fee.amount)[0]
+        assert ranked.fee_unranked is False
+        assert ranked.fee_in_token_out_units == 500_000
+        assert ranked.effective_amount_out == 100_000_000 - 500_000
+
     def test_converter_lets_ccip_compete(self):
         """0.002 ETH ≈ 6 USDC fee outweighs CCTP's 0.2 USDC margin."""
         legacy = _legacy_quote(amount_out=99_800_000, fee=200_000)

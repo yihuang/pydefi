@@ -59,10 +59,15 @@ def rank_bridge_quotes(
     ranked: list[RankedBridgeQuote] = []
     for quote in quotes:
         fee_addr = quote.bridge_fee.token.address
+        amount_in = quote.amount_in.amount
         amount_out = quote.amount_out.amount
+        fee = quote.bridge_fee.amount
 
-        if fee_addr in (quote.token_in.address, quote.token_out.address):
-            # Fee already netted into amount_out by the bridge.
+        # Fast-path: only when the fee is in token_in / token_out *and* the
+        # amount_in / amount_out / fee triple says it's already netted.
+        # Catches CCIP fee-in-token_in (e.g. USDC-as-fee bridging USDC) where
+        # the fee is separate even though the addresses match.
+        if fee_addr in (quote.token_in.address, quote.token_out.address) and amount_out + fee == amount_in:
             ranked.append(RankedBridgeQuote(quote, amount_out, 0, False))
             continue
 
