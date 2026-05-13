@@ -25,10 +25,9 @@ EVM_EXTRA_ARGS_V2_TAG: bytes = bytes.fromhex("181dcf10")
 
 
 # CCIP identifies destination chains by a 64-bit selector, distinct from the
-# EVM chain ID.  This map covers every chain pydefi can target as a
-# destination; the source-chain Router map below is a subset, since pydefi
-# only initiates from chains where a Router is also deployed.
-# https://docs.chain.link/ccip/directory/mainnet
+# EVM chain ID.  Source data:
+# https://github.com/smartcontractkit/documentation/blob/main/src/config/data/ccip/v1_2_0/mainnet/chains.json
+# Rendered: https://docs.chain.link/ccip/directory/mainnet
 _CCIP_CHAIN_SELECTOR: dict[int, int] = {
     1: 5009297550715157269,  # Ethereum
     10: 3734403246176062136,  # Optimism
@@ -38,10 +37,9 @@ _CCIP_CHAIN_SELECTOR: dict[int, int] = {
     42161: 4949039107694359620,  # Arbitrum
     43114: 6433500567565415381,  # Avalanche
     59144: 4627098889531055414,  # Linea
-    81457: 4411394078118774322,  # Blast
     324: 1562403441176082196,  # zkSync Era
-    534352: 13264668187771770619,  # Scroll
-    130: 1923510734129558909,  # Unichain
+    534352: 13204309965629103672,  # Scroll
+    130: 1923510103922296319,  # Unichain
     480: 2049429975587534727,  # World Chain
 }
 
@@ -54,9 +52,11 @@ _CCIP_ROUTER: dict[int, str] = {
     8453: "0x881e3A65B4d4a04dD529061dd0071cf975F58bCD",  # Base
     42161: "0x141fa059441E0ca23ce184B6A78bafD2A517DdE8",  # Arbitrum
     43114: "0xF4c7E640EdA248ef95972845a62bdC74237805dB",  # Avalanche
-    59144: "0xb5e8Cc83af0E1ce05A9c5b2655d50e9CF85753f4",  # Linea
-    324: "0xF12CA89aaaeC02E0F2f0F86620586D08D7C9bf85",  # zkSync Era
-    534352: "0x6b9a4fb612b9d3D5fE69bbF93bD8a13767E96b62",  # Scroll
+    59144: "0x549FEB73F2348F6cD99b9fc8c69252034897f06C",  # Linea
+    324: "0x748Fd769d81F5D94752bf8B0875E9301d0ba71bB",  # zkSync Era
+    534352: "0x9a55E8Cab6564eb7bbd7124238932963B8Af71DC",  # Scroll
+    130: "0x68891f5F96695ECd7dEdBE2289D1b73426ae7864",  # Unichain
+    480: "0x5fd9E4986187c56826A3064954Cfa2Cf250cfA0f",  # World Chain
 }
 
 
