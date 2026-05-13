@@ -423,7 +423,15 @@ class BridgeQuote:
         token_out: Destination token (on the destination chain).
         amount_in: Amount being sent.
         amount_out: Expected amount received after fees.
-        bridge_fee: Fee charged by the bridge (in *amount_in* token units).
+        bridge_fee: Fee charged by the bridge.  Most bridges deduct the fee
+            from ``amount_out`` and report it in ``token_in`` units, so
+            ``amount_in == amount_out + bridge_fee``.  Some bridges (notably
+            CCIP) charge the fee separately in a third token such as native
+            gas or LINK; in that case ``bridge_fee.token`` is neither
+            ``token_in`` nor ``token_out`` and ``amount_out`` is the gross
+            bridged amount.  Cross-bridge comparisons should go through
+            :func:`pydefi.bridge.rank_bridge_quotes`, which normalises both
+            shapes.
         estimated_time_seconds: Estimated bridge completion time.
         protocol: Bridge protocol name.
     """

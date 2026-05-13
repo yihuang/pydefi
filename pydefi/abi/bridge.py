@@ -171,3 +171,55 @@ ACROSS_SPOKE_POOL = Contract.from_abi(
         "function getCurrentTime() external view returns (uint256)",
     ]
 )
+
+# ---------------------------------------------------------------------------
+# Chainlink CCIP — ABI struct definitions
+# ---------------------------------------------------------------------------
+
+
+class CCIPEVMTokenAmount(ABIStruct):
+    """``Client.EVMTokenAmount`` — one (token, amount) entry in ``EVM2AnyMessage``."""
+
+    token: Annotated[str, "address"]
+    amount: Annotated[int, "uint256"]
+
+
+class CCIPEVM2AnyMessage(ABIStruct):
+    """``Client.EVM2AnyMessage`` — payload to ``IRouterClient.ccipSend`` / ``getFee``.
+
+    Fields:
+        receiver: ``abi.encode(<destination address>)`` — for EVM destinations
+            this is a 32-byte word containing the address right-aligned.
+        data: Arbitrary destination payload (empty for plain token transfers;
+            DeFiVM bytecode for compose flows).
+        tokenAmounts: List of tokens and amounts to transfer.  Each entry's
+            token must be approved to the Router by the sender.
+        feeToken: ERC-20 fee token, or ``address(0)`` to pay the message fee
+            in native gas via ``msg.value``.
+        extraArgs: Tag-prefixed extra arguments.  For v2 lanes this is
+            ``EVM_EXTRA_ARGS_V2_TAG (0x181dcf10)`` followed by
+            ``abi.encode(uint256 gasLimit, bool allowOutOfOrderExecution)``.
+            Empty falls back to the lane default.
+    """
+
+    receiver: Annotated[bytes, "bytes"]
+    data: Annotated[bytes, "bytes"]
+    tokenAmounts: list[CCIPEVMTokenAmount]
+    feeToken: Annotated[str, "address"]
+    extraArgs: Annotated[bytes, "bytes"]
+
+
+# ---------------------------------------------------------------------------
+# Chainlink CCIP — Router contract
+# ---------------------------------------------------------------------------
+
+CCIP_ROUTER = Contract.from_abi(
+    CCIPEVMTokenAmount.human_readable_abi()
+    + CCIPEVM2AnyMessage.human_readable_abi()
+    + [
+        # getFee(destChainSelector, message) -> uint256 fee
+        "function getFee(uint64 destinationChainSelector, CCIPEVM2AnyMessage message) external view returns (uint256 fee)",
+        # ccipSend(destChainSelector, message) payable -> bytes32 messageId
+        "function ccipSend(uint64 destinationChainSelector, CCIPEVM2AnyMessage message) external payable returns (bytes32)",
+    ]
+)
