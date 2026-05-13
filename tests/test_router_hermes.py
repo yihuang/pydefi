@@ -9,9 +9,10 @@ import random
 import pytest
 
 from pydefi.exceptions import NoRouteFoundError
+from pydefi.pathfinder.graph import PoolGraph
 from pydefi.pathfinder.router import Router
-from pydefi.types import TokenAmount
-from tests._fixtures import core_periphery_fixture, multi_cluster_fixture
+from pydefi.types import Address, TokenAmount
+from tests._fixtures import core_periphery_fixture, make_token, multi_cluster_fixture
 
 
 def _random_pairs(tokens: list, n: int, seed: int) -> list:
@@ -111,6 +112,26 @@ def test_hermes_default_remains_hop_dp():
     fix = core_periphery_fixture(n_periphery=10, seed=0)
     r = Router(fix.pool_graph)
     assert r.candidate_solver == "hop_dp"
+
+
+# ---------------------------------------------------------------------------
+# First-hop diversity contract
+# ---------------------------------------------------------------------------
+
+
+def test_hermes_candidates_deduplicated_by_first_hop_pool():
+    """Multiple Yen paths sharing the same first edge must collapse to one in the candidate list."""
+    weth, t1, t2, t3, dst = (make_token(s, 18, i) for i, s in enumerate(["WETH", "T1", "T2", "T3", "DST"], 1))
+    g = PoolGraph()
+    # Single WETH→T1 edge; three distinct downstream paths to dst all start through it.
+    edges = [(weth, t1), (t1, dst), (t1, t2), (t2, dst), (t1, t3), (t3, dst)]
+    for i, (a, b) in enumerate(edges, 1):
+        g.add_bidirectional_pool(a, b, Address("0x" + format(i, "040x")), "UniswapV2", 10**22, 10**22)
+
+    router = Router(g, max_hops=4, candidate_solver="hermes")
+    routes = router._find_top_routes_hermes(TokenAmount(weth, 10**18), dst, top_n=5)
+    first_pools = [r.steps[0].pool_address for r in routes]
+    assert len(first_pools) == len(set(first_pools)), f"duplicate first-hop pools: {first_pools}"
 
 
 # ---------------------------------------------------------------------------

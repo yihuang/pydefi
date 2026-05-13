@@ -656,7 +656,8 @@ class Router:
         actually walking each path's edges with ``edge.amount_out`` — Hermes
         only ranks by ``-log(spot rate)``, so we fetch
         :data:`_HERMES_OVERSAMPLE`× *top_n* paths, re-quote at the requested
-        input size, sort by realized output, and trim to *top_n* before ASGM
+        input size, sort by realized output, dedupe by first-hop pool (same
+        diversity contract as ``hop_dp``), and trim to *top_n* before ASGM
         consumes the candidates. Paths exceeding *max_hops* edges are dropped
         before re-ranking — keeps hermes' candidate hop-depth aligned with
         hop_dp so ASGM doesn't dilute weight onto longer alternatives that
@@ -746,9 +747,22 @@ class Router:
                 )
             )
         # Sort by amount_out descending (Hermes ordered by -log(rate); finite-
-        # input quoting can shuffle near-tied routes) and trim the oversample.
+        # input quoting can shuffle near-tied routes), then dedupe by first-
+        # hop pool — same diversity contract as hop_dp. Without it, two Yen
+        # paths sharing pool_X for hop 0 would both reach ASGM and just split
+        # the same first-hop liquidity, blunting allocation diversity.
         routes.sort(key=lambda r: r.amount_out.amount, reverse=True)
-        return routes[:top_n]
+        seen_first_pools: set[Address] = set()
+        diverse: list[SwapRoute] = []
+        for r in routes:
+            first_pool = r.steps[0].pool_address
+            if first_pool is None or first_pool in seen_first_pools:
+                continue
+            seen_first_pools.add(first_pool)
+            diverse.append(r)
+            if len(diverse) >= top_n:
+                break
+        return diverse
 
     def simulate(self, dag: RouteDAG, amount_in: int) -> int:
         """Simulate the output amount for *dag* at *amount_in* using off-chain edge math.
