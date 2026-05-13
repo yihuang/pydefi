@@ -72,8 +72,8 @@ def rank_bridge_quotes(
         else:
             ranked.append(RankedBridgeQuote(quote, amount_out - converted, converted, False))
 
-    # Stable: unranked → last; within each group, higher effective_amount_out first.
-    ranked.sort(key=lambda r: (r.fee_unranked, -r.effective_amount_out))
+    # Ranked first by effective_amount_out (desc), unranked last in insertion order
+    ranked.sort(key=lambda r: (r.fee_unranked, 0 if r.fee_unranked else -r.effective_amount_out))
     return ranked
 
 

@@ -1455,10 +1455,10 @@ class TestRankBridgeQuotes:
         assert ranked[0].effective_amount_out > ranked[1].effective_amount_out
 
     def test_unrankable_quotes_keep_input_order(self):
-        """Unrankable quotes preserve insertion order (stable sort)."""
-        q1 = _ccip_native_quote(amount_in=100_000_000, native_fee=10**15)
+        """Unrankable quotes preserve insertion order regardless of amount_out."""
+        q1 = _ccip_native_quote(amount_in=50_000_000, native_fee=10**15)
         q1.protocol = "first"
-        q2 = _ccip_native_quote(amount_in=100_000_000, native_fee=10**15)
+        q2 = _ccip_native_quote(amount_in=200_000_000, native_fee=10**15)
         q2.protocol = "second"
         assert [r.protocol for r in rank_bridge_quotes([q1, q2])] == ["first", "second"]
 
