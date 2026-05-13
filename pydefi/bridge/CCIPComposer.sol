@@ -8,10 +8,18 @@ pragma solidity ^0.8.24;
  *         bridged tokens.
  *
  * Flow: the Router calls ccipReceive(Any2EVMMessage) → this contract prepends
- * two PUSH_U256 instructions for (amountReceived, sourceChainSelector),
- * transfers the received token to DeFiVM, and forwards the combined program
- * with msg.value attached.  Compose flows expect exactly one entry in
- * destTokenAmounts; multi-token programs should subclass this receiver.
+ * a two-PUSH DeFiVM prologue, transfers the received token to DeFiVM, and
+ * forwards the combined program with msg.value attached.  Compose flows
+ * expect exactly one entry in destTokenAmounts; multi-token programs should
+ * subclass this receiver.
+ *
+ * Stack after prologue (bottom → top):
+ *     stack[0] = amountReceived       (tokens delivered to the composer)
+ *     stack[1] = sourceChainSelector  (CCIP selector of the source chain)
+ *
+ * A typical program therefore begins:
+ *     STORE_REG 0   ; R0 = sourceChainSelector  (pops the top of stack)
+ *     STORE_REG 1   ; R1 = amountReceived
  *
  * Source-side authorisation is opt-in via the (sourceChainSelector,
  * senderHash) allowlist; when allowlistEnabled is false any Router-delivered
@@ -149,7 +157,8 @@ contract CCIPComposer {
         uint256 amountReceived = tokenAmount.amount;
         uint64 sourceSelector = message.sourceChainSelector;
 
-        // Initial DeFiVM stack: [amountReceived, sourceChainSelector] (top).
+        // Stack after prologue, bottom → top: [amountReceived, sourceChainSelector].
+        // First STORE_REG pops sourceChainSelector (top); second pops amountReceived.
         bytes memory program = bytes.concat(
             abi.encodePacked(
                 OP_PUSH_U256, bytes32(amountReceived),
