@@ -121,6 +121,12 @@ def merge_and_expand(
     Each hop bundle keeps the candidate routes' edges (in discovery order),
     then is widened with additional parallel edges from *graph* up to
     *max_parallel_per_hop* to bound bundle size on dense graphs.
+
+    Enforces PRIME's pool-disjoint constraint across paths (§III): a pool
+    claimed by an earlier-ranked path is excluded from later paths' bundles,
+    both during merge and during graph-widening. A path whose every bundle is
+    emptied by this filter is dropped. Earlier ranking comes from *routes*'
+    input order (the caller sorts by output descending).
     """
     by_seq: dict[tuple[Address, ...], list[list[PoolEdge]]] = {}
     for path in routes:
@@ -130,28 +136,35 @@ def merge_and_expand(
         by_seq.setdefault(seq, []).append(path)
 
     result: list[MultiEdgePath] = []
+    claimed: set[Address] = set()
     for paths in by_seq.values():
         n_hops = len(paths[0])
         bundles: list[list[PoolEdge]] = [[] for _ in range(n_hops)]
         seen: list[set[Address]] = [set() for _ in range(n_hops)]
-        # Discovery-order edges first.
         for path in paths:
             for i, edge in enumerate(path):
-                if edge.pool_address not in seen[i]:
-                    bundles[i].append(edge)
-                    seen[i].add(edge.pool_address)
-        # Widen each hop with any other parallel edges in the graph.
+                if edge.pool_address in claimed or edge.pool_address in seen[i]:
+                    continue
+                bundles[i].append(edge)
+                seen[i].add(edge.pool_address)
         for i in range(n_hops):
+            if not bundles[i]:
+                continue
             t_in = bundles[i][0].token_in
             t_out_addr = bundles[i][0].token_out.address
             for edge in graph.edges_from(t_in):
                 if edge.token_out.address != t_out_addr:
                     continue
-                if edge.pool_address in seen[i]:
+                if edge.pool_address in claimed or edge.pool_address in seen[i]:
                     continue
                 bundles[i].append(edge)
                 seen[i].add(edge.pool_address)
                 if len(bundles[i]) >= max_parallel_per_hop:
                     break
+        if any(not b for b in bundles):
+            continue
         result.append(MultiEdgePath(hops=tuple(tuple(b) for b in bundles)))
+        for bundle in bundles:
+            for edge in bundle:
+                claimed.add(edge.pool_address)
     return result

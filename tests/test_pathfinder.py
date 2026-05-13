@@ -5,7 +5,7 @@ from decimal import Decimal
 import pytest
 
 from pydefi.exceptions import NoRouteFoundError
-from pydefi.pathfinder.asgm import _bundle_marginal, asgm_optimize
+from pydefi.pathfinder.asgm import _MARGINAL_EPS, _bundle_marginal, asgm_optimize
 from pydefi.pathfinder.graph import PoolEdge, PoolGraph, ReserveOverlay, V3PoolEdge, merge_pool_graphs
 from pydefi.pathfinder.multipath import MultiEdgePath, PathWeights, _distribute_int, merge_and_expand
 from pydefi.pathfinder.router import Router
@@ -1198,6 +1198,46 @@ class TestMergeAndExpand:
         hop_counts = sorted(len(p.hops) for p in paths)
         assert hop_counts == [1, 2]
 
+    def test_enforces_pool_disjoint_across_paths(self):
+        """A pool claimed by the earlier-ranked path is excluded from later paths (PRIME §III)."""
+        g = PoolGraph()
+        # Two routes both pass through WETH→USDC via POOL_A, then diverge.
+        g.add_bidirectional_pool(
+            WETH,
+            USDC,
+            POOL_A,
+            "UniswapV2",
+            reserve_a=10**22,
+            reserve_b=2 * 10**10,
+            fee_bps=30,
+        )
+        g.add_bidirectional_pool(
+            USDC,
+            DAI,
+            POOL_B,
+            "UniswapV2",
+            reserve_a=2 * 10**10,
+            reserve_b=2 * 10**22,
+            fee_bps=30,
+        )
+        g.add_bidirectional_pool(
+            USDC,
+            WBTC,
+            POOL_C,
+            "UniswapV2",
+            reserve_a=2 * 10**10,
+            reserve_b=10**9,
+            fee_bps=30,
+        )
+        e_weth_usdc = next(e for e in g.edges_from(WETH) if e.pool_address == POOL_A and e.token_out == USDC)
+        e_usdc_dai = next(e for e in g.edges_from(USDC) if e.pool_address == POOL_B and e.token_out == DAI)
+        e_usdc_wbtc = next(e for e in g.edges_from(USDC) if e.pool_address == POOL_C and e.token_out == WBTC)
+        paths = merge_and_expand([[e_weth_usdc, e_usdc_dai], [e_weth_usdc, e_usdc_wbtc]], g)
+        # Each path is a distinct token sequence, so both survive — but POOL_A
+        # may appear in only one of them.
+        appearances = [pool for p in paths for bundle in p.hops for e in bundle if (pool := e.pool_address) == POOL_A]
+        assert len(appearances) == 1, "POOL_A must not appear in more than one MultiEdgePath"
+
 
 # ---------------------------------------------------------------------------
 # ASGM solver (PRIME §V-C)
@@ -1287,16 +1327,21 @@ class TestASGM:
         assert w_e1 > w_e2, "deep pool should get larger intra-hop share"
         assert abs(w_e1 + w_e2 - 1.0) < 1e-6
 
-    def test_bundle_marginal_ranks_saturated_edge_lower(self):
-        """Under skewed weights, the over-allocated edge has the lower marginal."""
+    def test_bundle_marginal_returns_per_edge_marginal_price(self):
+        """Returns f_e'(w_e · c) — positive for every edge, even an over-allocated one."""
         e1 = _v2_pool_edge(WETH, USDC, POOL_A, reserve_in=10**22, reserve_out=2 * 10**10, fee_bps=30)
         e2 = _v2_pool_edge(WETH, USDC, POOL_B, reserve_in=10**22, reserve_out=2 * 10**10, fee_bps=30)
         bundle = (e1, e2)
         hop_input = 10**18
-        skewed = [0.99, 0.01]
-        g0 = _bundle_marginal(bundle, hop_input, skewed, idx=0)
-        g1 = _bundle_marginal(bundle, hop_input, skewed, idx=1)
-        assert g1 > g0, "under-allocated identical edge must have the higher marginal"
+        g_saturated = _bundle_marginal(bundle, hop_input, [0.99, 0.01], idx=0)
+        g_underused = _bundle_marginal(bundle, hop_input, [0.99, 0.01], idx=1)
+        assert g_saturated > 0, "per-edge marginal of a monotone swap function is positive"
+        assert g_underused > g_saturated, "less-allocated identical edge has higher marginal"
+        # Cross-check: marginal at the equal-split point matches a direct FD on the edge.
+        equal = _bundle_marginal(bundle, hop_input, [0.5, 0.5], idx=0)
+        x0, x1 = int(0.5 * hop_input), int(0.5 * hop_input) + int(_MARGINAL_EPS * hop_input)
+        expected = (e1.amount_out(x1) - e1.amount_out(x0)) / (x1 - x0)
+        assert abs(equal - expected) / max(expected, 1e-18) < 1e-6
 
 
 # ---------------------------------------------------------------------------
