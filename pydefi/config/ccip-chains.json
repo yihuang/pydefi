@@ -1,0 +1,1434 @@
+{
+  "1": {
+    "chainFamily": "evm",
+    "chainId": 1,
+    "chainType": "evm",
+    "displayName": "Ethereum",
+    "feeTokens": [
+      "GHO",
+      "LINK",
+      "WETH",
+      "ETH"
+    ],
+    "internalId": "ethereum-mainnet",
+    "registryModule": "0x4855174E9479E211337832E109E7721d43A4CA64",
+    "rmn": "0x411dE17f12D1A34ecC7F45f49844626267c75e81",
+    "router": "0x80226fc0Ee2b096224EeAc085Bb9a8cba1146f7D",
+    "selector": "5009297550715157269",
+    "supported": true,
+    "tokenAdminRegistry": "0xb22764f98dD05c789929716D677382Df22C05Cb6",
+    "tokenPoolFactory": "0x17D8a409fE2ceF2d3808bcB61F14aBEFfc28876e"
+  },
+  "10": {
+    "chainFamily": "evm",
+    "chainId": 10,
+    "chainType": "evm",
+    "displayName": "OP",
+    "feeTokens": [
+      "LINK",
+      "WETH",
+      "ETH"
+    ],
+    "internalId": "ethereum-mainnet-optimism-1",
+    "registryModule": "0xAFEd606Bd2CAb6983fC6F10167c98aaC2173D77f",
+    "rmn": "0x55b3FCa23EdDd28b1f5B4a3C7975f63EFd2d06CE",
+    "router": "0x3206695CaE29952f4b0c22a169725a865bc8Ce0f",
+    "selector": "3734403246176062136",
+    "supported": true,
+    "tokenAdminRegistry": "0x657c42abE4CD8aa731Aec322f871B5b90cf6274F",
+    "tokenPoolFactory": "0xBF38331E34ef7f248020611bB31Be0576D06413D"
+  },
+  "100": {
+    "chainFamily": "evm",
+    "chainId": 100,
+    "chainType": "evm",
+    "displayName": "Gnosis",
+    "feeTokens": [
+      "GHO",
+      "LINK",
+      "WXDAI",
+      "XDAI"
+    ],
+    "internalId": "gnosis_chain-mainnet",
+    "registryModule": "0x1f524a11d89D68a4E4b1c8A195E91Fb1d8f0B56a",
+    "rmn": "0xf5e5e1676942520995c1e39aFaC58A75Fe1cd2bB",
+    "router": "0x4aAD6071085df840abD9Baf1697d5D5992bDadce",
+    "selector": "465200170687744372",
+    "supported": true,
+    "tokenAdminRegistry": "0x73BC11423CBF14914998C23B0aFC9BE0cb5B2229",
+    "tokenPoolFactory": "0x76159c2b43ff6F630193e37EC68452169914C1Bb"
+  },
+  "102030": {
+    "chainFamily": "evm",
+    "chainId": 102030,
+    "chainType": "evm",
+    "displayName": "Creditcoin Mainnet",
+    "feeTokens": [
+      "LINK",
+      "WCTC",
+      "CTC"
+    ],
+    "internalId": "creditcoin-mainnet",
+    "registryModule": "0x8FE3B17E6B0863aeEA3D38DF063AEa39D4Ab1602",
+    "rmn": "0xdCc981e12Fd132d9172eb03E8373BE68032588e8",
+    "router": "0x1bADBe95bEe68D3a74EC08621256ddDBe6eAd3F9",
+    "selector": "18240105181246962294",
+    "supported": true,
+    "tokenAdminRegistry": "0xD941fBEcD2b971d0F54b4C34286C95faB52B60B8",
+    "tokenPoolFactory": "0x61b7492A40AE4c403629703a38d24851CAA1e7E4"
+  },
+  "1088": {
+    "chainFamily": "evm",
+    "chainId": 1088,
+    "chainType": "evm",
+    "displayName": "Metis Andromeda",
+    "feeTokens": [
+      "LINK",
+      "WMETIS",
+      "METIS"
+    ],
+    "internalId": "ethereum-mainnet-metis-1",
+    "registryModule": "0xE939C02E92e9E66d1F0D8E4F099E7d3d269a8a11",
+    "rmn": "0xd99cc1d64027E07Cd2AaE871E16bb32b8F401998",
+    "router": "0x7b9FB8717D306e2e08ce2e1Efa81F026bf9AD13c",
+    "selector": "8805746078405598895",
+    "supported": true,
+    "tokenAdminRegistry": "0x3af897541eB03927c7431bF68884A6C2C23b683f",
+    "tokenPoolFactory": "0xD3F31950e5Ec340b021D0d27454F44Edb7304C18"
+  },
+  "109": {
+    "chainFamily": "evm",
+    "chainId": 109,
+    "chainType": "evm",
+    "displayName": "Shibarium",
+    "feeTokens": [
+      "LINK",
+      "WBONE",
+      "BONE"
+    ],
+    "internalId": "shibarium-mainnet",
+    "registryModule": "0x1f524a11d89D68a4E4b1c8A195E91Fb1d8f0B56a",
+    "rmn": "0xD2bdb98dA1Ff575d091CA5b76412C23Cba88CA02",
+    "router": "0xc2CA5d5C17911e4B838194b51585DdF8fe5116C1",
+    "selector": "3993510008929295315",
+    "supported": true,
+    "tokenAdminRegistry": "0x995d2Aa233aBeaCA2a64Edf898AE9F4e01bE15B9",
+    "tokenPoolFactory": "0x051665f2455116e929b9972c36d23070F5054Ce0"
+  },
+  "1111": {
+    "chainFamily": "evm",
+    "chainId": 1111,
+    "chainType": "evm",
+    "displayName": "Wemix",
+    "feeTokens": [
+      "LINK",
+      "WWEMIX",
+      "WEMIX"
+    ],
+    "internalId": "wemix-mainnet",
+    "registryModule": "0xF549af21578Cfe2385FFD3488B3039fd9e52f006",
+    "rmn": "0x2375959c6571AC7a83c164C6FCcbd09E7782773d",
+    "router": "0x7798b795Fde864f4Cd1b124a38Ba9619B7F8A442",
+    "selector": "5142893604156789321",
+    "supported": true,
+    "tokenAdminRegistry": "0xE993e046AC50659800a91Bab0bd2daBF59CbD171",
+    "tokenPoolFactory": "0xc2e3A3C18ccb634622B57fF119a1C8C7f12e8C0c"
+  },
+  "1116": {
+    "chainFamily": "evm",
+    "chainId": 1116,
+    "chainType": "evm",
+    "displayName": "Core",
+    "feeTokens": [
+      "LINK",
+      "WCORE",
+      "CORE"
+    ],
+    "internalId": "core-mainnet",
+    "registryModule": "0x50056397CF6ccF50D1748e95c32EC361951ee6F9",
+    "rmn": "0x1e9B034c67B6eA4cB819aA8BE4E84cff2d5417fb",
+    "router": "0xF7Cc8b0B5263A74AFBb1a2ac87FfF1CF7E62152f",
+    "selector": "1224752112135636129",
+    "supported": true,
+    "tokenAdminRegistry": "0x4D2B43c60f3e476Ee94637C4e3be844FC9a70012",
+    "tokenPoolFactory": "0x51e2A24742Db77604B881d6781Ee16B5b8fcBE29"
+  },
+  "1135": {
+    "chainFamily": "evm",
+    "chainId": 1135,
+    "chainType": "evm",
+    "displayName": "Lisk",
+    "feeTokens": [
+      "LINK",
+      "WETH",
+      "ETH"
+    ],
+    "internalId": "lisk-mainnet",
+    "registryModule": "0x15C03488B29e27d62BAf10E30b0c474bf60E0264",
+    "rmn": "0x193e4f6c1A2FD8fa167c8a6e8E05564402DF6890",
+    "router": "0x0145c1fbA8a16128c1061eB9CE7eC3cadb8e30c7",
+    "selector": "15293031020466096408",
+    "supported": true,
+    "tokenAdminRegistry": "0x98acD723D0E9C13d09Df4619Abec729F3434a10a",
+    "tokenPoolFactory": "0x85A422d0F2584E15C331b5DE225c4cAe32F9182B"
+  },
+  "130": {
+    "chainFamily": "evm",
+    "chainId": 130,
+    "chainType": "evm",
+    "displayName": "Unichain",
+    "feeTokens": [
+      "LINK",
+      "WETH",
+      "ETH"
+    ],
+    "internalId": "ethereum-mainnet-unichain-1",
+    "registryModule": "0xd8F5e7FAc317c638d2Fe4d07ab3f436ca6b5e5c7",
+    "rmn": "0x2c8De9677b07Cc256228069109D9842f0cB96291",
+    "router": "0x68891f5F96695ECd7dEdBE2289D1b73426ae7864",
+    "selector": "1923510103922296319",
+    "supported": true,
+    "tokenAdminRegistry": "0xAB3Ee2e897cf23c10e76d26aB4674fEFA376bc0d",
+    "tokenPoolFactory": "0xB79791184973589c38e114D43Eb8E4588C283A18"
+  },
+  "1329": {
+    "chainFamily": "evm",
+    "chainId": 1329,
+    "chainType": "evm",
+    "displayName": "Sei Network",
+    "feeTokens": [
+      "LINK",
+      "WSEI",
+      "SEI"
+    ],
+    "internalId": "sei-mainnet",
+    "registryModule": "0x258Fc917b8de98b4aA0d38776E95dcce9e7EC8aC",
+    "rmn": "0x32C67585dA17839245c75D80d36c8CBD7d35E1a5",
+    "router": "0xAba60dA7E88F7E8f5868C2B6dE06CB759d693af0",
+    "selector": "9027416829622342829",
+    "supported": true,
+    "tokenAdminRegistry": "0x910a46cA93E8086BF1d7D65190eE6AEe5256Bd61",
+    "tokenPoolFactory": "0xE67E30B1b4F80A35852488757C3efc093903651A"
+  },
+  "137": {
+    "chainFamily": "evm",
+    "chainId": 137,
+    "chainType": "evm",
+    "displayName": "Polygon",
+    "feeTokens": [
+      "LINK",
+      "WPOL",
+      "POL"
+    ],
+    "internalId": "polygon-mainnet",
+    "registryModule": "0xc751E86208F0F8aF2d5CD0e29716cA7AD98B5eF5",
+    "rmn": "0xf1ceAa46D8d13Cac9fC38aaEF3d3d14754C5A9c2",
+    "router": "0x849c5ED5a80F5B408Dd4969b78c2C8fdf0565Bfe",
+    "selector": "4051577828743386545",
+    "supported": true,
+    "tokenAdminRegistry": "0x00F027eA6D0fb03256A15E9182B2B9227A4931d8",
+    "tokenPoolFactory": "0x6378c36C44B28f4d1513e7a5510A8481a23eecda"
+  },
+  "143": {
+    "chainFamily": "evm",
+    "chainId": 143,
+    "chainType": "evm",
+    "displayName": "Monad",
+    "feeTokens": [
+      "LINK",
+      "WMON",
+      "MON"
+    ],
+    "internalId": "monad-mainnet",
+    "registryModule": "0xB71513B6c80Adf35B43eACC24DA7A08A806a7f2C",
+    "rmn": "0x99dFCa5d88f4D9C023531F4403966b8d61562AcD",
+    "router": "0x33566fE5976AAa420F3d5C64996641Fc3858CaDB",
+    "selector": "8481857512324358265",
+    "supported": true,
+    "tokenAdminRegistry": "0x11ACd984DD680363117B310f6ebdf78fD6c0195f",
+    "tokenPoolFactory": "0x26d3681DfC9E4c8C79cfbf461adec8A21d5d73C5"
+  },
+  "146": {
+    "chainFamily": "evm",
+    "chainId": 146,
+    "chainType": "evm",
+    "displayName": "Sonic",
+    "feeTokens": [
+      "LINK",
+      "WS",
+      "S"
+    ],
+    "internalId": "sonic-mainnet",
+    "registryModule": "0xb0112a2723D9D6CB5194580701A93B1eb67846D2",
+    "rmn": "0x60536Ef486DB5E0e1771874E31485c12e3c2844f",
+    "router": "0xB4e1Ff7882474BB93042be9AD5E1fA387949B860",
+    "selector": "1673871237479749969",
+    "supported": true,
+    "tokenAdminRegistry": "0x2961Cb47b5111F38d75f415c21ceB4120ddd1b69",
+    "tokenPoolFactory": "0x5931822f394baBC2AACF4588E98FC77a9f5aa8C9"
+  },
+  "16661": {
+    "chainFamily": "evm",
+    "chainId": 16661,
+    "chainType": "evm",
+    "displayName": "0G",
+    "feeTokens": [
+      "LINK",
+      "W0G",
+      "OG"
+    ],
+    "internalId": "0g-mainnet",
+    "registryModule": "0x91339eb99C4c2Be9A071203DD99E014A3189FD29",
+    "rmn": "0xBF38331E34ef7f248020611bB31Be0576D06413D",
+    "router": "0x0aA145a62153190B8f0D3cA00c441e451529f755",
+    "selector": "4426351306075016396",
+    "supported": true,
+    "tokenAdminRegistry": "0x051665f2455116e929b9972c36d23070F5054Ce0",
+    "tokenPoolFactory": "0x094Ffe96db4e8bC05CF3D4bD4aCc4B7E770ba7d8"
+  },
+  "167000": {
+    "chainFamily": "evm",
+    "chainId": 167000,
+    "chainType": "evm",
+    "displayName": "Taiko Alethia",
+    "feeTokens": [
+      "LINK",
+      "WETH",
+      "ETH"
+    ],
+    "internalId": "ethereum-mainnet-taiko-1",
+    "registryModule": "0x4e52dD94e9BCfeFE3C78153bDfB0AB1d30687297",
+    "rmn": "0x01f66BA71474d30De43d3c7B389F4019505B7F59",
+    "router": "0xeb2502AeD3Cfd6E37e292c6B837a8FFF9a042367",
+    "selector": "16468599424800719238",
+    "supported": true,
+    "tokenAdminRegistry": "0x308a2A7d13B12ba26649F381C53F7e7C60d0D9c6",
+    "tokenPoolFactory": "0x43DB2E5d6A83399e0530DC652286F655B18a2b07"
+  },
+  "1672": {
+    "chainFamily": "evm",
+    "chainId": 1672,
+    "chainType": "evm",
+    "displayName": "Pharos Mainnet",
+    "feeTokens": [
+      "LINK",
+      "WPROS",
+      "PROS"
+    ],
+    "internalId": "pharos-mainnet",
+    "registryModule": "0xE27dd9BF01B55ce6803c0d81386A04212c718b95",
+    "rmn": "0xF4486d70EBED800204898Ec99C812661551471dC",
+    "router": "0x4e52dD94e9BCfeFE3C78153bDfB0AB1d30687297",
+    "selector": "7801139999541420232",
+    "supported": true,
+    "tokenAdminRegistry": "0xB79791184973589c38e114D43Eb8E4588C283A18",
+    "tokenPoolFactory": "0xEC1276CA704c612A28cb2C873dEdCEba97F65cED"
+  },
+  "1750": {
+    "chainFamily": "evm",
+    "chainId": 1750,
+    "chainType": "evm",
+    "displayName": "Metal L2",
+    "feeTokens": [
+      "LINK",
+      "WETH",
+      "ETH"
+    ],
+    "internalId": "metal-mainnet",
+    "registryModule": "0x258Fc917b8de98b4aA0d38776E95dcce9e7EC8aC",
+    "rmn": "0x87E84fc7cBD63D7e8653C660De09Fe48AB0276a8",
+    "router": "0x020c61ECEEE0E5DC32F2503AbB6E070fa0EbBfaA",
+    "selector": "13447077090413146373",
+    "supported": true,
+    "tokenAdminRegistry": "0xc41640B959Ca2A62b9293509202D8615dC293634",
+    "tokenPoolFactory": "0xE67E30B1b4F80A35852488757C3efc093903651A"
+  },
+  "177": {
+    "chainFamily": "evm",
+    "chainId": 177,
+    "chainType": "evm",
+    "displayName": "HashKey Chain",
+    "feeTokens": [
+      "LINK",
+      "WHSK",
+      "HSK"
+    ],
+    "internalId": "ethereum-mainnet-hashkey-1",
+    "registryModule": "0x04c5046A1f4E3fFf094c26dFCAA75eF293932f18",
+    "rmn": "0x59F168858472c5ECC217588678F6c378951Bd524",
+    "router": "0xf2Fd62c083F3BF324e99ce157D1a42d7EbA77f1d",
+    "selector": "7613811247471741961",
+    "supported": true,
+    "tokenAdminRegistry": "0x4b238f757f842280FeA88A1c2B4186b71eF8BC5E",
+    "tokenPoolFactory": "0x9A82E768C885DEF7C4b47451Fd4Db53d8B21ed07"
+  },
+  "185": {
+    "chainFamily": "evm",
+    "chainId": 185,
+    "chainType": "evm",
+    "displayName": "Mint",
+    "feeTokens": [
+      "LINK",
+      "WETH",
+      "ETH"
+    ],
+    "internalId": "mint-mainnet",
+    "registryModule": "0x3869fE7e385554978Eff78423Fd16B5f0974D260",
+    "rmn": "0xA84f7c3E7d1025EF1F991110B1956c024bb6Ac99",
+    "router": "0x1d86012266F214a368766C2B9329FdCC75B1Ce6b",
+    "selector": "17164792800244661392",
+    "supported": true,
+    "tokenAdminRegistry": "0xfAb243379A10D8090B32BC706288c2187dbe495C",
+    "tokenPoolFactory": "0xE67E30B1b4F80A35852488757C3efc093903651A"
+  },
+  "1868": {
+    "chainFamily": "evm",
+    "chainId": 1868,
+    "chainType": "evm",
+    "displayName": "Soneium",
+    "feeTokens": [
+      "LINK",
+      "WETH",
+      "ETH"
+    ],
+    "internalId": "soneium-mainnet",
+    "registryModule": "0x2c3D51c7B454cB045C8cEc92d2F9E717C7519106",
+    "rmn": "0x3117f515D763652A32d3D6D447171ea7c9d57218",
+    "router": "0x8C8B88d827Fe14Df2bc6392947d513C86afD6977",
+    "selector": "12505351618335765396",
+    "supported": true,
+    "tokenAdminRegistry": "0x5ba21F6824400B91F232952CA6d7c8875C1755a4",
+    "tokenPoolFactory": "0xD3F31950e5Ec340b021D0d27454F44Edb7304C18"
+  },
+  "196": {
+    "chainFamily": "evm",
+    "chainId": 196,
+    "chainType": "evm",
+    "displayName": "X Layer",
+    "feeTokens": [
+      "LINK",
+      "WOKB",
+      "OKB"
+    ],
+    "internalId": "ethereum-mainnet-xlayer-1",
+    "registryModule": "0xb227f007804c16546Bd054dfED2E7A1fD5437678",
+    "rmn": "0x326B01f673681dAd72cd386CCe12FFF717be32cD",
+    "router": "0xF2b6Cb7867EB5502C3249dD37D7bc1Cc148e5232",
+    "selector": "3016212468291539606",
+    "supported": true,
+    "tokenAdminRegistry": "0xeCf1eAEE01E82F3388dECD7f4C3792374f3f72F3",
+    "tokenPoolFactory": "0x5931822f394baBC2AACF4588E98FC77a9f5aa8C9"
+  },
+  "200901": {
+    "chainFamily": "evm",
+    "chainId": 200901,
+    "chainType": "evm",
+    "displayName": "Bitlayer",
+    "feeTokens": [
+      "LINK",
+      "WBTC",
+      "BTC"
+    ],
+    "internalId": "bitcoin-mainnet-bitlayer-1",
+    "registryModule": "0x1f524a11d89D68a4E4b1c8A195E91Fb1d8f0B56a",
+    "rmn": "0xcaa6131cEe85ba2F140cBa05F6825aC60B6CEA56",
+    "router": "0x6c0aA29330c58dda07faD577fF5a0280823a910c",
+    "selector": "7937294810946806131",
+    "supported": true,
+    "tokenAdminRegistry": "0xd999758aEB04BDa755Ae78344FFF5534947620CD",
+    "tokenPoolFactory": "0x5931822f394baBC2AACF4588E98FC77a9f5aa8C9"
+  },
+  "2020": {
+    "chainFamily": "evm",
+    "chainId": 2020,
+    "chainType": "evm",
+    "displayName": "Ronin",
+    "feeTokens": [
+      "LINK",
+      "WRON",
+      "RON"
+    ],
+    "internalId": "ronin-mainnet",
+    "registryModule": "0xC6a4854eeB493224d5f9485E12Dd3A81f22EEE14",
+    "rmn": "0xceA253a8c2BB995054524d071498281E89aACD59",
+    "router": "0x46527571D5D1B68eE7Eb60B18A32e6C60DcEAf99",
+    "selector": "6916147374840168594",
+    "supported": true,
+    "tokenAdminRegistry": "0x90e83d532A4aD13940139c8ACE0B93b0DdbD323a",
+    "tokenPoolFactory": "0xEfd5fEFEdE55B5C41B8fa0d171a79ba5BeadD2Aa"
+  },
+  "204": {
+    "chainFamily": "evm",
+    "chainId": 204,
+    "chainType": "evm",
+    "displayName": "opBNB",
+    "feeTokens": [
+      "LINK",
+      "WBNB",
+      "BNB"
+    ],
+    "internalId": "binance_smart_chain-mainnet-opbnb-1",
+    "registryModule": "0xC2eAfBAD518849e9A5Acd33E687EeAc7306C1dea",
+    "rmn": "0xf7adFeB4433E09d4f652EC2c55d39e505F7c8b75",
+    "router": "0xa3ca4306B9256aAB177C47A18b43593F03378976",
+    "selector": "465944652040885897",
+    "supported": true,
+    "tokenAdminRegistry": "0xEfF5D2147F9cAcdedF80C2ee1F5320B01C664bE5",
+    "tokenPoolFactory": "0x9A82E768C885DEF7C4b47451Fd4Db53d8B21ed07"
+  },
+  "21000000": {
+    "chainFamily": "evm",
+    "chainId": 21000000,
+    "chainType": "evm",
+    "displayName": "Corn",
+    "feeTokens": [
+      "LINK",
+      "WBTCN",
+      "BTCN"
+    ],
+    "internalId": "corn-mainnet",
+    "registryModule": "0x04c5046A1f4E3fFf094c26dFCAA75eF293932f18",
+    "rmn": "0x91ca2Aa7429e5F702f1F750b317AB604d5a6a16e",
+    "router": "0x183f6069A0D5c2DEC1Dd1eCF3B1581e12dEb4Efe",
+    "selector": "9043146809313071210",
+    "supported": true,
+    "tokenAdminRegistry": "0xCd51e57cD26b9B5eecbfe3d96DAabF3d12A663DA",
+    "tokenPoolFactory": "0x518DD3D8a38ea4FB5f8c06c33b6a32F34F6C3712"
+  },
+  "223": {
+    "chainFamily": "evm",
+    "chainId": 223,
+    "chainType": "evm",
+    "displayName": "B²",
+    "feeTokens": [
+      "LINK",
+      "WBTC",
+      "BTC"
+    ],
+    "internalId": "bitcoin-mainnet-bsquared-1",
+    "registryModule": "0x55aeb80Aa6Ab34aA83E1F387903F8Bb2Aa9e2F2d",
+    "rmn": "0x1C6Faa5762860261014a355a9efF2bEea2255851",
+    "router": "0x9C34e9A192d7a4c2cf054668C1122C028C43026c",
+    "selector": "5406759801798337480",
+    "supported": true,
+    "tokenAdminRegistry": "0x2e1543255119CfB9D3501E32d7f5B244E59A06F4",
+    "tokenPoolFactory": "0x5931822f394baBC2AACF4588E98FC77a9f5aa8C9"
+  },
+  "228": {
+    "chainFamily": "evm",
+    "chainId": 228,
+    "chainType": "evm",
+    "displayName": "Mind Network",
+    "feeTokens": [
+      "LINK",
+      "WETH",
+      "ETH"
+    ],
+    "internalId": "mind-mainnet",
+    "registryModule": "0x7bc6fB227983Ad829dF8b210407A589F2EB34f64",
+    "rmn": "0x4F26203d04A57A73df795DBed362d3A8d5C34D0c",
+    "router": "0x3E13485E767D53f938cD4AF502111d3fF8726A2D",
+    "selector": "11690709103138290329",
+    "supported": true,
+    "tokenAdminRegistry": "0x469169915210462F5e01EFBE0822Cf7079F9306b",
+    "tokenPoolFactory": "0xD3F31950e5Ec340b021D0d27454F44Edb7304C18"
+  },
+  "232": {
+    "chainFamily": "evm",
+    "chainId": 232,
+    "chainType": "evm",
+    "displayName": "Lens",
+    "feeTokens": [
+      "LINK",
+      "WGHO",
+      "GHO"
+    ],
+    "internalId": "lens-mainnet",
+    "registryModule": "0xfCe3246A7Cc4Ae9E529836F584843fcCB73F736D",
+    "rmn": "0xE187a792bbf76232A307d8E44615973C849E25A0",
+    "router": "0x498F3feBAd3ff75e05b7847B37a301fc2DA6fDC0",
+    "selector": "5608378062013572713",
+    "supported": true,
+    "tokenAdminRegistry": "0xdD98482Ec0cfEFfe14EAb750A9c484F9D5d07380",
+    "tokenPoolFactory": "0x200a3874970F6078B6D85Fb356Df4e72C24821a6"
+  },
+  "239": {
+    "chainFamily": "evm",
+    "chainId": 239,
+    "chainType": "evm",
+    "displayName": "Tac",
+    "feeTokens": [
+      "LINK",
+      "WTAC",
+      "TAC"
+    ],
+    "internalId": "tac-mainnet",
+    "registryModule": "0x313F663E79ef202251a28F0252c254842D5ABC6a",
+    "rmn": "0xbDCb06538A5f4F5aCC69bb0B7548d314d3c1A8Fd",
+    "router": "0x966519C334D895121B61584CAdeBc15571b62983",
+    "selector": "5936861837188149645",
+    "supported": true,
+    "tokenAdminRegistry": "0xd31dB306E5D79F0018Ac92e08492284201493EA1",
+    "tokenPoolFactory": "0x150869eac5C58d3655f860C4316107fB626244d0"
+  },
+  "25": {
+    "chainFamily": "evm",
+    "chainId": 25,
+    "chainType": "evm",
+    "displayName": "Cronos",
+    "feeTokens": [
+      "LINK",
+      "WCRO",
+      "CRO"
+    ],
+    "internalId": "cronos-mainnet",
+    "registryModule": "0x36293c0fbF1872Be5b6cBc65704fB22d41405388",
+    "rmn": "0xd22A59e9b4eA2af16e66487411204224F5003351",
+    "router": "0xE26B0A098D861d5C7d9434aD471c0572Ca6EAa67",
+    "selector": "1456215246176062136",
+    "supported": true,
+    "tokenAdminRegistry": "0x32c4634338f1386fdD18E0bD6dF51Ca2Fa56f762",
+    "tokenPoolFactory": "0xABF586910586b8dcbdF92f1C5e2Ae14106f3DD16"
+  },
+  "252": {
+    "chainFamily": "evm",
+    "chainId": 252,
+    "chainType": "evm",
+    "displayName": "Fraxtal",
+    "feeTokens": [
+      "LINK",
+      "WFRAX",
+      "frxETH"
+    ],
+    "internalId": "fraxtal-mainnet",
+    "registryModule": "0xdd8aF6046349EDFD40123E0b616286cEC08010ed",
+    "rmn": "0x889b5Ada2Ce451ED68C5e1b40B8236C3448ff681",
+    "router": "0x4bdF20477744Ec5F9DE738b5cC9ACd01763905ee",
+    "selector": "1462016016387883143",
+    "supported": true,
+    "tokenAdminRegistry": "0x6724621d8A560A84E4B6012c4bAA0eA6fF47B9DF",
+    "tokenPoolFactory": "0x6170Dd67f0Bd9a371870D8e27F3E3f64Cf4F394c"
+  },
+  "2741": {
+    "chainFamily": "evm",
+    "chainId": 2741,
+    "chainType": "evm",
+    "displayName": "Abstract",
+    "feeTokens": [
+      "LINK",
+      "WETH",
+      "ETH"
+    ],
+    "internalId": "abstract-mainnet",
+    "registryModule": "0xB79791184973589c38e114D43Eb8E4588C283A18",
+    "rmn": "0x2edAc8B8928c4e1Ed559e619b6A8a4aaCe9Ef18A",
+    "router": "0x09521B0B5BB2d4406124c0207Cf551829B45f84d",
+    "selector": "3577778157919314504",
+    "supported": true,
+    "tokenAdminRegistry": "0x7EEdf2DBC74924Cb1f23fC8845CD35bF18b697de"
+  },
+  "2818": {
+    "chainFamily": "evm",
+    "chainId": 2818,
+    "chainType": "evm",
+    "displayName": "Morph",
+    "feeTokens": [
+      "LINK",
+      "WETH",
+      "ETH"
+    ],
+    "internalId": "morph-mainnet",
+    "registryModule": "0x9A82E768C885DEF7C4b47451Fd4Db53d8B21ed07",
+    "rmn": "0x15C03488B29e27d62BAf10E30b0c474bf60E0264",
+    "router": "0x3201a20D2a33820C0DaC8Bc93C4819755C2a8c7F",
+    "selector": "18164309074156128038",
+    "supported": true,
+    "tokenAdminRegistry": "0xEfd5fEFEdE55B5C41B8fa0d171a79ba5BeadD2Aa",
+    "tokenPoolFactory": "0x150869eac5C58d3655f860C4316107fB626244d0"
+  },
+  "295": {
+    "chainFamily": "evm",
+    "chainId": 295,
+    "chainType": "evm",
+    "displayName": "Hedera",
+    "feeTokens": [
+      "LINK",
+      "WHBAR",
+      "HBAR"
+    ],
+    "internalId": "hedera-mainnet",
+    "registryModule": "0x1d952d2f6eE86Ef4940Fa648aA7477c8fF175F09",
+    "rmn": "0x09d9c9a2Ba147654fB40e217B68f2874775271b9",
+    "router": "0x87b400B4d4F5Fe2Fdb6FBEa66C38003ced565b76",
+    "selector": "3229138320728879060",
+    "supported": true,
+    "tokenAdminRegistry": "0xC9efBD4f73C37aE1573806030A4146e1E72EADc1",
+    "tokenPoolFactory": "0x02A4D69cFfeC00Fbf7F3B60c93e3529Dfc58894d"
+  },
+  "30": {
+    "chainFamily": "evm",
+    "chainId": 30,
+    "chainType": "evm",
+    "displayName": "Rootstock",
+    "feeTokens": [
+      "LINK",
+      "WRBTC",
+      "RBTC"
+    ],
+    "internalId": "rootstock-mainnet",
+    "registryModule": "0x51e2A24742Db77604B881d6781Ee16B5b8fcBE29",
+    "rmn": "0x54E38BFA3584415C28228Ed4865Ed4FA5cDD013A",
+    "router": "0xCe7aFb0BF5F73BfDB5e9E04976eBac2005746bD0",
+    "selector": "11964252391146578476",
+    "supported": true,
+    "tokenAdminRegistry": "0xad71ac82aCFCbDD27BBd3F3eD2fA24E26E49CBE2",
+    "tokenPoolFactory": "0xcDca5D374e46A6DDDab50bD2D9acB8c796eC35C3"
+  },
+  "324": {
+    "chainFamily": "evm",
+    "chainId": 324,
+    "chainType": "evm",
+    "displayName": "ZKsync",
+    "feeTokens": [
+      "LINK",
+      "WETH",
+      "ETH"
+    ],
+    "internalId": "ethereum-mainnet-zksync-1",
+    "registryModule": "0x55231e520F09D53ef836CE9477011C7057a70bd6",
+    "rmn": "0x2aBB46A2D32220b8801CE96CAbC32dd2dA7b7B20",
+    "router": "0x748Fd769d81F5D94752bf8B0875E9301d0ba71bB",
+    "selector": "1562403441176082196",
+    "supported": true,
+    "tokenAdminRegistry": "0x100a47C9DB342884E3314B91cec076BbAC8e619c",
+    "tokenPoolFactory": "0xF1CEb7680819A1F5436e5deAC2737EB1f4EaeE35"
+  },
+  "33139": {
+    "chainFamily": "evm",
+    "chainId": 33139,
+    "chainType": "evm",
+    "displayName": "Apechain",
+    "feeTokens": [
+      "LINK",
+      "WAPE",
+      "APE"
+    ],
+    "internalId": "apechain-mainnet",
+    "registryModule": "0x1c2F528e3BEeFF81Bc03CC63E64dB131d18be7fA",
+    "rmn": "0x768a1a3B321126A8B214d7376D48465C7f6Fa061",
+    "router": "0xe9c6945281028cb6530d43F998eE539dFE2a9191",
+    "selector": "14894068710063348487",
+    "supported": true,
+    "tokenAdminRegistry": "0xD3ED6fC9fd22412764ac2Ef64fB664b9393dF9F2",
+    "tokenPoolFactory": "0xABF586910586b8dcbdF92f1C5e2Ae14106f3DD16"
+  },
+  "3343": {
+    "chainFamily": "evm",
+    "chainId": 3343,
+    "chainType": "evm",
+    "displayName": "Edge",
+    "feeTokens": [
+      "LINK",
+      "WETH",
+      "ETH"
+    ],
+    "internalId": "edge-mainnet",
+    "registryModule": "0x91339eb99C4c2Be9A071203DD99E014A3189FD29",
+    "rmn": "0xBF38331E34ef7f248020611bB31Be0576D06413D",
+    "router": "0x0aA145a62153190B8f0D3cA00c441e451529f755",
+    "selector": "6325494908023253251",
+    "supported": true,
+    "tokenAdminRegistry": "0x051665f2455116e929b9972c36d23070F5054Ce0",
+    "tokenPoolFactory": "0xad1493B01ced4fAAc409124E667b95259F12fb05"
+  },
+  "34443": {
+    "chainFamily": "evm",
+    "chainId": 34443,
+    "chainType": "evm",
+    "displayName": "Mode",
+    "feeTokens": [
+      "LINK",
+      "WETH",
+      "ETH"
+    ],
+    "internalId": "ethereum-mainnet-mode-1",
+    "registryModule": "0xCe3f7378aE409e1CE0dD6fFA70ab683326b73f04",
+    "rmn": "0xA0876B45271615c737781185C2B5ada60ed2D2B9",
+    "router": "0x24C40f13E77De2aFf37c280BA06c333531589bf1",
+    "selector": "7264351850409363825",
+    "supported": true,
+    "tokenAdminRegistry": "0xB4b40c010A547dff6A22d94bC2C1c1e745b62aB2",
+    "tokenPoolFactory": "0xEfd5fEFEdE55B5C41B8fa0d171a79ba5BeadD2Aa"
+  },
+  "3637": {
+    "chainFamily": "evm",
+    "chainId": 3637,
+    "chainType": "evm",
+    "displayName": "Botanix",
+    "feeTokens": [
+      "LINK",
+      "PBTC",
+      "BTC"
+    ],
+    "internalId": "bitcoin-mainnet-botanix",
+    "registryModule": "0xbDCb06538A5f4F5aCC69bb0B7548d314d3c1A8Fd",
+    "rmn": "0x7f1310420E197B491311Ac75bF44e852f796779a",
+    "router": "0x5EE890c89B5Ae75cBC516Dd53345e38E5B39B664",
+    "selector": "4560701533377838164",
+    "supported": true,
+    "tokenAdminRegistry": "0x3eD4752266fF42FECe47dB8BA1249fF3978f3E5E",
+    "tokenPoolFactory": "0xcDca5D374e46A6DDDab50bD2D9acB8c796eC35C3"
+  },
+  "36888": {
+    "chainFamily": "evm",
+    "chainId": 36888,
+    "chainType": "evm",
+    "displayName": "AB Chain",
+    "feeTokens": [
+      "LINK",
+      "WAB",
+      "AB"
+    ],
+    "internalId": "ab-mainnet",
+    "registryModule": "0xf4a170A36D4C656F614d44453f73308Bdb275196",
+    "rmn": "0xf09AFe78d3c7d359b334d7cB88995751F7eC5E13",
+    "router": "0x492641F648a4986844848E0beFE66D14817bCE34",
+    "selector": "4829375610284793157",
+    "supported": true,
+    "tokenAdminRegistry": "0xA27056438FfA1f286AB197488808692F0db93F8B",
+    "tokenPoolFactory": "0xfa546248C54939AA6C48279CdC1EAf9A1125c411"
+  },
+  "36900": {
+    "chainFamily": "evm",
+    "chainId": 36900,
+    "chainType": "evm",
+    "displayName": "ADI Network",
+    "feeTokens": [
+      "LINK",
+      "WADI",
+      "ADI"
+    ],
+    "internalId": "adi-mainnet",
+    "registryModule": "0x6525923279256B8a86c1C01cF5955eB00C39B048",
+    "rmn": "0x61b7492A40AE4c403629703a38d24851CAA1e7E4",
+    "router": "0x010771998A1F4736BD844939d0bf01ac5cA0f8fa",
+    "selector": "4059281736450291836",
+    "supported": true,
+    "tokenAdminRegistry": "0x5fA6f142EAC511DF12325776386AB92B0F4D1eba",
+    "tokenPoolFactory": "0x38C41225f530a60cB358F08b19B935534858a06c"
+  },
+  "388": {
+    "chainFamily": "evm",
+    "chainId": 388,
+    "chainType": "evm",
+    "displayName": "Cronos zkEVM",
+    "feeTokens": [
+      "LINK",
+      "WZKCRO",
+      "zkCRO"
+    ],
+    "internalId": "cronos-zkevm-mainnet",
+    "registryModule": "0x5Fa0fa2f1dE61BddD68dc8902b59Eaa028BE6F57",
+    "rmn": "0xA6f2662523693CFA3Ff2e36e3550ea432864c7DA",
+    "router": "0x17b828DF8679D68318f0849C1221AD1760699eCb",
+    "selector": "8788096068760390840",
+    "supported": true,
+    "tokenAdminRegistry": "0x94Fa8b263dEb66fA3e160D408Cd200be8b030609"
+  },
+  "4200": {
+    "chainFamily": "evm",
+    "chainId": 4200,
+    "chainType": "evm",
+    "displayName": "Merlin",
+    "feeTokens": [
+      "LINK",
+      "WBTC",
+      "BTC"
+    ],
+    "internalId": "bitcoin-merlin-mainnet",
+    "registryModule": "0xE27dd9BF01B55ce6803c0d81386A04212c718b95",
+    "rmn": "0x225c0187d88e5E42455c4B46078D15283551930B",
+    "router": "0x8Be462D21b05eEeF81a3AA384b7C6CF18597232A",
+    "selector": "241851231317828981",
+    "supported": true,
+    "tokenAdminRegistry": "0xA51Cdb9154bB0c9Bc3CE25dBf7DE3331B3A1C8E7",
+    "tokenPoolFactory": "0x38A4035bEBDD71423BE589b8dCf8e73Ef17E4498"
+  },
+  "42161": {
+    "chainFamily": "evm",
+    "chainId": 42161,
+    "chainType": "evm",
+    "displayName": "Arbitrum One",
+    "feeTokens": [
+      "GHO",
+      "LINK",
+      "WETH",
+      "ETH"
+    ],
+    "internalId": "ethereum-mainnet-arbitrum-1",
+    "registryModule": "0x1f1df9f7fc939E71819F766978d8F900B816761b",
+    "rmn": "0xC311a21e6fEf769344EB1515588B9d535662a145",
+    "router": "0x141fa059441E0ca23ce184B6A78bafD2A517DdE8",
+    "selector": "4949039107694359620",
+    "supported": true,
+    "tokenAdminRegistry": "0x39AE1032cF4B334a1Ed41cdD0833bdD7c7E7751E",
+    "tokenPoolFactory": "0x8A76fe7fA6da27f85a626c5C53730B38D13603d7"
+  },
+  "4217": {
+    "chainFamily": "evm",
+    "chainId": 4217,
+    "chainType": "evm",
+    "displayName": "Tempo Mainnet",
+    "feeTokens": [
+      "LINK",
+      "pathUSD",
+      "WTEMP",
+      "USD"
+    ],
+    "internalId": "tempo-mainnet",
+    "registryModule": "0x09AC52380E6Ede653E122773734fDc8b4B716422",
+    "rmn": "0x65615642056b48BCB8120C109f7e7c0c3623A8BF",
+    "router": "0xa132F089492CcE5f1D79483a9e4552f37266ed01",
+    "selector": "7281642695469137430",
+    "supported": true,
+    "tokenAdminRegistry": "0x60A97bd9ACf755954Ff0fE85837224f2920a57F3",
+    "tokenPoolFactory": "0xb0B4b5847E35033766d5B49CD9C0fC40F459321F"
+  },
+  "42220": {
+    "chainFamily": "evm",
+    "chainId": 42220,
+    "chainType": "evm",
+    "displayName": "Celo",
+    "feeTokens": [
+      "LINK",
+      "WCELO",
+      "CELO"
+    ],
+    "internalId": "celo-mainnet",
+    "registryModule": "0xb0112a2723D9D6CB5194580701A93B1eb67846D2",
+    "rmn": "0x56e0507d4E69D98bE7Eb4ada01d2315596F9f281",
+    "router": "0xfB48f15480926A4ADf9116Dca468bDd2EE6C5F62",
+    "selector": "1346049177634351622",
+    "supported": true,
+    "tokenAdminRegistry": "0xf19e0555fAA9051e277eeD5A0DcdB13CDaca39a9",
+    "tokenPoolFactory": "0x9fCd83bC7F67ADa1fB51a4caBEa333c72B641bd1"
+  },
+  "42793": {
+    "chainFamily": "evm",
+    "chainId": 42793,
+    "chainType": "evm",
+    "displayName": "Etherlink",
+    "feeTokens": [
+      "LINK",
+      "WXTZ",
+      "XTZ"
+    ],
+    "internalId": "etherlink-mainnet",
+    "registryModule": "0xfa546248C54939AA6C48279CdC1EAf9A1125c411",
+    "rmn": "0x1E11bAB3f07fa72312182fFDc460AE45400E6e7b",
+    "router": "0x1912C3cFafE8A76A32a92861d815aC2837F237Ca",
+    "selector": "13624601974233774587",
+    "supported": true,
+    "tokenAdminRegistry": "0x492641F648a4986844848E0beFE66D14817bCE34",
+    "tokenPoolFactory": "0x69c3619326d5DF0d5abB752f2AE629413811ccD1"
+  },
+  "43111": {
+    "chainFamily": "evm",
+    "chainId": 43111,
+    "chainType": "evm",
+    "displayName": "Hemi",
+    "feeTokens": [
+      "LINK",
+      "WETH",
+      "ETH"
+    ],
+    "internalId": "hemi-mainnet",
+    "registryModule": "0xE27dd9BF01B55ce6803c0d81386A04212c718b95",
+    "rmn": "0xa1E3b310025c9E1861374D9CAF629E0DAa8Ecd8C",
+    "router": "0x5e48912cFDd14417D6856872341f894AE0EF07DD",
+    "selector": "1804312132722180201",
+    "supported": true,
+    "tokenAdminRegistry": "0x81e81F9B2C0B79C00F38357068AE049090F2DaDE",
+    "tokenPoolFactory": "0x3A704ad3E4784b935AE029171AdCF57ee7988198"
+  },
+  "43114": {
+    "chainFamily": "evm",
+    "chainId": 43114,
+    "chainType": "evm",
+    "displayName": "Avalanche",
+    "feeTokens": [
+      "GHO",
+      "LINK",
+      "WAVAX",
+      "AVAX"
+    ],
+    "internalId": "avalanche-mainnet",
+    "registryModule": "0x76Aa17dCda9E8529149E76e9ffaE4aD1C4AD701B",
+    "rmn": "0xcBD48A8eB077381c3c4Eb36b402d7283aB2b11Bc",
+    "router": "0xF4c7E640EdA248ef95972845a62bdC74237805dB",
+    "selector": "6433500567565415381",
+    "supported": true,
+    "tokenAdminRegistry": "0xc8df5D618c6a59Cc6A311E96a39450381001464F",
+    "tokenPoolFactory": "0x6378c36C44B28f4d1513e7a5510A8481a23eecda"
+  },
+  "4326": {
+    "chainFamily": "evm",
+    "chainId": 4326,
+    "chainType": "evm",
+    "displayName": "MegaETH Mainnet",
+    "feeTokens": [
+      "LINK",
+      "WETH",
+      "ETH"
+    ],
+    "internalId": "megaeth-mainnet",
+    "registryModule": "0x1E11bAB3f07fa72312182fFDc460AE45400E6e7b",
+    "rmn": "0xA27056438FfA1f286AB197488808692F0db93F8B",
+    "router": "0xfa546248C54939AA6C48279CdC1EAf9A1125c411",
+    "selector": "6093540873831549674",
+    "supported": true,
+    "tokenAdminRegistry": "0xf4a170A36D4C656F614d44453f73308Bdb275196",
+    "tokenPoolFactory": "0xe8464c353210Cc398A45dB2454FBc5BCd25fFf20"
+  },
+  "480": {
+    "chainFamily": "evm",
+    "chainId": 480,
+    "chainType": "evm",
+    "displayName": "World Chain",
+    "feeTokens": [
+      "LINK",
+      "WETH",
+      "ETH"
+    ],
+    "internalId": "ethereum-mainnet-worldchain-1",
+    "registryModule": "0xb0112a2723D9D6CB5194580701A93B1eb67846D2",
+    "rmn": "0x7DE7Ef73cF001ff15b3aA558855D7eeC439d43ab",
+    "router": "0x5fd9E4986187c56826A3064954Cfa2Cf250cfA0f",
+    "selector": "2049429975587534727",
+    "supported": true,
+    "tokenAdminRegistry": "0x02Fe6ab4fb0943F58D9D925d1d2cbA9474997Ed0",
+    "tokenPoolFactory": "0x0aA145a62153190B8f0D3cA00c441e451529f755"
+  },
+  "48900": {
+    "chainFamily": "evm",
+    "chainId": 48900,
+    "chainType": "evm",
+    "displayName": "Zircuit",
+    "feeTokens": [
+      "LINK",
+      "WETH",
+      "ETH"
+    ],
+    "internalId": "ethereum-mainnet-zircuit-1",
+    "registryModule": "0x55aeb80Aa6Ab34aA83E1F387903F8Bb2Aa9e2F2d",
+    "rmn": "0xf735667F2F3193d407089bb4c50824941821b156",
+    "router": "0x0A6436B56378D305729713ac332ccdCD367f3918",
+    "selector": "17198166215261833993",
+    "supported": true,
+    "tokenAdminRegistry": "0x47d2D93EEDb694bf445E7F6458f17669459612c7",
+    "tokenPoolFactory": "0x518DD3D8a38ea4FB5f8c06c33b6a32F34F6C3712"
+  },
+  "50": {
+    "chainFamily": "evm",
+    "chainId": 50,
+    "chainType": "evm",
+    "displayName": "XDC Network",
+    "feeTokens": [
+      "LINK",
+      "WXDC",
+      "XDC"
+    ],
+    "internalId": "xdc-mainnet",
+    "registryModule": "0x318Ec96df83AccC18B5EAD5D23e0F022F7Eb5503",
+    "rmn": "0x4e52dD94e9BCfeFE3C78153bDfB0AB1d30687297",
+    "router": "0x2a9f896660E802c59a3178b2E8CB7FBaCCC04e86",
+    "selector": "17673274061779414707",
+    "supported": true,
+    "tokenAdminRegistry": "0xEC1276CA704c612A28cb2C873dEdCEba97F65cED",
+    "tokenPoolFactory": "0x150869eac5C58d3655f860C4316107fB626244d0"
+  },
+  "5000": {
+    "chainFamily": "evm",
+    "chainId": 5000,
+    "chainType": "evm",
+    "displayName": "Mantle",
+    "feeTokens": [
+      "GHO",
+      "LINK",
+      "WMNT",
+      "MNT"
+    ],
+    "internalId": "ethereum-mainnet-mantle-1",
+    "registryModule": "0xf49f81b3d2F2a79b706621FA2D5934136352140c",
+    "rmn": "0x91E2186E93F0ECeDDCdf9850078F104daB085E79",
+    "router": "0x670052635a9850bb45882Cb2eCcF66bCff0F41B7",
+    "selector": "1556008542357238666",
+    "supported": true,
+    "tokenAdminRegistry": "0x000A744940eB5D857c0d61d97015DFc83107404F",
+    "tokenPoolFactory": "0xc2e3A3C18ccb634622B57fF119a1C8C7f12e8C0c"
+  },
+  "5330": {
+    "chainFamily": "evm",
+    "chainId": 5330,
+    "chainType": "evm",
+    "displayName": "Superseed",
+    "feeTokens": [
+      "LINK",
+      "WETH",
+      "ETH"
+    ],
+    "internalId": "superseed-mainnet",
+    "registryModule": "0x1d952d2f6eE86Ef4940Fa648aA7477c8fF175F09",
+    "rmn": "0x1A99FF887e5bb3962dA97F409487663B5F539799",
+    "router": "0xAD93FBB3A9a077F896e1F57739e43dEd063f181F",
+    "selector": "470401360549526817",
+    "supported": true,
+    "tokenAdminRegistry": "0x7a1874cBc865580c6cbE09af25509dF12A6b4F58",
+    "tokenPoolFactory": "0xC85e8E5c90aE9d78DA5c886B27d01EB4b2A1cf92"
+  },
+  "534352": {
+    "chainFamily": "evm",
+    "chainId": 534352,
+    "chainType": "evm",
+    "displayName": "Scroll",
+    "feeTokens": [
+      "LINK",
+      "WETH",
+      "ETH"
+    ],
+    "internalId": "ethereum-mainnet-scroll-1",
+    "registryModule": "0x3539F2E214d8BC7E611056383323aC6D1b01943c",
+    "rmn": "0x68B38980aD70650a6f3229BA156e5c1F88A21320",
+    "router": "0x9a55E8Cab6564eb7bbd7124238932963B8Af71DC",
+    "selector": "13204309965629103672",
+    "supported": true,
+    "tokenAdminRegistry": "0x846dEA1c1706FC35b4aa78B32d31F1599DAA47b4",
+    "tokenPoolFactory": "0xB79791184973589c38e114D43Eb8E4588C283A18"
+  },
+  "56": {
+    "chainFamily": "evm",
+    "chainId": 56,
+    "chainType": "evm",
+    "displayName": "BNB Chain",
+    "feeTokens": [
+      "LINK",
+      "WBNB",
+      "BNB"
+    ],
+    "internalId": "binance_smart_chain-mainnet",
+    "registryModule": "0x47Db76c9c97F4bcFd54D8872FDb848Cab696092d",
+    "rmn": "0x9e09697842194f77d315E0907F1Bda77922e8f84",
+    "router": "0x34B03Cb9086d7D758AC55af71584F81A598759FE",
+    "selector": "11344663589394136015",
+    "supported": true,
+    "tokenAdminRegistry": "0x736Fd8660c443547a85e4Eaf70A49C1b7Bb008fc",
+    "tokenPoolFactory": "0xa5b1FF748Eba9eBE7c9051817CaB9cb94fe14B90"
+  },
+  "57073": {
+    "chainFamily": "evm",
+    "chainId": 57073,
+    "chainType": "evm",
+    "displayName": "Ink",
+    "feeTokens": [
+      "GHO",
+      "LINK",
+      "WETH",
+      "ETH"
+    ],
+    "internalId": "ethereum-mainnet-ink-1",
+    "registryModule": "0x04c5046A1f4E3fFf094c26dFCAA75eF293932f18",
+    "rmn": "0x3A293fa336E118900AD0f2EcfeC0DAa6A4DeDaA1",
+    "router": "0xca7c90A52B44E301AC01Cb5EB99b2fD99339433A",
+    "selector": "3461204551265785888",
+    "supported": true,
+    "tokenAdminRegistry": "0xEb062d21c713A3d940BB0FaECFdC387d6Ea23697",
+    "tokenPoolFactory": "0x2D5d6b0e3160A54c3cb84C64B7d320789fB747dB"
+  },
+  "5734951": {
+    "chainFamily": "evm",
+    "chainId": 5734951,
+    "chainType": "evm",
+    "displayName": "Jovay",
+    "feeTokens": [
+      "LINK",
+      "WETH",
+      "ETH"
+    ],
+    "internalId": "jovay-mainnet",
+    "registryModule": "0xf4a170A36D4C656F614d44453f73308Bdb275196",
+    "rmn": "0xf09AFe78d3c7d359b334d7cB88995751F7eC5E13",
+    "router": "0x492641F648a4986844848E0beFE66D14817bCE34",
+    "selector": "1523760397290643893",
+    "supported": true,
+    "tokenAdminRegistry": "0xA27056438FfA1f286AB197488808692F0db93F8B",
+    "tokenPoolFactory": "0xfa546248C54939AA6C48279CdC1EAf9A1125c411"
+  },
+  "59144": {
+    "chainFamily": "evm",
+    "chainId": 59144,
+    "chainType": "evm",
+    "displayName": "Linea",
+    "feeTokens": [
+      "LINK",
+      "WETH",
+      "ETH"
+    ],
+    "internalId": "ethereum-mainnet-linea-1",
+    "registryModule": "0x0a12ec21c43ab2b4f69693Da1b0149e7652689c0",
+    "rmn": "0x1F8fbCf559f08FE7c4076f0d68DB861e1E27f95b",
+    "router": "0x549FEB73F2348F6cD99b9fc8c69252034897f06C",
+    "selector": "4627098889531055414",
+    "supported": true,
+    "tokenAdminRegistry": "0xBc933cEE67d2b1c08490ee8C51E2dF653a713534",
+    "tokenPoolFactory": "0xb0B4b5847E35033766d5B49CD9C0fC40F459321F"
+  },
+  "592": {
+    "chainFamily": "evm",
+    "chainId": 592,
+    "chainType": "evm",
+    "displayName": "Astar",
+    "feeTokens": [
+      "LINK",
+      "WASTR",
+      "ASTR"
+    ],
+    "internalId": "polkadot-mainnet-astar",
+    "registryModule": "0x3f2Be15aEA9F68f63ADE10440C6fE00753300b68",
+    "rmn": "0x7317D216F3DCDa40144a54eC9bA09829a423cb35",
+    "router": "0x8D5c5CB8ec58285B424C93436189fB865e437feF",
+    "selector": "6422105447186081193",
+    "supported": true,
+    "tokenAdminRegistry": "0xB98eEd70e3cE8E342B0f770589769E3A6bc20A09",
+    "tokenPoolFactory": "0x77FDbd20ED582794b1d9F1a8a94e4a60494D677e"
+  },
+  "60808": {
+    "chainFamily": "evm",
+    "chainId": 60808,
+    "chainType": "evm",
+    "displayName": "BOB",
+    "feeTokens": [
+      "LINK",
+      "WETH",
+      "ETH"
+    ],
+    "internalId": "bitcoin-mainnet-bob-1",
+    "registryModule": "0x55aeb80Aa6Ab34aA83E1F387903F8Bb2Aa9e2F2d",
+    "rmn": "0xe4D8E0A02C61f6DDe95255E702fe1237428673D8",
+    "router": "0x827716e74F769AB7b6bb374A29235d9c2156932C",
+    "selector": "3849287863852499584",
+    "supported": true,
+    "tokenAdminRegistry": "0xa57d04119AFf4884F8602213E58d8AaAD18229cb",
+    "tokenPoolFactory": "0xD4D2841Ac332075833AE86eb49ce7aF9f353cd21"
+  },
+  "68414": {
+    "chainFamily": "evm",
+    "chainId": 68414,
+    "chainType": "evm",
+    "displayName": "Henesys",
+    "feeTokens": [
+      "LINK",
+      "WNXPC",
+      "NXPC"
+    ],
+    "internalId": "nexon-mainnet-henesys",
+    "registryModule": "0xf4a170A36D4C656F614d44453f73308Bdb275196",
+    "rmn": "0xf09AFe78d3c7d359b334d7cB88995751F7eC5E13",
+    "router": "0x492641F648a4986844848E0beFE66D14817bCE34",
+    "selector": "12657445206920369324",
+    "supported": true,
+    "tokenAdminRegistry": "0xA27056438FfA1f286AB197488808692F0db93F8B",
+    "tokenPoolFactory": "0xfa546248C54939AA6C48279CdC1EAf9A1125c411"
+  },
+  "747474": {
+    "chainFamily": "evm",
+    "chainId": 747474,
+    "chainType": "evm",
+    "displayName": "Katana",
+    "feeTokens": [
+      "LINK",
+      "WETH",
+      "ETH"
+    ],
+    "internalId": "polygon-mainnet-katana",
+    "registryModule": "0x10fD7245f6ca39885D3A398b03dCcCC833fC96A1",
+    "rmn": "0x32270E4FA459cA47ae0334488e27ffb9bC9aB4a1",
+    "router": "0x7c19b79D2a054114Ab36ad758A36e92376e267DA",
+    "selector": "2459028469735686113",
+    "supported": true,
+    "tokenAdminRegistry": "0x048B911A1AE5dD4f0aEE5241A30d3DEDa3501D54",
+    "tokenPoolFactory": "0x3201a20D2a33820C0DaC8Bc93C4819755C2a8c7F"
+  },
+  "7777777": {
+    "chainFamily": "evm",
+    "chainId": 7777777,
+    "chainType": "evm",
+    "displayName": "Zora",
+    "feeTokens": [
+      "LINK",
+      "WETH",
+      "ETH"
+    ],
+    "internalId": "zora-mainnet",
+    "registryModule": "0x03Df929510A52C97bb1B3E5f33EA5D9735A50280",
+    "rmn": "0xFb6e1F0041c273dE4b99B23E2cB4c12CECe06C56",
+    "router": "0x65b40941fa86Fc444043257cd677a7F0bD034F79",
+    "selector": "3555797439612589184",
+    "supported": true,
+    "tokenAdminRegistry": "0x791BA3010A5BFeA773d2cfD6Ea4D0Ce9627856eB",
+    "tokenPoolFactory": "0x77FDbd20ED582794b1d9F1a8a94e4a60494D677e"
+  },
+  "80094": {
+    "chainFamily": "evm",
+    "chainId": 80094,
+    "chainType": "evm",
+    "displayName": "Berachain",
+    "feeTokens": [
+      "LINK",
+      "WBERA",
+      "BERA"
+    ],
+    "internalId": "berachain-mainnet",
+    "registryModule": "0x160603D7C0Ac00409276bf6707430712Caf5b555",
+    "rmn": "0x25943b8C30C47F4eF09CcF2BAE315EbaF591881d",
+    "router": "0x71a275704c283486fBa26dad3dd0DB78804426eF",
+    "selector": "1294465214383781161",
+    "supported": true,
+    "tokenAdminRegistry": "0x0944C3Fb1dB7D165336569221995B31cBE6c8A55",
+    "tokenPoolFactory": "0x76159c2b43ff6F630193e37EC68452169914C1Bb"
+  },
+  "8217": {
+    "chainFamily": "evm",
+    "chainId": 8217,
+    "chainType": "evm",
+    "displayName": "Kaia",
+    "feeTokens": [
+      "LINK",
+      "WKAIA",
+      "KAIA"
+    ],
+    "internalId": "kaia-mainnet",
+    "registryModule": "0xd1832207E4b37EB51c66bc5bf9001295f5079D3D",
+    "rmn": "0x98E7867DE8D5904bEda540Ee2Ee4E941Ac1caFD9",
+    "router": "0x4Eb2a60AF37bC6bb05500F581c00E8EA3075f6E9",
+    "selector": "9813823125703490621",
+    "supported": true,
+    "tokenAdminRegistry": "0x75b48579Fb886C04E54b53038970a2BA19B75e09",
+    "tokenPoolFactory": "0x6CD23265767Db1219e6399E9dC5a50017925Db52"
+  },
+  "8453": {
+    "chainFamily": "evm",
+    "chainId": 8453,
+    "chainType": "evm",
+    "displayName": "Base",
+    "feeTokens": [
+      "GHO",
+      "LINK",
+      "WETH",
+      "ETH"
+    ],
+    "internalId": "ethereum-mainnet-base-1",
+    "registryModule": "0xAFEd606Bd2CAb6983fC6F10167c98aaC2173D77f",
+    "rmn": "0xC842c69d54F83170C42C4d556B4F6B2ca53Dd3E8",
+    "router": "0x881e3A65B4d4a04dD529061dd0071cf975F58bCD",
+    "selector": "15971525489660198786",
+    "supported": true,
+    "tokenAdminRegistry": "0x6f6C373d09C07425BaAE72317863d7F6bb731e37",
+    "tokenPoolFactory": "0xcD66e8e103D05BC3a5059746283949A45C594D16"
+  },
+  "964": {
+    "chainFamily": "evm",
+    "chainId": 964,
+    "chainType": "evm",
+    "displayName": "Bittensor EVM",
+    "feeTokens": [
+      "LINK",
+      "WTAO",
+      "TAO"
+    ],
+    "internalId": "bittensor-mainnet",
+    "registryModule": "0xcDca5D374e46A6DDDab50bD2D9acB8c796eC35C3",
+    "rmn": "0x02A4D69cFfeC00Fbf7F3B60c93e3529Dfc58894d",
+    "router": "0xD941fBEcD2b971d0F54b4C34286C95faB52B60B8",
+    "selector": "2135107236357186872",
+    "supported": true,
+    "tokenAdminRegistry": "0xe72d25aDd538E8ef9CeF85622eA8912a6CB98Be6",
+    "tokenPoolFactory": "0x8FE3B17E6B0863aeEA3D38DF063AEa39D4Ab1602"
+  },
+  "9745": {
+    "chainFamily": "evm",
+    "chainId": 9745,
+    "chainType": "evm",
+    "displayName": "Plasma",
+    "feeTokens": [
+      "GHO",
+      "LINK",
+      "WXPL",
+      "XPL"
+    ],
+    "internalId": "plasma-mainnet",
+    "registryModule": "0x02A4D69cFfeC00Fbf7F3B60c93e3529Dfc58894d",
+    "rmn": "0xAEf7A922931848d2e731D5914f428b4E851d1Ad5",
+    "router": "0xcDca5D374e46A6DDDab50bD2D9acB8c796eC35C3",
+    "selector": "9335212494177455608",
+    "supported": true,
+    "tokenAdminRegistry": "0xc23071a8AE83671f37bdA1DaDBC745a9780f632A",
+    "tokenPoolFactory": "0xD6e3c0089f6c260109A2a54D2441D5D4743801CD"
+  },
+  "988": {
+    "chainFamily": "evm",
+    "chainId": 988,
+    "chainType": "evm",
+    "displayName": "Stable",
+    "feeTokens": [
+      "LINK",
+      "WUSDT0",
+      "gUSDT"
+    ],
+    "internalId": "stable-mainnet",
+    "registryModule": "0x7CcFb2Fa43637b4858Cb1269CF0d64a99e8C668a",
+    "rmn": "0x8A76fe7fA6da27f85a626c5C53730B38D13603d7",
+    "router": "0xECFF67559c0583027A5fbd85136E33bC4D66eeA0",
+    "selector": "16978377838628290997",
+    "supported": true,
+    "tokenAdminRegistry": "0x3c23e6FB09064e9A64829Fa8FEe27Ad19A27Bfa9",
+    "tokenPoolFactory": "0xb7fEabf544d8eE041645148C8FbaE782b2557aeF"
+  },
+  "98866": {
+    "chainFamily": "evm",
+    "chainId": 98866,
+    "chainType": "evm",
+    "displayName": "Plume",
+    "feeTokens": [
+      "LINK",
+      "WPLUME",
+      "PLUME"
+    ],
+    "internalId": "plume-mainnet",
+    "registryModule": "0x022D74c2D24e7625368720dcBA5674bd8A951892",
+    "rmn": "0x975B590aCc4aAd12f69974339B26cCE24A380031",
+    "router": "0x5C4f4622AD0EC4a47e04840db7E9EcA8354109af",
+    "selector": "17912061998839310979",
+    "supported": true,
+    "tokenAdminRegistry": "0x01E5B2fAC7156c54f034E1767f2799fDd41B8285",
+    "tokenPoolFactory": "0xF41a468dBcD9f626ceB56E8691Df3d5B7bdd3015"
+  },
+  "999": {
+    "chainFamily": "evm",
+    "chainId": 999,
+    "chainType": "evm",
+    "displayName": "HyperEVM",
+    "feeTokens": [
+      "LINK",
+      "WHYPE",
+      "HYPE"
+    ],
+    "internalId": "hyperliquid-mainnet",
+    "registryModule": "0xe2712A0C09DfB8031857Adb8D73Eb04997D271bA",
+    "rmn": "0x07f15e9813FBd007d38CF534133C0838f449ecFA",
+    "router": "0x13b3332b66389B1467CA6eBd6fa79775CCeF65ec",
+    "selector": "2442541497099098535",
+    "supported": true,
+    "tokenAdminRegistry": "0xcE44363496ABc3a9e53B3F404a740F992D977bDF",
+    "tokenPoolFactory": "0xeD32cc1e63Da138734b64e67E54c3aaBF8f5b96C"
+  }
+}

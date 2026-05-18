@@ -7,6 +7,12 @@ from hexbytes import HexBytes
 
 from pydefi.bridge.across import Across
 from pydefi.bridge.base import BaseBridge
+from pydefi.bridge.ccip import (
+    _CCIP_CHAIN_SELECTOR,
+    _CCIP_ROUTER,
+    CCIP,
+    EVM_EXTRA_ARGS_V2_TAG,
+)
 from pydefi.bridge.cctp import (
     HYPERCORE_DEX_PERP,
     HYPERCORE_DEX_SPOT,
@@ -16,9 +22,10 @@ from pydefi.bridge.gaszip import _SUPPORTED_CHAINS, GasZip
 from pydefi.bridge.layerzero_oft import _LZ_EID, LayerZeroOFT
 from pydefi.bridge.mayan import _CHAIN_NAMES, _MAYAN_FORWARDER, Mayan
 from pydefi.bridge.relay import Relay
+from pydefi.bridge.router import BridgeRouter, rank_bridge_quotes
 from pydefi.bridge.stargate import _LZ_CHAIN_ID, _POOL_IDS, Stargate
 from pydefi.exceptions import BridgeError
-from pydefi.types import Address, ChainId, Token, TokenAmount
+from pydefi.types import Address, BridgeQuote, ChainId, Token, TokenAmount
 from tests.addrs import ETH_WHALE, USDC, WETH
 
 
@@ -989,3 +996,527 @@ class TestEncodeCctpForwardHookData:
         data = encode_cctp_forward_hook_data(recipient=HexBytes(addr_no_prefix))
         expected_addr = bytes.fromhex(addr_no_prefix)
         assert data[32:52] == expected_addr
+
+
+# ---------------------------------------------------------------------------
+# CCIP tests
+# ---------------------------------------------------------------------------
+
+# Canonical CCIP Router function selectors.
+_CCIP_SEND_SELECTOR = "96f4e9f9"  # ccipSend(uint64,(bytes,bytes,(address,uint256)[],address,bytes))
+_CCIP_GET_FEE_SELECTOR = "20487ded"  # getFee(uint64,(bytes,bytes,(address,uint256)[],address,bytes))
+
+
+# ---- Shared CCIP fixtures and constants -----------------------------------
+
+CCIP_USDC_ETH = Token(chain_id=ChainId.ETHEREUM, address=USDC.address, symbol="USDC", decimals=6)
+CCIP_USDC_ARB = Token(
+    chain_id=ChainId.ARBITRUM,
+    address=Address("0xaf88d065e77c8cC2239327C5EDb3A432268e5831"),
+    symbol="USDC",
+    decimals=6,
+)
+_CCIP_RECIPIENT: Address = Address("0x" + "AA" * 20)
+_CCIP_COMPOSER: Address = Address("0x" + "CC" * 20)
+
+
+@pytest.fixture
+def ccip() -> CCIP:
+    """Vanilla CCIP for Ethereum→Arbitrum, native fee."""
+    return CCIP(w3=None, src_chain_id=1, dst_chain_id=42161)
+
+
+@pytest.fixture
+def amount_in() -> TokenAmount:
+    """100 USDC on Ethereum side — the default amount across CCIP tests."""
+    return TokenAmount.from_human(CCIP_USDC_ETH, "100")
+
+
+def _patched_quote_fee(ccip: CCIP, fee: int):
+    """Stub ``ccip.quote_fee`` so build_*_tx skips its on-chain call."""
+    return patch.object(ccip, "quote_fee", new=AsyncMock(return_value=fee))
+
+
+def _mock_ccip_router(call: AsyncMock) -> tuple[MagicMock, MagicMock]:
+    """Build a fake ``CCIP_ROUTER`` module constant and return ``(router, get_fee_factory)``.
+
+    Patch via ``patch("pydefi.bridge.ccip.CCIP_ROUTER", router)`` and inspect
+    invocations through ``get_fee_factory.call_args``.
+    """
+    mock_get_fee = MagicMock(return_value=MagicMock(call=call))
+    mock_router = MagicMock()
+    mock_router.fns.getFee = mock_get_fee
+    return mock_router, mock_get_fee
+
+
+class TestCCIP:
+    # -- construction + registry --------------------------------------------
+
+    def test_protocol_name(self, ccip):
+        assert ccip.protocol_name == "CCIP"
+
+    def test_router_address_defaults_to_registry(self, ccip):
+        assert ccip.router_address == _CCIP_ROUTER[1]
+
+    def test_router_address_override(self):
+        custom = "0x" + "11" * 20
+        assert CCIP(w3=None, src_chain_id=1, dst_chain_id=42161, router_address=custom).router_address == custom
+
+    def test_unknown_src_chain_raises(self):
+        with pytest.raises(BridgeError, match="Router"):
+            CCIP(w3=None, src_chain_id=999999, dst_chain_id=42161)
+
+    def test_unknown_dst_chain_raises(self):
+        with pytest.raises(BridgeError, match="chain selector"):
+            CCIP(w3=None, src_chain_id=1, dst_chain_id=999999)
+
+    def test_dst_chain_selector_resolved(self, ccip):
+        assert ccip.dst_chain_selector == _CCIP_CHAIN_SELECTOR[42161]
+
+    def test_fee_token_defaults_to_zero(self, ccip):
+        """fee_token=None means pay in native gas (zero address)."""
+        assert bytes(ccip.fee_token) == b"\x00" * 20
+
+    # -- fee_token_decimals validation --------------------------------------
+
+    def test_fee_token_decimals_defaults_to_18(self, ccip):
+        assert ccip.fee_token_decimals == 18
+
+    def test_fee_token_decimals_override(self):
+        """Caller can specify a non-18-decimal fee token (e.g. USDC=6)."""
+        c = CCIP(
+            w3=None,
+            src_chain_id=1,
+            dst_chain_id=42161,
+            fee_token=Address("0x" + "A0" * 20),
+            fee_token_decimals=6,
+            fee_token_symbol="USDC",
+        )
+        assert c.fee_token_decimals == 6
+        assert c.fee_token_symbol == "USDC"
+
+    @pytest.mark.parametrize(
+        "value,match",
+        [
+            (-1, r"\[0, 36\]"),
+            (37, r"\[0, 36\]"),
+            # bool subclasses int — common gotcha; explicit type check rejects it.
+            (True, "must be an int"),
+            (18.0, "must be an int"),
+        ],
+        ids=["negative", "above_36", "bool", "float"],
+    )
+    def test_fee_token_decimals_rejected(self, value, match):
+        with pytest.raises(BridgeError, match=match):
+            CCIP(w3=None, src_chain_id=1, dst_chain_id=42161, fee_token_decimals=value)
+
+    def test_fee_token_decimals_accepts_zero(self):
+        """0 is a legal precision (sub-units only)."""
+        assert CCIP(w3=None, src_chain_id=1, dst_chain_id=42161, fee_token_decimals=0).fee_token_decimals == 0
+
+    @pytest.mark.asyncio
+    async def test_get_quote_uses_fee_token_decimals(self, amount_in):
+        """The synthetic fee Token in bridge_fee carries the decimals override."""
+        usdc = Address("0x" + "A0" * 20)
+        c = CCIP(
+            w3=None,
+            src_chain_id=1,
+            dst_chain_id=42161,
+            fee_token=usdc,
+            fee_token_decimals=6,
+            fee_token_symbol="USDC",
+        )
+        with _patched_quote_fee(c, 1_500_000):
+            q = await c.get_quote(CCIP_USDC_ETH, CCIP_USDC_ARB, amount_in)
+        assert q.bridge_fee.token.decimals == 6
+        assert q.bridge_fee.token.symbol == "USDC"
+        assert bytes(q.bridge_fee.token.address) == bytes(usdc)
+
+    # -- quote_fee on-chain wrapper -----------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_quote_fee_calls_getfee(self, ccip, amount_in):
+        """quote_fee calls Router.getFee and returns its uint256."""
+        router_mock, get_fee_mock = _mock_ccip_router(AsyncMock(return_value=5 * 10**15))
+        with patch("pydefi.bridge.ccip.CCIP_ROUTER", router_mock):
+            fee = await ccip.quote_fee(CCIP_USDC_ETH, amount_in, _CCIP_RECIPIENT)
+        assert fee == 5 * 10**15
+        get_fee_mock.assert_called_once()
+        # First positional arg is the destination chain selector.
+        assert get_fee_mock.call_args.args[0] == _CCIP_CHAIN_SELECTOR[42161]
+
+    @pytest.mark.asyncio
+    async def test_quote_fee_wraps_revert(self, ccip, amount_in):
+        """A reverting getFee call surfaces as BridgeError."""
+        router_mock, _ = _mock_ccip_router(AsyncMock(side_effect=RuntimeError("execution reverted")))
+        with patch("pydefi.bridge.ccip.CCIP_ROUTER", router_mock):
+            with pytest.raises(BridgeError, match="getFee"):
+                await ccip.quote_fee(CCIP_USDC_ETH, amount_in, _CCIP_RECIPIENT)
+
+    # -- get_quote / build_bridge_tx ----------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_get_quote(self, ccip, amount_in):
+        """get_quote returns a 1:1 token amount with the fee separated."""
+        with _patched_quote_fee(ccip, 5 * 10**15):
+            q = await ccip.get_quote(CCIP_USDC_ETH, CCIP_USDC_ARB, amount_in)
+        assert q.protocol == "CCIP"
+        assert q.amount_out.amount == amount_in.amount  # CCIP is 1:1
+        assert q.bridge_fee.amount == 5 * 10**15
+        assert bytes(q.bridge_fee.token.address) == b"\x00" * 20  # native default
+        assert q.estimated_time_seconds > 0
+
+    @pytest.mark.asyncio
+    async def test_build_bridge_tx_native_fee(self, ccip, amount_in):
+        """Native fee → tx.value carries the fee, tx.to is the Router."""
+        with _patched_quote_fee(ccip, 5 * 10**15):
+            tx = await ccip.build_bridge_tx(CCIP_USDC_ETH, CCIP_USDC_ARB, amount_in, _CCIP_RECIPIENT)
+        assert tx["to"] == _CCIP_ROUTER[1]
+        assert tx["data"].startswith("0x" + _CCIP_SEND_SELECTOR)
+        assert tx["value"] == str(5 * 10**15)
+        assert int(tx["gas"]) > 0
+
+    @pytest.mark.asyncio
+    async def test_build_bridge_tx_erc20_fee(self, amount_in):
+        """ERC-20 fee → tx.value is 0; caller approves fee token separately."""
+        link = Address("0x" + "CC" * 20)
+        c = CCIP(w3=None, src_chain_id=1, dst_chain_id=42161, fee_token=link)
+        with _patched_quote_fee(c, 42 * 10**18):
+            tx = await c.build_bridge_tx(CCIP_USDC_ETH, CCIP_USDC_ARB, amount_in, _CCIP_RECIPIENT)
+        assert tx["value"] == "0"
+        assert link.hex().lower() in tx["data"].lower()
+
+    @pytest.mark.asyncio
+    async def test_build_bridge_tx_embeds_recipient(self, ccip, amount_in):
+        with _patched_quote_fee(ccip, 10**15):
+            tx = await ccip.build_bridge_tx(CCIP_USDC_ETH, CCIP_USDC_ARB, amount_in, _CCIP_RECIPIENT)
+        assert _CCIP_RECIPIENT.hex().lower() in tx["data"].lower()
+
+    @pytest.mark.asyncio
+    async def test_build_bridge_tx_uses_chain_selector(self, ccip, amount_in):
+        """The 64-bit dst chain selector is the first 32-byte arg after the function selector."""
+        with _patched_quote_fee(ccip, 10**15):
+            tx = await ccip.build_bridge_tx(CCIP_USDC_ETH, CCIP_USDC_ARB, amount_in, _CCIP_RECIPIENT)
+        body = tx["data"][2 + 8 :]  # strip 0x + selector
+        assert int(body[:64], 16) == _CCIP_CHAIN_SELECTOR[42161]
+
+    @pytest.mark.asyncio
+    async def test_build_bridge_tx_with_compose_payload(self, ccip, amount_in):
+        """A non-empty `data` payload is encoded into the message's data field."""
+        program = b"\xde\xad\xbe\xef" * 8
+        with _patched_quote_fee(ccip, 10**15):
+            tx = await ccip.build_bridge_tx(
+                CCIP_USDC_ETH,
+                CCIP_USDC_ARB,
+                amount_in,
+                _CCIP_RECIPIENT,
+                data=program,
+                gas_limit=200_000,
+            )
+        assert program.hex() in tx["data"].lower()
+
+    @pytest.mark.parametrize(
+        "gas_limit,allow_ooo,last_byte",
+        [
+            (200_000, True, b"\x01"),
+            (0, False, b"\x00"),
+        ],
+        ids=["gas=200k,ooo=True", "gas=0,ooo=False"],
+    )
+    @pytest.mark.asyncio
+    async def test_build_bridge_tx_extra_args_v2_layout(self, ccip, amount_in, gas_limit, allow_ooo, last_byte):
+        """``extraArgs`` is encoded as 0x181dcf10 ++ abi.encode(uint256 gas, bool ooo).
+
+        Verifies the v2 tag, the 68-byte total length, and that the gas_limit
+        and allow_out_of_order_execution flag round-trip through the public
+        ``build_bridge_tx`` calldata — covering what the deleted
+        encode_ccip_extra_args_v2 helper used to verify in isolation.
+        """
+        with _patched_quote_fee(ccip, 10**15):
+            tx = await ccip.build_bridge_tx(
+                CCIP_USDC_ETH,
+                CCIP_USDC_ARB,
+                amount_in,
+                _CCIP_RECIPIENT,
+                gas_limit=gas_limit,
+                allow_out_of_order_execution=allow_ooo,
+            )
+
+        # The complete 68-byte extraArgs blob must appear verbatim in the calldata.
+        expected = EVM_EXTRA_ARGS_V2_TAG + gas_limit.to_bytes(32, "big") + (b"\x00" * 31 + last_byte)
+        assert len(expected) == 4 + 32 + 32
+        assert EVM_EXTRA_ARGS_V2_TAG.hex() == "181dcf10"
+        assert expected.hex() in tx["data"].lower()
+
+    # -- canonical constants -------------------------------------------------
+
+    @pytest.mark.parametrize(
+        "chain_id,expected",
+        [
+            (1, 5009297550715157269),  # Ethereum
+            (42161, 4949039107694359620),  # Arbitrum
+            (8453, 15971525489660198786),  # Base
+            (10, 3734403246176062136),  # Optimism
+            (137, 4051577828743386545),  # Polygon
+            (43114, 6433500567565415381),  # Avalanche
+            (56, 11344663589394136015),  # BNB Chain
+            (59144, 4627098889531055414),  # Linea
+        ],
+    )
+    def test_chain_selector_constants(self, chain_id, expected):
+        """Spot-check published CCIP chain-selector values."""
+        assert _CCIP_CHAIN_SELECTOR[chain_id] == expected
+
+    def test_router_function_selectors(self):
+        """Verify the bound Router contract's encoded selectors match the published ones."""
+        from pydefi.abi.bridge import CCIP_ROUTER, CCIPEVM2AnyMessage, CCIPEVMTokenAmount
+
+        msg = CCIPEVM2AnyMessage(
+            receiver=b"\x00" * 32,
+            data=b"",
+            tokenAmounts=(CCIPEVMTokenAmount(token="0x" + "aa" * 20, amount=0),),
+            feeToken="0x" + "00" * 20,
+            extraArgs=b"",
+        )
+        assert CCIP_ROUTER.fns.ccipSend(0, msg).data.hex().startswith(_CCIP_SEND_SELECTOR)
+        assert CCIP_ROUTER.fns.getFee(0, msg).data.hex().startswith(_CCIP_GET_FEE_SELECTOR)
+
+
+class TestCCIPCompose:
+    """Tests for the CCIP compose flow (``build_bridge_compose_tx``)."""
+
+    @pytest.mark.asyncio
+    async def test_rejects_empty_program(self, ccip, amount_in):
+        with _patched_quote_fee(ccip, 10**15):
+            with pytest.raises(BridgeError, match="program"):
+                await ccip.build_bridge_compose_tx(CCIP_USDC_ETH, amount_in, _CCIP_COMPOSER, program=b"")
+
+    @pytest.mark.asyncio
+    async def test_embeds_program_in_data(self, ccip, amount_in):
+        """The DeFiVM bytecode appears verbatim inside the ccipSend calldata."""
+        program = b"\xde\xad\xbe\xef" * 16
+        with _patched_quote_fee(ccip, 10**15):
+            tx = await ccip.build_bridge_compose_tx(CCIP_USDC_ETH, amount_in, _CCIP_COMPOSER, program)
+        assert tx["data"].startswith("0x" + _CCIP_SEND_SELECTOR)
+        assert program.hex() in tx["data"].lower()
+
+    @pytest.mark.asyncio
+    async def test_receiver_is_composer(self, ccip, amount_in):
+        with _patched_quote_fee(ccip, 10**15):
+            tx = await ccip.build_bridge_compose_tx(
+                CCIP_USDC_ETH,
+                amount_in,
+                _CCIP_COMPOSER,
+                program=b"\x01\x02\x03\x04",
+            )
+        assert _CCIP_COMPOSER.hex().lower() in tx["data"].lower()
+
+    @pytest.mark.asyncio
+    async def test_quote_fee_called_with_program_and_gas_limit(self, ccip, amount_in):
+        """quote_fee receives the program payload and the requested gas_limit."""
+        program = b"\xaa" * 64
+        spy = AsyncMock(return_value=10**15)
+        with patch.object(ccip, "quote_fee", new=spy):
+            await ccip.build_bridge_compose_tx(
+                CCIP_USDC_ETH,
+                amount_in,
+                _CCIP_COMPOSER,
+                program,
+                gas_limit=1_500_000,
+            )
+        spy.assert_called_once()
+        assert spy.call_args.kwargs["data"] == program
+        assert spy.call_args.kwargs["gas_limit"] == 1_500_000
+
+    @pytest.mark.asyncio
+    async def test_native_fee_attaches_value(self, ccip, amount_in):
+        with _patched_quote_fee(ccip, 7 * 10**15):
+            tx = await ccip.build_bridge_compose_tx(
+                CCIP_USDC_ETH,
+                amount_in,
+                _CCIP_COMPOSER,
+                program=b"\xff" * 32,
+            )
+        assert tx["value"] == str(7 * 10**15)
+
+    @pytest.mark.asyncio
+    async def test_erc20_fee_token_zero_value(self, amount_in):
+        """ERC-20 fee_token → tx.value is 0; caller approves fee token separately."""
+        link = Address("0x" + "DD" * 20)
+        c = CCIP(w3=None, src_chain_id=1, dst_chain_id=42161, fee_token=link)
+        with _patched_quote_fee(c, 20 * 10**18):
+            tx = await c.build_bridge_compose_tx(
+                CCIP_USDC_ETH,
+                amount_in,
+                _CCIP_COMPOSER,
+                program=b"\xff" * 32,
+            )
+        assert tx["value"] == "0"
+        assert link.hex().lower() in tx["data"].lower()
+
+
+# ---------------------------------------------------------------------------
+# BridgeRouter / rank_bridge_quotes tests
+# ---------------------------------------------------------------------------
+
+_NATIVE_TOKEN = Token(
+    chain_id=ChainId.ETHEREUM,
+    address=Address("0x" + "00" * 20),
+    symbol="NATIVE",
+    decimals=18,
+)
+_ROUTER_AMOUNT = TokenAmount(USDC_ETH, 100_000_000)
+
+
+def _legacy_quote(amount_out: int, fee: int, protocol: str = "CCTP") -> BridgeQuote:
+    """A bridge whose fee is denominated in token_in — fee already baked into amount_out."""
+    return BridgeQuote(
+        token_in=USDC_ETH,
+        token_out=USDC_ARB,
+        amount_in=TokenAmount(USDC_ETH, 100_000_000),
+        amount_out=TokenAmount(USDC_ARB, amount_out),
+        bridge_fee=TokenAmount(USDC_ETH, fee),
+        estimated_time_seconds=180,
+        protocol=protocol,
+    )
+
+
+def _ccip_native_quote(amount_in: int, native_fee: int) -> BridgeQuote:
+    """A CCIP-style quote: amount_out == amount_in, fee in a separate native token."""
+    return BridgeQuote(
+        token_in=USDC_ETH,
+        token_out=USDC_ARB,
+        amount_in=TokenAmount(USDC_ETH, amount_in),
+        amount_out=TokenAmount(USDC_ARB, amount_in),
+        bridge_fee=TokenAmount(_NATIVE_TOKEN, native_fee),
+        estimated_time_seconds=600,
+        protocol="CCIP",
+    )
+
+
+def _native_fee_to_usdc(q: BridgeQuote) -> int | None:
+    """Test-only fee converter: NATIVE → USDC at 3000 USDC/ETH; everything else → None."""
+    if q.bridge_fee.token.symbol != "NATIVE":
+        return None
+    return q.bridge_fee.amount * 3000 * 10**6 // 10**18
+
+
+def _mock_bridge(*, quote: BridgeQuote | None = None, side_effect: BaseException | None = None) -> MagicMock:
+    """Build a fake BaseBridge whose ``get_quote`` returns a quote or raises."""
+    b = MagicMock(spec=BaseBridge)
+    if side_effect is not None:
+        b.get_quote = AsyncMock(side_effect=side_effect)
+    else:
+        b.get_quote = AsyncMock(return_value=quote)
+    return b
+
+
+class TestRankBridgeQuotes:
+    def test_legacy_quotes_compared_by_amount_out(self):
+        """Bridges with fee in token_in are ranked directly by amount_out."""
+        better = _legacy_quote(amount_out=99_900_000, fee=100_000, protocol="Across")
+        worse = _legacy_quote(amount_out=99_500_000, fee=500_000, protocol="Stargate")
+        ranked = rank_bridge_quotes([worse, better])
+        assert [r.protocol for r in ranked] == ["Across", "Stargate"]
+        assert all(r.fee_in_token_out_units == 0 and not r.fee_unranked for r in ranked)
+
+    def test_unconverted_ccip_is_marked_unranked_and_last(self):
+        legacy = _legacy_quote(amount_out=99_800_000, fee=200_000)
+        ccip = _ccip_native_quote(amount_in=100_000_000, native_fee=2 * 10**15)
+        ranked = rank_bridge_quotes([ccip, legacy])
+        assert [r.protocol for r in ranked] == ["CCTP", "CCIP"]
+        assert ranked[1].fee_unranked is True
+        assert ranked[1].effective_amount_out == 100_000_000  # not penalised
+
+    def test_ccip_with_fee_in_token_in_is_not_treated_as_netted(self):
+        """CCIP fee in token_in (e.g. USDC-as-fee bridging USDC) has
+        amount_out == amount_in but a separate non-zero fee — the fast-path
+        must not fire.
+        """
+        q = BridgeQuote(
+            token_in=USDC_ETH,
+            token_out=USDC_ARB,
+            amount_in=TokenAmount(USDC_ETH, 100_000_000),
+            amount_out=TokenAmount(USDC_ARB, 100_000_000),  # CCIP is 1:1
+            bridge_fee=TokenAmount(USDC_ETH, 500_000),  # 0.5 USDC fee on top
+            estimated_time_seconds=600,
+            protocol="CCIP",
+        )
+
+        # Without a converter the quote is unrankable, not silently fee-free.
+        unranked = rank_bridge_quotes([q])[0]
+        assert unranked.fee_unranked is True
+        assert unranked.fee_in_token_out_units == 0
+
+        # With a converter the fee is subtracted from amount_out.
+        ranked = rank_bridge_quotes([q], fee_converter=lambda r: r.bridge_fee.amount)[0]
+        assert ranked.fee_unranked is False
+        assert ranked.fee_in_token_out_units == 500_000
+        assert ranked.effective_amount_out == 100_000_000 - 500_000
+
+    def test_converter_lets_ccip_compete(self):
+        """0.002 ETH ≈ 6 USDC fee outweighs CCTP's 0.2 USDC margin."""
+        legacy = _legacy_quote(amount_out=99_800_000, fee=200_000)
+        ccip = _ccip_native_quote(amount_in=100_000_000, native_fee=2 * 10**15)
+        ranked = rank_bridge_quotes([ccip, legacy], fee_converter=_native_fee_to_usdc)
+
+        ccip_r = next(r for r in ranked if r.protocol == "CCIP")
+        cctp_r = next(r for r in ranked if r.protocol == "CCTP")
+        assert ccip_r.fee_in_token_out_units == 6_000_000
+        assert ccip_r.effective_amount_out == 100_000_000 - 6_000_000
+        assert cctp_r.effective_amount_out > ccip_r.effective_amount_out
+        assert ranked[0].protocol == "CCTP"
+
+    def test_converter_returning_none_marks_unranked(self):
+        ccip = _ccip_native_quote(amount_in=100_000_000, native_fee=2 * 10**15)
+        ranked = rank_bridge_quotes([ccip], fee_converter=lambda _: None)
+        assert ranked[0].fee_unranked is True
+
+    def test_ccip_wins_when_fee_is_small(self):
+        """If the converted CCIP fee is small, CCIP can rank above legacy bridges."""
+        legacy = _legacy_quote(amount_out=99_500_000, fee=500_000)  # 0.5% legacy fee
+        ccip = _ccip_native_quote(amount_in=100_000_000, native_fee=10**14)  # ~0.3 USDC
+        ranked = rank_bridge_quotes([legacy, ccip], fee_converter=_native_fee_to_usdc)
+        assert ranked[0].protocol == "CCIP"
+        assert ranked[0].effective_amount_out > ranked[1].effective_amount_out
+
+    def test_unrankable_quotes_keep_input_order(self):
+        """Unrankable quotes preserve insertion order regardless of amount_out."""
+        q1 = _ccip_native_quote(amount_in=50_000_000, native_fee=10**15)
+        q1.protocol = "first"
+        q2 = _ccip_native_quote(amount_in=200_000_000, native_fee=10**15)
+        q2.protocol = "second"
+        assert [r.protocol for r in rank_bridge_quotes([q1, q2])] == ["first", "second"]
+
+    def test_empty_input_returns_empty_list(self):
+        assert rank_bridge_quotes([]) == []
+
+
+class TestBridgeRouter:
+    def test_requires_at_least_one_bridge(self):
+        with pytest.raises(ValueError):
+            BridgeRouter([])
+
+    @pytest.mark.asyncio
+    async def test_quote_all_calls_every_bridge(self):
+        b1 = _mock_bridge(quote=_legacy_quote(amount_out=99_800_000, fee=200_000))
+        b2 = _mock_bridge(quote=_ccip_native_quote(amount_in=100_000_000, native_fee=10**15))
+        quotes = await BridgeRouter([b1, b2]).quote_all(USDC_ETH, USDC_ARB, _ROUTER_AMOUNT)
+        assert len(quotes) == 2
+        b1.get_quote.assert_called_once_with(USDC_ETH, USDC_ARB, _ROUTER_AMOUNT)
+        b2.get_quote.assert_called_once_with(USDC_ETH, USDC_ARB, _ROUTER_AMOUNT)
+
+    @pytest.mark.asyncio
+    async def test_quote_all_skips_bridge_errors(self):
+        """BridgeError from a single bridge does not poison the whole batch."""
+        good = _mock_bridge(quote=_legacy_quote(amount_out=99_800_000, fee=200_000))
+        bad = _mock_bridge(side_effect=BridgeError("lane unsupported"))
+        quotes = await BridgeRouter([bad, good]).quote_all(USDC_ETH, USDC_ARB, _ROUTER_AMOUNT)
+        assert [q.protocol for q in quotes] == ["CCTP"]
+
+    @pytest.mark.asyncio
+    async def test_quote_all_propagates_other_exceptions(self):
+        """Non-BridgeError exceptions bubble up to the caller."""
+        bad = _mock_bridge(side_effect=RuntimeError("boom"))
+        with pytest.raises(RuntimeError, match="boom"):
+            await BridgeRouter([bad]).quote_all(USDC_ETH, USDC_ARB, _ROUTER_AMOUNT)
