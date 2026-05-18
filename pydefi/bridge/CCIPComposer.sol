@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
+import "../vm/DEXCallbackRouter.sol";
 import "../vm/InterpreterRunner.sol";
+import "../vm/TransientReentrancyGuard.sol";
 
 /**
  * @title CCIPComposer
@@ -47,7 +49,7 @@ struct Any2EVMMessage {
     EVMTokenAmount[] destTokenAmounts;   // minted to address(this)
 }
 
-contract CCIPComposer is InterpreterRunner {
+contract CCIPComposer is DEXCallbackRouter, TransientReentrancyGuard, InterpreterRunner {
     error UnauthorizedRouter(address caller);
     error UnexpectedTokenCount(uint256 count);
     error UnauthorizedSender(uint64 sourceChainSelector, bytes32 senderHash);
@@ -142,7 +144,7 @@ contract CCIPComposer is InterpreterRunner {
     /// @notice Authenticate the Router, stage the bridged parameters in
     ///         transient storage, and DELEGATECALL the interpreter to run the
     ///         compose program in this composer's context.
-    function ccipReceive(Any2EVMMessage calldata message) external payable {
+    function ccipReceive(Any2EVMMessage calldata message) external payable nonReentrant {
         if (msg.sender != router) revert UnauthorizedRouter(msg.sender);
 
         if (allowlistEnabled) {
