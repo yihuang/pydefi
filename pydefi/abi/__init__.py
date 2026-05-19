@@ -42,6 +42,8 @@ from .lending import (
     AAVE_V3_DATA_PROVIDER,
     AAVE_V3_ORACLE,
     AAVE_V3_POOL,
+    COMPOUND_V3_COMET,
+    CometAssetInfo,
     ReserveConfigurationMap,
     ReserveDataLegacy,
 )
@@ -81,6 +83,8 @@ __all__ = [
     "AAVE_V3_DATA_PROVIDER",
     "AAVE_V3_ORACLE",
     "AAVE_V3_POOL",
+    "COMPOUND_V3_COMET",
+    "CometAssetInfo",
     "ReserveConfigurationMap",
     "ReserveDataLegacy",
     # vm

@@ -1,14 +1,16 @@
 """
 Lending protocol integrations.
 
-Currently exposes the Aave V3 client. Each protocol lives as its own
-self-contained module under :mod:`pydefi.lending` because lending models
-diverge enough (per-reserve markets vs single-base-asset markets) that
-a shared abstract base would be fictitious.
+There is no shared abstract base — Aave V3 and Compound III have
+incompatible models (per-reserve markets with aTokens vs single-base-asset
+Comet proxies), so each protocol lives as its own self-contained module:
 
 * :mod:`pydefi.lending.aave_v3` — Aave V3 client, the Aave-specific
   ``ReserveData`` / ``UserAccountData`` / ``EModeCategory`` types, and
   the RAY rate-model helpers (``ray_rate_to_apy``).
+* :mod:`pydefi.lending.compound_v3` — Compound III (Comet) client plus
+  its own ``CompoundMarketData`` / ``CompoundUserPosition`` types and
+  per-second rate-model helper.
 
 Quick-start::
 
@@ -56,9 +58,19 @@ from pydefi.lending.aave_v3 import (
     UserReserveData,
     ray_rate_to_apy,
 )
+from pydefi.lending.compound_v3 import (
+    CompoundCollateralInfo,
+    CompoundMarketData,
+    CompoundUserPosition,
+    CompoundV3,
+)
 
 __all__ = [
     "AaveV3",
+    "CompoundCollateralInfo",
+    "CompoundMarketData",
+    "CompoundUserPosition",
+    "CompoundV3",
     "EModeCategory",
     "InterestRateMode",
     "ReserveData",

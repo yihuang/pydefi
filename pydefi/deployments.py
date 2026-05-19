@@ -157,6 +157,27 @@ _CONTRACTS: dict[str, dict[int, str]] = {
         ChainId.ZKSYNC: "0xC7F58Fca663a8d377B6D0c9703C697f56dC40088",
         ChainId.GNOSIS: "0xeb0a051be10228213BAEb449db63719d6742F7c4",
     },
+    # Compound III (Comet)
+    # Canonical source: https://github.com/compound-finance/comet/tree/main/deployments
+    # One proxy per (chain, base asset) market. Naming pattern:
+    # COMPOUND_V3_<BASE><CHAIN-SUFFIX-IF-MULTIPLE>.
+    "COMPOUND_V3_USDC": {
+        _ETH: "0xc3d688B66703497DAA19211EEdff47f25384cdc3",
+        ChainId.ARBITRUM: "0x9c4ec768c28520B50860ea7a15bd7213a9fF58bf",
+        ChainId.BASE: "0xb125E6687d4313864e53df431d5425969c15Eb2F",
+        ChainId.POLYGON: "0xF25212E676D1F7F89Cd72fFEe66158f541246445",
+        ChainId.OPTIMISM: "0x2e44e174f7D53F0212823acC11C01A11d58c5bCB",
+    },
+    "COMPOUND_V3_WETH": {
+        _ETH: "0xA17581A9E3356d9A858b789D68B4d866e593aE94",
+        ChainId.ARBITRUM: "0x6f7D514bbD4aFf3BcD1140B7344b32f063dEe486",
+        ChainId.BASE: "0x46e6b214b524310239732D51387075E0e70970bf",
+        ChainId.OPTIMISM: "0xE36A30D249f7761327fd973001A32010b521b6Fd",
+    },
+    "COMPOUND_V3_USDT": {
+        _ETH: "0x3Afdc9BCA9213A35503b077a6072F3D0d5AB0840",
+        ChainId.ARBITRUM: "0xd98Be00b5D27fc98112BdE293e487f8D4cA57d07",
+    },
 }
 
 

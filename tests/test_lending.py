@@ -1,4 +1,11 @@
-"""Unit tests for pydefi.lending.aave_v3 (no live node required)."""
+"""Unit tests for pydefi.lending (no live node required).
+
+Covers both protocols under the lending umbrella:
+
+* Aave V3 — pool-per-reserve model with aTokens, health factors, E-Mode.
+* Compound V3 (Comet) — one-base-asset-per-market model where supply /
+  withdraw also handle borrow / repay through the same dispatch.
+"""
 
 from __future__ import annotations
 
@@ -7,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from pydefi.abi.lending import AAVE_V3_POOL
+from pydefi.abi.lending import AAVE_V3_POOL, COMPOUND_V3_COMET
 from pydefi.lending import AaveV3, InterestRateMode, UserAccountData
 from pydefi.lending.aave_v3 import (
     RAY,
@@ -15,6 +22,11 @@ from pydefi.lending.aave_v3 import (
     UINT256_MAX,
     parse_health_factor,
     ray_rate_to_apy,
+)
+from pydefi.lending.compound_v3 import (
+    COMET_SCALE,
+    CompoundV3,
+    per_second_rate_to_apy,
 )
 from pydefi.types import Address, ChainId, TokenAmount
 from tests.addrs import ETH_WHALE, USDC, WETH
@@ -247,6 +259,144 @@ AAVE_V3_CONTRACTS = (
 @pytest.mark.parametrize("name", AAVE_V3_CONTRACTS)
 def test_aave_v3_deployment_pinned(chain: int, name: str):
     """Every Aave V3 contract is pinned on every supported chain."""
+    from pydefi.deployments import get_address
+
+    addr = get_address(name, chain)
+    assert len(addr) == 42 and addr.startswith("0x"), f"{name} on {chain}: {addr!r}"
+
+
+# ===========================================================================
+# Compound V3 (Comet)
+# ===========================================================================
+
+CUSDC_V3 = Address("0xc3d688B66703497DAA19211EEdff47f25384cdc3")
+
+
+def _apy_to_per_second_rate(target_apy: Decimal) -> int:
+    """Invert :func:`per_second_rate_to_apy` for round-trip testing."""
+    per_second = (Decimal(1) + target_apy) ** (Decimal(1) / Decimal(SECONDS_PER_YEAR)) - Decimal(1)
+    return int(per_second * Decimal(COMET_SCALE))
+
+
+# ---------------------------------------------------------------------------
+# Rate model
+# ---------------------------------------------------------------------------
+
+
+class TestCompoundRateModel:
+    def test_zero(self):
+        assert per_second_rate_to_apy(0) == Decimal(0)
+
+    @pytest.mark.parametrize("target,tolerance", [(Decimal("0.03"), "0.0001"), (Decimal("0.18"), "0.0005")])
+    def test_round_trip(self, target: Decimal, tolerance: str):
+        apy = per_second_rate_to_apy(_apy_to_per_second_rate(target))
+        assert abs(apy - target) < Decimal(tolerance)
+
+
+# ---------------------------------------------------------------------------
+# Tx-builder calldata encoding
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def comet() -> CompoundV3:
+    return CompoundV3(
+        w3=None,  # type: ignore[arg-type]
+        chain_id=ChainId.ETHEREUM,
+        comet_address=CUSDC_V3,
+        base_token=USDC,
+    )
+
+
+class TestCompoundBuildSupplyTx:
+    @pytest.mark.parametrize("token", [USDC, WETH], ids=["base", "collateral"])
+    def test_supply_dispatches_by_asset(self, comet: CompoundV3, token):
+        """Comet's single ``supply`` handles both base and collateral."""
+        amount = TokenAmount.from_human(token, "1")
+        tx = comet.build_supply_tx(amount)
+        assert Address(tx["to"]) == CUSDC_V3
+        asset, raw_amount = decode_call(tx, COMPOUND_V3_COMET.fns.supply)
+        assert asset == token.address
+        assert raw_amount == amount.amount
+
+    def test_supply_to(self, comet: CompoundV3):
+        dst = Address("0x" + "ab" * 20)
+        amount = TokenAmount.from_human(USDC, "50")
+        decoded_dst, asset, raw_amount = decode_call(
+            comet.build_supply_tx(amount, dst=dst), COMPOUND_V3_COMET.fns.supplyTo
+        )
+        assert decoded_dst == dst
+        assert asset == USDC.address
+        assert raw_amount == amount.amount
+
+
+class TestCompoundBuildWithdrawTx:
+    def test_explicit_amount(self, comet: CompoundV3):
+        amount = TokenAmount.from_human(USDC, "25")
+        asset, raw_amount = decode_call(comet.build_withdraw_tx(amount), COMPOUND_V3_COMET.fns.withdraw)
+        assert asset == USDC.address
+        assert raw_amount == amount.amount
+
+    def test_max_amount(self, comet: CompoundV3):
+        _asset, raw_amount = decode_call(comet.build_withdraw_tx((USDC, "max")), COMPOUND_V3_COMET.fns.withdraw)
+        assert raw_amount == UINT256_MAX
+
+    def test_withdraw_to(self, comet: CompoundV3):
+        recipient = Address("0x" + "cd" * 20)
+        decoded_to, asset, _amount = decode_call(
+            comet.build_withdraw_tx(TokenAmount.from_human(WETH, "1"), to=recipient),
+            COMPOUND_V3_COMET.fns.withdrawTo,
+        )
+        assert decoded_to == recipient
+        assert asset == WETH.address
+
+    def test_rejects_invalid_amount(self, comet: CompoundV3):
+        with pytest.raises(TypeError):
+            comet.build_withdraw_tx("bad")  # type: ignore[arg-type]
+
+
+class TestCompoundOtherBuilders:
+    def test_transfer_asset(self, comet: CompoundV3):
+        dst = Address("0x" + "ef" * 20)
+        amount = TokenAmount.from_human(USDC, "10")
+        decoded_dst, asset, raw_amount = decode_call(
+            comet.build_transfer_asset_tx(dst, amount), COMPOUND_V3_COMET.fns.transferAsset
+        )
+        assert decoded_dst == dst
+        assert asset == USDC.address
+        assert raw_amount == amount.amount
+
+    @pytest.mark.parametrize("flag", [True, False])
+    def test_allow_flag(self, comet: CompoundV3, flag: bool):
+        manager = Address("0x" + "ad" * 20)
+        decoded_manager, is_allowed = decode_call(comet.build_allow_tx(manager, flag), COMPOUND_V3_COMET.fns.allow)
+        assert decoded_manager == manager
+        assert is_allowed is flag
+
+
+# ---------------------------------------------------------------------------
+# Deployment registry sanity
+# ---------------------------------------------------------------------------
+
+
+COMPOUND_V3_MARKETS = [
+    ("COMPOUND_V3_USDC", ChainId.ETHEREUM),
+    ("COMPOUND_V3_USDC", ChainId.ARBITRUM),
+    ("COMPOUND_V3_USDC", ChainId.BASE),
+    ("COMPOUND_V3_USDC", ChainId.POLYGON),
+    ("COMPOUND_V3_USDC", ChainId.OPTIMISM),
+    ("COMPOUND_V3_WETH", ChainId.ETHEREUM),
+    ("COMPOUND_V3_WETH", ChainId.ARBITRUM),
+    ("COMPOUND_V3_WETH", ChainId.BASE),
+    ("COMPOUND_V3_WETH", ChainId.OPTIMISM),
+    ("COMPOUND_V3_USDT", ChainId.ETHEREUM),
+    ("COMPOUND_V3_USDT", ChainId.ARBITRUM),
+]
+
+
+@pytest.mark.parametrize("name,chain", COMPOUND_V3_MARKETS)
+def test_compound_v3_market_pinned(name: str, chain: int):
+    """Every Comet market entry resolves to a 20-byte address."""
     from pydefi.deployments import get_address
 
     addr = get_address(name, chain)
