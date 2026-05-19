@@ -31,7 +31,10 @@ class ReserveConfigurationMap(ABIStruct):
 class ReserveDataLegacy(ABIStruct):
     """Aave V3 ``DataTypes.ReserveDataLegacy`` (returned by ``Pool.getReserveData``).
 
-    Note: rates are in RAY (1e27) per-second compounded.
+    Note: ``currentLiquidityRate`` / ``currentVariableBorrowRate`` /
+    ``currentStableBorrowRate`` are RAY (1e27)-scaled **annual** rates;
+    Aave divides by ``SECONDS_PER_YEAR`` to get a per-second rate and then
+    compounds on-chain. See :func:`pydefi.lending.aave_v3.ray_rate_to_apy`.
     """
 
     configuration: ReserveConfigurationMap
