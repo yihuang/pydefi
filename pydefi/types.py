@@ -48,6 +48,7 @@ class ChainId(IntEnum):
     WORLDCHAIN = 480
     BASE = 8453
     ARBITRUM = 42161
+    GNOSIS = 100
     AVALANCHE = 43114
     LINEA = 59144
     HYPERCORE = 1337  # Hyperliquid L1 (HyperCore); CCTP routes through HyperEVM (domain 19)
