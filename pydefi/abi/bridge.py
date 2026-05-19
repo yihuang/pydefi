@@ -223,3 +223,35 @@ CCIP_ROUTER = Contract.from_abi(
         "function ccipSend(uint64 destinationChainSelector, CCIPEVM2AnyMessage message) external payable returns (bytes32)",
     ]
 )
+
+
+# Lucid Labs AssetController. Tokens move 1:1; native fee is msg.value
+# forwarded to the adapter via IBaseAdapter.relayMessage{value: msg.value}.
+LUCID_ASSET_CONTROLLER = Contract.from_abi(
+    [
+        "function transferTo(address recipient, uint256 amount, bool unwrap, uint256 destChainId, address bridgeAdapter, bytes bridgeOptions) external payable",
+        "function token() external view returns (address)",
+        "function getControllerForChain(uint256 destChainId) external view returns (address)",
+        "function transfersPausedTo(uint256 destChainId) external view returns (bool)",
+        "function paused() external view returns (bool)",
+        "function minBridges() external view returns (uint256)",
+        "function allowTokenUnwrapping() external view returns (bool)",
+    ]
+)
+
+# Lucid bridge adapters. Only gasLimit width differs (LZ: uint128, HL: uint256);
+# the same difference shows up in the bridgeOptions encoding in lucid.py.
+LUCID_HYPERLANE_ADAPTER = Contract.from_abi(
+    [
+        "function quoteMessage(address destination, uint256 chainId, uint256 gasLimit, bytes message, bool includeFee) external view returns (uint256)",
+        "function paused() external view returns (bool)",
+    ]
+)
+
+LUCID_LAYERZERO_ADAPTER = Contract.from_abi(
+    [
+        "function quoteMessage(address destination, uint256 chainId, uint128 gasLimit, bytes message, bool includeFee) external view returns (uint256)",
+        "function isChainIdSupported(uint256 chainId) external view returns (bool)",
+        "function paused() external view returns (bool)",
+    ]
+)

@@ -1,5 +1,6 @@
 """Tests for pydefi.bridge (no live calls)."""
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -20,13 +21,26 @@ from pydefi.bridge.cctp import (
 )
 from pydefi.bridge.gaszip import _SUPPORTED_CHAINS, GasZip
 from pydefi.bridge.layerzero_oft import _LZ_EID, LayerZeroOFT
+from pydefi.bridge.lucid import LucidBridge
 from pydefi.bridge.mayan import _CHAIN_NAMES, _MAYAN_FORWARDER, Mayan
 from pydefi.bridge.relay import Relay
 from pydefi.bridge.router import BridgeRouter, rank_bridge_quotes
 from pydefi.bridge.stargate import _LZ_CHAIN_ID, _POOL_IDS, Stargate
 from pydefi.exceptions import BridgeError
 from pydefi.types import Address, BridgeQuote, ChainId, Token, TokenAmount
-from tests.addrs import ETH_WHALE, USDC, WETH
+from tests.addrs import (
+    ETH_WHALE,
+    LUCID_HL_ADAPTER,
+    LUCID_LZ_ADAPTER,
+    LUCID_USDC_CTRL_KITE,
+    LUCID_USDC_CTRL_MANTRA,
+    USDC,
+    USDC_BASE,
+    USDC_E_AVAX,
+    USDC_E_KITE,
+    USDC_MANTRA,
+    WETH,
+)
 
 
 def _make_aiohttp_mock(status: int, response_data) -> MagicMock:
@@ -1520,3 +1534,241 @@ class TestBridgeRouter:
         bad = _mock_bridge(side_effect=RuntimeError("boom"))
         with pytest.raises(RuntimeError, match="boom"):
             await BridgeRouter([bad]).quote_all(USDC_ETH, USDC_ARB, _ROUTER_AMOUNT)
+
+
+# ---------------------------------------------------------------------------
+# LucidBridge tests
+# ---------------------------------------------------------------------------
+
+_RECIPIENT: Address = Address("0x" + "AA" * 20)
+_REFUND: Address = Address("0x" + "BB" * 20)
+_DEST_CTRL_STUB: Address = Address("0x" + "DD" * 20)
+
+_MANTRA_CASE = SimpleNamespace(
+    src=ChainId.MANTRA,
+    dst=ChainId.BASE,
+    src_token=USDC_MANTRA,
+    dst_token=USDC_BASE,
+    ctrl=LUCID_USDC_CTRL_MANTRA,
+    adapter=LUCID_HL_ADAPTER,
+    kind="hyperlane",
+)
+_KITE_CASE = SimpleNamespace(
+    src=ChainId.KITE,
+    dst=ChainId.AVALANCHE,
+    src_token=USDC_E_KITE,
+    dst_token=USDC_E_AVAX,
+    ctrl=LUCID_USDC_CTRL_KITE,
+    adapter=LUCID_LZ_ADAPTER,
+    kind="layerzero",
+)
+_LUCID_CASES = [
+    pytest.param(_MANTRA_CASE, id="mantra"),
+    pytest.param(_KITE_CASE, id="kite"),
+]
+
+
+def _make_lucid(case: SimpleNamespace, **kw) -> LucidBridge:
+    bridge = LucidBridge(
+        w3=None,
+        src_chain_id=case.src,
+        dst_chain_id=case.dst,
+        controller_address=case.ctrl,
+        adapter_address=case.adapter,
+        **kw,
+    )
+    bridge._cached_source_token = case.src_token.address  # skip the controller.token() RPC
+    return bridge
+
+
+@pytest.fixture(params=_LUCID_CASES)
+def lucid(request) -> SimpleNamespace:
+    c = request.param
+    c.bridge = _make_lucid(c)
+    return c
+
+
+async def _build_tx(bridge: LucidBridge, src, dst, *, amount="100", fee=10**15, **kw):
+    with patch.object(bridge, "quote_native_fee", new=AsyncMock(return_value=fee)):
+        return await bridge.build_bridge_tx(src, dst, TokenAmount.from_human(src, amount), _RECIPIENT, **kw)
+
+
+class TestLucidBridge:
+    """Tests that pass identically for every supported source chain."""
+
+    def test_construction_state(self, lucid):
+        b = lucid.bridge
+        assert b.protocol_name == "Lucid"
+        assert b.adapter_kind == lucid.kind
+        assert b.src_chain_id == lucid.src
+        assert b.dst_chain_id == lucid.dst
+        assert b.controller_address == lucid.ctrl
+        assert b.adapter_address == lucid.adapter
+
+    def test_encode_bridge_options_shape(self, lucid):
+        # 64 bytes total; gasLimit lives in the low bytes of the second word
+        # for both adapters (uint128 and uint256 differ only at >2^128, see
+        # TestLucidAdapter.test_layerzero_rejects_oversized_gas).
+        opts = lucid.bridge._encode_bridge_options(_REFUND, 300_000)
+        assert len(opts) == 64
+        assert int.from_bytes(opts[32:], "big") == 300_000
+
+    @pytest.mark.asyncio
+    async def test_get_quote_uses_native_fee(self, lucid):
+        amount_in = TokenAmount.from_human(lucid.src_token, "1000")
+        with patch.object(lucid.bridge, "quote_native_fee", new=AsyncMock(return_value=5 * 10**16)):
+            quote = await lucid.bridge.get_quote(lucid.src_token, lucid.dst_token, amount_in)
+        assert quote.protocol == "Lucid"
+        assert quote.amount_out.amount == amount_in.amount
+        assert quote.bridge_fee.amount == 5 * 10**16
+        assert quote.bridge_fee.token.address == Address(b"\x00" * 20)
+        assert quote.bridge_fee.token.symbol == "NATIVE"
+        assert quote.bridge_fee.token.decimals == 18
+
+    @pytest.mark.asyncio
+    async def test_get_quote_passes_unwrap_through(self, lucid):
+        mock_quote = AsyncMock(return_value=10**15)
+        amount_in = TokenAmount.from_human(lucid.src_token, "1")
+        with patch.object(lucid.bridge, "quote_native_fee", new=mock_quote):
+            await lucid.bridge.get_quote(lucid.src_token, lucid.dst_token, amount_in, unwrap=True)
+        assert mock_quote.await_args.args[2] is True
+
+    @pytest.mark.asyncio
+    async def test_build_bridge_tx_calldata_shape(self, lucid):
+        from web3 import Web3
+
+        tx = await _build_tx(lucid.bridge, lucid.src_token, lucid.dst_token, amount="1000", fee=5 * 10**16)
+        assert tx["to"].lower() == "0x" + bytes(lucid.ctrl).hex()
+        assert tx["data"].startswith("0x")
+        sig = Web3.keccak(text="transferTo(address,uint256,bool,uint256,address,bytes)")[:4]
+        assert tx["data"][2:10] == sig.hex()
+        assert tx["value"] == str(5 * 10**16)
+        assert int(tx["gas"]) > 0
+
+    @pytest.mark.asyncio
+    async def test_build_bridge_tx_refund_defaults_to_recipient(self, lucid):
+        tx = await _build_tx(lucid.bridge, lucid.src_token, lucid.dst_token)
+        # Recipient appears twice: as the transfer recipient and as refundAddress in bridgeOptions.
+        assert tx["data"].lower().count(_RECIPIENT.hex()) == 2
+
+    @pytest.mark.asyncio
+    async def test_build_bridge_tx_explicit_refund(self, lucid):
+        tx = await _build_tx(lucid.bridge, lucid.src_token, lucid.dst_token, refund_address=_REFUND)
+        assert _RECIPIENT.hex() in tx["data"].lower()
+        assert _REFUND.hex() in tx["data"].lower()
+
+    @pytest.mark.asyncio
+    async def test_build_bridge_tx_fee_buffer_bumps_value(self, lucid):
+        tx = await _build_tx(lucid.bridge, lucid.src_token, lucid.dst_token, fee=1_000_000, fee_buffer_bps=1000)
+        assert tx["value"] == str(1_100_000)  # +10%
+
+    @pytest.mark.asyncio
+    async def test_build_bridge_tx_dest_gas_in_options(self, lucid):
+        bridge = _make_lucid(lucid, dest_gas_limit=750_000)
+        tx = await _build_tx(bridge, lucid.src_token, lucid.dst_token, amount="1")
+        # 750_000 == 0xb71b0 right-aligned in a 32-byte word (identical bytes for uint128 and uint256).
+        assert "00000000000000000000000000000000000000000000000000000000000b71b0" in tx["data"].lower()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", ["get_quote", "build_bridge_tx"])
+    async def test_rejects_wrong_token_in(self, lucid, method):
+        wrong = Token(chain_id=lucid.src, address=Address("0x" + "DE" * 20), symbol="WRONG", decimals=6)
+        amount_in = TokenAmount.from_human(wrong, "1")
+        args = [wrong, lucid.dst_token, amount_in]
+        if method == "build_bridge_tx":
+            args.append(_RECIPIENT)
+        with pytest.raises(BridgeError, match="does not match controller token"):
+            await getattr(lucid.bridge, method)(*args)
+
+    @pytest.mark.asyncio
+    async def test_assert_token_in_rejects_wrong_chain_id(self, lucid):
+        # Same wrapped token bytes but tagged with the destination chain.
+        cross_chain = Token(
+            chain_id=lucid.dst,
+            address=lucid.src_token.address,
+            symbol=lucid.src_token.symbol,
+            decimals=lucid.src_token.decimals,
+        )
+        with pytest.raises(BridgeError, match="token_in.chain_id"):
+            await lucid.bridge._assert_token_in(cross_chain)
+
+    @pytest.mark.asyncio
+    async def test_assert_token_in_short_circuits_when_cached(self, lucid):
+        # w3=None would AttributeError on any eth.call — a clean return proves the cache path.
+        await lucid.bridge._assert_token_in(lucid.src_token)
+
+
+class TestLucidAdapter:
+    """Tests for the adapter switch, source-chain validation, and the actual
+    uint128/uint256 discriminator — none of which generalize per-chain."""
+
+    def test_encode_transfer_message_length(self):
+        # 7 fixed-size words → 224 bytes. Chain-agnostic.
+        msg = LucidBridge._encode_transfer_message(
+            nonce=0,
+            dest_chain_id=ChainId.BASE,
+            recipient=_RECIPIENT,
+            amount=10**6,
+            unwrap=False,
+        )
+        assert len(msg) == 7 * 32
+
+    def test_kite_testnet_source_allowed(self):
+        bridge = LucidBridge(
+            w3=None,
+            src_chain_id=ChainId.KITE_TESTNET,
+            dst_chain_id=ChainId.AVALANCHE,
+            controller_address=LUCID_USDC_CTRL_KITE,
+            adapter_address=LUCID_LZ_ADAPTER,
+        )
+        assert bridge.src_chain_id == ChainId.KITE_TESTNET
+        assert bridge.adapter_kind == "layerzero"
+
+    def test_explicit_adapter_kind_override(self):
+        bridge = _make_lucid(_MANTRA_CASE, adapter_kind="layerzero")
+        assert bridge.adapter_kind == "layerzero"
+
+    def test_rejects_unknown_adapter_kind(self):
+        with pytest.raises(BridgeError, match="unknown adapter_kind"):
+            _make_lucid(_MANTRA_CASE, adapter_kind="wormhole")  # type: ignore[arg-type]
+
+    def test_rejects_unsupported_source_chain(self):
+        with pytest.raises(BridgeError, match="source chain must be Kite"):
+            LucidBridge(
+                w3=None,
+                src_chain_id=ChainId.ETHEREUM,
+                dst_chain_id=ChainId.BASE,
+                controller_address=LUCID_USDC_CTRL_MANTRA,
+                adapter_address=LUCID_HL_ADAPTER,
+            )
+
+    def test_layerzero_rejects_oversized_gas(self):
+        """uint128 (LZ) overflows at 2^128 while uint256 (Hyperlane) accepts it.
+        This is the only assertion that actually discriminates the two encodings
+        (small gas values produce identical bytes either way)."""
+        oversized = 2**129
+        with pytest.raises(Exception):
+            _make_lucid(_KITE_CASE)._encode_bridge_options(_REFUND, oversized)
+        _make_lucid(_MANTRA_CASE)._encode_bridge_options(_REFUND, oversized)  # must not raise
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("case", [_MANTRA_CASE, _KITE_CASE], ids=["mantra", "kite"])
+    async def test_quote_native_fee_uses_correct_adapter_abi(self, case):
+        """The hyperlane/layerzero switch in quote_native_fee must hit the
+        matching ABI — verified by mocking both quoteMessage callables."""
+        from pydefi.abi import bridge as abi_mod
+
+        bridge = _make_lucid(case)
+        with (
+            patch.object(bridge, "_dest_controller", new=AsyncMock(return_value=_DEST_CTRL_STUB)),
+            patch.object(abi_mod.LUCID_HYPERLANE_ADAPTER.fns, "quoteMessage") as hl_fn,
+            patch.object(abi_mod.LUCID_LAYERZERO_ADAPTER.fns, "quoteMessage") as lz_fn,
+        ):
+            hl_fn.return_value.call = AsyncMock(return_value=7 * 10**15)
+            lz_fn.return_value.call = AsyncMock(return_value=3 * 10**15)
+            await bridge.quote_native_fee(amount=10**6, recipient=Address(b"\xaa" * 20))
+
+        if case.kind == "hyperlane":
+            assert hl_fn.called and not lz_fn.called
+        else:
+            assert lz_fn.called and not hl_fn.called
