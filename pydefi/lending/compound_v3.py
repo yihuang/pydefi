@@ -202,12 +202,7 @@ class CompoundV3:
             return self._base_token
         addr_str = await COMPOUND_V3_COMET.fns.baseToken().call(self.w3, to=self.comet_address)
         scale = await COMPOUND_V3_COMET.fns.baseScale().call(self.w3, to=self.comet_address)
-        decimals = scale.bit_length() - 1 if scale > 0 else 18
-        # 10 ** decimals must equal scale; if not, fall back to log10.
-        if 10**decimals != scale:
-            from math import log10
-
-            decimals = round(log10(scale))
+        decimals = _scale_to_decimals(scale)
         token = Token(
             chain_id=self.chain_id,
             address=Address(addr_str),
@@ -390,15 +385,23 @@ def _to_tx(to: Address, call_data: bytes) -> dict[str, Any]:
 
 
 def _scale_to_decimals(scale: int) -> int:
-    """Derive ``decimals`` from a Comet ``scale`` (``10 ** decimals``)."""
-    if scale <= 0:
-        return 18
-    decimals = scale.bit_length() - 1
-    if 10**decimals == scale:
-        return decimals
-    from math import log10
+    """Derive ``decimals`` from a Comet ``scale`` (``10 ** decimals``).
 
-    return round(log10(scale))
+    Raises ``ValueError`` if ``scale`` is not a positive exact power of 10,
+    since Comet always sets it as ``10 ** decimals`` and a mismatch means the
+    contract is non-conformant — silently rounding would produce wrong token
+    metadata.
+    """
+    if scale <= 0:
+        raise ValueError(f"Comet scale must be positive, got {scale}")
+    decimals = 0
+    n = scale
+    while n > 1:
+        if n % 10 != 0:
+            raise ValueError(f"Comet scale {scale} is not a power of 10")
+        n //= 10
+        decimals += 1
+    return decimals
 
 
 __all__ = [
