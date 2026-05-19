@@ -147,7 +147,7 @@ class TestLucidBridgeLive:
         recipient = Address(b"\xaa" * 20)
         tx = await bridge.build_bridge_tx(usdc, usdc, amount_in, recipient)
 
-        assert tx["to"].lower() == get_address("LUCID_USDC_CONTROLLER", src_chain_id).lower()
+        assert tx["to"] == _ctrl_addr("LUCID_USDC_CONTROLLER", src_chain_id)
         assert tx["data"].startswith("0x")
         assert int(tx["value"]) > 0
         assert int(tx["gas"]) > 0

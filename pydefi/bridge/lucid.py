@@ -18,7 +18,7 @@ from typing import Any, Literal
 
 from eth_abi import encode as abi_encode
 from web3 import AsyncWeb3, Web3
-from web3.types import BlockIdentifier, FilterParams
+from web3.types import FilterParams
 
 from pydefi._utils import decode_address, encode_address
 from pydefi.abi.bridge import (
@@ -37,7 +37,7 @@ async def discover_adapter(
     w3: AsyncWeb3,
     controller_address: Address,
     from_block: int = 0,
-    to_block: BlockIdentifier = "latest",
+    to_block: int | Literal["latest"] = "latest",
     *,
     chunk_size: int = 10_000,
 ) -> Address:
@@ -48,9 +48,22 @@ async def discover_adapter(
     The chunked walk is required for providers that cap log range (MANTRA's
     public RPC rejects requests with ``to - from > 10000``). Kite has no cap
     but pays only one extra eth_blockNumber round-trip.
+
+    Only ``int`` and ``"latest"`` are accepted for ``to_block`` — other
+    BlockIdentifier forms (block tags like ``"finalized"``, hash strings)
+    are not supported and raise :class:`BridgeError`. ``chunk_size`` must
+    be positive.
     """
+    if chunk_size < 1:
+        raise BridgeError(f"Lucid: chunk_size must be >= 1, got {chunk_size}")
+    if isinstance(to_block, int):
+        head = to_block
+    elif to_block == "latest":
+        head = await w3.eth.block_number
+    else:
+        raise BridgeError(f"Lucid: unsupported to_block {to_block!r}; pass an int or 'latest'")
+
     address = Web3.to_checksum_address(bytes(controller_address))
-    head = to_block if isinstance(to_block, int) else await w3.eth.block_number
     cursor = head
     while cursor >= from_block:
         lo = max(from_block, cursor - chunk_size + 1)
@@ -210,7 +223,6 @@ class LucidBridge(BaseBridge):
         amount_in: TokenAmount,
         recipient: Address | None = None,
         unwrap: bool = False,
-        **kwargs: Any,
     ) -> BridgeQuote:
         # `recipient` only affects the encoded payload length (fixed for Transfer),
         # so the zero address is fine for read-only quoting.
@@ -244,12 +256,15 @@ class LucidBridge(BaseBridge):
         unwrap: bool = False,
         refund_address: Address | None = None,
         fee_buffer_bps: int = 0,
-        **kwargs: Any,
     ) -> dict[str, Any]:
         """Caller must have pre-approved ``token_in`` to the controller. Excess
         ``msg.value`` is refunded by the adapter to ``refund_address`` (defaults
         to ``recipient``). ``fee_buffer_bps`` bumps msg.value above the live quote
         for cases where broadcast lags the quote and adapter pricing drifts.
+
+        ``slippage_bps`` and ``token_out`` are accepted for ``BaseBridge``
+        compatibility and ignored: Lucid is 1:1, and the destination token is
+        implicit from the controller — neither value can change the outcome.
         """
         del slippage_bps, token_out
         await self._assert_token_in(token_in)
@@ -270,7 +285,7 @@ class LucidBridge(BaseBridge):
         ).data
 
         return {
-            "to": "0x" + bytes(self.controller_address).hex(),
+            "to": self.controller_address,
             "data": "0x" + call_data.hex(),
             "value": str(fee),
             "gas": str(_DEFAULT_SEND_GAS),

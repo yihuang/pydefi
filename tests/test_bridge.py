@@ -21,7 +21,7 @@ from pydefi.bridge.cctp import (
 )
 from pydefi.bridge.gaszip import _SUPPORTED_CHAINS, GasZip
 from pydefi.bridge.layerzero_oft import _LZ_EID, LayerZeroOFT
-from pydefi.bridge.lucid import LucidBridge
+from pydefi.bridge.lucid import LucidBridge, discover_adapter
 from pydefi.bridge.mayan import _CHAIN_NAMES, _MAYAN_FORWARDER, Mayan
 from pydefi.bridge.relay import Relay
 from pydefi.bridge.router import BridgeRouter, rank_bridge_quotes
@@ -1638,7 +1638,7 @@ class TestLucidBridge:
         from web3 import Web3
 
         tx = await _build_tx(lucid.bridge, lucid.src_token, lucid.dst_token, amount="1000", fee=5 * 10**16)
-        assert tx["to"].lower() == "0x" + bytes(lucid.ctrl).hex()
+        assert tx["to"] == lucid.ctrl
         assert tx["data"].startswith("0x")
         sig = Web3.keccak(text="transferTo(address,uint256,bool,uint256,address,bytes)")[:4]
         assert tx["data"][2:10] == sig.hex()
@@ -1772,3 +1772,25 @@ class TestLucidAdapter:
             assert hl_fn.called and not lz_fn.called
         else:
             assert lz_fn.called and not hl_fn.called
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("chunk_size", [0, -1])
+    async def test_discover_adapter_rejects_non_positive_chunk_size(self, chunk_size):
+        # Without this guard the cursor walk would never decrement → infinite loop.
+        with pytest.raises(BridgeError, match="chunk_size must be"):
+            await discover_adapter(
+                w3=None,  # type: ignore[arg-type]
+                controller_address=LUCID_USDC_CTRL_MANTRA,
+                chunk_size=chunk_size,
+            )
+
+    @pytest.mark.asyncio
+    async def test_discover_adapter_rejects_unsupported_to_block(self):
+        # "finalized"/"safe"/"earliest" and hex strings were previously coerced
+        # silently to head; now they raise.
+        with pytest.raises(BridgeError, match="unsupported to_block"):
+            await discover_adapter(
+                w3=None,  # type: ignore[arg-type]
+                controller_address=LUCID_USDC_CTRL_MANTRA,
+                to_block="finalized",  # type: ignore[arg-type]
+            )
