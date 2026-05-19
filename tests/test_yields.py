@@ -9,13 +9,17 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from web3 import Web3
 
+from pydefi.exceptions import BridgeError
 from pydefi.lending.aave_v3 import ReserveData
 from pydefi.types import Address, ChainId, Token, TokenAmount
 from pydefi.yields import (
+    Position,
     YieldMarket,
     build_approve_tx,
     build_yield_route,
+    get_positions,
     get_yield_markets,
+    wait_for_bridge_settlement,
 )
 
 # ---------------------------------------------------------------------------
@@ -366,3 +370,96 @@ async def test_build_yield_route_validation_errors(strategy, kw, err):
             **kw,
         )
 
+def _position(market: YieldMarket, amount: int) -> Position:
+    return Position(market=market, balance=TokenAmount(token=market.token, amount=amount))
+
+
+# ---------------------------------------------------------------------------
+# get_positions (PositionTracker)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_positions_returns_only_nonzero_balances_sorted():
+    aave_mkt = _market("aave_v3", ChainId.BASE, USDC_BASE, apy="0.04")
+    comet_mkt = _market("compound_v3", ChainId.BASE, USDC_BASE, apy="0.05")
+    with (
+        patch("pydefi.yields.tracker.get_yield_markets", new=AsyncMock(return_value=[aave_mkt, comet_mkt])),
+        patch(
+            "pydefi.yields.tracker._aave_balance",
+            new=AsyncMock(return_value=TokenAmount(token=USDC_BASE, amount=200_000)),
+        ),
+        patch(
+            "pydefi.yields.tracker._compound_balance",
+            new=AsyncMock(return_value=TokenAmount(token=USDC_BASE, amount=500_000)),
+        ),
+    ):
+        positions = await get_positions(_USER, "USDC", w3s={ChainId.BASE: object()})
+    assert [p.market.protocol for p in positions] == ["compound_v3", "aave_v3"]
+    assert [p.balance.amount for p in positions] == [500_000, 200_000]
+
+
+@pytest.mark.asyncio
+async def test_get_positions_filters_zero_balance():
+    with (
+        patch(
+            "pydefi.yields.tracker.get_yield_markets",
+            new=AsyncMock(return_value=[_market("aave_v3", ChainId.BASE, USDC_BASE)]),
+        ),
+        patch(
+            "pydefi.yields.tracker._aave_balance", new=AsyncMock(return_value=TokenAmount(token=USDC_BASE, amount=0))
+        ),
+    ):
+        positions = await get_positions(_USER, "USDC", w3s={ChainId.BASE: object()})
+    assert positions == []
+
+
+def test_position_is_frozen_dataclass():
+    p = _position(_market("aave_v3", ChainId.BASE, USDC_BASE), 10)
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        p.balance = TokenAmount(token=USDC_BASE, amount=20)  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# wait_for_bridge_settlement
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_wait_for_bridge_settlement_returns_when_delta_reached():
+    # First two polls stay at the start balance; third one shows the bridge landed.
+    call_mock = AsyncMock(side_effect=[100, 100, 1_100])
+    with (
+        patch("pydefi.yields.tracker.ERC20") as ERC20_mock,
+        patch("pydefi.yields.tracker.asyncio.sleep", new=AsyncMock(return_value=None)),
+    ):
+        ERC20_mock.fns.balanceOf.return_value.call = call_mock
+        new_balance = await wait_for_bridge_settlement(
+            w3=object(),  # type: ignore[arg-type]
+            token_address=Address("0x" + "11" * 20),
+            recipient=_USER,
+            starting_balance=100,
+            min_delta=1_000,
+            timeout_seconds=60.0,
+            poll_interval_seconds=0.01,
+        )
+    assert new_balance == 1_100
+
+
+@pytest.mark.asyncio
+async def test_wait_for_bridge_settlement_raises_on_timeout():
+    with (
+        patch("pydefi.yields.tracker.ERC20") as ERC20_mock,
+        patch("pydefi.yields.tracker.asyncio.sleep", new=AsyncMock(return_value=None)),
+    ):
+        ERC20_mock.fns.balanceOf.return_value.call = AsyncMock(return_value=100)
+        with pytest.raises(BridgeError, match="bridge settlement timeout"):
+            await wait_for_bridge_settlement(
+                w3=object(),  # type: ignore[arg-type]
+                token_address=Address("0x" + "11" * 20),
+                recipient=_USER,
+                starting_balance=100,
+                min_delta=1_000,
+                timeout_seconds=0.0,
+                poll_interval_seconds=0.01,
+            )
