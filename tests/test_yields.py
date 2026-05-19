@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import dataclasses
 from decimal import Decimal
+from typing import cast
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from web3 import Web3
+from web3 import AsyncWeb3, Web3
 
 from pydefi.exceptions import BridgeError
 from pydefi.lending.aave_v3 import ReserveData
@@ -17,10 +18,14 @@ from pydefi.yields import (
     YieldMarket,
     build_approve_tx,
     build_yield_route,
+    expected_apy_gain,
+    find_best_rebalance,
     get_positions,
     get_yield_markets,
+    rebalance_tick,
     wait_for_bridge_settlement,
 )
+from pydefi.yields.router import Protocol, Strategy
 
 # ---------------------------------------------------------------------------
 # Tokens / addresses / canned tx dicts (shared across every test)
@@ -40,9 +45,9 @@ _STUB_SUPPLY = {"to": Address("0x" + "22" * 20), "data": "0xbeef", "value": "0",
 # ---------------------------------------------------------------------------
 
 
-def _market(protocol: str, chain_id: int, token: Token, apy: str = "0.04") -> YieldMarket:
+def _market(protocol: Protocol, chain_id: int, token: Token, apy: str = "0.04") -> YieldMarket:
     return YieldMarket(
-        protocol=protocol,  # type: ignore[arg-type]
+        protocol=protocol,
         chain_id=chain_id,
         token=token,
         supply_apy=Decimal(apy),
@@ -358,17 +363,18 @@ async def test_bridge_then_supply_validation_errors(bridge_src, bridge_dst, targ
     ],
     ids=["missing_source_market", "missing_bridge", "unknown_strategy"],
 )
-async def test_build_yield_route_validation_errors(strategy, kw, err):
+async def test_build_yield_route_validation_errors(strategy: str, kw: dict, err: str):
     target = _market("aave_v3", ChainId.BASE, USDC_BASE)
     with pytest.raises(ValueError, match=err):
         await build_yield_route(
-            strategy,
+            cast(Strategy, strategy),  # "supply_then_borrow" is intentionally not in Strategy
             _USER,
-            TokenAmount.from_human(USDC_BASE, "1"),  # type: ignore[arg-type]
-            w3s={ChainId.BASE: object()},
+            TokenAmount.from_human(USDC_BASE, "1"),
+            w3s={ChainId.BASE: cast(AsyncWeb3, object())},
             target_market=target,
             **kw,
         )
+
 
 def _position(market: YieldMarket, amount: int) -> Position:
     return Position(market=market, balance=TokenAmount(token=market.token, amount=amount))
@@ -435,7 +441,7 @@ async def test_wait_for_bridge_settlement_returns_when_delta_reached():
     ):
         ERC20_mock.fns.balanceOf.return_value.call = call_mock
         new_balance = await wait_for_bridge_settlement(
-            w3=object(),  # type: ignore[arg-type]
+            w3=cast(AsyncWeb3, object()),  # ERC20.balanceOf is patched, real w3 never used
             token_address=Address("0x" + "11" * 20),
             recipient=_USER,
             starting_balance=100,
@@ -455,7 +461,7 @@ async def test_wait_for_bridge_settlement_raises_on_timeout():
         ERC20_mock.fns.balanceOf.return_value.call = AsyncMock(return_value=100)
         with pytest.raises(BridgeError, match="bridge settlement timeout"):
             await wait_for_bridge_settlement(
-                w3=object(),  # type: ignore[arg-type]
+                w3=cast(AsyncWeb3, object()),  # ERC20.balanceOf is patched
                 token_address=Address("0x" + "11" * 20),
                 recipient=_USER,
                 starting_balance=100,
@@ -463,3 +469,132 @@ async def test_wait_for_bridge_settlement_raises_on_timeout():
                 timeout_seconds=0.0,
                 poll_interval_seconds=0.01,
             )
+
+
+# ---------------------------------------------------------------------------
+# expected_apy_gain / find_best_rebalance
+# ---------------------------------------------------------------------------
+
+_YEAR = 365 * 24 * 60 * 60
+
+
+def test_expected_apy_gain_positive_for_better_market():
+    current = _position(_market("aave_v3", ChainId.BASE, USDC_BASE, apy="0.04"), 1_000 * 10**6)
+    better = _market("compound_v3", ChainId.BASE, USDC_BASE, apy="0.06")
+    # 1000 USDC × (6% − 4%) × 1 year = 20 USDC == 20_000_000 sub-units.
+    assert expected_apy_gain(current, better, horizon_seconds=_YEAR) == 20_000_000
+
+
+def test_expected_apy_gain_negative_for_worse_market():
+    current = _position(_market("compound_v3", ChainId.BASE, USDC_BASE, apy="0.06"), 1_000 * 10**6)
+    worse = _market("aave_v3", ChainId.BASE, USDC_BASE, apy="0.04")
+    assert expected_apy_gain(current, worse, horizon_seconds=_YEAR) == -20_000_000
+
+
+def test_expected_apy_gain_scales_linearly_with_horizon():
+    current = _position(_market("aave_v3", ChainId.BASE, USDC_BASE, apy="0.04"), 10_000 * 10**6)
+    better = _market("compound_v3", ChainId.BASE, USDC_BASE, apy="0.05")
+    year = expected_apy_gain(current, better, horizon_seconds=_YEAR)
+    month = expected_apy_gain(current, better, horizon_seconds=30 * 24 * 60 * 60)
+    # 30/365 of the full-year gain (±1 unit for integer rounding).
+    assert abs(month - year * 30 // 365) <= 1
+
+
+@pytest.mark.asyncio
+async def test_find_best_rebalance_picks_highest_gain_same_chain():
+    current = _position(_market("aave_v3", ChainId.BASE, USDC_BASE, apy="0.04"), 1_000 * 10**6)
+    candidates = [
+        _market("compound_v3", ChainId.BASE, USDC_BASE, apy="0.06"),
+        _market("compound_v3", ChainId.BASE, USDC_BASE, apy="0.08"),  # winner
+        _market("compound_v3", ChainId.OPTIMISM, USDC_OPT, apy="0.20"),  # ignored: wrong chain
+    ]
+    captured: dict = {}
+
+    async def fake_build(strategy, **kw):
+        captured.update(strategy=strategy, target=kw["target_market"], source=kw["source_market"])
+        return "ROUTE_SENTINEL"
+
+    with patch("pydefi.yields.rebalance.build_yield_route", new=fake_build):
+        result = await find_best_rebalance(
+            _USER,
+            positions=[current],
+            markets=candidates,
+            w3s={ChainId.BASE: object()},
+            horizon_seconds=_YEAR,
+        )
+
+    assert result == "ROUTE_SENTINEL"
+    assert captured["strategy"] == "withdraw_then_supply"
+    assert captured["target"].supply_apy == Decimal("0.08")
+    assert captured["source"].market_id == current.market.market_id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "candidate_apy,reason",
+    [
+        ("0.043", "below_threshold"),  # 30 bps over current 4%, default threshold is 50
+        ("0.04", "same_market_id"),  # same market — must be skipped even at equal APY
+    ],
+)
+async def test_find_best_rebalance_returns_none(candidate_apy, reason):
+    current = _position(_market("aave_v3", ChainId.BASE, USDC_BASE, apy="0.04"), 1_000 * 10**6)
+    candidate = _market(
+        "aave_v3" if reason == "same_market_id" else "compound_v3", ChainId.BASE, USDC_BASE, apy=candidate_apy
+    )
+    with patch("pydefi.yields.rebalance.build_yield_route", new=AsyncMock()) as build:
+        result = await find_best_rebalance(
+            _USER,
+            positions=[current],
+            markets=[candidate],
+            w3s={ChainId.BASE: object()},
+            horizon_seconds=_YEAR,
+        )
+    assert result is None
+    assert build.await_count == 0
+
+
+# ---------------------------------------------------------------------------
+# rebalance_tick
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_rebalance_tick_returns_none_when_user_has_no_positions():
+    markets_mock = AsyncMock(return_value=[])
+    find_mock = AsyncMock(return_value=None)
+    with (
+        patch("pydefi.yields.rebalance.get_positions", new=AsyncMock(return_value=[])),
+        patch("pydefi.yields.rebalance.get_yield_markets", new=markets_mock),
+        patch("pydefi.yields.rebalance.find_best_rebalance", new=find_mock),
+    ):
+        result = await rebalance_tick(_USER, "USDC", w3s={ChainId.BASE: object()})
+    assert result is None
+    # Short-circuited: no point scanning markets or picking when there are no positions.
+    assert markets_mock.await_count == 0
+    assert find_mock.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_rebalance_tick_forwards_thresholds():
+    positions = [_position(_market("aave_v3", ChainId.BASE, USDC_BASE, apy="0.04"), 1_000 * 10**6)]
+    candidate = _market("compound_v3", ChainId.BASE, USDC_BASE, apy="0.06")
+    find_mock = AsyncMock(return_value="ROUTE_SENTINEL")
+    with (
+        patch("pydefi.yields.rebalance.get_positions", new=AsyncMock(return_value=positions)),
+        patch("pydefi.yields.rebalance.get_yield_markets", new=AsyncMock(return_value=[candidate])),
+        patch("pydefi.yields.rebalance.find_best_rebalance", new=find_mock),
+    ):
+        result = await rebalance_tick(
+            _USER,
+            "USDC",
+            w3s={ChainId.BASE: object()},
+            horizon_seconds=86_400,
+            min_apy_gain_bps=10,
+        )
+    assert result == "ROUTE_SENTINEL"
+    kwargs = find_mock.await_args.kwargs
+    assert kwargs["horizon_seconds"] == 86_400
+    assert kwargs["min_apy_gain_bps"] == 10
+    assert kwargs["positions"] == positions
+    assert kwargs["markets"] == [candidate]

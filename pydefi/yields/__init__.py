@@ -2,6 +2,7 @@
 :mod:`pydefi.bridge`. No new on-chain primitive; everything composes the
 existing readers / tx builders."""
 
+from pydefi.yields.rebalance import expected_apy_gain, find_best_rebalance, rebalance_tick
 from pydefi.yields.router import (
     YieldMarket,
     YieldRoute,
@@ -19,7 +20,10 @@ __all__ = [
     "YieldStep",
     "build_approve_tx",
     "build_yield_route",
+    "expected_apy_gain",
+    "find_best_rebalance",
     "get_positions",
     "get_yield_markets",
+    "rebalance_tick",
     "wait_for_bridge_settlement",
 ]
