@@ -53,6 +53,10 @@ class ChainId(IntEnum):
     LINEA = 59144
     HYPERCORE = 1337  # Hyperliquid L1 (HyperCore); CCTP routes through HyperEVM (domain 19)
     HYPEREVM = 999
+    CELO = 42220
+    MANTRA = 5888
+    KITE = 2366
+    KITE_TESTNET = 2368
     BLAST = 81457
     SCROLL = 534352
     ZKSYNC = 324

@@ -13,6 +13,7 @@ from pydefi.bridge.cctp import (
 )
 from pydefi.bridge.gaszip import GasZip
 from pydefi.bridge.layerzero_oft import LayerZeroOFT
+from pydefi.bridge.lucid import LucidBridge
 from pydefi.bridge.mayan import Mayan
 from pydefi.bridge.relay import Relay
 from pydefi.bridge.router import BridgeRouter, RankedBridgeQuote, rank_bridge_quotes
@@ -28,6 +29,7 @@ __all__ = [
     "GasZip",
     "Relay",
     "LayerZeroOFT",
+    "LucidBridge",
     "CCTP",
     "CCIP",
     "EVM_EXTRA_ARGS_V2_TAG",

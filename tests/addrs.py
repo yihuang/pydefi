@@ -9,7 +9,7 @@ No pytest, no network I/O — safe to import from unit tests.
 from __future__ import annotations
 
 from pydefi.deployments import get_address, get_token
-from pydefi.types import ZERO_ADDRESS, Address, ChainId
+from pydefi.types import ZERO_ADDRESS, Address, ChainId, Token
 
 # ── Chain-agnostic ────────────────────────────────────────────────────────────
 
@@ -53,3 +53,17 @@ PAIR_WETH_USDC: Address = Address(get_address("PAIR_WETH_USDC", ChainId.ETHEREUM
 PAIR_WETH_DAI: Address = Address(get_address("PAIR_WETH_DAI", ChainId.ETHEREUM))
 PAIR_USDC_DAI: Address = Address(get_address("PAIR_USDC_DAI", ChainId.ETHEREUM))
 PAIR_USDC_USDT: Address = Address(get_address("PAIR_USDC_USDT", ChainId.ETHEREUM))
+
+# ── Lucid Labs ────────────────────────────────────────────────────────────────
+
+LUCID_USDC_CTRL_MANTRA: Address = Address(get_address("LUCID_USDC_CONTROLLER", ChainId.MANTRA))
+# Synthetic — Lucid's docs don't publish the Hyperlane adapter; tests don't need a real one.
+LUCID_HL_ADAPTER: Address = Address("0x" + "AB" * 20)
+USDC_MANTRA = get_token("USDC", ChainId.MANTRA)
+USDC_BASE = Token(chain_id=ChainId.BASE, address=Address("0x" + "C2" * 20), symbol="USDC", decimals=6)
+
+LUCID_USDC_CTRL_KITE: Address = Address(get_address("LUCID_USDC_CONTROLLER", ChainId.KITE))
+LUCID_LZ_ADAPTER: Address = Address(get_address("LUCID_LAYERZERO_ADAPTER", ChainId.KITE))
+USDC_E_KITE = get_token("USDC.e", ChainId.KITE)
+# Synthetic destination token — only address matters since LucidBridge doesn't validate it.
+USDC_E_AVAX = Token(chain_id=ChainId.AVALANCHE, address=Address("0x" + "C1" * 20), symbol="USDC.e", decimals=6)

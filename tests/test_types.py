@@ -87,6 +87,9 @@ class TestToken:
         assert ChainId.ETHEREUM == 1
         assert ChainId.ARBITRUM == 42161
         assert ChainId.BASE == 8453
+        assert ChainId.MANTRA == 5888
+        assert ChainId.KITE == 2366
+        assert ChainId.KITE_TESTNET == 2368
 
 
 # ---------------------------------------------------------------------------

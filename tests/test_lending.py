@@ -13,6 +13,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 import pytest
+from hexbytes import HexBytes
 
 from pydefi.abi.lending import AAVE_V3_POOL, COMPOUND_V3_COMET
 from pydefi.lending import AaveV3, InterestRateMode, UserAccountData
@@ -41,7 +42,7 @@ def decode_call(tx: dict, fn: ContractFunction) -> tuple[Any, ...]:
     Address-typed arguments come back as :class:`Address` so callers can
     compare them directly with :attr:`Token.address`.
     """
-    raw = fn.decode_input(tx["data"])
+    raw = fn.decode_input(HexBytes(tx["data"]))
     # decode_input unwraps single-input functions; re-wrap so callers
     # can always tuple-unpack.
     if not isinstance(raw, tuple):

@@ -27,6 +27,8 @@ _TOKENS: dict[str, dict] = {
         "addresses": {
             _ETH: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
             _SEP: "0xfff9976782d46cc05630d1f6ebab18b2324d6b14",
+            ChainId.MANTRA: "0xEc09D14459e18fa15C1F916a8d8a2575eA5F7Ac4",
+            ChainId.KITE: "0x3D66d6c3201190952e8EA973F59c4428b32D5F9b",
         },
     },
     "USDC": {
@@ -35,6 +37,14 @@ _TOKENS: dict[str, dict] = {
         "addresses": {
             _ETH: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
             _SEP: "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
+            ChainId.MANTRA: "0x8f726A72e3a28d21f153F1698e60d6a97eFd1a00",
+        },
+    },
+    "USDC.e": {
+        "symbol": "USDC.e",
+        "decimals": 6,
+        "addresses": {
+            ChainId.KITE: "0x7aB6f3ed87C42eF0aDb67Ed95090f8bF5240149e",
         },
     },
     "DAI": {
@@ -49,6 +59,8 @@ _TOKENS: dict[str, dict] = {
         "decimals": 6,
         "addresses": {
             _ETH: "0xdAC17F958D2ee523a2206206994597C13D831ec7",
+            ChainId.MANTRA: "0x3806640578b710d8480910bF51510bc538d2F51A",
+            ChainId.KITE: "0x3Fdd283C4c43A60398bf93CA01a8a8BD773a755b",
         },
     },
     "UNI": {
@@ -178,6 +190,24 @@ _CONTRACTS: dict[str, dict[int, str]] = {
         _ETH: "0x3Afdc9BCA9213A35503b077a6072F3D0d5AB0840",
         ChainId.ARBITRUM: "0xd98Be00b5D27fc98112BdE293e487f8D4cA57d07",
     },
+    # Lucid AssetControllers — https://docs.lucidlabs.fi/developer-reference/deployed-contracts/controller-contracts
+    # MANTRA lanes: USDC/WETH -> Base,      USDT -> Optimism (Hyperlane adapter)
+    # Kite lanes:   USDC/WETH -> Avalanche, USDT -> Celo (LayerZero adapter)
+    "LUCID_USDC_CONTROLLER": {
+        ChainId.MANTRA: "0xFf54162d7061290A966119784a0F34663d00E190",
+        ChainId.KITE: "0x7144ADe61f4BEcD513658db3441a0CE286aE90fd",
+    },
+    "LUCID_WETH_CONTROLLER": {
+        ChainId.MANTRA: "0x47263861BD8E964425910FAA0870e9d0fb630876",
+        ChainId.KITE: "0x1324Be9339e1618387d2405C6f4CE660447cB582",
+    },
+    "LUCID_USDT_CONTROLLER": {
+        ChainId.MANTRA: "0x0569725992ee675f862bf0d25CA40fCfB2B69d6E",
+        ChainId.KITE: "0xc620C68Cb63EA35e9930e240051A6A7C02D568A1",
+    },
+    # Adapter addresses are not published by Lucid; discover via TransferRelayed
+    # event scan against any controller, then pass to LucidBridge(adapter_address=…).
+    "LUCID_LAYERZERO_ADAPTER": {ChainId.KITE: "0x5ef37628D45C80740Fb6Db7Ed9C0A753B4f85263"},
 }
 
 
