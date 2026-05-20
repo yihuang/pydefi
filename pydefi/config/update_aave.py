@@ -27,6 +27,7 @@ _FILE_BY_CHAIN: dict[int, str] = {
     43114: "AaveV3Avalanche",
     59144: "AaveV3Linea",
     534352: "AaveV3Scroll",
+    11155111: "AaveV3Sepolia",
 }
 
 # pydefi registry name -> Solidity constant in the AaveV3<Chain> library.
