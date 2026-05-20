@@ -12,7 +12,7 @@ Usage::
 from __future__ import annotations
 
 from pydefi._utils import decode_address
-from pydefi.types import ChainId, Token
+from pydefi.types import Address, ChainId, Token
 
 _ETH = ChainId.ETHEREUM
 _SEP = ChainId.SEPOLIA
@@ -258,3 +258,29 @@ def chains_for(name: str) -> list[int]:
     if name in _TOKENS:
         return list(_TOKENS[name]["addresses"])
     raise KeyError(f"Unknown deployment name {name!r}")
+
+
+def address_for(name: str, chain_id: int) -> Address:
+    """Like :func:`get_address` but returns a chain-aware :class:`Address`
+    instead of a raw string — saves callers from wrapping in
+    ``Address(decode_address(...))`` at every call site."""
+    return Address(decode_address(get_address(name, chain_id), chain_id))
+
+
+# Compound III deployments are keyed by their base asset.
+COMET_CONTRACT_BY_SYMBOL: dict[str, str] = {
+    "USDC": "COMPOUND_V3_USDC",
+    "WETH": "COMPOUND_V3_WETH",
+    "USDT": "COMPOUND_V3_USDT",
+}
+
+
+def comet_contract_for(token_symbol: str) -> str:
+    """Comet deployment name for *token_symbol*, or :class:`ValueError`
+    listing supported symbols."""
+    name = COMET_CONTRACT_BY_SYMBOL.get(token_symbol)
+    if name is None:
+        raise ValueError(
+            f"Compound V3 has no market for token {token_symbol!r}; supported: {sorted(COMET_CONTRACT_BY_SYMBOL)}"
+        )
+    return name

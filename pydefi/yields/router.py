@@ -4,6 +4,7 @@ Caller supplies a per-chain ``AsyncWeb3`` map and broadcasts the steps."""
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Literal
@@ -11,9 +12,14 @@ from typing import Any, Literal
 from eth_contract.erc20 import ERC20
 from web3 import AsyncWeb3
 
-from pydefi._utils import decode_address
 from pydefi.bridge.lucid import LucidBridge
-from pydefi.deployments import _CONTRACTS, get_address, get_token
+from pydefi.deployments import (
+    COMET_CONTRACT_BY_SYMBOL,
+    address_for,
+    chains_for,
+    comet_contract_for,
+    get_token,
+)
 from pydefi.lending.aave_v3 import AaveV3
 from pydefi.lending.compound_v3 import CompoundV3
 from pydefi.types import Address, Token, TokenAmount
@@ -66,30 +72,16 @@ class YieldRoute:
         return [s.tx for s in self.steps]
 
 
-# Comet markets are keyed by base asset.
-_COMET_CONTRACT_BY_SYMBOL: dict[str, str] = {
-    "USDC": "COMPOUND_V3_USDC",
-    "WETH": "COMPOUND_V3_WETH",
-    "USDT": "COMPOUND_V3_USDT",
-}
-
-
 def _candidate_chains(token_symbol: str) -> list[int]:
-    aave = set(_CONTRACTS.get("AAVE_V3_POOL", {}).keys())
-    comet_name = _COMET_CONTRACT_BY_SYMBOL.get(token_symbol)
-    comet = set(_CONTRACTS.get(comet_name, {}).keys()) if comet_name else set()
+    aave = set(chains_for("AAVE_V3_POOL"))
+    comet_name = COMET_CONTRACT_BY_SYMBOL.get(token_symbol)
+    comet = set(chains_for(comet_name)) if comet_name else set()
     return sorted(aave | comet)
 
 
-def _addr(name: str, chain_id: int) -> Address:
-    return Address(decode_address(get_address(name, chain_id), chain_id))
-
-
 def _market_spender(market: YieldMarket) -> Address:
-    return _addr(
-        "AAVE_V3_POOL" if market.protocol == "aave_v3" else _COMET_CONTRACT_BY_SYMBOL[market.token.symbol],
-        market.chain_id,
-    )
+    name = "AAVE_V3_POOL" if market.protocol == "aave_v3" else comet_contract_for(market.token.symbol)
+    return address_for(name, market.chain_id)
 
 
 def _same_token_identity(a: Token, b: Token) -> bool:
@@ -112,14 +104,14 @@ def _supply_tx(market: YieldMarket, user: Address, w3: AsyncWeb3, amount: TokenA
         aave = AaveV3(
             w3=w3,
             chain_id=market.chain_id,
-            pool_address=_addr("AAVE_V3_POOL", market.chain_id),
-            data_provider_address=_addr("AAVE_V3_DATA_PROVIDER", market.chain_id),
+            pool_address=address_for("AAVE_V3_POOL", market.chain_id),
+            data_provider_address=address_for("AAVE_V3_DATA_PROVIDER", market.chain_id),
         )
         return aave.build_supply_tx(user, amount)
     comet = CompoundV3(
         w3=w3,
         chain_id=market.chain_id,
-        comet_address=_addr(_COMET_CONTRACT_BY_SYMBOL[market.token.symbol], market.chain_id),
+        comet_address=address_for(comet_contract_for(market.token.symbol), market.chain_id),
     )
     return comet.build_supply_tx(amount)
 
@@ -129,26 +121,26 @@ def _withdraw_tx(market: YieldMarket, user: Address, w3: AsyncWeb3, amount: Toke
         aave = AaveV3(
             w3=w3,
             chain_id=market.chain_id,
-            pool_address=_addr("AAVE_V3_POOL", market.chain_id),
-            data_provider_address=_addr("AAVE_V3_DATA_PROVIDER", market.chain_id),
+            pool_address=address_for("AAVE_V3_POOL", market.chain_id),
+            data_provider_address=address_for("AAVE_V3_DATA_PROVIDER", market.chain_id),
         )
         return aave.build_withdraw_tx(user, amount)
     comet = CompoundV3(
         w3=w3,
         chain_id=market.chain_id,
-        comet_address=_addr(_COMET_CONTRACT_BY_SYMBOL[market.token.symbol], market.chain_id),
+        comet_address=address_for(comet_contract_for(market.token.symbol), market.chain_id),
     )
     return comet.build_withdraw_tx(amount)
 
 
 async def _aave_market(w3: AsyncWeb3, chain_id: int, token: Token, token_symbol: str) -> YieldMarket | None:
-    if chain_id not in _CONTRACTS.get("AAVE_V3_POOL", {}):
+    if chain_id not in chains_for("AAVE_V3_POOL"):
         return None
     aave = AaveV3(
         w3=w3,
         chain_id=chain_id,
-        pool_address=_addr("AAVE_V3_POOL", chain_id),
-        data_provider_address=_addr("AAVE_V3_DATA_PROVIDER", chain_id),
+        pool_address=address_for("AAVE_V3_POOL", chain_id),
+        data_provider_address=address_for("AAVE_V3_DATA_PROVIDER", chain_id),
     )
     reserve = await aave.get_reserve_data(token)
     # Inactive / frozen / paused reserves cannot accept supplies — the APY
@@ -167,19 +159,22 @@ async def _aave_market(w3: AsyncWeb3, chain_id: int, token: Token, token_symbol:
 
 
 async def _compound_market(w3: AsyncWeb3, chain_id: int, token_symbol: str) -> YieldMarket | None:
-    name = _COMET_CONTRACT_BY_SYMBOL.get(token_symbol)
-    if name is None or chain_id not in _CONTRACTS.get(name, {}):
+    name = COMET_CONTRACT_BY_SYMBOL.get(token_symbol)
+    if name is None or chain_id not in chains_for(name):
         return None
-    comet = CompoundV3(w3=w3, chain_id=chain_id, comet_address=_addr(name, chain_id))
+    comet = CompoundV3(w3=w3, chain_id=chain_id, comet_address=address_for(name, chain_id))
     market = await comet.get_market_data()
+    # Comet's baseToken() has no symbol(); restore the real ticker so downstream
+    # symbol-based dispatch (`comet_contract_for`) works on this market.
+    base_token = dataclasses.replace(market.base_token, symbol=token_symbol)
     available = TokenAmount(
-        token=market.base_token,
+        token=base_token,
         amount=max(0, market.total_supply.amount - market.total_borrow.amount),
     )
     return YieldMarket(
         protocol="compound_v3",
         chain_id=chain_id,
-        token=market.base_token,
+        token=base_token,
         supply_apy=market.supply_apy,
         utilization=market.utilization,
         available_liquidity=available,

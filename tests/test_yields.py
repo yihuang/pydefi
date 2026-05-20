@@ -189,6 +189,17 @@ def test_yield_market_is_frozen_dataclass():
 # ---------------------------------------------------------------------------
 
 
+def test_compound_unsupported_symbol_raises_value_error():
+    """Building a Compound spender for an unsupported token must surface a
+    descriptive ValueError listing what *is* supported — not a bare KeyError."""
+    from pydefi.yields.router import _market_spender
+
+    weird = Token(chain_id=ChainId.BASE, address=Address("0x" + "44" * 20), symbol="WEIRD", decimals=18)
+    bogus_market = _market("compound_v3", ChainId.BASE, weird)
+    with pytest.raises(ValueError, match="Compound V3 has no market for token 'WEIRD'"):
+        _market_spender(bogus_market)
+
+
 def test_build_approve_tx_shape():
     tx = build_approve_tx(USDC_BASE, Address("0x" + "BB" * 20), 10**12)
     assert tx["to"] == USDC_BASE.address
@@ -394,8 +405,12 @@ async def test_build_yield_route_rejects_token_mismatch():
     for strategy, token, src, tgt, err in cases:
         with pytest.raises(ValueError, match=err):
             await build_yield_route(
-                strategy, _USER, TokenAmount(token, 1),
-                w3s=w3s, source_market=src, target_market=tgt,
+                strategy,
+                _USER,
+                TokenAmount(token, 1),
+                w3s=w3s,
+                source_market=src,
+                target_market=tgt,
                 target_chain=ChainId.OPTIMISM,
             )
 

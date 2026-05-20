@@ -11,17 +11,12 @@ from dataclasses import dataclass
 from eth_contract.erc20 import ERC20
 from web3 import AsyncWeb3
 
+from pydefi.abi.lending import COMPOUND_V3_COMET
+from pydefi.deployments import address_for, comet_contract_for
 from pydefi.exceptions import BridgeError
 from pydefi.lending.aave_v3 import AaveV3
-from pydefi.lending.compound_v3 import CompoundV3
 from pydefi.types import Address, TokenAmount
-from pydefi.yields.router import (
-    _COMET_CONTRACT_BY_SYMBOL,
-    Protocol,
-    YieldMarket,
-    _addr,
-    get_yield_markets,
-)
+from pydefi.yields.router import Protocol, YieldMarket, get_yield_markets
 
 logger = logging.getLogger(__name__)
 
@@ -39,21 +34,19 @@ async def _aave_balance(market: YieldMarket, user: Address, w3: AsyncWeb3) -> To
     aave = AaveV3(
         w3=w3,
         chain_id=market.chain_id,
-        pool_address=_addr("AAVE_V3_POOL", market.chain_id),
-        data_provider_address=_addr("AAVE_V3_DATA_PROVIDER", market.chain_id),
+        pool_address=address_for("AAVE_V3_POOL", market.chain_id),
+        data_provider_address=address_for("AAVE_V3_DATA_PROVIDER", market.chain_id),
     )
     user_reserve = await aave.get_user_reserve_data(user, market.token)
     return user_reserve.a_token_balance
 
 
 async def _compound_balance(market: YieldMarket, user: Address, w3: AsyncWeb3) -> TokenAmount:
-    comet = CompoundV3(
-        w3=w3,
-        chain_id=market.chain_id,
-        comet_address=_addr(_COMET_CONTRACT_BY_SYMBOL[market.token.symbol], market.chain_id),
-    )
-    pos = await comet.get_user_position(user)
-    return pos.base_supply
+    # Direct balanceOf — get_user_position would also iterate every collateral
+    # via collateralBalanceOf, wasted RPC for a pure supply read.
+    comet_address = address_for(comet_contract_for(market.token.symbol), market.chain_id)
+    balance = await COMPOUND_V3_COMET.fns.balanceOf(user).call(w3, to=comet_address)
+    return TokenAmount(token=market.token, amount=int(balance))
 
 
 async def get_positions(
