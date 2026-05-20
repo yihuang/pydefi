@@ -30,16 +30,7 @@ from web3.exceptions import Web3Exception
 from pydefi.lending import AaveV3
 from pydefi.lending.aave_v3 import UINT256_MAX
 from pydefi.types import Address, ChainId, TokenAmount
-from tests.addrs import (
-    AAVE_ADDRESSES_PROVIDER,
-    AAVE_DATA_PROVIDER,
-    AAVE_ORACLE,
-    AAVE_POOL,
-    ETH_WHALE,
-    USDC,
-    USDC_WHALE,
-    WETH,
-)
+from tests.addrs import AAVE_ADDRESSES_PROVIDER, ETH_WHALE, USDC, USDC_WHALE, WETH
 from tests.live.anvil_helpers import (
     erc20_approve,
     impersonate,
@@ -55,23 +46,13 @@ WETH_SUPPLY_AMOUNT = 10 * 10**18
 USDC_BORROW_AMOUNT = 5_000 * 10**6
 
 
-def _make_aave(w3) -> AaveV3:
-    return AaveV3(
-        w3=w3,
-        chain_id=ChainId.ETHEREUM,
-        pool_address=AAVE_POOL,
-        data_provider_address=AAVE_DATA_PROVIDER,
-        oracle_address=AAVE_ORACLE,
-    )
-
-
-async def _prepare_whale(fork_w3, weth_amount: int = 0) -> None:
+async def _prepare_whale(fork_w3, pool: Address, weth_amount: int = 0) -> None:
     """Impersonate the whale, give it ETH, and optionally wrap some to WETH."""
     await impersonate(fork_w3, ETH_WHALE)
     await set_balance(fork_w3, ETH_WHALE, WHALE_BALANCE)
     if weth_amount > 0:
         await wrap_eth(fork_w3, ETH_WHALE, WETH.address, weth_amount)
-        await erc20_approve(fork_w3, WETH.address, ETH_WHALE, AAVE_POOL, weth_amount)
+        await erc20_approve(fork_w3, WETH.address, ETH_WHALE, pool, weth_amount)
 
 
 # ---------------------------------------------------------------------------
@@ -84,7 +65,8 @@ class TestAaveV3LiveReads:
     """Read-only smoke tests against Ethereum mainnet."""
 
     async def test_get_reserve_data_usdc(self, eth_w3):
-        data = await _make_aave(eth_w3).get_reserve_data(USDC)
+        aave = await AaveV3.from_chain(eth_w3, ChainId.ETHEREUM)
+        data = await aave.get_reserve_data(USDC)
         assert data.token == USDC
         assert data.is_active is True
         assert data.borrowing_enabled is True
@@ -99,14 +81,16 @@ class TestAaveV3LiveReads:
         assert len(data.variable_debt_token_address) == 20
 
     async def test_get_reserve_data_weth(self, eth_w3):
-        data = await _make_aave(eth_w3).get_reserve_data(WETH)
+        aave = await AaveV3.from_chain(eth_w3, ChainId.ETHEREUM)
+        data = await aave.get_reserve_data(WETH)
         assert data.is_active is True
         assert data.usage_as_collateral_enabled is True
         assert data.ltv > 0
 
     async def test_get_asset_price_usdc(self, eth_w3):
         # Aave V3 mainnet oracle uses USD with 8 decimals.
-        price = await _make_aave(eth_w3).get_asset_price(USDC)
+        aave = await AaveV3.from_chain(eth_w3, ChainId.ETHEREUM)
+        price = await aave.get_asset_price(USDC)
         assert 0.95 * 10**8 < price < 1.05 * 10**8, f"USDC oracle price out of range: {price / 1e8}"
 
     async def test_get_user_account_data_no_debt(self, eth_w3):
@@ -117,20 +101,11 @@ class TestAaveV3LiveReads:
         dumped real collateral into it.
         """
         fresh = Address(secrets.token_bytes(20))
-        acc = await _make_aave(eth_w3).get_user_account_data(fresh)
+        aave = await AaveV3.from_chain(eth_w3, ChainId.ETHEREUM)
+        acc = await aave.get_user_account_data(fresh)
         assert acc.total_debt_base == 0
         assert acc.total_collateral_base == 0
         assert acc.health_factor.is_infinite()
-
-    async def test_from_addresses_provider_matches_pinned(self, eth_w3):
-        live = await AaveV3.from_addresses_provider(
-            w3=eth_w3,
-            chain_id=ChainId.ETHEREUM,
-            addresses_provider=AAVE_ADDRESSES_PROVIDER,
-        )
-        assert live.pool_address == AAVE_POOL
-        assert live.data_provider_address == AAVE_DATA_PROVIDER
-        assert live.oracle_address == AAVE_ORACLE
 
 
 # ---------------------------------------------------------------------------
@@ -189,8 +164,8 @@ class TestAaveV3Fork:
 
     async def test_supply_weth_increases_atoken_balance(self, fork_w3):
         """Wrapping ETH and supplying WETH must mint aWETH to the depositor."""
-        aave = _make_aave(fork_w3)
-        await _prepare_whale(fork_w3, weth_amount=WETH_SUPPLY_AMOUNT)
+        aave = await AaveV3.from_chain(fork_w3, ChainId.ETHEREUM)
+        await _prepare_whale(fork_w3, aave.pool_address, weth_amount=WETH_SUPPLY_AMOUNT)
 
         reserve = await aave.get_reserve_data(WETH)
         a_weth = reserve.a_token_address
@@ -210,8 +185,8 @@ class TestAaveV3Fork:
 
     async def test_supply_then_borrow_then_repay_then_withdraw(self, fork_w3):
         """Full lifecycle: supply WETH → borrow USDC → repay USDC → withdraw WETH."""
-        aave = _make_aave(fork_w3)
-        await _prepare_whale(fork_w3, weth_amount=WETH_SUPPLY_AMOUNT)
+        aave = await AaveV3.from_chain(fork_w3, ChainId.ETHEREUM)
+        await _prepare_whale(fork_w3, aave.pool_address, weth_amount=WETH_SUPPLY_AMOUNT)
 
         # 1. Supply WETH.
         receipt = await send_tx(
@@ -233,7 +208,7 @@ class TestAaveV3Fork:
         assert (await aave.get_user_reserve_data(ETH_WHALE, USDC)).variable_debt.amount >= USDC_BORROW_AMOUNT
 
         # 3. Repay the full USDC debt.
-        await erc20_approve(fork_w3, USDC.address, ETH_WHALE, AAVE_POOL, UINT256_MAX)
+        await erc20_approve(fork_w3, USDC.address, ETH_WHALE, aave.pool_address, UINT256_MAX)
         receipt = await send_tx(
             fork_w3,
             ETH_WHALE,
@@ -254,13 +229,13 @@ class TestAaveV3Fork:
 
     async def test_flashloan_simple_round_trip(self, fork_w3):
         """flashLoanSimple must invoke the receiver and pull amount + premium."""
-        aave = _make_aave(fork_w3)
+        aave = await AaveV3.from_chain(fork_w3, ChainId.ETHEREUM)
 
         # Deploy a minimal receiver using one of Anvil's pre-funded accounts.
         accounts = await fork_w3.eth.accounts
         deployer = accounts[0]
         compiled = compile_sol_source(MINIMAL_FLASH_RECEIVER_SOL, "MinimalFlashLoanReceiver")
-        receiver = await deploy(fork_w3, compiled, deployer, AAVE_POOL, AAVE_ADDRESSES_PROVIDER)
+        receiver = await deploy(fork_w3, compiled, deployer, aave.pool_address, AAVE_ADDRESSES_PROVIDER)
 
         # Pre-fund the receiver with 10 USDC for the premium.
         await impersonate(fork_w3, USDC_WHALE)
@@ -305,8 +280,8 @@ class TestAaveV3Fork:
         the category 0 → ETH-correlated → 0 and assert get_user_emode
         tracks each transition.
         """
-        aave = _make_aave(fork_w3)
-        await _prepare_whale(fork_w3)
+        aave = await AaveV3.from_chain(fork_w3, ChainId.ETHEREUM)
+        await _prepare_whale(fork_w3, aave.pool_address)
         assert await aave.get_user_emode(ETH_WHALE) == 0
 
         # Resolve the ETH-correlated category by label scan so the test
@@ -345,8 +320,8 @@ class TestAaveV3Fork:
 
     async def test_set_collateral_toggle(self, fork_w3):
         """Disabling WETH as collateral must zero the user's borrowing power."""
-        aave = _make_aave(fork_w3)
-        await _prepare_whale(fork_w3, weth_amount=WETH_SUPPLY_AMOUNT)
+        aave = await AaveV3.from_chain(fork_w3, ChainId.ETHEREUM)
+        await _prepare_whale(fork_w3, aave.pool_address, weth_amount=WETH_SUPPLY_AMOUNT)
         receipt = await send_tx(
             fork_w3, ETH_WHALE, aave.build_supply_tx(ETH_WHALE, TokenAmount(WETH, WETH_SUPPLY_AMOUNT))
         )
