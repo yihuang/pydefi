@@ -362,25 +362,6 @@
     "tokenAdminRegistry": "0x4b238f757f842280FeA88A1c2B4186b71eF8BC5E",
     "tokenPoolFactory": "0x9A82E768C885DEF7C4b47451Fd4Db53d8B21ed07"
   },
-  "185": {
-    "chainFamily": "evm",
-    "chainId": 185,
-    "chainType": "evm",
-    "displayName": "Mint",
-    "feeTokens": [
-      "LINK",
-      "WETH",
-      "ETH"
-    ],
-    "internalId": "mint-mainnet",
-    "registryModule": "0x3869fE7e385554978Eff78423Fd16B5f0974D260",
-    "rmn": "0xA84f7c3E7d1025EF1F991110B1956c024bb6Ac99",
-    "router": "0x1d86012266F214a368766C2B9329FdCC75B1Ce6b",
-    "selector": "17164792800244661392",
-    "supported": true,
-    "tokenAdminRegistry": "0xfAb243379A10D8090B32BC706288c2187dbe495C",
-    "tokenPoolFactory": "0xE67E30B1b4F80A35852488757C3efc093903651A"
-  },
   "1868": {
     "chainFamily": "evm",
     "chainId": 1868,
@@ -989,6 +970,25 @@
     "supported": true,
     "tokenAdminRegistry": "0xf4a170A36D4C656F614d44453f73308Bdb275196",
     "tokenPoolFactory": "0xe8464c353210Cc398A45dB2454FBc5BCd25fFf20"
+  },
+  "47763": {
+    "chainFamily": "evm",
+    "chainId": 47763,
+    "chainType": "evm",
+    "displayName": "Neo X",
+    "feeTokens": [
+      "LINK",
+      "WGAS",
+      "GAS"
+    ],
+    "internalId": "neox-mainnet",
+    "registryModule": "0x051665f2455116e929b9972c36d23070F5054Ce0",
+    "rmn": "0x024F6a98712F5d9b7464B871ba36e1CF0BdB2C5d",
+    "router": "0xd18b6b2306920d8Ae13b4A2D06b55AD36A6Fa2C7",
+    "selector": "7222032299962346917",
+    "supported": true,
+    "tokenAdminRegistry": "0x344FCBb30EC9ECf58c8399EDe0430592E6703BC1",
+    "tokenPoolFactory": "0x684bBDaD7Eabc58596DF0c0Ba59Df05FD6a519Bf"
   },
   "480": {
     "chainFamily": "evm",
