@@ -16,7 +16,7 @@ import pytest
 from hexbytes import HexBytes
 
 from pydefi.abi.lending import AAVE_V3_POOL, COMPOUND_V3_COMET
-from pydefi.deployments import chains_for
+from pydefi.deployments import chains_for, comet_contract_names
 from pydefi.lending import AaveV3, UserAccountData
 from pydefi.lending.aave_v3 import (
     RAY,
@@ -360,19 +360,7 @@ class TestCompoundOtherBuilders:
 # ---------------------------------------------------------------------------
 
 
-COMPOUND_V3_MARKETS = [
-    ("COMPOUND_V3_USDC", ChainId.ETHEREUM),
-    ("COMPOUND_V3_USDC", ChainId.ARBITRUM),
-    ("COMPOUND_V3_USDC", ChainId.BASE),
-    ("COMPOUND_V3_USDC", ChainId.POLYGON),
-    ("COMPOUND_V3_USDC", ChainId.OPTIMISM),
-    ("COMPOUND_V3_WETH", ChainId.ETHEREUM),
-    ("COMPOUND_V3_WETH", ChainId.ARBITRUM),
-    ("COMPOUND_V3_WETH", ChainId.BASE),
-    ("COMPOUND_V3_WETH", ChainId.OPTIMISM),
-    ("COMPOUND_V3_USDT", ChainId.ETHEREUM),
-    ("COMPOUND_V3_USDT", ChainId.ARBITRUM),
-]
+COMPOUND_V3_MARKETS = [(name, chain) for name in comet_contract_names() for chain in sorted(chains_for(name))]
 
 
 @pytest.mark.parametrize("name,chain", COMPOUND_V3_MARKETS)

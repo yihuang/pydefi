@@ -12,6 +12,7 @@ Usage::
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from pydefi._utils import decode_address
@@ -214,20 +215,19 @@ def address_for(name: str, chain_id: int) -> Address:
     return Address(decode_address(get_address(name, chain_id), chain_id))
 
 
-# Compound III deployments are keyed by their base asset.
-COMET_CONTRACT_BY_SYMBOL: dict[str, str] = {
-    "USDC": "COMPOUND_V3_USDC",
-    "WETH": "COMPOUND_V3_WETH",
-    "USDT": "COMPOUND_V3_USDT",
-}
+def _normalize_symbol(token_symbol: str) -> str:
+    return re.sub(r"[^A-Za-z0-9]+", "_", token_symbol.upper()).strip("_")
+
+
+def comet_contract_names() -> list[str]:
+    """All ``COMPOUND_V3_*`` deployment names in the registry, sorted."""
+    return sorted(name for name in _CONTRACTS if name.startswith("COMPOUND_V3_"))
 
 
 def comet_contract_for(token_symbol: str) -> str:
     """Comet deployment name for *token_symbol*, or :class:`ValueError`
     listing supported symbols."""
-    name = COMET_CONTRACT_BY_SYMBOL.get(token_symbol)
-    if name is None:
-        raise ValueError(
-            f"Compound V3 has no market for token {token_symbol!r}; supported: {sorted(COMET_CONTRACT_BY_SYMBOL)}"
-        )
+    name = f"COMPOUND_V3_{_normalize_symbol(token_symbol)}"
+    if name not in _CONTRACTS:
+        raise ValueError(f"Compound V3 has no market for token {token_symbol!r}; supported: {comet_contract_names()}")
     return name
