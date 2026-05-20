@@ -23,6 +23,7 @@ Docs: https://docs.compound.finance/
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Literal
@@ -214,8 +215,10 @@ class CompoundV3:
         """
         if self._base_token is not None:
             return self._base_token
-        addr_str = await COMPOUND_V3_COMET.fns.baseToken().call(self.w3, to=self.comet_address)
-        scale = await COMPOUND_V3_COMET.fns.baseScale().call(self.w3, to=self.comet_address)
+        addr_str, scale = await asyncio.gather(
+            COMPOUND_V3_COMET.fns.baseToken().call(self.w3, to=self.comet_address),
+            COMPOUND_V3_COMET.fns.baseScale().call(self.w3, to=self.comet_address),
+        )
         decimals = _scale_to_decimals(scale)
         token = Token(
             chain_id=self.chain_id,
@@ -228,13 +231,18 @@ class CompoundV3:
 
     async def get_market_data(self) -> CompoundMarketData:
         """Return the current state of the base asset side of this market."""
-        base = await self.get_base_token()
-        total_supply = await COMPOUND_V3_COMET.fns.totalSupply().call(self.w3, to=self.comet_address)
-        total_borrow = await COMPOUND_V3_COMET.fns.totalBorrow().call(self.w3, to=self.comet_address)
-        utilization_raw = await COMPOUND_V3_COMET.fns.getUtilization().call(self.w3, to=self.comet_address)
-        supply_rate = await COMPOUND_V3_COMET.fns.getSupplyRate(utilization_raw).call(self.w3, to=self.comet_address)
-        borrow_rate = await COMPOUND_V3_COMET.fns.getBorrowRate(utilization_raw).call(self.w3, to=self.comet_address)
-        base_price_feed_str = await COMPOUND_V3_COMET.fns.baseTokenPriceFeed().call(self.w3, to=self.comet_address)
+        base, total_supply, total_borrow, utilization_raw, base_price_feed_str = await asyncio.gather(
+            self.get_base_token(),
+            COMPOUND_V3_COMET.fns.totalSupply().call(self.w3, to=self.comet_address),
+            COMPOUND_V3_COMET.fns.totalBorrow().call(self.w3, to=self.comet_address),
+            COMPOUND_V3_COMET.fns.getUtilization().call(self.w3, to=self.comet_address),
+            COMPOUND_V3_COMET.fns.baseTokenPriceFeed().call(self.w3, to=self.comet_address),
+        )
+        # Both rate getters take utilization as input, so they run after it.
+        supply_rate, borrow_rate = await asyncio.gather(
+            COMPOUND_V3_COMET.fns.getSupplyRate(utilization_raw).call(self.w3, to=self.comet_address),
+            COMPOUND_V3_COMET.fns.getBorrowRate(utilization_raw).call(self.w3, to=self.comet_address),
+        )
 
         return CompoundMarketData(
             base_token=base,
@@ -257,9 +265,11 @@ class CompoundV3:
         """
         tokens = tokens or {}
         num_assets = await COMPOUND_V3_COMET.fns.numAssets().call(self.w3, to=self.comet_address)
+        infos = await asyncio.gather(
+            *(COMPOUND_V3_COMET.fns.getAssetInfo(i).call(self.w3, to=self.comet_address) for i in range(num_assets))
+        )
         out: list[CompoundCollateralInfo] = []
-        for i in range(num_assets):
-            info = await COMPOUND_V3_COMET.fns.getAssetInfo(i).call(self.w3, to=self.comet_address)
+        for info in infos:
             offset = info[0]
             asset_addr = Address(info[1])
             price_feed = Address(info[2])
@@ -300,20 +310,27 @@ class CompoundV3:
             collateral_assets: Pre-fetched collateral list. When omitted,
                 :meth:`get_collateral_assets` is called once internally.
         """
-        base = await self.get_base_token()
-        if collateral_assets is None:
-            collateral_assets = await self.get_collateral_assets()
 
-        base_supply = await COMPOUND_V3_COMET.fns.balanceOf(user).call(self.w3, to=self.comet_address)
-        base_borrow = await COMPOUND_V3_COMET.fns.borrowBalanceOf(user).call(self.w3, to=self.comet_address)
-        is_liquidatable = await COMPOUND_V3_COMET.fns.isLiquidatable(user).call(self.w3, to=self.comet_address)
+        async def _collateral_assets() -> list[CompoundCollateralInfo]:
+            return collateral_assets if collateral_assets is not None else await self.get_collateral_assets()
 
-        collateral: dict[Address, TokenAmount] = {}
-        for info in collateral_assets:
-            balance = await COMPOUND_V3_COMET.fns.collateralBalanceOf(user, info.asset.address).call(
-                self.w3, to=self.comet_address
+        base, assets, base_supply, base_borrow, is_liquidatable = await asyncio.gather(
+            self.get_base_token(),
+            _collateral_assets(),
+            COMPOUND_V3_COMET.fns.balanceOf(user).call(self.w3, to=self.comet_address),
+            COMPOUND_V3_COMET.fns.borrowBalanceOf(user).call(self.w3, to=self.comet_address),
+            COMPOUND_V3_COMET.fns.isLiquidatable(user).call(self.w3, to=self.comet_address),
+        )
+
+        balances = await asyncio.gather(
+            *(
+                COMPOUND_V3_COMET.fns.collateralBalanceOf(user, info.asset.address).call(self.w3, to=self.comet_address)
+                for info in assets
             )
-            collateral[info.asset.address] = TokenAmount(token=info.asset, amount=balance)
+        )
+        collateral: dict[Address, TokenAmount] = {
+            info.asset.address: TokenAmount(token=info.asset, amount=balance) for info, balance in zip(assets, balances)
+        }
 
         return CompoundUserPosition(
             base_supply=TokenAmount(token=base, amount=base_supply),
