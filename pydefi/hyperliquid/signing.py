@@ -26,13 +26,22 @@ Refs:
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any, Union
 
 import msgpack
 from eth_account import Account
 from eth_account.messages import encode_typed_data
 from eth_utils import keccak, to_hex
 from hexbytes import HexBytes
+
+if TYPE_CHECKING:
+    from pydefi.wallet import WalletSigner
+
+#: Type alias for a signer: either a raw private-key hex string or any
+#: :class:`~pydefi.wallet.WalletSigner` instance (e.g.
+#: :class:`~pydefi.wallet.EthKeystoreSigner` or
+#: :class:`~pydefi.wallet.OpenWalletSigner`).
+Signer = Union[str, "WalletSigner"]
 
 # ---------------------------------------------------------------------------
 # EIP-712 type definitions for user-signed actions
@@ -209,21 +218,41 @@ def _user_signed_payload(
     }
 
 
-def sign_inner(wallet: Account, data: dict[str, Any]) -> dict[str, str | int]:
+def sign_inner(wallet: Any, data: dict[str, Any]) -> dict[str, str | int]:
     """Sign an EIP-712 ``data`` payload and return ``{r, s, v}``.
 
     Args:
-        wallet: An :class:`~eth_account.Account` instance (or any object with
-            a ``sign_message`` method compatible with ``eth_account``).
+        wallet: An :class:`~eth_account.Account` instance **or** any object
+            that implements a ``sign_eip712(data)`` method (e.g.
+            :class:`pydefi.wallet.OpenWalletSigner`).
         data: A fully-formed EIP-712 payload dict with ``domain``, ``types``,
             ``primaryType``, and ``message`` keys.
 
     Returns:
         ``{"r": "0x...", "s": "0x...", "v": 27|28}``
     """
+    if hasattr(wallet, "sign_eip712"):
+        return wallet.sign_eip712(data)
     structured_data = encode_typed_data(full_message=data)
     signed = wallet.sign_message(structured_data)
     return {"r": to_hex(signed.r), "s": to_hex(signed.s), "v": signed.v}
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+
+def _as_account(signer: Signer) -> Any:
+    """Convert a *signer* to an object suitable for :func:`sign_inner`.
+
+    If *signer* is a raw private-key string it is converted to an
+    :class:`~eth_account.Account` instance.  Any other object (e.g. an
+    :class:`~pydefi.wallet.OpenWalletSigner`) is returned unchanged.
+    """
+    if isinstance(signer, str):
+        return Account.from_key(signer)
+    return signer
 
 
 # ---------------------------------------------------------------------------
@@ -232,7 +261,7 @@ def sign_inner(wallet: Account, data: dict[str, Any]) -> dict[str, str | int]:
 
 
 def sign_l1_action(
-    private_key: str,
+    private_key: Signer,
     action: Any,
     nonce: int,
     vault_address: str | None = None,
@@ -244,7 +273,8 @@ def sign_l1_action(
     Use this for trading actions: ``order``, ``cancel``, ``modify``, etc.
 
     Args:
-        private_key: Hex-encoded private key (with or without ``0x`` prefix).
+        private_key: Hex-encoded private key (with or without ``0x`` prefix)
+            **or** an :class:`~pydefi.wallet.OpenWalletSigner` instance.
         action: The L1 action dict (e.g. ``{"type": "order", ...}``).
         nonce: Millisecond-precision timestamp (unique per signer per action).
         vault_address: Address of the vault / sub-account, or ``None`` for the
@@ -258,12 +288,12 @@ def sign_l1_action(
     h = action_hash(action, vault_address, nonce, expires_after)
     phantom_agent = {"source": "a" if is_mainnet else "b", "connectionId": h}
     data = _l1_payload(phantom_agent)
-    wallet = Account.from_key(private_key)
+    wallet = _as_account(private_key)
     return sign_inner(wallet, data)
 
 
 def sign_user_signed_action(
-    private_key: str,
+    private_key: Signer,
     action: dict[str, Any],
     payload_types: list[dict[str, str]],
     primary_type: str,
@@ -275,7 +305,8 @@ def sign_user_signed_action(
     ``hyperliquidChain`` fields before signing.
 
     Args:
-        private_key: Hex-encoded private key.
+        private_key: Hex-encoded private key **or** an
+            :class:`~pydefi.wallet.OpenWalletSigner` instance.
         action: The action dict (will be mutated to add signing metadata).
         payload_types: EIP-712 type definition list for this action type.
         primary_type: EIP-712 primary type string (e.g.
@@ -288,12 +319,12 @@ def sign_user_signed_action(
     action["signatureChainId"] = _SIGNATURE_CHAIN_ID
     action["hyperliquidChain"] = _hyperliquid_chain_name(is_mainnet)
     data = _user_signed_payload(primary_type, payload_types, action)
-    wallet = Account.from_key(private_key)
+    wallet = _as_account(private_key)
     return sign_inner(wallet, data)
 
 
 def sign_usd_transfer_action(
-    private_key: str,
+    private_key: Signer,
     action: dict[str, Any],
     is_mainnet: bool = True,
 ) -> dict[str, str | int]:
@@ -308,7 +339,7 @@ def sign_usd_transfer_action(
 
 
 def sign_spot_transfer_action(
-    private_key: str,
+    private_key: Signer,
     action: dict[str, Any],
     is_mainnet: bool = True,
 ) -> dict[str, str | int]:
@@ -323,7 +354,7 @@ def sign_spot_transfer_action(
 
 
 def sign_withdraw_action(
-    private_key: str,
+    private_key: Signer,
     action: dict[str, Any],
     is_mainnet: bool = True,
 ) -> dict[str, str | int]:
@@ -338,7 +369,7 @@ def sign_withdraw_action(
 
 
 def sign_usd_class_transfer_action(
-    private_key: str,
+    private_key: Signer,
     action: dict[str, Any],
     is_mainnet: bool = True,
 ) -> dict[str, str | int]:
@@ -353,7 +384,7 @@ def sign_usd_class_transfer_action(
 
 
 def sign_send_asset_action(
-    private_key: str,
+    private_key: Signer,
     action: dict[str, Any],
     is_mainnet: bool = True,
 ) -> dict[str, str | int]:
@@ -368,7 +399,7 @@ def sign_send_asset_action(
 
 
 def sign_approve_agent_action(
-    private_key: str,
+    private_key: Signer,
     action: dict[str, Any],
     is_mainnet: bool = True,
 ) -> dict[str, str | int]:
@@ -383,7 +414,7 @@ def sign_approve_agent_action(
 
 
 def sign_approve_builder_fee_action(
-    private_key: str,
+    private_key: Signer,
     action: dict[str, Any],
     is_mainnet: bool = True,
 ) -> dict[str, str | int]:
@@ -398,7 +429,7 @@ def sign_approve_builder_fee_action(
 
 
 def sign_send_to_evm_with_data_action(
-    private_key: str,
+    private_key: Signer,
     action: dict[str, Any],
     is_mainnet: bool = True,
 ) -> dict[str, str | int]:
@@ -411,7 +442,8 @@ def sign_send_to_evm_with_data_action(
     the correct destination chain ID before calling this function.
 
     Args:
-        private_key: Hex-encoded private key.
+        private_key: Hex-encoded private key **or** an
+            :class:`~pydefi.wallet.OpenWalletSigner` instance.
         action: The ``sendToEvmWithData`` action dict.  Must already contain
             ``signatureChainId`` (destination chain ID in hex, e.g.
             ``"0xa4b1"``).  The ``hyperliquidChain`` field will be set
@@ -427,5 +459,5 @@ def sign_send_to_evm_with_data_action(
         SEND_TO_EVM_WITH_DATA_SIGN_TYPES,
         action,
     )
-    wallet = Account.from_key(private_key)
+    wallet = _as_account(private_key)
     return sign_inner(wallet, data)

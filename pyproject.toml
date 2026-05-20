@@ -34,6 +34,9 @@ dev = [
     "py-solc-x>=2.0.0",
     "ethereum-execution>=2.19.0",
 ]
+wallet = [
+    "open-wallet-standard>=1.2.4",
+]
 
 [project.urls]
 "Homepage" = "https://github.com/yihuang/pydefi"
