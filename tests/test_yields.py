@@ -376,6 +376,35 @@ async def test_build_yield_route_validation_errors(strategy: str, kw: dict, err:
         )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "strategy,amount_token_is_dai,source_is_dai_market,target_is_dai_market,err",
+    [
+        ("withdraw_then_supply", True, False, False, "amount_in.token must match source_market.token"),
+        ("withdraw_then_supply", False, False, True, "target_market.token must match amount_in.token"),
+        ("supply_then_bridge", True, False, False, "amount_in.token must match target_market.token"),
+    ],
+    ids=["withdraw_source", "withdraw_target", "supply_target"],
+)
+async def test_build_yield_route_rejects_token_mismatch(
+    strategy, amount_token_is_dai, source_is_dai_market, target_is_dai_market, err
+):
+    """amount_in.token must match the relevant market token by (chain_id, address)
+    — otherwise the route would act on the wrong asset while metadata pointed elsewhere."""
+    dai = Token(chain_id=ChainId.BASE, address=Address("0x" + "33" * 20), symbol="DAI", decimals=18)
+    usdc_m = _market("aave_v3", ChainId.BASE, USDC_BASE)
+    dai_m = _market("compound_v3", ChainId.BASE, dai)
+    with pytest.raises(ValueError, match=err):
+        await build_yield_route(
+            cast(Strategy, strategy),
+            _USER,
+            TokenAmount(dai if amount_token_is_dai else USDC_BASE, 1),
+            w3s={ChainId.BASE: cast(AsyncWeb3, object())},
+            source_market=dai_m if source_is_dai_market else usdc_m,
+            target_market=dai_m if target_is_dai_market else usdc_m,
+        )
+
+
 def _position(market: YieldMarket, amount: int) -> Position:
     return Position(market=market, balance=TokenAmount(token=market.token, amount=amount))
 

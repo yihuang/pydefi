@@ -92,6 +92,12 @@ def _market_spender(market: YieldMarket) -> Address:
     )
 
 
+def _same_token_identity(a: Token, b: Token) -> bool:
+    # Identity = (chain, address). Symbol/decimals are not compared because
+    # Compound markets carry a "BASE" placeholder symbol from baseToken().
+    return a.chain_id == b.chain_id and a.address == b.address
+
+
 def build_approve_tx(token: Token, spender: Address, amount: int, gas: int = _APPROVE_GAS) -> dict[str, Any]:
     return {
         "to": token.address,
@@ -244,7 +250,17 @@ async def build_yield_route(
     if strategy == "withdraw_then_supply":
         if source_market is None:
             raise ValueError("withdraw_then_supply requires source_market")
+        if not _same_token_identity(amount_in.token, source_market.token):
+            raise ValueError(
+                "withdraw_then_supply: amount_in.token must match source_market.token "
+                f"(amount_in={amount_in.token}, source={source_market.token})"
+            )
         same_chain = source_market.chain_id == target_market.chain_id
+        if same_chain and not _same_token_identity(amount_in.token, target_market.token):
+            raise ValueError(
+                "same-chain withdraw_then_supply: target_market.token must match amount_in.token "
+                f"(amount_in={amount_in.token}, target={target_market.token})"
+            )
         if not same_chain:
             if bridge is None:
                 raise ValueError(
@@ -332,6 +348,11 @@ async def build_yield_route(
             raise ValueError(
                 "supply_then_bridge expects target_market on amount_in.token's chain "
                 f"(got market={target_market.chain_id}, token={chain_id})"
+            )
+        if not _same_token_identity(amount_in.token, target_market.token):
+            raise ValueError(
+                "supply_then_bridge: amount_in.token must match target_market.token "
+                f"(amount_in={amount_in.token}, target={target_market.token})"
             )
         w3 = w3s[chain_id]
         approve_tx = build_approve_tx(amount_in.token, _market_spender(target_market), amount_in.amount)
