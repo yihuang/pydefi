@@ -9,6 +9,10 @@ cd "$(dirname "$0")"
 curl -s 'https://docs.chain.link/api/ccip/v1/chains?environment=mainnet' \
   | jq -S '.data.evm' > ccip-chains.json
 
-# Aave V3 core addresses (the AAVE_V3_* block of deployments.json).
+# Aave V3 core addresses (aave.json).
 # Source: https://github.com/aave-dao/aave-address-book
 python3 update_aave.py
+
+# Compound III (Comet) market addresses (compound.json).
+# Source: https://github.com/compound-finance/comet
+python3 update_compound.py

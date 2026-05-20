@@ -112,27 +112,6 @@ _CONTRACTS: dict[str, dict[int, str]] = {
     "PAIR_WETH_DAI": {_ETH: "0xA478c2975Ab1Ea89e8196811F51A7B7Ade33eB11"},
     "PAIR_USDC_DAI": {_ETH: "0xAE461cA67B15dc8dc81CE7615e0320dA1A9aB8D5"},
     "PAIR_USDC_USDT": {_ETH: "0x3041CbD36888bECc7bbCBc0045E3B1f144466f5f"},
-    # Compound III (Comet)
-    # Canonical source: https://github.com/compound-finance/comet/tree/main/deployments
-    # One proxy per (chain, base asset) market. Naming pattern:
-    # COMPOUND_V3_<BASE><CHAIN-SUFFIX-IF-MULTIPLE>.
-    "COMPOUND_V3_USDC": {
-        _ETH: "0xc3d688B66703497DAA19211EEdff47f25384cdc3",
-        ChainId.ARBITRUM: "0x9c4ec768c28520B50860ea7a15bd7213a9fF58bf",
-        ChainId.BASE: "0xb125E6687d4313864e53df431d5425969c15Eb2F",
-        ChainId.POLYGON: "0xF25212E676D1F7F89Cd72fFEe66158f541246445",
-        ChainId.OPTIMISM: "0x2e44e174f7D53F0212823acC11C01A11d58c5bCB",
-    },
-    "COMPOUND_V3_WETH": {
-        _ETH: "0xA17581A9E3356d9A858b789D68B4d866e593aE94",
-        ChainId.ARBITRUM: "0x6f7D514bbD4aFf3BcD1140B7344b32f063dEe486",
-        ChainId.BASE: "0x46e6b214b524310239732D51387075E0e70970bf",
-        ChainId.OPTIMISM: "0xE36A30D249f7761327fd973001A32010b521b6Fd",
-    },
-    "COMPOUND_V3_USDT": {
-        _ETH: "0x3Afdc9BCA9213A35503b077a6072F3D0d5AB0840",
-        ChainId.ARBITRUM: "0xd98Be00b5D27fc98112BdE293e487f8D4cA57d07",
-    },
     # Lucid AssetControllers — https://docs.lucidlabs.fi/developer-reference/deployed-contracts/controller-contracts
     # MANTRA lanes: USDC/WETH -> Base,      USDT -> Optimism (Hyperlane adapter)
     # Kite lanes:   USDC/WETH -> Avalanche, USDT -> Celo (LayerZero adapter)
@@ -154,26 +133,29 @@ _CONTRACTS: dict[str, dict[int, str]] = {
 }
 
 
-def _merge_aave(contracts: dict[str, dict[int, str]]) -> None:
-    """Merge Aave V3 addresses from config/aave.json into *contracts*.
+def _merge_generated(contracts: dict[str, dict[int, str]], filename: str) -> None:
+    """Merge a generated address file (config/<filename>) into *contracts*.
 
-    Regenerate aave.json with ``bash config/update.sh`` if missing or stale."""
-    path = Path(__file__).resolve().parent / "config" / "aave.json"
+    aave.json and compound.json are produced from upstream registries by
+    config/update.sh. Regenerate with ``bash config/update.sh`` if a file
+    is missing/empty/corrupt."""
+    path = Path(__file__).resolve().parent / "config" / filename
     hint = "run config/update.sh to (re)generate it"
     if not path.exists():
-        raise FileNotFoundError(f"aave registry not found: {path} \u2014 {hint}")
+        raise FileNotFoundError(f"{filename} not found: {path} \u2014 {hint}")
     text = path.read_text()
     if not text.strip():
-        raise ValueError(f"aave registry is empty: {path} \u2014 {hint}")
+        raise ValueError(f"{filename} is empty: {path} \u2014 {hint}")
     try:
-        aave = json.loads(text)
+        data = json.loads(text)
     except json.JSONDecodeError as exc:
-        raise ValueError(f"aave registry is corrupt: {path} ({exc}) \u2014 {hint}") from exc
-    for name, chains in aave.items():
+        raise ValueError(f"{filename} is corrupt: {path} ({exc}) \u2014 {hint}") from exc
+    for name, chains in data.items():
         contracts[name] = {int(cid): addr for cid, addr in chains.items()}
 
 
-_merge_aave(_CONTRACTS)
+_merge_generated(_CONTRACTS, "aave.json")
+_merge_generated(_CONTRACTS, "compound.json")
 
 
 def get_address(name: str, chain_id: int) -> str:
