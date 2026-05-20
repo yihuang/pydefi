@@ -16,6 +16,7 @@ import pytest
 from hexbytes import HexBytes
 
 from pydefi.abi.lending import AAVE_V3_POOL, COMPOUND_V3_COMET
+from pydefi.deployments import chains_for
 from pydefi.lending import AaveV3, UserAccountData
 from pydefi.lending.aave_v3 import (
     RAY,
@@ -234,22 +235,7 @@ class TestAaveBuildFlashLoanSimpleTx:
 # ---------------------------------------------------------------------------
 
 
-AAVE_V3_CHAINS = [
-    ChainId.ETHEREUM,
-    ChainId.ARBITRUM,
-    ChainId.BASE,
-    ChainId.OPTIMISM,
-    ChainId.POLYGON,
-    ChainId.AVALANCHE,
-    ChainId.BSC,
-    ChainId.SCROLL,
-    ChainId.LINEA,
-    ChainId.ZKSYNC,
-    ChainId.GNOSIS,
-]
-
-
-@pytest.mark.parametrize("chain", AAVE_V3_CHAINS)
+@pytest.mark.parametrize("chain", chains_for("AAVE_V3_ADDRESSES_PROVIDER"))
 def test_aave_v3_deployment_pinned(chain: int):
     """The immutable ``PoolAddressesProvider`` is pinned on every supported
     chain — Pool / DataProvider / Oracle are resolved from it on-chain and

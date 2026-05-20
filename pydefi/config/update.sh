@@ -9,16 +9,19 @@ cd "$(dirname "$0")"
 curl -s 'https://docs.chain.link/api/ccip/v1/chains?environment=mainnet' \
   | jq -S '.data.evm' > ccip-chains.json
 
-# Aave V3 PoolAddressesProvider per chain (aave.json) — the immutable root;
-# Pool / DataProvider / Oracle are resolved from it on-chain at runtime.
-# Source: the @aave-dao/aave-address-book npm package; jq picks the canonical
-# V3 markets and reduces each to its PoolAddressesProvider, keyed by chain id.
+# Aave V3 PoolAddressesProvider per chain (aave.json).
+# Source: the @aave-dao/aave-address-book npm package — it ships several
+# markets per chain id, so jq keeps the canonical one (shortest export name).
 deno eval 'import * as book from "npm:@aave-dao/aave-address-book"; console.log(JSON.stringify(book, null, " "))' \
   | jq -S '{AAVE_V3_ADDRESSES_PROVIDER: (
-      [.AaveV3Ethereum, .AaveV3Optimism, .AaveV3BNB, .AaveV3Gnosis, .AaveV3Polygon,
-       .AaveV3ZkSync, .AaveV3Base, .AaveV3Arbitrum, .AaveV3Avalanche, .AaveV3Linea,
-       .AaveV3Scroll, .AaveV3Sepolia]
-      | map({(.CHAIN_ID | tostring): .POOL_ADDRESSES_PROVIDER}) | add)}' \
+      to_entries
+      | map(select((.key | startswith("AaveV3"))
+                   and .value.CHAIN_ID != null
+                   and .value.POOL_ADDRESSES_PROVIDER != null))
+      | group_by(.value.CHAIN_ID)
+      | map(min_by(.key | length))
+      | map({(.value.CHAIN_ID | tostring): .value.POOL_ADDRESSES_PROVIDER})
+      | add)}' \
   > aave.json
 
 # Compound III (Comet) market addresses (compound.json).
