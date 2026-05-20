@@ -31,7 +31,7 @@ class Position:
 
 
 async def _aave_balance(market: YieldMarket, user: Address, w3: AsyncWeb3) -> TokenAmount:
-    aave = AaveV3.from_chain(w3, market.chain_id)
+    aave = await AaveV3.from_chain(w3, market.chain_id)
     user_reserve = await aave.get_user_reserve_data(user, market.token)
     return user_reserve.a_token_balance
 

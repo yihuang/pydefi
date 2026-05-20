@@ -54,6 +54,19 @@ PAIR_WETH_DAI: Address = Address(get_address("PAIR_WETH_DAI", ChainId.ETHEREUM))
 PAIR_USDC_DAI: Address = Address(get_address("PAIR_USDC_DAI", ChainId.ETHEREUM))
 PAIR_USDC_USDT: Address = Address(get_address("PAIR_USDC_USDT", ChainId.ETHEREUM))
 
+# ── Aave V3 mainnet ───────────────────────────────────────────────────────────
+# Only the PoolAddressesProvider is pinned in the deployment registry — Pool /
+# DataProvider / Oracle are resolved from it on-chain in production
+# (AaveV3.from_chain). The three literals below give the explicit-constructor
+# tests a deterministic target; test_from_addresses_provider_matches_pinned
+# asserts the on-chain resolution still matches them. Refresh after an Aave
+# protocol revision.
+
+AAVE_ADDRESSES_PROVIDER: Address = Address(get_address("AAVE_V3_ADDRESSES_PROVIDER", ChainId.ETHEREUM))
+AAVE_POOL: Address = Address("0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2")
+AAVE_DATA_PROVIDER: Address = Address("0x0a16f2FCC0D44FaE41cc54e079281D84A363bECD")
+AAVE_ORACLE: Address = Address("0x54586bE62E3c3580375aE3723C145253060Ca0C2")
+
 # ── Lucid Labs ────────────────────────────────────────────────────────────────
 
 LUCID_USDC_CTRL_MANTRA: Address = Address(get_address("LUCID_USDC_CONTROLLER", ChainId.MANTRA))

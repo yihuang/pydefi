@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Generate config/aave.json — Aave V3 core addresses from aave-address-book.
+"""Generate config/aave.json — the Aave V3 ``PoolAddressesProvider`` per chain.
+
+It is the only Aave V3 address pydefi pins; ``Pool``, ``DataProvider`` and
+``Oracle`` are resolved from it on-chain (see ``AaveV3.from_addresses_provider``).
 
 Run via update.sh. Stdlib only.
 """
@@ -13,6 +16,10 @@ from pathlib import Path
 
 _RAW = "https://raw.githubusercontent.com/aave-dao/aave-address-book/main/src"
 _AAVE_JSON = Path(__file__).resolve().parent / "aave.json"
+
+# pydefi registry name -> Solidity constant in the AaveV3<Chain> library.
+_NAME = "AAVE_V3_ADDRESSES_PROVIDER"
+_CONST = "POOL_ADDRESSES_PROVIDER"
 
 # pydefi chain id -> aave-address-book AaveV3<Chain>.sol file stem.
 _FILE_BY_CHAIN: dict[int, str] = {
@@ -28,14 +35,6 @@ _FILE_BY_CHAIN: dict[int, str] = {
     59144: "AaveV3Linea",
     534352: "AaveV3Scroll",
     11155111: "AaveV3Sepolia",
-}
-
-# pydefi registry name -> Solidity constant in the AaveV3<Chain> library.
-_CONST_BY_NAME: dict[str, str] = {
-    "AAVE_V3_POOL": "POOL",
-    "AAVE_V3_DATA_PROVIDER": "AAVE_PROTOCOL_DATA_PROVIDER",
-    "AAVE_V3_ADDRESSES_PROVIDER": "POOL_ADDRESSES_PROVIDER",
-    "AAVE_V3_ORACLE": "ORACLE",
 }
 
 
@@ -55,14 +54,12 @@ def _extract(sol: str, const: str) -> str:
 
 
 def main() -> None:
-    aave: dict[str, dict[str, str]] = {name: {} for name in _CONST_BY_NAME}
+    provider: dict[str, str] = {}
     for chain_id, stem in sorted(_FILE_BY_CHAIN.items()):
-        sol = _fetch(stem)
-        for name, const in _CONST_BY_NAME.items():
-            aave[name][str(chain_id)] = _extract(sol, const)
+        provider[str(chain_id)] = _extract(_fetch(stem), _CONST)
 
-    _AAVE_JSON.write_text(json.dumps(aave, indent=2, sort_keys=True) + "\n")
-    print(f"update_aave: wrote {_AAVE_JSON.name} — {len(_CONST_BY_NAME)} contracts across {len(_FILE_BY_CHAIN)} chains")
+    _AAVE_JSON.write_text(json.dumps({_NAME: provider}, indent=2, sort_keys=True) + "\n")
+    print(f"update_aave: wrote {_AAVE_JSON.name} — {_NAME} across {len(_FILE_BY_CHAIN)} chains")
 
 
 if __name__ == "__main__":

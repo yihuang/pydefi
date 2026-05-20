@@ -25,7 +25,7 @@ from pydefi.yields import (
     rebalance_tick,
     wait_for_bridge_settlement,
 )
-from pydefi.yields.router import Protocol, Strategy
+from pydefi.yields.router import Protocol, Strategy, YieldStep
 
 # ---------------------------------------------------------------------------
 # Tokens / addresses / canned tx dicts (shared across every test)
@@ -37,7 +37,14 @@ USDC_MANTRA = Token(chain_id=ChainId.MANTRA, address=Address("0x" + "EE" * 20), 
 
 _USER = Address("0x" + "AA" * 20)
 _STUB_WITHDRAW = {"to": Address("0x" + "11" * 20), "data": "0xdead", "value": "0", "gas": "100000"}
+_STUB_APPROVE = {"to": Address("0x" + "33" * 20), "data": "0xface", "value": "0", "gas": "100000"}
 _STUB_SUPPLY = {"to": Address("0x" + "22" * 20), "data": "0xbeef", "value": "0", "gas": "100000"}
+
+# Canned [approve, supply] pair returned by a patched router._supply_steps.
+_STUB_SUPPLY_STEPS = [
+    YieldStep("approve", ChainId.BASE, _STUB_APPROVE),
+    YieldStep("supply", ChainId.BASE, _STUB_SUPPLY),
+]
 
 
 # ---------------------------------------------------------------------------
@@ -135,7 +142,9 @@ async def test_get_yield_markets_skips_paused_aave_reserve():
         patch("pydefi.yields.router.AaveV3") as Aave,
         patch("pydefi.yields.router._compound_market", new=AsyncMock(return_value=None)),
     ):
-        Aave.from_chain.return_value.get_reserve_data = AsyncMock(return_value=_paused_reserve(USDC_BASE))
+        aave_client = AsyncMock()
+        aave_client.get_reserve_data = AsyncMock(return_value=_paused_reserve(USDC_BASE))
+        Aave.from_chain = AsyncMock(return_value=aave_client)
         out = await get_yield_markets(
             "USDC", w3s={ChainId.BASE: object()}, chains=[ChainId.BASE], protocols=["aave_v3"]
         )
@@ -189,15 +198,16 @@ def test_yield_market_is_frozen_dataclass():
 # ---------------------------------------------------------------------------
 
 
-def test_compound_unsupported_symbol_raises_value_error():
-    """Building a Compound spender for an unsupported token must surface a
+@pytest.mark.asyncio
+async def test_compound_unsupported_symbol_raises_value_error():
+    """Building supply steps for an unsupported Compound token must surface a
     descriptive ValueError listing what *is* supported — not a bare KeyError."""
-    from pydefi.yields.router import _market_spender
+    from pydefi.yields.router import _supply_steps
 
     weird = Token(chain_id=ChainId.BASE, address=Address("0x" + "44" * 20), symbol="WEIRD", decimals=18)
     bogus_market = _market("compound_v3", ChainId.BASE, weird)
     with pytest.raises(ValueError, match="Compound V3 has no market for token 'WEIRD'"):
-        _market_spender(bogus_market)
+        await _supply_steps(bogus_market, _USER, cast(AsyncWeb3, object()), TokenAmount(weird, 1))
 
 
 def test_build_approve_tx_shape():
@@ -220,8 +230,8 @@ async def test_withdraw_then_supply_same_chain():
     dst = _market("compound_v3", ChainId.BASE, USDC_BASE, apy="0.05")
     amount = TokenAmount.from_human(USDC_BASE, "1000")
     with (
-        patch("pydefi.yields.router._withdraw_tx", return_value=_STUB_WITHDRAW),
-        patch("pydefi.yields.router._supply_tx", return_value=_STUB_SUPPLY),
+        patch("pydefi.yields.router._withdraw_tx", new=AsyncMock(return_value=_STUB_WITHDRAW)),
+        patch("pydefi.yields.router._supply_steps", new=AsyncMock(return_value=_STUB_SUPPLY_STEPS)),
     ):
         route = await build_yield_route(
             "withdraw_then_supply",
@@ -246,7 +256,7 @@ async def test_withdraw_then_supply_cross_chain_emits_bridge():
     dst = _market("compound_v3", ChainId.BASE, USDC_BASE, apy="0.06")
     bridge = _fake_bridge(ChainId.MANTRA, ChainId.BASE)
     amount = TokenAmount(USDC_MANTRA, 1_000_000)
-    with patch("pydefi.yields.router._withdraw_tx", return_value=_STUB_WITHDRAW):
+    with patch("pydefi.yields.router._withdraw_tx", new=AsyncMock(return_value=_STUB_WITHDRAW)):
         route = await build_yield_route(
             "withdraw_then_supply",
             _USER,
@@ -270,7 +280,7 @@ async def test_withdraw_then_supply_cross_chain_emits_bridge():
 async def test_supply_then_bridge_entry_leg():
     market = _market("aave_v3", ChainId.BASE, USDC_BASE)
     amount = TokenAmount.from_human(USDC_BASE, "1000")
-    with patch("pydefi.yields.router._supply_tx", return_value=_STUB_SUPPLY):
+    with patch("pydefi.yields.router._supply_steps", new=AsyncMock(return_value=_STUB_SUPPLY_STEPS)):
         route = await build_yield_route(
             "supply_then_bridge",
             _USER,

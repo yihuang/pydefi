@@ -248,22 +248,16 @@ AAVE_V3_CHAINS = [
     ChainId.GNOSIS,
 ]
 
-AAVE_V3_CONTRACTS = (
-    "AAVE_V3_POOL",
-    "AAVE_V3_DATA_PROVIDER",
-    "AAVE_V3_ADDRESSES_PROVIDER",
-    "AAVE_V3_ORACLE",
-)
-
 
 @pytest.mark.parametrize("chain", AAVE_V3_CHAINS)
-@pytest.mark.parametrize("name", AAVE_V3_CONTRACTS)
-def test_aave_v3_deployment_pinned(chain: int, name: str):
-    """Every Aave V3 contract is pinned on every supported chain."""
+def test_aave_v3_deployment_pinned(chain: int):
+    """The immutable ``PoolAddressesProvider`` is pinned on every supported
+    chain — Pool / DataProvider / Oracle are resolved from it on-chain and
+    deliberately not pinned (see ``AaveV3.from_chain``)."""
     from pydefi.deployments import get_address
 
-    addr = get_address(name, chain)
-    assert len(addr) == 42 and addr.startswith("0x"), f"{name} on {chain}: {addr!r}"
+    addr = get_address("AAVE_V3_ADDRESSES_PROVIDER", chain)
+    assert len(addr) == 42 and addr.startswith("0x"), f"AAVE_V3_ADDRESSES_PROVIDER on {chain}: {addr!r}"
 
 
 # ===========================================================================

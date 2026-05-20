@@ -21,7 +21,7 @@ Quick-start::
     from pydefi.types import ChainId, TokenAmount
     from pydefi._utils import decode_address
 
-    aave = AaveV3.from_chain(w3, ChainId.ETHEREUM)
+    aave = await AaveV3.from_chain(w3, ChainId.ETHEREUM)
 
     usdc = get_token("USDC", ChainId.ETHEREUM)
     data = await aave.get_reserve_data(usdc)
@@ -34,14 +34,12 @@ Quick-start::
 
 Three ways to construct a client:
 
-* ``AaveV3.from_chain(w3, chain_id)`` — addresses from the pydefi
-  deployment registry; no network round-trip. The default choice.
+* ``await AaveV3.from_chain(w3, chain_id)`` — the default. Resolves Pool /
+  DataProvider / Oracle on-chain from the registry's ``PoolAddressesProvider``.
 * ``await AaveV3.from_addresses_provider(w3, chain_id, addresses_provider)``
-  — resolves Pool / DataProvider / Oracle live from the on-chain
-  ``PoolAddressesProvider``. Prefer when a chain may have rotated its
-  ``PoolDataProvider`` since the registry was last regenerated.
+  — same, from a provider you supply; for forks or unregistered chains.
 * ``AaveV3(w3, chain_id, pool_address, data_provider_address, ...)`` —
-  explicit addresses, for forks, testnets, or custom deployments.
+  explicit addresses, no network round-trip; for tests or pinned forks.
 
 ``CompoundV3`` mirrors the first and third: ``CompoundV3.from_chain(w3,
 chain_id, "USDC")`` (Comet markets are keyed by base asset) or the

@@ -13,7 +13,7 @@ from eth_contract.erc20 import ERC20
 from web3 import AsyncWeb3
 
 from pydefi.bridge.lucid import LucidBridge
-from pydefi.deployments import COMET_CONTRACT_BY_SYMBOL, address_for, chains_for, comet_contract_for, get_token
+from pydefi.deployments import COMET_CONTRACT_BY_SYMBOL, chains_for, get_token
 from pydefi.lending.aave_v3 import AaveV3
 from pydefi.lending.compound_v3 import CompoundV3
 from pydefi.types import Address, Token, TokenAmount
@@ -66,15 +66,10 @@ class YieldRoute:
 
 
 def _candidate_chains(token_symbol: str) -> list[int]:
-    aave = set(chains_for("AAVE_V3_POOL"))
+    aave = set(chains_for("AAVE_V3_ADDRESSES_PROVIDER"))
     comet_name = COMET_CONTRACT_BY_SYMBOL.get(token_symbol)
     comet = set(chains_for(comet_name)) if comet_name else set()
     return sorted(aave | comet)
-
-
-def _market_spender(market: YieldMarket) -> Address:
-    name = "AAVE_V3_POOL" if market.protocol == "aave_v3" else comet_contract_for(market.token.symbol)
-    return address_for(name, market.chain_id)
 
 
 def _same_token_identity(a: Token, b: Token) -> bool:
@@ -103,23 +98,29 @@ def build_approve_tx(token: Token, spender: Address, amount: int, gas: int = _AP
     }
 
 
-def _supply_tx(market: YieldMarket, user: Address, w3: AsyncWeb3, amount: TokenAmount) -> dict[str, Any]:
+async def _withdraw_tx(market: YieldMarket, user: Address, w3: AsyncWeb3, amount: TokenAmount) -> dict[str, Any]:
     if market.protocol == "aave_v3":
-        return AaveV3.from_chain(w3, market.chain_id).build_supply_tx(user, amount)
-    return CompoundV3.from_chain(w3, market.chain_id, market.token.symbol).build_supply_tx(amount)
-
-
-def _withdraw_tx(market: YieldMarket, user: Address, w3: AsyncWeb3, amount: TokenAmount) -> dict[str, Any]:
-    if market.protocol == "aave_v3":
-        return AaveV3.from_chain(w3, market.chain_id).build_withdraw_tx(user, amount)
+        aave = await AaveV3.from_chain(w3, market.chain_id)
+        return aave.build_withdraw_tx(user, amount)
     return CompoundV3.from_chain(w3, market.chain_id, market.token.symbol).build_withdraw_tx(amount)
 
 
-def _supply_steps(market: YieldMarket, user: Address, w3: AsyncWeb3, amount: TokenAmount) -> list[YieldStep]:
-    """``[approve, supply]`` — approve the market's spender, then supply."""
+async def _supply_steps(market: YieldMarket, user: Address, w3: AsyncWeb3, amount: TokenAmount) -> list[YieldStep]:
+    """``[approve, supply]`` — approve the market's spender, then supply.
+
+    The ERC-20 ``approve`` spender is the contract that pulls the funds —
+    the Aave V3 ``Pool`` or the Compound III ``Comet``. Both come off the
+    constructed client, so the approval always targets the exact contract
+    the supply call hits."""
+    if market.protocol == "aave_v3":
+        aave = await AaveV3.from_chain(w3, market.chain_id)
+        spender, supply_tx = aave.pool_address, aave.build_supply_tx(user, amount)
+    else:
+        comet = CompoundV3.from_chain(w3, market.chain_id, market.token.symbol)
+        spender, supply_tx = comet.comet_address, comet.build_supply_tx(amount)
     return [
-        YieldStep("approve", market.chain_id, build_approve_tx(amount.token, _market_spender(market), amount.amount)),
-        YieldStep("supply", market.chain_id, _supply_tx(market, user, w3, amount)),
+        YieldStep("approve", market.chain_id, build_approve_tx(amount.token, spender, amount.amount)),
+        YieldStep("supply", market.chain_id, supply_tx),
     ]
 
 
@@ -142,9 +143,10 @@ async def _bridge_steps(
 
 
 async def _aave_market(w3: AsyncWeb3, chain_id: int, token: Token, token_symbol: str) -> YieldMarket | None:
-    if chain_id not in chains_for("AAVE_V3_POOL"):
+    if chain_id not in chains_for("AAVE_V3_ADDRESSES_PROVIDER"):
         return None
-    reserve = await AaveV3.from_chain(w3, chain_id).get_reserve_data(token)
+    aave = await AaveV3.from_chain(w3, chain_id)
+    reserve = await aave.get_reserve_data(token)
     # Inactive / frozen / paused reserves cannot accept supplies — the APY
     # would be informational only.
     if not reserve.is_active or reserve.is_frozen or reserve.is_paused:
@@ -264,10 +266,10 @@ async def _withdraw_then_supply(
     chain_id = source_market.chain_id
     w3 = w3s[chain_id]
     steps: list[YieldStep] = [
-        YieldStep("withdraw", chain_id, _withdraw_tx(source_market, user, w3, amount_in)),
+        YieldStep("withdraw", chain_id, await _withdraw_tx(source_market, user, w3, amount_in)),
     ]
     if same_chain:
-        steps += _supply_steps(target_market, user, w3, amount_in)
+        steps += await _supply_steps(target_market, user, w3, amount_in)
     else:
         assert bridge is not None  # narrowed above
         steps += await _bridge_steps(bridge, user, amount_in, target_market.token)
@@ -282,7 +284,7 @@ async def _withdraw_then_supply(
     )
 
 
-def _supply_then_bridge(
+async def _supply_then_bridge(
     user: Address,
     amount_in: TokenAmount,
     w3s: dict[int, AsyncWeb3],
@@ -304,7 +306,7 @@ def _supply_then_bridge(
         amount_in.token, target_market.token, "supply_then_bridge: amount_in.token must match target_market.token"
     )
 
-    steps = _supply_steps(target_market, user, w3s[chain_id], amount_in)
+    steps = await _supply_steps(target_market, user, w3s[chain_id], amount_in)
     return YieldRoute(
         strategy="supply_then_bridge",
         source_chain=chain_id,
@@ -372,7 +374,7 @@ async def build_yield_route(
     if strategy == "withdraw_then_supply":
         return await _withdraw_then_supply(user, amount_in, w3s, target_market, source_market, bridge)
     if strategy == "supply_then_bridge":
-        return _supply_then_bridge(user, amount_in, w3s, target_market, target_chain)
+        return await _supply_then_bridge(user, amount_in, w3s, target_market, target_chain)
     if strategy == "bridge_then_supply":
         return await _bridge_then_supply(user, amount_in, target_market, bridge)
     raise ValueError(f"unknown strategy: {strategy!r}")

@@ -27,15 +27,13 @@ from pydefi.lending import AaveV3, CompoundV3
 from pydefi.types import Address, ChainId, TokenAmount
 from pydefi.yields import YieldMarket, YieldRoute, build_yield_route
 from pydefi.yields.router import Protocol
-from tests.addrs import ETH_WHALE, USDC
+from tests.addrs import AAVE_DATA_PROVIDER, AAVE_POOL, ETH_WHALE, USDC
 from tests.live.anvil_helpers import fund_usdc, impersonate, send_tx, set_balance
 
 # ---------------------------------------------------------------------------
 # Pinned addresses + per-test constants
 # ---------------------------------------------------------------------------
 
-AAVE_POOL = Address(get_address("AAVE_V3_POOL", ChainId.ETHEREUM))
-AAVE_DATA_PROVIDER = Address(get_address("AAVE_V3_DATA_PROVIDER", ChainId.ETHEREUM))
 COMET_USDC = Address(get_address("COMPOUND_V3_USDC", ChainId.ETHEREUM))
 
 USDC_TEST_AMOUNT = 1_000 * 10**6  # 1000 USDC

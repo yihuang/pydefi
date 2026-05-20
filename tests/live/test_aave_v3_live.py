@@ -27,11 +27,19 @@ import pytest
 from eth_contract.erc20 import ERC20
 from web3.exceptions import Web3Exception
 
-from pydefi.deployments import get_address
 from pydefi.lending import AaveV3
 from pydefi.lending.aave_v3 import UINT256_MAX
 from pydefi.types import Address, ChainId, TokenAmount
-from tests.addrs import ETH_WHALE, USDC, USDC_WHALE, WETH
+from tests.addrs import (
+    AAVE_ADDRESSES_PROVIDER,
+    AAVE_DATA_PROVIDER,
+    AAVE_ORACLE,
+    AAVE_POOL,
+    ETH_WHALE,
+    USDC,
+    USDC_WHALE,
+    WETH,
+)
 from tests.live.anvil_helpers import (
     erc20_approve,
     impersonate,
@@ -40,15 +48,6 @@ from tests.live.anvil_helpers import (
     wrap_eth,
 )
 from tests.live.sol_utils import compile_sol_source, deploy
-
-# ---------------------------------------------------------------------------
-# Pinned addresses
-# ---------------------------------------------------------------------------
-
-AAVE_POOL = Address(get_address("AAVE_V3_POOL", ChainId.ETHEREUM))
-AAVE_DATA_PROVIDER = Address(get_address("AAVE_V3_DATA_PROVIDER", ChainId.ETHEREUM))
-AAVE_ORACLE = Address(get_address("AAVE_V3_ORACLE", ChainId.ETHEREUM))
-AAVE_ADDRESSES_PROVIDER = Address(get_address("AAVE_V3_ADDRESSES_PROVIDER", ChainId.ETHEREUM))
 
 # Test parameters — small enough to keep blocks fast and price-impact negligible.
 WHALE_BALANCE = 100 * 10**18

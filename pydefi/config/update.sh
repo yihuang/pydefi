@@ -9,7 +9,7 @@ cd "$(dirname "$0")"
 curl -s 'https://docs.chain.link/api/ccip/v1/chains?environment=mainnet' \
   | jq -S '.data.evm' > ccip-chains.json
 
-# Aave V3 core addresses (aave.json).
+# Aave V3 PoolAddressesProvider per chain (aave.json).
 # Source: https://github.com/aave-dao/aave-address-book
 python3 update_aave.py
 

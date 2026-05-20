@@ -14,6 +14,7 @@ Docs: https://aave.com/docs/aave-v3/overview
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from decimal import Decimal, getcontext
 from typing import Any, Literal
@@ -256,16 +257,11 @@ class AaveV3:
         self.protocol_name = protocol_name
 
     @classmethod
-    def from_chain(cls, w3: AsyncWeb3, chain_id: int, protocol_name: str = "AaveV3") -> AaveV3:
+    async def from_chain(cls, w3: AsyncWeb3, chain_id: int, protocol_name: str = "AaveV3") -> AaveV3:
         from pydefi.deployments import address_for
 
-        return cls(
-            w3=w3,
-            chain_id=chain_id,
-            pool_address=address_for("AAVE_V3_POOL", chain_id),
-            data_provider_address=address_for("AAVE_V3_DATA_PROVIDER", chain_id),
-            oracle_address=address_for("AAVE_V3_ORACLE", chain_id),
-            protocol_name=protocol_name,
+        return await cls.from_addresses_provider(
+            w3, chain_id, address_for("AAVE_V3_ADDRESSES_PROVIDER", chain_id), protocol_name
         )
 
     @classmethod
@@ -276,18 +272,19 @@ class AaveV3:
         addresses_provider: Address,
         protocol_name: str = "AaveV3",
     ) -> "AaveV3":
-        """Construct an :class:`AaveV3` by resolving every dependency on-chain.
+        """Construct an :class:`AaveV3`, resolving ``Pool``,
+        ``AaveProtocolDataProvider`` and ``AaveOracle`` from *addresses_provider*.
 
-        The ``PoolAddressesProvider`` is the only Aave V3 address that is
-        guaranteed not to be rotated by governance. ``Pool``,
-        ``AaveProtocolDataProvider`` and ``AaveOracle`` can each be upgraded
-        — in practice the DataProvider rotates on every protocol revision.
-        Use this constructor when freshness matters more than saving the
-        three RPC reads.
+        Only the ``PoolAddressesProvider`` is stable enough to pin — Aave
+        rotates the DataProvider on every protocol revision — so the three
+        are read live. :meth:`from_chain` supplies the provider from the
+        pydefi registry.
         """
-        pool_str = await AAVE_V3_ADDRESSES_PROVIDER.fns.getPool().call(w3, to=addresses_provider)
-        dp_str = await AAVE_V3_ADDRESSES_PROVIDER.fns.getPoolDataProvider().call(w3, to=addresses_provider)
-        oracle_str = await AAVE_V3_ADDRESSES_PROVIDER.fns.getPriceOracle().call(w3, to=addresses_provider)
+        pool_str, dp_str, oracle_str = await asyncio.gather(
+            AAVE_V3_ADDRESSES_PROVIDER.fns.getPool().call(w3, to=addresses_provider),
+            AAVE_V3_ADDRESSES_PROVIDER.fns.getPoolDataProvider().call(w3, to=addresses_provider),
+            AAVE_V3_ADDRESSES_PROVIDER.fns.getPriceOracle().call(w3, to=addresses_provider),
+        )
         return cls(
             w3=w3,
             chain_id=chain_id,
@@ -318,18 +315,17 @@ class AaveV3:
           would drift.
         * ``DataProvider.getTotalDebt`` — stable + variable debt sum.
         """
-        reserve = await AAVE_V3_POOL.fns.getReserveData(token.address).call(self.w3, to=self.pool_address)
-        config = await AAVE_V3_DATA_PROVIDER.fns.getReserveConfigurationData(token.address).call(
-            self.w3, to=self.data_provider_address
+        reserve, config, is_paused, total_debt = await asyncio.gather(
+            AAVE_V3_POOL.fns.getReserveData(token.address).call(self.w3, to=self.pool_address),
+            AAVE_V3_DATA_PROVIDER.fns.getReserveConfigurationData(token.address).call(
+                self.w3, to=self.data_provider_address
+            ),
+            AAVE_V3_DATA_PROVIDER.fns.getPaused(token.address).call(self.w3, to=self.data_provider_address),
+            AAVE_V3_DATA_PROVIDER.fns.getTotalDebt(token.address).call(self.w3, to=self.data_provider_address),
         )
-        is_paused = await AAVE_V3_DATA_PROVIDER.fns.getPaused(token.address).call(
-            self.w3, to=self.data_provider_address
-        )
+        # balanceOf needs the aToken address out of getReserveData, so it runs second.
         a_token_address = Address(reserve[8])
         available_liquidity = await ERC20.fns.balanceOf(a_token_address).call(self.w3, to=token.address)
-        total_debt = await AAVE_V3_DATA_PROVIDER.fns.getTotalDebt(token.address).call(
-            self.w3, to=self.data_provider_address
-        )
 
         # Pool.getReserveData returns the ReserveDataLegacy tuple.
         # Index layout matches ``ReserveDataLegacy`` in abi/lending.py.
@@ -439,16 +435,13 @@ class AaveV3:
         """
         if not 0 <= category_id <= 255:
             raise ValueError("category_id must fit in uint8 (0–255)")
-        label = await AAVE_V3_POOL.fns.getEModeCategoryLabel(category_id).call(self.w3, to=self.pool_address)
-        (ltv, liq_threshold, liq_bonus) = await AAVE_V3_POOL.fns.getEModeCategoryCollateralConfig(category_id).call(
-            self.w3, to=self.pool_address
+        label, collateral_config, coll_bitmap, borr_bitmap = await asyncio.gather(
+            AAVE_V3_POOL.fns.getEModeCategoryLabel(category_id).call(self.w3, to=self.pool_address),
+            AAVE_V3_POOL.fns.getEModeCategoryCollateralConfig(category_id).call(self.w3, to=self.pool_address),
+            AAVE_V3_POOL.fns.getEModeCategoryCollateralBitmap(category_id).call(self.w3, to=self.pool_address),
+            AAVE_V3_POOL.fns.getEModeCategoryBorrowableBitmap(category_id).call(self.w3, to=self.pool_address),
         )
-        coll_bitmap = await AAVE_V3_POOL.fns.getEModeCategoryCollateralBitmap(category_id).call(
-            self.w3, to=self.pool_address
-        )
-        borr_bitmap = await AAVE_V3_POOL.fns.getEModeCategoryBorrowableBitmap(category_id).call(
-            self.w3, to=self.pool_address
-        )
+        (ltv, liq_threshold, liq_bonus) = collateral_config
         return EModeCategory(
             id=category_id,
             label=label,
