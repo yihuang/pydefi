@@ -343,6 +343,11 @@ async def build_yield_route(
         )
 
     if strategy == "supply_then_bridge":
+        if target_chain is None:
+            raise ValueError(
+                "supply_then_bridge requires target_chain — the destination the user "
+                "intends to bridge into after the entry supply"
+            )
         chain_id = amount_in.token.chain_id
         if target_market.chain_id != chain_id:
             raise ValueError(

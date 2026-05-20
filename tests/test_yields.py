@@ -359,9 +359,10 @@ async def test_bridge_then_supply_validation_errors(bridge_src, bridge_dst, targ
     [
         ("withdraw_then_supply", {}, "requires source_market"),
         ("bridge_then_supply", {}, "requires a configured LucidBridge"),
+        ("supply_then_bridge", {}, "requires target_chain"),
         ("supply_then_borrow", {}, "unknown strategy"),
     ],
-    ids=["missing_source_market", "missing_bridge", "unknown_strategy"],
+    ids=["missing_source_market", "missing_bridge", "missing_target_chain", "unknown_strategy"],
 )
 async def test_build_yield_route_validation_errors(strategy: str, kw: dict, err: str):
     target = _market("aave_v3", ChainId.BASE, USDC_BASE)
@@ -377,32 +378,26 @@ async def test_build_yield_route_validation_errors(strategy: str, kw: dict, err:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "strategy,amount_token_is_dai,source_is_dai_market,target_is_dai_market,err",
-    [
-        ("withdraw_then_supply", True, False, False, "amount_in.token must match source_market.token"),
-        ("withdraw_then_supply", False, False, True, "target_market.token must match amount_in.token"),
-        ("supply_then_bridge", True, False, False, "amount_in.token must match target_market.token"),
-    ],
-    ids=["withdraw_source", "withdraw_target", "supply_target"],
-)
-async def test_build_yield_route_rejects_token_mismatch(
-    strategy, amount_token_is_dai, source_is_dai_market, target_is_dai_market, err
-):
+async def test_build_yield_route_rejects_token_mismatch():
     """amount_in.token must match the relevant market token by (chain_id, address)
-    — otherwise the route would act on the wrong asset while metadata pointed elsewhere."""
+    — else the route would act on the wrong asset while metadata pointed elsewhere."""
     dai = Token(chain_id=ChainId.BASE, address=Address("0x" + "33" * 20), symbol="DAI", decimals=18)
     usdc_m = _market("aave_v3", ChainId.BASE, USDC_BASE)
     dai_m = _market("compound_v3", ChainId.BASE, dai)
-    with pytest.raises(ValueError, match=err):
-        await build_yield_route(
-            cast(Strategy, strategy),
-            _USER,
-            TokenAmount(dai if amount_token_is_dai else USDC_BASE, 1),
-            w3s={ChainId.BASE: cast(AsyncWeb3, object())},
-            source_market=dai_m if source_is_dai_market else usdc_m,
-            target_market=dai_m if target_is_dai_market else usdc_m,
-        )
+    w3s: dict[int, AsyncWeb3] = {ChainId.BASE: cast(AsyncWeb3, object())}
+
+    cases: list[tuple[Strategy, Token, YieldMarket, YieldMarket, str]] = [
+        ("withdraw_then_supply", dai, usdc_m, usdc_m, "amount_in.token must match source_market.token"),
+        ("withdraw_then_supply", USDC_BASE, usdc_m, dai_m, "target_market.token must match amount_in.token"),
+        ("supply_then_bridge", dai, usdc_m, usdc_m, "amount_in.token must match target_market.token"),
+    ]
+    for strategy, token, src, tgt, err in cases:
+        with pytest.raises(ValueError, match=err):
+            await build_yield_route(
+                strategy, _USER, TokenAmount(token, 1),
+                w3s=w3s, source_market=src, target_market=tgt,
+                target_chain=ChainId.OPTIMISM,
+            )
 
 
 def _position(market: YieldMarket, amount: int) -> Position:
