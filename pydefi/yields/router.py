@@ -13,13 +13,7 @@ from eth_contract.erc20 import ERC20
 from web3 import AsyncWeb3
 
 from pydefi.bridge.lucid import LucidBridge
-from pydefi.deployments import (
-    COMET_CONTRACT_BY_SYMBOL,
-    address_for,
-    chains_for,
-    comet_contract_for,
-    get_token,
-)
+from pydefi.deployments import COMET_CONTRACT_BY_SYMBOL, address_for, chains_for, comet_contract_for, get_token
 from pydefi.lending.aave_v3 import AaveV3
 from pydefi.lending.compound_v3 import CompoundV3
 from pydefi.types import Address, Token, TokenAmount
@@ -52,7 +46,6 @@ class YieldStep:
     kind: StepKind
     chain_id: int
     tx: dict[str, Any]
-    description: str
 
 
 @dataclass(frozen=True)
@@ -90,6 +83,17 @@ def _same_token_identity(a: Token, b: Token) -> bool:
     return a.chain_id == b.chain_id and a.address == b.address
 
 
+def _require_token(token: Token, expected: Token, what: str) -> None:
+    """Raise ``ValueError`` unless *token* matches *expected* by (chain, address)."""
+    if not _same_token_identity(token, expected):
+        raise ValueError(f"{what} (got {token}, expected {expected})")
+
+
+# ---------------------------------------------------------------------------
+# Transaction / step builders
+# ---------------------------------------------------------------------------
+
+
 def build_approve_tx(token: Token, spender: Address, amount: int, gas: int = _APPROVE_GAS) -> dict[str, Any]:
     return {
         "to": token.address,
@@ -101,48 +105,46 @@ def build_approve_tx(token: Token, spender: Address, amount: int, gas: int = _AP
 
 def _supply_tx(market: YieldMarket, user: Address, w3: AsyncWeb3, amount: TokenAmount) -> dict[str, Any]:
     if market.protocol == "aave_v3":
-        aave = AaveV3(
-            w3=w3,
-            chain_id=market.chain_id,
-            pool_address=address_for("AAVE_V3_POOL", market.chain_id),
-            data_provider_address=address_for("AAVE_V3_DATA_PROVIDER", market.chain_id),
-        )
-        return aave.build_supply_tx(user, amount)
-    comet = CompoundV3(
-        w3=w3,
-        chain_id=market.chain_id,
-        comet_address=address_for(comet_contract_for(market.token.symbol), market.chain_id),
-    )
-    return comet.build_supply_tx(amount)
+        return AaveV3.from_chain(w3, market.chain_id).build_supply_tx(user, amount)
+    return CompoundV3.from_chain(w3, market.chain_id, market.token.symbol).build_supply_tx(amount)
 
 
 def _withdraw_tx(market: YieldMarket, user: Address, w3: AsyncWeb3, amount: TokenAmount) -> dict[str, Any]:
     if market.protocol == "aave_v3":
-        aave = AaveV3(
-            w3=w3,
-            chain_id=market.chain_id,
-            pool_address=address_for("AAVE_V3_POOL", market.chain_id),
-            data_provider_address=address_for("AAVE_V3_DATA_PROVIDER", market.chain_id),
-        )
-        return aave.build_withdraw_tx(user, amount)
-    comet = CompoundV3(
-        w3=w3,
-        chain_id=market.chain_id,
-        comet_address=address_for(comet_contract_for(market.token.symbol), market.chain_id),
-    )
-    return comet.build_withdraw_tx(amount)
+        return AaveV3.from_chain(w3, market.chain_id).build_withdraw_tx(user, amount)
+    return CompoundV3.from_chain(w3, market.chain_id, market.token.symbol).build_withdraw_tx(amount)
+
+
+def _supply_steps(market: YieldMarket, user: Address, w3: AsyncWeb3, amount: TokenAmount) -> list[YieldStep]:
+    """``[approve, supply]`` — approve the market's spender, then supply."""
+    return [
+        YieldStep("approve", market.chain_id, build_approve_tx(amount.token, _market_spender(market), amount.amount)),
+        YieldStep("supply", market.chain_id, _supply_tx(market, user, w3, amount)),
+    ]
+
+
+async def _bridge_steps(
+    bridge: LucidBridge, user: Address, amount: TokenAmount, target_token: Token
+) -> list[YieldStep]:
+    """``[approve, bridge]`` — approve the Lucid controller, then bridge."""
+    bridge_tx = await bridge.build_bridge_tx(amount.token, target_token, amount, user)
+    return [
+        YieldStep(
+            "approve", bridge.src_chain_id, build_approve_tx(amount.token, bridge.controller_address, amount.amount)
+        ),
+        YieldStep("bridge", bridge.src_chain_id, bridge_tx),
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Market discovery
+# ---------------------------------------------------------------------------
 
 
 async def _aave_market(w3: AsyncWeb3, chain_id: int, token: Token, token_symbol: str) -> YieldMarket | None:
     if chain_id not in chains_for("AAVE_V3_POOL"):
         return None
-    aave = AaveV3(
-        w3=w3,
-        chain_id=chain_id,
-        pool_address=address_for("AAVE_V3_POOL", chain_id),
-        data_provider_address=address_for("AAVE_V3_DATA_PROVIDER", chain_id),
-    )
-    reserve = await aave.get_reserve_data(token)
+    reserve = await AaveV3.from_chain(w3, chain_id).get_reserve_data(token)
     # Inactive / frozen / paused reserves cannot accept supplies — the APY
     # would be informational only.
     if not reserve.is_active or reserve.is_frozen or reserve.is_paused:
@@ -162,8 +164,7 @@ async def _compound_market(w3: AsyncWeb3, chain_id: int, token_symbol: str) -> Y
     name = COMET_CONTRACT_BY_SYMBOL.get(token_symbol)
     if name is None or chain_id not in chains_for(name):
         return None
-    comet = CompoundV3(w3=w3, chain_id=chain_id, comet_address=address_for(name, chain_id))
-    market = await comet.get_market_data()
+    market = await CompoundV3.from_chain(w3, chain_id, token_symbol).get_market_data()
     # Comet's baseToken() has no symbol(); restore the real ticker so downstream
     # symbol-based dispatch (`comet_contract_for`) works on this market.
     base_token = dataclasses.replace(market.base_token, symbol=token_symbol)
@@ -218,6 +219,132 @@ async def get_yield_markets(
     return out
 
 
+# ---------------------------------------------------------------------------
+# Route builders — one per strategy, dispatched by build_yield_route
+# ---------------------------------------------------------------------------
+
+
+async def _withdraw_then_supply(
+    user: Address,
+    amount_in: TokenAmount,
+    w3s: dict[int, AsyncWeb3],
+    target_market: YieldMarket,
+    source_market: YieldMarket | None,
+    bridge: LucidBridge | None,
+) -> YieldRoute:
+    if source_market is None:
+        raise ValueError("withdraw_then_supply requires source_market")
+    _require_token(
+        amount_in.token, source_market.token, "withdraw_then_supply: amount_in.token must match source_market.token"
+    )
+
+    same_chain = source_market.chain_id == target_market.chain_id
+    if same_chain:
+        _require_token(
+            amount_in.token,
+            target_market.token,
+            "same-chain withdraw_then_supply: target_market.token must match amount_in.token",
+        )
+    elif bridge is None:
+        raise ValueError(
+            "cross-chain withdraw_then_supply requires a configured LucidBridge "
+            f"(source={source_market.chain_id}, target={target_market.chain_id})"
+        )
+    elif bridge.src_chain_id != source_market.chain_id:
+        raise ValueError(
+            "bridge.src_chain_id must match source_market.chain_id "
+            f"(bridge src={bridge.src_chain_id}, source={source_market.chain_id})"
+        )
+    elif bridge.dst_chain_id != target_market.chain_id:
+        raise ValueError(
+            "bridge.dst_chain_id must match target_market.chain_id "
+            f"(bridge dst={bridge.dst_chain_id}, target={target_market.chain_id})"
+        )
+
+    chain_id = source_market.chain_id
+    w3 = w3s[chain_id]
+    steps: list[YieldStep] = [
+        YieldStep("withdraw", chain_id, _withdraw_tx(source_market, user, w3, amount_in)),
+    ]
+    if same_chain:
+        steps += _supply_steps(target_market, user, w3, amount_in)
+    else:
+        assert bridge is not None  # narrowed above
+        steps += await _bridge_steps(bridge, user, amount_in, target_market.token)
+
+    return YieldRoute(
+        strategy="withdraw_then_supply",
+        source_chain=chain_id,
+        steps=tuple(steps),
+        route_id=f"withdraw_then_supply:{source_market.market_id}->{target_market.market_id}",
+        target_market=target_market,
+        target_chain=None if same_chain else target_market.chain_id,
+    )
+
+
+def _supply_then_bridge(
+    user: Address,
+    amount_in: TokenAmount,
+    w3s: dict[int, AsyncWeb3],
+    target_market: YieldMarket,
+    target_chain: int | None,
+) -> YieldRoute:
+    if target_chain is None:
+        raise ValueError(
+            "supply_then_bridge requires target_chain — the destination the user "
+            "intends to bridge into after the entry supply"
+        )
+    chain_id = amount_in.token.chain_id
+    if target_market.chain_id != chain_id:
+        raise ValueError(
+            "supply_then_bridge expects target_market on amount_in.token's chain "
+            f"(got market={target_market.chain_id}, token={chain_id})"
+        )
+    _require_token(
+        amount_in.token, target_market.token, "supply_then_bridge: amount_in.token must match target_market.token"
+    )
+
+    steps = _supply_steps(target_market, user, w3s[chain_id], amount_in)
+    return YieldRoute(
+        strategy="supply_then_bridge",
+        source_chain=chain_id,
+        steps=tuple(steps),
+        route_id=f"supply_then_bridge:{target_market.market_id}->chain:{target_chain}",
+        target_market=target_market,
+        target_chain=target_chain,
+    )
+
+
+async def _bridge_then_supply(
+    user: Address,
+    amount_in: TokenAmount,
+    target_market: YieldMarket,
+    bridge: LucidBridge | None,
+) -> YieldRoute:
+    if bridge is None:
+        raise ValueError("bridge_then_supply requires a configured LucidBridge")
+    if amount_in.token.chain_id != bridge.src_chain_id:
+        raise ValueError(
+            "bridge_then_supply expects amount_in.token on the bridge's source chain "
+            f"(token chain={amount_in.token.chain_id}, bridge src={bridge.src_chain_id})"
+        )
+    if target_market.chain_id != bridge.dst_chain_id:
+        raise ValueError(
+            "bridge_then_supply expects target_market on the bridge's destination chain "
+            f"(market chain={target_market.chain_id}, bridge dst={bridge.dst_chain_id})"
+        )
+
+    steps = await _bridge_steps(bridge, user, amount_in, target_market.token)
+    return YieldRoute(
+        strategy="bridge_then_supply",
+        source_chain=bridge.src_chain_id,
+        steps=tuple(steps),
+        route_id=f"bridge_then_supply:chain:{bridge.src_chain_id}->{target_market.market_id}",
+        target_market=target_market,
+        target_chain=bridge.dst_chain_id,
+    )
+
+
 async def build_yield_route(
     strategy: Strategy,
     user: Address,
@@ -243,185 +370,9 @@ async def build_yield_route(
       destination supply runs on a follow-up call. Requires ``bridge``.
     """
     if strategy == "withdraw_then_supply":
-        if source_market is None:
-            raise ValueError("withdraw_then_supply requires source_market")
-        if not _same_token_identity(amount_in.token, source_market.token):
-            raise ValueError(
-                "withdraw_then_supply: amount_in.token must match source_market.token "
-                f"(amount_in={amount_in.token}, source={source_market.token})"
-            )
-        same_chain = source_market.chain_id == target_market.chain_id
-        if same_chain and not _same_token_identity(amount_in.token, target_market.token):
-            raise ValueError(
-                "same-chain withdraw_then_supply: target_market.token must match amount_in.token "
-                f"(amount_in={amount_in.token}, target={target_market.token})"
-            )
-        if not same_chain:
-            if bridge is None:
-                raise ValueError(
-                    "cross-chain withdraw_then_supply requires a configured LucidBridge "
-                    f"(source={source_market.chain_id}, target={target_market.chain_id})"
-                )
-            if bridge.src_chain_id != source_market.chain_id:
-                raise ValueError(
-                    "bridge.src_chain_id must match source_market.chain_id "
-                    f"(bridge src={bridge.src_chain_id}, source={source_market.chain_id})"
-                )
-            if bridge.dst_chain_id != target_market.chain_id:
-                raise ValueError(
-                    "bridge.dst_chain_id must match target_market.chain_id "
-                    f"(bridge dst={bridge.dst_chain_id}, target={target_market.chain_id})"
-                )
-
-        chain_id = source_market.chain_id
-        w3 = w3s[chain_id]
-        withdraw_tx = _withdraw_tx(source_market, user, w3, amount_in)
-        steps_list: list[YieldStep] = [
-            YieldStep(
-                "withdraw",
-                chain_id,
-                withdraw_tx,
-                f"withdraw {amount_in.human_amount} {amount_in.token.symbol} from {source_market.market_id}",
-            ),
-        ]
-        if same_chain:
-            approve_tx = build_approve_tx(amount_in.token, _market_spender(target_market), amount_in.amount)
-            supply_tx = _supply_tx(target_market, user, w3, amount_in)
-            steps_list.append(
-                YieldStep(
-                    "approve",
-                    chain_id,
-                    approve_tx,
-                    f"approve {amount_in.human_amount} {amount_in.token.symbol} to {target_market.market_id}",
-                )
-            )
-            steps_list.append(
-                YieldStep(
-                    "supply",
-                    chain_id,
-                    supply_tx,
-                    f"supply {amount_in.human_amount} {amount_in.token.symbol} into {target_market.market_id}",
-                )
-            )
-        else:
-            assert bridge is not None  # narrowed above
-            approve_tx = build_approve_tx(amount_in.token, bridge.controller_address, amount_in.amount)
-            bridge_tx = await bridge.build_bridge_tx(
-                amount_in.token,
-                target_market.token,
-                amount_in,
-                user,
-            )
-            steps_list.append(
-                YieldStep(
-                    "approve",
-                    chain_id,
-                    approve_tx,
-                    f"approve {amount_in.human_amount} {amount_in.token.symbol} to Lucid controller",
-                )
-            )
-            steps_list.append(
-                YieldStep(
-                    "bridge",
-                    chain_id,
-                    bridge_tx,
-                    f"bridge {amount_in.human_amount} {amount_in.token.symbol} to chain {target_market.chain_id}",
-                )
-            )
-        return YieldRoute(
-            strategy="withdraw_then_supply",
-            source_chain=chain_id,
-            steps=tuple(steps_list),
-            route_id=f"withdraw_then_supply:{source_market.market_id}->{target_market.market_id}",
-            target_market=target_market,
-            target_chain=target_market.chain_id if not same_chain else None,
-        )
-
+        return await _withdraw_then_supply(user, amount_in, w3s, target_market, source_market, bridge)
     if strategy == "supply_then_bridge":
-        if target_chain is None:
-            raise ValueError(
-                "supply_then_bridge requires target_chain — the destination the user "
-                "intends to bridge into after the entry supply"
-            )
-        chain_id = amount_in.token.chain_id
-        if target_market.chain_id != chain_id:
-            raise ValueError(
-                "supply_then_bridge expects target_market on amount_in.token's chain "
-                f"(got market={target_market.chain_id}, token={chain_id})"
-            )
-        if not _same_token_identity(amount_in.token, target_market.token):
-            raise ValueError(
-                "supply_then_bridge: amount_in.token must match target_market.token "
-                f"(amount_in={amount_in.token}, target={target_market.token})"
-            )
-        w3 = w3s[chain_id]
-        approve_tx = build_approve_tx(amount_in.token, _market_spender(target_market), amount_in.amount)
-        supply_tx = _supply_tx(target_market, user, w3, amount_in)
-        steps = (
-            YieldStep(
-                "approve",
-                chain_id,
-                approve_tx,
-                f"approve {amount_in.human_amount} {amount_in.token.symbol} to {target_market.market_id}",
-            ),
-            YieldStep(
-                "supply",
-                chain_id,
-                supply_tx,
-                f"supply {amount_in.human_amount} {amount_in.token.symbol} into {target_market.market_id}",
-            ),
-        )
-        return YieldRoute(
-            strategy="supply_then_bridge",
-            source_chain=chain_id,
-            steps=steps,
-            route_id=f"supply_then_bridge:{target_market.market_id}->chain:{target_chain}",
-            target_market=target_market,
-            target_chain=target_chain,
-        )
-
+        return _supply_then_bridge(user, amount_in, w3s, target_market, target_chain)
     if strategy == "bridge_then_supply":
-        if bridge is None:
-            raise ValueError("bridge_then_supply requires a configured LucidBridge")
-        source_chain = bridge.src_chain_id
-        if amount_in.token.chain_id != source_chain:
-            raise ValueError(
-                "bridge_then_supply expects amount_in.token on the bridge's source chain "
-                f"(token chain={amount_in.token.chain_id}, bridge src={source_chain})"
-            )
-        if target_market.chain_id != bridge.dst_chain_id:
-            raise ValueError(
-                "bridge_then_supply expects target_market on the bridge's destination chain "
-                f"(market chain={target_market.chain_id}, bridge dst={bridge.dst_chain_id})"
-            )
-        approve_tx = build_approve_tx(amount_in.token, bridge.controller_address, amount_in.amount)
-        bridge_tx = await bridge.build_bridge_tx(
-            amount_in.token,
-            target_market.token,
-            amount_in,
-            user,
-        )
-        steps = (
-            YieldStep(
-                "approve",
-                source_chain,
-                approve_tx,
-                f"approve {amount_in.human_amount} {amount_in.token.symbol} to Lucid controller",
-            ),
-            YieldStep(
-                "bridge",
-                source_chain,
-                bridge_tx,
-                f"bridge {amount_in.human_amount} {amount_in.token.symbol} to chain {bridge.dst_chain_id}",
-            ),
-        )
-        return YieldRoute(
-            strategy="bridge_then_supply",
-            source_chain=source_chain,
-            steps=steps,
-            route_id=f"bridge_then_supply:chain:{source_chain}->{target_market.market_id}",
-            target_market=target_market,
-            target_chain=bridge.dst_chain_id,
-        )
-
+        return await _bridge_then_supply(user, amount_in, target_market, bridge)
     raise ValueError(f"unknown strategy: {strategy!r}")

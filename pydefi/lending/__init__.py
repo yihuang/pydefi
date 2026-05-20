@@ -7,25 +7,21 @@ Comet proxies), so each protocol lives as its own self-contained module:
 
 * :mod:`pydefi.lending.aave_v3` — Aave V3 client, the Aave-specific
   ``ReserveData`` / ``UserAccountData`` / ``EModeCategory`` types, and
-  the RAY rate-model helpers (``ray_rate_to_apy``).
+  the RAY rate-model helper (``ray_rate_to_apy``).
 * :mod:`pydefi.lending.compound_v3` — Compound III (Comet) client plus
   its own ``CompoundMarketData`` / ``CompoundUserPosition`` types and
   per-second rate-model helper.
+* :mod:`pydefi.lending.utils` — shared helpers (``UINT256_MAX``,
+  ``SECONDS_PER_YEAR``, ``resolve_amount``, ``to_tx``).
 
 Quick-start::
 
     from pydefi.lending import AaveV3
-    from pydefi.deployments import get_address, get_token
-    from pydefi.types import Address, ChainId, TokenAmount
+    from pydefi.deployments import get_token
+    from pydefi.types import ChainId, TokenAmount
     from pydefi._utils import decode_address
 
-    aave = AaveV3(
-        w3=w3,
-        chain_id=ChainId.ETHEREUM,
-        pool_address=Address(get_address("AAVE_V3_POOL", ChainId.ETHEREUM)),
-        data_provider_address=Address(get_address("AAVE_V3_DATA_PROVIDER", ChainId.ETHEREUM)),
-        oracle_address=Address(get_address("AAVE_V3_ORACLE", ChainId.ETHEREUM)),
-    )
+    aave = AaveV3.from_chain(w3, ChainId.ETHEREUM)
 
     usdc = get_token("USDC", ChainId.ETHEREUM)
     data = await aave.get_reserve_data(usdc)
@@ -36,23 +32,26 @@ Quick-start::
         amount=TokenAmount.from_human(usdc, "1000"),
     )
 
-For chains that may rotate the ``PoolDataProvider``, prefer the live
-constructor that resolves every dependency from the
-``PoolAddressesProvider``::
+Three ways to construct a client:
 
-    aave = await AaveV3.from_addresses_provider(
-        w3=w3,
-        chain_id=ChainId.ETHEREUM,
-        addresses_provider=Address(get_address("AAVE_V3_ADDRESSES_PROVIDER", ChainId.ETHEREUM)),
-    )
+* ``AaveV3.from_chain(w3, chain_id)`` — addresses from the pydefi
+  deployment registry; no network round-trip. The default choice.
+* ``await AaveV3.from_addresses_provider(w3, chain_id, addresses_provider)``
+  — resolves Pool / DataProvider / Oracle live from the on-chain
+  ``PoolAddressesProvider``. Prefer when a chain may have rotated its
+  ``PoolDataProvider`` since the registry was last regenerated.
+* ``AaveV3(w3, chain_id, pool_address, data_provider_address, ...)`` —
+  explicit addresses, for forks, testnets, or custom deployments.
+
+``CompoundV3`` mirrors the first and third: ``CompoundV3.from_chain(w3,
+chain_id, "USDC")`` (Comet markets are keyed by base asset) or the
+explicit ``CompoundV3(w3, chain_id, comet_address)``.
 """
 
 from pydefi.lending.aave_v3 import (
     RAY,
-    SECONDS_PER_YEAR,
     AaveV3,
     EModeCategory,
-    InterestRateMode,
     ReserveData,
     UserAccountData,
     UserReserveData,
@@ -64,6 +63,7 @@ from pydefi.lending.compound_v3 import (
     CompoundUserPosition,
     CompoundV3,
 )
+from pydefi.lending.utils import SECONDS_PER_YEAR
 
 __all__ = [
     "AaveV3",
@@ -72,7 +72,6 @@ __all__ = [
     "CompoundUserPosition",
     "CompoundV3",
     "EModeCategory",
-    "InterestRateMode",
     "ReserveData",
     "UserAccountData",
     "UserReserveData",

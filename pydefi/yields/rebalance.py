@@ -9,6 +9,7 @@ from decimal import Decimal
 
 from web3 import AsyncWeb3
 
+from pydefi.lending.utils import SECONDS_PER_YEAR
 from pydefi.types import Address
 from pydefi.yields.router import (
     Protocol,
@@ -18,8 +19,6 @@ from pydefi.yields.router import (
     get_yield_markets,
 )
 from pydefi.yields.tracker import Position, get_positions
-
-_SECONDS_PER_YEAR = Decimal(365 * 24 * 60 * 60)
 
 
 def expected_apy_gain(
@@ -31,7 +30,7 @@ def expected_apy_gain(
     when the candidate is worse. Linear approximation — assumes neither
     rate moves over the horizon and ignores compounding."""
     delta_apy = candidate.supply_apy - current.market.supply_apy
-    horizon = Decimal(horizon_seconds) / _SECONDS_PER_YEAR
+    horizon = Decimal(horizon_seconds) / SECONDS_PER_YEAR
     gain = Decimal(current.balance.amount) * delta_apy * horizon
     return int(gain.to_integral_value())
 

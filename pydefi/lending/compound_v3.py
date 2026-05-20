@@ -30,16 +30,11 @@ from typing import Any, Literal
 from web3 import AsyncWeb3
 
 from pydefi.abi.lending import COMPOUND_V3_COMET
+from pydefi.lending.utils import SECONDS_PER_YEAR, UINT256_MAX, resolve_amount, to_tx
 from pydefi.types import Address, Token, TokenAmount
 
 #: Compound III scales rates and factors by 1e18 (no separate "RAY").
 COMET_SCALE: int = 10**18
-
-#: Seconds per calendar year — matches Aave's convention.
-SECONDS_PER_YEAR: int = 31_536_000
-
-#: ``type(uint256).max`` sentinel meaning "full balance" for ``withdraw``.
-UINT256_MAX: int = (1 << 256) - 1
 
 
 # ---------------------------------------------------------------------------
@@ -186,6 +181,25 @@ class CompoundV3:
         self.protocol_name = protocol_name
         self._base_token: Token | None = base_token
 
+    @classmethod
+    def from_chain(
+        cls,
+        w3: AsyncWeb3,
+        chain_id: int,
+        token_symbol: str,
+        base_token: Token | None = None,
+        protocol_name: str = "CompoundV3",
+    ) -> CompoundV3:
+        from pydefi.deployments import address_for, comet_contract_for
+
+        return cls(
+            w3=w3,
+            chain_id=chain_id,
+            comet_address=address_for(comet_contract_for(token_symbol), chain_id),
+            base_token=base_token,
+            protocol_name=protocol_name,
+        )
+
     # ------------------------------------------------------------------
     # Reads
     # ------------------------------------------------------------------
@@ -327,7 +341,7 @@ class CompoundV3:
             call_data = COMPOUND_V3_COMET.fns.supply(amount.token.address, amount.amount).data
         else:
             call_data = COMPOUND_V3_COMET.fns.supplyTo(dst, amount.token.address, amount.amount).data
-        return _to_tx(self.comet_address, call_data)
+        return to_tx(self.comet_address, call_data)
 
     def build_withdraw_tx(
         self,
@@ -341,12 +355,12 @@ class CompoundV3:
         balance silently opens a borrow position — Comet has no separate
         ``borrow`` function.
         """
-        asset, raw = _resolve_amount(amount)
+        asset, raw = resolve_amount(amount)
         if to is None:
             call_data = COMPOUND_V3_COMET.fns.withdraw(asset.address, raw).data
         else:
             call_data = COMPOUND_V3_COMET.fns.withdrawTo(to, asset.address, raw).data
-        return _to_tx(self.comet_address, call_data)
+        return to_tx(self.comet_address, call_data)
 
     def build_transfer_asset_tx(self, dst: Address, amount: TokenAmount) -> dict[str, Any]:
         """Build a ``transferAsset`` transaction.
@@ -355,33 +369,17 @@ class CompoundV3:
         accounts without touching the underlying ERC-20.
         """
         call_data = COMPOUND_V3_COMET.fns.transferAsset(dst, amount.token.address, amount.amount).data
-        return _to_tx(self.comet_address, call_data)
+        return to_tx(self.comet_address, call_data)
 
     def build_allow_tx(self, manager: Address, is_allowed: bool) -> dict[str, Any]:
         """Build an ``allow`` transaction to grant or revoke manager rights."""
         call_data = COMPOUND_V3_COMET.fns.allow(manager, is_allowed).data
-        return _to_tx(self.comet_address, call_data)
+        return to_tx(self.comet_address, call_data)
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _resolve_amount(amount: TokenAmount | tuple[Token, Literal["max"]]) -> tuple[Token, int]:
-    if isinstance(amount, TokenAmount):
-        return amount.token, amount.amount
-    if isinstance(amount, tuple) and len(amount) == 2 and amount[1] == "max":
-        return amount[0], UINT256_MAX
-    raise TypeError("amount must be a TokenAmount or (Token, 'max') tuple")
-
-
-def _to_tx(to: Address, call_data: bytes) -> dict[str, Any]:
-    return {
-        "to": "0x" + bytes(to).hex(),
-        "data": "0x" + call_data.hex(),
-        "value": "0",
-    }
 
 
 def _scale_to_decimals(scale: int) -> int:

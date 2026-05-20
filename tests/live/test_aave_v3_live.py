@@ -28,7 +28,7 @@ from eth_contract.erc20 import ERC20
 from web3.exceptions import Web3Exception
 
 from pydefi.deployments import get_address
-from pydefi.lending import AaveV3, InterestRateMode
+from pydefi.lending import AaveV3
 from pydefi.lending.aave_v3 import UINT256_MAX
 from pydefi.types import Address, ChainId, TokenAmount
 from tests.addrs import ETH_WHALE, USDC, USDC_WHALE, WETH
@@ -225,7 +225,7 @@ class TestAaveV3Fork:
         receipt = await send_tx(
             fork_w3,
             ETH_WHALE,
-            aave.build_borrow_tx(ETH_WHALE, TokenAmount(USDC, USDC_BORROW_AMOUNT), mode=InterestRateMode.VARIABLE),
+            aave.build_borrow_tx(ETH_WHALE, TokenAmount(USDC, USDC_BORROW_AMOUNT)),
         )
         assert receipt["status"] == 1, "borrow reverted"
 
@@ -238,7 +238,7 @@ class TestAaveV3Fork:
         receipt = await send_tx(
             fork_w3,
             ETH_WHALE,
-            aave.build_repay_tx(ETH_WHALE, (USDC, "max"), mode=InterestRateMode.VARIABLE),
+            aave.build_repay_tx(ETH_WHALE, (USDC, "max")),
         )
         assert receipt["status"] == 1, "repay reverted"
         assert (await aave.get_user_reserve_data(ETH_WHALE, USDC)).variable_debt.amount == 0

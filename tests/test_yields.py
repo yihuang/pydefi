@@ -135,7 +135,7 @@ async def test_get_yield_markets_skips_paused_aave_reserve():
         patch("pydefi.yields.router.AaveV3") as Aave,
         patch("pydefi.yields.router._compound_market", new=AsyncMock(return_value=None)),
     ):
-        Aave.return_value.get_reserve_data = AsyncMock(return_value=_paused_reserve(USDC_BASE))
+        Aave.from_chain.return_value.get_reserve_data = AsyncMock(return_value=_paused_reserve(USDC_BASE))
         out = await get_yield_markets(
             "USDC", w3s={ChainId.BASE: object()}, chains=[ChainId.BASE], protocols=["aave_v3"]
         )

@@ -16,7 +16,7 @@ import pytest
 from hexbytes import HexBytes
 
 from pydefi.abi.lending import AAVE_V3_POOL, COMPOUND_V3_COMET
-from pydefi.lending import AaveV3, InterestRateMode, UserAccountData
+from pydefi.lending import AaveV3, UserAccountData
 from pydefi.lending.aave_v3 import (
     RAY,
     SECONDS_PER_YEAR,
@@ -159,12 +159,12 @@ class TestAaveBuildWithdrawTx:
 
 
 class TestAaveBuildBorrowTx:
-    def test_variable_mode_default(self, aave: AaveV3):
+    def test_encodes_variable_rate_mode(self, aave: AaveV3):
         amount = TokenAmount.from_human(USDC, "100")
         _asset, _amount, mode, _referral, _on_behalf_of = decode_call(
             aave.build_borrow_tx(ETH_WHALE, amount), AAVE_V3_POOL.fns.borrow
         )
-        assert mode == int(InterestRateMode.VARIABLE)
+        assert mode == 2  # Aave V3 variable-rate mode
 
     def test_uses_on_behalf_of_override(self, aave: AaveV3):
         other = Address("0x" + "ab" * 20)

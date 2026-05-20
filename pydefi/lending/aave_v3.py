@@ -6,10 +6,8 @@ handles supply / withdraw / borrow / repay for every listed reserve. This
 module wraps that contract plus the ``AaveProtocolDataProvider`` for the
 richer configuration struct and the ``AaveOracle`` for asset prices.
 
-Stable-rate borrowing was removed from Aave V3 in late 2023; only
-:attr:`~pydefi.lending.base.InterestRateMode.VARIABLE` is accepted by
-``borrow``. The :class:`~pydefi.lending.base.InterestRateMode.STABLE` value
-is kept for legacy callers.
+Borrowing is variable-rate only — Aave removed stable-rate borrowing from
+the protocol in 2023.
 
 Docs: https://aave.com/docs/aave-v3/overview
 """
@@ -18,7 +16,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal, getcontext
-from enum import IntEnum
 from typing import Any, Literal
 
 from eth_contract.erc20 import ERC20
@@ -31,16 +28,15 @@ from pydefi.abi.lending import (
     AAVE_V3_POOL,
 )
 from pydefi.exceptions import PydefiError
+from pydefi.lending.utils import SECONDS_PER_YEAR, UINT256_MAX, resolve_amount, to_tx
 from pydefi.types import Address, Token, TokenAmount
-
-#: Aave's ``type(uint256).max`` sentinel meaning "full balance".
-UINT256_MAX: int = (1 << 256) - 1
 
 #: 10**27 — Aave's fixed-point scale for rates and indices.
 RAY: int = 10**27
 
-#: Seconds in a calendar year (365 days). Matches the Aave protocol constant.
-SECONDS_PER_YEAR: int = 31_536_000
+#: Aave V3 ``borrow`` / ``repay`` take an ``interestRateMode`` arg; the
+#: protocol now supports only variable rate, whose on-chain value is 2.
+_VARIABLE_RATE_MODE: int = 2
 
 
 def ray_rate_to_apy(rate_annual_ray: int) -> Decimal:
@@ -79,18 +75,6 @@ def ray_rate_to_apy(rate_annual_ray: int) -> Decimal:
 # ---------------------------------------------------------------------------
 # Types
 # ---------------------------------------------------------------------------
-
-
-class InterestRateMode(IntEnum):
-    """Aave V3 interest rate mode.
-
-    Stable-rate borrowing was removed from Aave V3 in late 2023; only
-    :attr:`VARIABLE` is accepted on-chain. The :attr:`STABLE` value is kept
-    for legacy callers but Aave will revert if it is passed to ``borrow``.
-    """
-
-    STABLE = 1
-    VARIABLE = 2
 
 
 @dataclass
@@ -222,17 +206,13 @@ class UserAccountData:
     health_factor: Decimal
 
 
-# Aave returns ``type(uint256).max`` for healthFactor when a user has no debt.
-_UINT256_MAX = (1 << 256) - 1
-
-
 def parse_health_factor(raw: int) -> Decimal:
     """Convert the on-chain ``uint256`` health factor to a :class:`Decimal`.
 
     The value is 1e18-scaled on Aave. When the user has no debt, Aave
     returns ``type(uint256).max``; we surface that as ``Decimal("Infinity")``.
     """
-    if raw == _UINT256_MAX:
+    if raw == UINT256_MAX:
         return Decimal("Infinity")
     return Decimal(raw) / Decimal(10**18)
 
@@ -274,6 +254,19 @@ class AaveV3:
         self.data_provider_address = data_provider_address
         self.oracle_address = oracle_address
         self.protocol_name = protocol_name
+
+    @classmethod
+    def from_chain(cls, w3: AsyncWeb3, chain_id: int, protocol_name: str = "AaveV3") -> AaveV3:
+        from pydefi.deployments import address_for
+
+        return cls(
+            w3=w3,
+            chain_id=chain_id,
+            pool_address=address_for("AAVE_V3_POOL", chain_id),
+            data_provider_address=address_for("AAVE_V3_DATA_PROVIDER", chain_id),
+            oracle_address=address_for("AAVE_V3_ORACLE", chain_id),
+            protocol_name=protocol_name,
+        )
 
     @classmethod
     async def from_addresses_provider(
@@ -499,7 +492,7 @@ class AaveV3:
             on_behalf_of,
             referral_code,
         ).data
-        return _to_tx(self.pool_address, call_data)
+        return to_tx(self.pool_address, call_data)
 
     def build_withdraw_tx(
         self,
@@ -508,15 +501,14 @@ class AaveV3:
         to: Address | None = None,
     ) -> dict[str, Any]:
         recipient = to or user
-        asset, raw = _resolve_amount(amount)
+        asset, raw = resolve_amount(amount)
         call_data = AAVE_V3_POOL.fns.withdraw(asset.address, raw, recipient).data
-        return _to_tx(self.pool_address, call_data)
+        return to_tx(self.pool_address, call_data)
 
     def build_borrow_tx(
         self,
         user: Address,
         amount: TokenAmount,
-        mode: InterestRateMode = InterestRateMode.VARIABLE,
         on_behalf_of: Address | None = None,
         referral_code: int = 0,
     ) -> dict[str, Any]:
@@ -524,23 +516,22 @@ class AaveV3:
         call_data = AAVE_V3_POOL.fns.borrow(
             amount.token.address,
             amount.amount,
-            int(mode),
+            _VARIABLE_RATE_MODE,
             referral_code,
             on_behalf_of,
         ).data
-        return _to_tx(self.pool_address, call_data)
+        return to_tx(self.pool_address, call_data)
 
     def build_repay_tx(
         self,
         user: Address,
         amount: TokenAmount | tuple[Token, Literal["max"]],
-        mode: InterestRateMode = InterestRateMode.VARIABLE,
         on_behalf_of: Address | None = None,
     ) -> dict[str, Any]:
         on_behalf_of = on_behalf_of or user
-        asset, raw = _resolve_amount(amount)
-        call_data = AAVE_V3_POOL.fns.repay(asset.address, raw, int(mode), on_behalf_of).data
-        return _to_tx(self.pool_address, call_data)
+        asset, raw = resolve_amount(amount)
+        call_data = AAVE_V3_POOL.fns.repay(asset.address, raw, _VARIABLE_RATE_MODE, on_behalf_of).data
+        return to_tx(self.pool_address, call_data)
 
     def build_set_collateral_tx(
         self,
@@ -548,7 +539,7 @@ class AaveV3:
         use_as_collateral: bool,
     ) -> dict[str, Any]:
         call_data = AAVE_V3_POOL.fns.setUserUseReserveAsCollateral(token.address, use_as_collateral).data
-        return _to_tx(self.pool_address, call_data)
+        return to_tx(self.pool_address, call_data)
 
     def build_flashloan_simple_tx(
         self,
@@ -572,37 +563,11 @@ class AaveV3:
             params,
             referral_code,
         ).data
-        return _to_tx(self.pool_address, call_data)
+        return to_tx(self.pool_address, call_data)
 
     def build_set_emode_tx(self, category_id: int) -> dict[str, Any]:
         """Build a ``setUserEMode`` transaction. Pass ``0`` to disable E-Mode."""
         if not 0 <= category_id <= 255:
             raise ValueError("category_id must fit in uint8 (0–255)")
         call_data = AAVE_V3_POOL.fns.setUserEMode(category_id).data
-        return _to_tx(self.pool_address, call_data)
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _resolve_amount(amount: TokenAmount | tuple[Token, Literal["max"]]) -> tuple[Token, int]:
-    """Accept either an exact :class:`TokenAmount` or ``(token, "max")``."""
-    if isinstance(amount, TokenAmount):
-        return amount.token, amount.amount
-    if isinstance(amount, tuple) and len(amount) == 2 and amount[1] == "max":
-        return amount[0], UINT256_MAX
-    raise TypeError("amount must be a TokenAmount or (Token, 'max') tuple")
-
-
-def _to_tx(to: Address, call_data: bytes) -> dict[str, Any]:
-    """Format a calldata payload as the project-wide tx dict shape."""
-    return {
-        "to": "0x" + bytes(to).hex(),
-        "data": "0x" + call_data.hex(),
-        "value": "0",
-    }
-
-
-__all__ = ["AaveV3", "UINT256_MAX"]
+        return to_tx(self.pool_address, call_data)
