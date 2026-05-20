@@ -13,7 +13,7 @@ from eth_contract.erc20 import ERC20
 from web3 import AsyncWeb3
 
 from pydefi.bridge.lucid import LucidBridge
-from pydefi.deployments import COMET_CONTRACT_BY_SYMBOL, chains_for, get_token
+from pydefi.deployments import chains_for, comet_contract_for, get_token
 from pydefi.lending.aave_v3 import AaveV3
 from pydefi.lending.compound_v3 import CompoundV3
 from pydefi.types import Address, Token, TokenAmount
@@ -67,7 +67,7 @@ class YieldRoute:
 
 def _candidate_chains(token_symbol: str) -> list[int]:
     aave = set(chains_for("AAVE_V3_ADDRESSES_PROVIDER"))
-    comet_name = COMET_CONTRACT_BY_SYMBOL.get(token_symbol)
+    comet_name = comet_contract_for(token_symbol)
     comet = set(chains_for(comet_name)) if comet_name else set()
     return sorted(aave | comet)
 
@@ -163,7 +163,7 @@ async def _aave_market(w3: AsyncWeb3, chain_id: int, token: Token, token_symbol:
 
 
 async def _compound_market(w3: AsyncWeb3, chain_id: int, token_symbol: str) -> YieldMarket | None:
-    name = COMET_CONTRACT_BY_SYMBOL.get(token_symbol)
+    name = comet_contract_for(token_symbol)
     if name is None or chain_id not in chains_for(name):
         return None
     market = await CompoundV3.from_chain(w3, chain_id, token_symbol).get_market_data()
