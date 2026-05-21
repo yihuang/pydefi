@@ -27,3 +27,18 @@ deno eval 'import * as book from "npm:@aave-dao/aave-address-book"; console.log(
 # Compound III (Comet) market addresses (compound.json).
 # Source: https://github.com/compound-finance/comet
 python3 update_compound.py
+
+# Morpho Blue core + AdaptiveCurveIRM per chain (morpho.json).
+# Source: the @morpho-org/blue-sdk npm package's addressesRegistry. Morpho
+# Blue is immutable, but only its Ethereum/Base deployment got the vanity
+# 0xBBBB… address — later chains were deployed at distinct addresses — so the
+# registry is the canonical per-chain source. blue-sdk needs viem as a peer
+# dependency, hence the extra import.
+deno eval 'import { addressesRegistry } from "npm:@morpho-org/blue-sdk"; import "npm:viem@2"; console.log(JSON.stringify(addressesRegistry))' \
+  | jq -S '{
+      MORPHO_BLUE: (to_entries | map(select(.value.morpho != null))
+                    | map({(.key): .value.morpho}) | add),
+      MORPHO_ADAPTIVE_CURVE_IRM: (to_entries | map(select(.value.adaptiveCurveIrm != null))
+                                  | map({(.key): .value.adaptiveCurveIrm}) | add)
+    }' \
+  > morpho.json

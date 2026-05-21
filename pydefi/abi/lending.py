@@ -189,3 +189,103 @@ COMPOUND_V3_COMET = Contract.from_abi(
         "function allow(address manager, bool isAllowed) external",
     ]
 )
+
+
+# ---------------------------------------------------------------------------
+# Morpho Blue — ABI struct definitions
+# ---------------------------------------------------------------------------
+
+
+class MorphoMarketParams(ABIStruct):
+    """Morpho Blue ``MarketParams`` — the immutable definition of one market.
+
+    The keccak256 of ``abi.encode(MarketParams)`` is the market's ``Id``
+    (a ``bytes32``). Field order is part of that hash, so it must match the
+    on-chain struct exactly: loanToken, collateralToken, oracle, irm, lltv.
+    """
+
+    loanToken: Annotated[str, "address"]
+    collateralToken: Annotated[str, "address"]
+    oracle: Annotated[str, "address"]
+    irm: Annotated[str, "address"]
+    lltv: Annotated[int, "uint256"]
+
+
+class MorphoMarketStruct(ABIStruct):
+    """Morpho Blue ``Market`` — a market's live accounting state.
+
+    Passed by value into ``IIrm.borrowRateView``. ``totalSupplyAssets`` /
+    ``totalBorrowAssets`` are the interest-bearing totals; the matching
+    ``*Shares`` fields track ERC-4626-style share supply.
+    """
+
+    totalSupplyAssets: Annotated[int, "uint128"]
+    totalSupplyShares: Annotated[int, "uint128"]
+    totalBorrowAssets: Annotated[int, "uint128"]
+    totalBorrowShares: Annotated[int, "uint128"]
+    lastUpdate: Annotated[int, "uint128"]
+    fee: Annotated[int, "uint128"]
+
+
+# ---------------------------------------------------------------------------
+# Morpho Blue — core singleton
+# ---------------------------------------------------------------------------
+
+MORPHO_BLUE = Contract.from_abi(
+    MorphoMarketParams.human_readable_abi()
+    + [
+        # Writes — every market-scoped call carries the full MarketParams.
+        # supply / withdraw / borrow / repay take (assets, shares) with
+        # exactly one non-zero.
+        "function supply(MorphoMarketParams marketParams, uint256 assets, uint256 shares, address onBehalf, bytes data) external returns (uint256 assetsSupplied, uint256 sharesSupplied)",
+        "function withdraw(MorphoMarketParams marketParams, uint256 assets, uint256 shares, address onBehalf, address receiver) external returns (uint256 assetsWithdrawn, uint256 sharesWithdrawn)",
+        "function borrow(MorphoMarketParams marketParams, uint256 assets, uint256 shares, address onBehalf, address receiver) external returns (uint256 assetsBorrowed, uint256 sharesBorrowed)",
+        "function repay(MorphoMarketParams marketParams, uint256 assets, uint256 shares, address onBehalf, bytes data) external returns (uint256 assetsRepaid, uint256 sharesRepaid)",
+        "function supplyCollateral(MorphoMarketParams marketParams, uint256 assets, address onBehalf, bytes data) external",
+        "function withdrawCollateral(MorphoMarketParams marketParams, uint256 assets, address onBehalf, address receiver) external",
+        "function createMarket(MorphoMarketParams marketParams) external",
+        "function accrueInterest(MorphoMarketParams marketParams) external",
+        "function setAuthorization(address authorized, bool newIsAuthorized) external",
+        "function flashLoan(address token, uint256 assets, bytes data) external",
+        "function liquidate(MorphoMarketParams marketParams, address borrower, uint256 seizedAssets, uint256 repaidShares, bytes data) external returns (uint256, uint256)",
+        # Reads. market / position / idToMarketParams are public-mapping
+        # getters: Solidity flattens the struct value into a plain tuple of
+        # its members, so the ABI return is NOT a nested struct.
+        "function market(bytes32 id) external view returns (uint128 totalSupplyAssets, uint128 totalSupplyShares, uint128 totalBorrowAssets, uint128 totalBorrowShares, uint128 lastUpdate, uint128 fee)",
+        "function position(bytes32 id, address user) external view returns (uint256 supplyShares, uint128 borrowShares, uint128 collateral)",
+        "function idToMarketParams(bytes32 id) external view returns (address loanToken, address collateralToken, address oracle, address irm, uint256 lltv)",
+        "function isAuthorized(address authorizer, address authorized) external view returns (bool)",
+        "function nonce(address authorizer) external view returns (uint256)",
+        "function isIrmEnabled(address irm) external view returns (bool)",
+        "function isLltvEnabled(uint256 lltv) external view returns (bool)",
+        "function owner() external view returns (address)",
+        "function feeRecipient() external view returns (address)",
+        "function DOMAIN_SEPARATOR() external view returns (bytes32)",
+    ]
+)
+
+
+# ---------------------------------------------------------------------------
+# Morpho Blue — Interest Rate Model (AdaptiveCurveIRM)
+# ---------------------------------------------------------------------------
+
+MORPHO_IRM = Contract.from_abi(
+    MorphoMarketParams.human_readable_abi()
+    + MorphoMarketStruct.human_readable_abi()
+    + [
+        # Returns the borrow rate per second, scaled by WAD (1e18).
+        "function borrowRateView(MorphoMarketParams marketParams, MorphoMarketStruct market) external view returns (uint256)",
+    ]
+)
+
+
+# ---------------------------------------------------------------------------
+# Morpho Blue — market oracle (IOracle)
+# ---------------------------------------------------------------------------
+
+MORPHO_ORACLE = Contract.from_abi(
+    [
+        # Price of 1 collateral unit quoted in loan token, scaled by 1e36.
+        "function price() external view returns (uint256)",
+    ]
+)

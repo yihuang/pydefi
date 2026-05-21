@@ -25,7 +25,7 @@ from pydefi.yields import (
     rebalance_tick,
     wait_for_bridge_settlement,
 )
-from pydefi.yields.router import Protocol, Strategy, YieldStep
+from pydefi.yields.router import Protocol, Strategy, YieldStep, _morpho_id, _morpho_markets
 
 # ---------------------------------------------------------------------------
 # Tokens / addresses / canned tx dicts (shared across every test)
@@ -126,6 +126,7 @@ async def test_get_yield_markets_sorts_by_apy_descending():
         patch("pydefi.yields.router.get_token", side_effect=_stub_get_token),
         patch("pydefi.yields.router._aave_market", new=fake_aave),
         patch("pydefi.yields.router._compound_market", new=fake_comet),
+        patch("pydefi.yields.router._morpho_markets", new=AsyncMock(return_value=[])),
     ):
         out = await get_yield_markets(
             "USDC", w3s={ChainId.BASE: object(), ChainId.OPTIMISM: object()}, chains=[ChainId.BASE, ChainId.OPTIMISM]
@@ -166,6 +167,7 @@ async def test_get_yield_markets_skips_unscannable_chains(w3s, chains):
     with (
         patch("pydefi.yields.router._aave_market", new=aave),
         patch("pydefi.yields.router._compound_market", new=comet),
+        patch("pydefi.yields.router._morpho_markets", new=AsyncMock(return_value=[])),
     ):
         out = await get_yield_markets("USDC", w3s=w3s, chains=chains)
     assert out == []
@@ -185,6 +187,70 @@ async def test_get_yield_markets_protocols_filter():
         await get_yield_markets("USDC", w3s={ChainId.BASE: object()}, chains=[ChainId.BASE], protocols=["aave_v3"])
     assert aave.await_count == 1
     assert comet.await_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Morpho discovery
+# ---------------------------------------------------------------------------
+
+_USDC_BASE_ADDR = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+
+
+def _morpho_api_item(unique_key: str, chain_id: int, symbol: str, address: str, decimals: int, apy: float) -> dict:
+    """One raw item shaped like the Morpho indexer's ``markets.items[]``."""
+    return {
+        "uniqueKey": unique_key,
+        "morphoBlue": {"chain": {"id": chain_id}},
+        "loanAsset": {"symbol": symbol, "address": address, "decimals": decimals},
+        "state": {"supplyApy": apy, "utilization": 0.8, "liquidityAssets": "1000000"},
+    }
+
+
+def test_morpho_id_round_trips_market_id():
+    market = dataclasses.replace(_market("morpho", ChainId.BASE, USDC_BASE), market_id="morpho:8453:0x" + "ab" * 32)
+    assert _morpho_id(market) == bytes.fromhex("ab" * 32)
+
+
+def test_morpho_id_rejects_non_morpho_market():
+    with pytest.raises(ValueError):
+        _morpho_id(_market("aave_v3", ChainId.BASE, USDC_BASE))
+
+
+@pytest.mark.asyncio
+async def test_morpho_markets_filters_by_loan_symbol():
+    # The indexer returns markets for every loan asset; only USDC-loan ones
+    # are surfaced, and the indexer's deepest-supply-first order is preserved.
+    canned = [
+        _morpho_api_item("0x" + "a1" * 32, 8453, "USDC", _USDC_BASE_ADDR, 6, 0.05),
+        _morpho_api_item("0x" + "a2" * 32, 8453, "USDC", _USDC_BASE_ADDR, 6, 0.04),
+        _morpho_api_item("0x" + "b1" * 32, 8453, "WETH", "0x" + "ee" * 20, 18, 0.09),
+        _morpho_api_item("0x" + "a3" * 32, 8453, "USDC", _USDC_BASE_ADDR, 6, 0.03),
+    ]
+    with patch("pydefi.yields.router._fetch_morpho_markets", new=AsyncMock(return_value=canned)):
+        out = await _morpho_markets("USDC", [ChainId.BASE])
+
+    assert [m.market_id for m in out] == [
+        "morpho:8453:0x" + "a1" * 32,
+        "morpho:8453:0x" + "a2" * 32,
+        "morpho:8453:0x" + "a3" * 32,
+    ]
+    assert all(m.protocol == "morpho" and m.token.symbol == "USDC" and m.token.decimals == 6 for m in out)
+    assert out[0].supply_apy == Decimal("0.05")
+    assert out[0].available_liquidity.amount == 1_000_000
+
+
+@pytest.mark.asyncio
+async def test_get_yield_markets_includes_morpho():
+    canned = [_morpho_api_item("0x" + "c1" * 32, 8453, "USDC", _USDC_BASE_ADDR, 6, 0.06)]
+    with (
+        patch("pydefi.yields.router._aave_market", new=AsyncMock(return_value=None)),
+        patch("pydefi.yields.router._compound_market", new=AsyncMock(return_value=None)),
+        patch("pydefi.yields.router._fetch_morpho_markets", new=AsyncMock(return_value=canned)),
+    ):
+        out = await get_yield_markets("USDC", w3s={ChainId.BASE: object()}, chains=[ChainId.BASE])
+
+    assert [m.protocol for m in out] == ["morpho"]
+    assert out[0].market_id == "morpho:8453:0x" + "c1" * 32
 
 
 def test_yield_market_is_frozen_dataclass():

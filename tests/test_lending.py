@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 from hexbytes import HexBytes
 
-from pydefi.abi.lending import AAVE_V3_POOL, COMPOUND_V3_COMET
+from pydefi.abi.lending import AAVE_V3_POOL, COMPOUND_V3_COMET, MORPHO_BLUE
 from pydefi.deployments import chains_for, comet_contract_names
 from pydefi.lending import AaveV3, UserAccountData
 from pydefi.lending.aave_v3 import (
@@ -29,6 +29,14 @@ from pydefi.lending.compound_v3 import (
     COMET_SCALE,
     CompoundV3,
     per_second_rate_to_apy,
+)
+from pydefi.lending.morpho import (
+    MarketParams,
+    MarketState,
+    MorphoBlue,
+    accrue_interest,
+    compute_health_factor,
+    supply_apy_from_borrow,
 )
 from pydefi.types import Address, ChainId, TokenAmount
 from tests.addrs import ETH_WHALE, USDC, WETH
@@ -370,3 +378,259 @@ def test_compound_v3_market_pinned(name: str, chain: int):
 
     addr = get_address(name, chain)
     assert len(addr) == 42 and addr.startswith("0x"), f"{name} on {chain}: {addr!r}"
+
+
+# ===========================================================================
+# Morpho Blue
+# ===========================================================================
+
+MORPHO_BLUE_ADDR = Address("0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb")
+MORPHO_IRM_ADDR = Address("0x870aC11D48B15DB9a138Cf899d20F13F79Ba00BC")
+MORPHO_ORACLE_ADDR = Address("0x2a01EB9496094dA03c4E364Def50f5aD1280AD72")
+
+#: An enabled standard LLTV (86%), WAD-scaled.
+LLTV_86 = 860_000_000_000_000_000
+
+#: ``keccak256(abi.encode(MARKET))`` computed offline (see docs/plan_morpho.md)
+#: — a fixed regression vector independent of the production code path.
+EXPECTED_MARKET_ID = bytes.fromhex("68e2c12cb7f73414a223441f15f6f5e0bf3019a80ed6752f1b75a4fc3642f006")
+
+#: A WETH-collateral / USDC-loan market used across the Morpho tests.
+MARKET = MarketParams(
+    loan_token=USDC,
+    collateral_token=WETH,
+    oracle=MORPHO_ORACLE_ADDR,
+    irm=MORPHO_IRM_ADDR,
+    lltv=LLTV_86,
+)
+
+
+# ---------------------------------------------------------------------------
+# Market Id
+# ---------------------------------------------------------------------------
+
+
+class TestMorphoMarketId:
+    def test_matches_offline_vector(self):
+        assert MARKET.id == EXPECTED_MARKET_ID
+
+    def test_cross_check_against_eth_abi(self):
+        """Independent path: raw eth_abi.encode + keccak, not the ABIStruct."""
+        from eth_abi import encode
+        from eth_utils import keccak
+
+        expected = keccak(
+            encode(
+                ["address", "address", "address", "address", "uint256"],
+                [bytes(USDC.address), bytes(WETH.address), bytes(MORPHO_ORACLE_ADDR), bytes(MORPHO_IRM_ADDR), LLTV_86],
+            )
+        )
+        assert MARKET.id == expected
+
+    def test_field_order_matters(self):
+        """Swapping loan / collateral must yield a different market."""
+        swapped = MarketParams(
+            loan_token=WETH,
+            collateral_token=USDC,
+            oracle=MORPHO_ORACLE_ADDR,
+            irm=MORPHO_IRM_ADDR,
+            lltv=LLTV_86,
+        )
+        assert swapped.id != MARKET.id
+
+
+# ---------------------------------------------------------------------------
+# Interest accrual
+# ---------------------------------------------------------------------------
+
+
+def _state(*, fee: int = 0) -> MarketState:
+    return MarketState(
+        total_supply_assets=1_000_000,
+        total_supply_shares=1_000_000,
+        total_borrow_assets=500_000,
+        total_borrow_shares=500_000,
+        last_update=1_700_000_000,
+        fee=fee,
+    )
+
+
+class TestMorphoAccrueInterest:
+    def test_zero_elapsed_is_noop(self):
+        state = _state()
+        assert accrue_interest(state, 10**9, 0) is state
+
+    def test_no_debt_is_noop(self):
+        no_debt = MarketState(1_000_000, 1_000_000, 0, 0, 1_700_000_000, 0)
+        assert accrue_interest(no_debt, 10**9, 3_600) is no_debt
+
+    def test_interest_grows_both_sides_equally(self):
+        accrued = accrue_interest(_state(), 10**9, SECONDS_PER_YEAR)
+        borrow_interest = accrued.total_borrow_assets - 500_000
+        assert borrow_interest > 0
+        # With no fee, every unit of borrow interest is credited to suppliers.
+        assert accrued.total_supply_assets - 1_000_000 == borrow_interest
+        assert accrued.total_supply_shares == 1_000_000
+
+    def test_fee_mints_supply_shares(self):
+        accrued = accrue_interest(_state(fee=10**17), 10**9, SECONDS_PER_YEAR)
+        assert accrued.total_supply_shares > 1_000_000
+
+
+# ---------------------------------------------------------------------------
+# Health factor
+# ---------------------------------------------------------------------------
+
+# Oracle price of WETH (18 dec) in USDC (6 dec), 1e36-scaled: $3000 -> 3000e24.
+_WETH_PRICE = 3_000 * 10**24
+
+
+class TestMorphoHealthFactor:
+    def test_no_debt_is_infinite(self):
+        assert compute_health_factor(10**18, 0, _WETH_PRICE, LLTV_86).is_infinite()
+
+    def test_known_value(self):
+        # 1 WETH collateral @ $3000, 86% LLTV -> max borrow 2580 USDC.
+        # Borrowing 1290 USDC leaves a health factor of exactly 2.
+        hf = compute_health_factor(10**18, 1_290 * 10**6, _WETH_PRICE, LLTV_86)
+        assert hf == Decimal(2)
+
+    def test_liquidatable_below_one(self):
+        hf = compute_health_factor(10**18, 2_600 * 10**6, _WETH_PRICE, LLTV_86)
+        assert hf < Decimal(1)
+
+
+# ---------------------------------------------------------------------------
+# Supply APY derivation
+# ---------------------------------------------------------------------------
+
+
+class TestMorphoSupplyApy:
+    def test_empty_market_is_zero(self):
+        assert supply_apy_from_borrow(10**9, MarketState(0, 0, 0, 0, 0, 0)) == Decimal(0)
+
+    def test_below_borrow_apy_when_partially_utilized(self):
+        # 50% utilization -> suppliers earn strictly less than the borrow rate.
+        half_used = MarketState(2_000_000, 2_000_000, 1_000_000, 1_000_000, 0, 0)
+        supply_apy = supply_apy_from_borrow(10**9, half_used)
+        assert Decimal(0) < supply_apy < per_second_rate_to_apy(10**9)
+
+
+# ---------------------------------------------------------------------------
+# Tx-builder calldata encoding
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def morpho() -> MorphoBlue:
+    return MorphoBlue(
+        w3=None,  # type: ignore[arg-type]
+        chain_id=ChainId.ETHEREUM,
+        morpho_address=MORPHO_BLUE_ADDR,
+    )
+
+
+def _assert_market_struct(struct: tuple) -> None:
+    """Assert a decoded MarketParams struct matches :data:`MARKET`."""
+    loan, collateral, oracle, irm, lltv = struct
+    assert Address(loan) == USDC.address
+    assert Address(collateral) == WETH.address
+    assert Address(oracle) == MORPHO_ORACLE_ADDR
+    assert Address(irm) == MORPHO_IRM_ADDR
+    assert lltv == LLTV_86
+
+
+#: supply / withdraw / borrow / repay share one calldata shape —
+#: ``(MarketParams, assets, shares, onBehalf, data|receiver)``. ``extra`` is
+#: the builder-specific trailing kwarg; ``trailing`` its expected decoded value.
+_AMOUNT_BUILDERS = [
+    pytest.param("build_supply_tx", MORPHO_BLUE.fns.supply, {}, b"", id="supply"),
+    pytest.param("build_withdraw_tx", MORPHO_BLUE.fns.withdraw, {"receiver": ETH_WHALE}, ETH_WHALE, id="withdraw"),
+    pytest.param("build_borrow_tx", MORPHO_BLUE.fns.borrow, {"receiver": ETH_WHALE}, ETH_WHALE, id="borrow"),
+    pytest.param("build_repay_tx", MORPHO_BLUE.fns.repay, {}, b"", id="repay"),
+]
+
+
+@pytest.mark.parametrize("method, abi_fn, extra, trailing", _AMOUNT_BUILDERS)
+class TestMorphoAmountBuilders:
+    """supply / withdraw / borrow / repay — MarketParams + an assets-XOR-shares
+    amount, all encoded the same way."""
+
+    def test_by_assets(self, morpho: MorphoBlue, method, abi_fn, extra, trailing):
+        amount = TokenAmount.from_human(USDC, "1000")
+        tx = getattr(morpho, method)(MARKET, assets=amount, on_behalf_of=ETH_WHALE, **extra)
+        assert Address(tx["to"]) == MORPHO_BLUE_ADDR
+        assert tx["value"] == "0"
+        struct, assets, shares, on_behalf, last = decode_call(tx, abi_fn)
+        _assert_market_struct(struct)
+        assert (assets, shares, on_behalf, last) == (amount.amount, 0, ETH_WHALE, trailing)
+
+    def test_by_shares(self, morpho: MorphoBlue, method, abi_fn, extra, trailing):
+        tx = getattr(morpho, method)(MARKET, shares=12_345, on_behalf_of=ETH_WHALE, **extra)
+        _struct, assets, shares, *_ = decode_call(tx, abi_fn)
+        assert (assets, shares) == (0, 12_345)
+
+    def test_requires_exactly_one_amount(self, morpho: MorphoBlue, method, abi_fn, extra, trailing):
+        build = getattr(morpho, method)
+        with pytest.raises(ValueError):  # neither assets nor shares
+            build(MARKET, on_behalf_of=ETH_WHALE, **extra)
+        with pytest.raises(ValueError):  # both
+            build(MARKET, assets=TokenAmount.from_human(USDC, "1"), shares=1, on_behalf_of=ETH_WHALE, **extra)
+
+
+#: supply / withdraw collateral — ``(MarketParams, assets, onBehalf, data|receiver)``.
+_COLLATERAL_BUILDERS = [
+    pytest.param("build_supply_collateral_tx", MORPHO_BLUE.fns.supplyCollateral, (ETH_WHALE,), b"", id="supply"),
+    pytest.param(
+        "build_withdraw_collateral_tx",
+        MORPHO_BLUE.fns.withdrawCollateral,
+        (ETH_WHALE, ETH_WHALE),
+        ETH_WHALE,
+        id="withdraw",
+    ),
+]
+
+
+@pytest.mark.parametrize("method, abi_fn, args, trailing", _COLLATERAL_BUILDERS)
+def test_morpho_collateral_builder(morpho: MorphoBlue, method, abi_fn, args, trailing):
+    amount = TokenAmount.from_human(WETH, "2")
+    struct, assets, on_behalf, last = decode_call(getattr(morpho, method)(MARKET, amount, *args), abi_fn)
+    _assert_market_struct(struct)
+    assert (assets, on_behalf, last) == (amount.amount, ETH_WHALE, trailing)
+
+
+class TestMorphoBuildOtherTxs:
+    @pytest.mark.parametrize("flag", [True, False])
+    def test_set_authorization(self, morpho: MorphoBlue, flag: bool):
+        authorized, is_authorized = decode_call(
+            morpho.build_set_authorization_tx(ETH_WHALE, flag), MORPHO_BLUE.fns.setAuthorization
+        )
+        assert authorized == ETH_WHALE
+        assert is_authorized is flag
+
+    def test_create_market(self, morpho: MorphoBlue):
+        tx = morpho.build_create_market_tx(MARKET)
+        # createMarket has a single struct input, which decode_input unwraps.
+        struct = MORPHO_BLUE.fns.createMarket.decode_input(HexBytes(tx["data"]))
+        _assert_market_struct(struct)
+
+    def test_flashloan(self, morpho: MorphoBlue):
+        amount = TokenAmount.from_human(USDC, "10000")
+        token, raw_amount, data = decode_call(morpho.build_flashloan_tx(USDC, amount), MORPHO_BLUE.fns.flashLoan)
+        assert token == USDC.address
+        assert raw_amount == amount.amount
+        assert data == b""
+
+
+# ---------------------------------------------------------------------------
+# Deployment registry sanity
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("chain", chains_for("MORPHO_BLUE"))
+def test_morpho_blue_deployment_pinned(chain: int):
+    """Every pinned Morpho Blue address resolves to a 20-byte address."""
+    from pydefi.deployments import get_address
+
+    addr = get_address("MORPHO_BLUE", chain)
+    assert len(addr) == 42 and addr.startswith("0x"), f"MORPHO_BLUE on {chain}: {addr!r}"

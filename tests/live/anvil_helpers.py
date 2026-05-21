@@ -71,6 +71,16 @@ async def send_tx(w3: AsyncWeb3, sender: Address, tx: dict) -> dict:
     return await w3.eth.wait_for_transaction_receipt(tx_hash)
 
 
+async def send_ok(w3: AsyncWeb3, sender: Address, tx: dict, label: str) -> dict:
+    """Submit *tx* via :func:`send_tx` and assert it did not revert.
+
+    *label* names the action in the ``"<label> reverted"`` failure message.
+    """
+    receipt = await send_tx(w3, sender, tx)
+    assert receipt["status"] == 1, f"{label} reverted"
+    return receipt
+
+
 async def fund_usdc(w3: AsyncWeb3, usdc: Address, recipient: Address, amount: int) -> None:
     """Send ``amount`` of USDC to *recipient* by impersonating :data:`USDC_WHALE`."""
     await impersonate(w3, USDC_WHALE)
