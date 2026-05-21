@@ -496,7 +496,7 @@ class PoolIndexer:
                 select(V2SyncEvent)
                 .where(V2SyncEvent.pool_address == addr)
                 .order_by(V2SyncEvent.block_number.desc(), V2SyncEvent.log_index.desc())
-            )  # type: ignore[arg-type]
+            )
             event = session.exec(stmt).first()
             if event is None:
                 return None

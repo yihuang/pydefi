@@ -106,6 +106,13 @@ STDLIB_FUNCTIONS: dict[str, Callable[[ProgramContext], None]] = {
 
 
 def build_stdlib(ir_ctx: IRContext) -> None:
+    """Add stdlib helper functions to *ir_ctx*.
+
+    Must be called exactly once per ``ir_ctx``.  ``ProgramContext.__init__``
+    already invokes this for entry contexts (``set_entry=True``), so callers
+    constructing a top-level ``ProgramContext`` should not call it again.
+    """
     for name, builder in STDLIB_FUNCTIONS.items():
+        assert IRLabel(name, True) not in ir_ctx.functions, f"stdlib function {name} already present"
         ctx = ProgramContext(ir_ctx, name, set_entry=False)
         builder(ctx)

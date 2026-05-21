@@ -2,25 +2,31 @@
 
 Provides two complementary EVM testing facilities:
 
-1. :func:`mini_evm` / :data:`RETURN_TOP` — stateless, single-shot executor
-   for quick bytecode tests (no contract setup needed).
+1. :func:`mini_evm` — stateless, single-shot executor for quick bytecode
+   tests (no contract setup needed).
 
 2. :class:`MiniEVMContext` — stateful EVM context backed by ethereum-execution
-   (execution-specs) Shanghai with real DeFiVM + Analog-Labs interpreter deployed.
+   (execution-specs) Cancun with real DeFiVM + Analog-Labs interpreter deployed.
    Contracts deployed via :meth:`~MiniEVMContext.deploy` persist across
    all subsequent calls.
 
 Usage::
 
+    from pydefi.vm import Program
+
     # Stateless
-    result = mini_evm(push_u256(3) + push_u256(5) + add() + RETURN_TOP)
+    p = Program()
+    p.return_word(p.add(p.const(3), p.const(5)))
+    result = mini_evm(p.build())
     assert int.from_bytes(result.output, "big") == 8
 
     # Stateful
     ctx = MiniEVMContext()
     token = ctx.deploy_mock_token()
     ctx.mint_token(token, ctx.program_executor, 500 * 10**18)
-    result = ctx.run_program(self_addr() + push_addr(token.hex()) + balance_of() + RETURN_TOP)
+    p = Program()
+    p.return_word(p.erc20_balance_of(token, p.builder.address()))
+    result = ctx.run_program(p.build())
     assert int.from_bytes(result.output, "big") == 500 * 10**18
 """
 
@@ -31,13 +37,13 @@ from pathlib import Path
 from typing import Optional
 
 import pytest
-from eth_contract.contract import Contract
 from eth_contract.erc20 import ERC20
 from eth_contract.utils import get_initcode
 from eth_keys import keys
-from ethereum.forks.shanghai.state import (
+from ethereum.forks.cancun.state import (
     EMPTY_ACCOUNT,
     State,
+    TransientStorage,
     begin_transaction,
     get_account,
     get_account_optional,
@@ -49,12 +55,13 @@ from ethereum.forks.shanghai.state import (
     set_code,
     set_storage,
 )
-from ethereum.forks.shanghai.utils.address import compute_contract_address
-from ethereum.forks.shanghai.vm import BlockEnvironment, Message, TransactionEnvironment
-from ethereum.forks.shanghai.vm.interpreter import process_create_message, process_message
+from ethereum.forks.cancun.utils.address import compute_contract_address
+from ethereum.forks.cancun.vm import BlockEnvironment, Message, TransactionEnvironment
+from ethereum.forks.cancun.vm.interpreter import process_create_message, process_message
 from ethereum_types.bytes import Bytes0, Bytes20, Bytes32
 from ethereum_types.numeric import U64, U256, Uint
 
+from pydefi.abi.vm import DeFiVM as _DeFiVM
 from tests.live.sol_utils import (
     MOCK_TOKEN_SOL,
     compile_interpreter_sync,
@@ -74,31 +81,8 @@ MINI_EVM_SENDER: bytes = b"\xaa" * 20
 MINI_EVM_RECEIVER: bytes = b"\xbb" * 20
 
 #: Initial ETH balance credited to :data:`MINI_EVM_SENDER` in the genesis
-#: state.  Tests can query this value via ``balance_of(0, SENDER_INT)``.
+#: state.  Tests can query this value via ``Program.eth_balance(...)``.
 MINI_EVM_SENDER_BALANCE: int = 10**21
-
-#: Bytecode snippet that stores the top-of-stack value at ``memory[0]`` and
-#: returns 32 bytes — effectively converting a ``uint256`` stack result into
-#: a 32-byte return value that :func:`mini_evm` exposes as ``result.output``.
-#:
-#: Append this to any program that leaves a ``uint256`` on the stack::
-#:
-#:     result = mini_evm(push_u256(42) + RETURN_TOP)
-#:     assert int.from_bytes(result.output, "big") == 42
-#:
-#: Opcodes: ``PUSH1 0x00  MSTORE  PUSH1 0x20  PUSH1 0x00  RETURN``
-RETURN_TOP: bytes = bytes(
-    [
-        0x60,
-        0x00,  # PUSH1 0x00   → offset for MSTORE
-        0x52,  # MSTORE        → mem[0] = TOS-value
-        0x60,
-        0x20,  # PUSH1 0x20   → size = 32
-        0x60,
-        0x00,  # PUSH1 0x00   → offset = 0
-        0xF3,  # RETURN
-    ]
-)
 
 # ---------------------------------------------------------------------------
 # Module-level EVM setup for mini_evm() (shared, read-only across calls)
@@ -108,6 +92,7 @@ RETURN_TOP: bytes = bytes(
 # execution in begin_transaction / rollback_transaction so the shared state
 # remains effectively read-only across test calls.
 _mini_evm_state: State = State()
+_mini_evm_transient: TransientStorage = TransientStorage()
 set_account_balance(_mini_evm_state, Bytes20(MINI_EVM_SENDER), U256(MINI_EVM_SENDER_BALANCE))
 
 _MINI_EVM_BLOCK_ENV: BlockEnvironment = BlockEnvironment(
@@ -120,6 +105,8 @@ _MINI_EVM_BLOCK_ENV: BlockEnvironment = BlockEnvironment(
     base_fee_per_gas=Uint(1),
     time=U256(1),
     prev_randao=Bytes32(b"\x00" * 32),
+    excess_blob_gas=U64(0),
+    parent_beacon_block_root=Bytes32(b"\x00" * 32),
 )
 
 
@@ -135,9 +122,9 @@ class EVMResult:
 
     Attributes:
         output:   Return data produced by ``RETURN``, or revert data produced
-                  by ``REVERT``.  For a successful execution that ends with
-                  :data:`RETURN_TOP` appended, ``output`` holds the 32-byte
-                  big-endian encoding of the top-of-stack value.
+                  by ``REVERT``.  For a program built with
+                  :meth:`Program.return_word`, ``output`` holds the 32-byte
+                  big-endian encoding of the returned uint256.
         gas_used: Number of EVM gas units consumed.
         is_error: ``True`` if the computation ended with ``REVERT`` or ran
                   out of gas; ``False`` for a successful ``RETURN``.
@@ -174,9 +161,11 @@ def mini_evm(
 
     Example::
 
-        from pydefi.vm.program import push_u256, mul
+        from pydefi.vm import Program
 
-        result = mini_evm(push_u256(6) + push_u256(7) + mul() + RETURN_TOP)
+        prog = Program()
+        prog.return_word(prog.mul(prog.const(6), prog.const(7)))
+        result = mini_evm(prog.build())
         assert not result.is_error
         assert int.from_bytes(result.output, "big") == 42
     """
@@ -188,6 +177,8 @@ def mini_evm(
             gas=Uint(gas),
             access_list_addresses=set(),
             access_list_storage_keys=set(),
+            transient_storage=TransientStorage(),
+            blob_versioned_hashes=(),
             index_in_block=None,
             tx_hash=None,
         ),
@@ -206,7 +197,7 @@ def mini_evm(
         accessed_storage_keys=set(),
         parent_evm=None,
     )
-    begin_transaction(_mini_evm_state)
+    begin_transaction(_mini_evm_state, _mini_evm_transient)
     try:
         evm = process_message(msg)
         return EVMResult(
@@ -215,7 +206,7 @@ def mini_evm(
             is_error=evm.error is not None,
         )
     finally:
-        rollback_transaction(_mini_evm_state)
+        rollback_transaction(_mini_evm_state, _mini_evm_transient)
 
 
 # ---------------------------------------------------------------------------
@@ -223,9 +214,9 @@ def mini_evm(
 # ---------------------------------------------------------------------------
 
 #: EVM-version flag used when compiling Solidity sources inside
-#: :class:`MiniEVMContext`.  ``"shanghai"`` enables PUSH0 (required by the
-#: Analog-Labs interpreter) while remaining compatible with Solidity 0.8.24.
-_SOLC_EVM_VERSION: str = "shanghai"
+#: :class:`MiniEVMContext`.  ``"cancun"`` enables MCOPY (used by Vyper's
+#: abi_encode lowering) and PUSH0.
+_SOLC_EVM_VERSION: str = "cancun"
 
 #: EIP-4844 is not used; gas price for deploy transactions in MiniEVMContext.
 _CTX_GAS_PRICE: int = 10**9
@@ -234,6 +225,29 @@ _CTX_GAS_PRICE: int = 10**9
 #: :class:`MiniEVMContext`.  Large enough for programs that do several
 #: ERC-20 calls; lower it explicitly when testing gas-bounded behaviour.
 _CTX_DEFAULT_GAS: int = 3_000_000
+
+
+def _tstore_preamble(params: list[bytes]) -> bytes:
+    """EVM bytecode that TSTORE's each param into transient slot ``i``.
+
+    Used by :meth:`MiniEVMContext.run_program` to stage params in transient
+    storage so the program can read them via ``TLOAD(i)``.  Slot indices
+    must fit in 1 byte (``< 256``), which is plenty for the test surface.
+    """
+    if len(params) > 255:
+        raise ValueError("too many params for inline TSTORE preamble")
+    code = b""
+    for i, p in enumerate(params):
+        if not isinstance(p, (bytes, bytearray)):
+            raise TypeError(f"param {i}: expected bytes, got {type(p).__name__}")
+        word = bytes(p).rjust(32, b"\x00") if len(p) < 32 else bytes(p)
+        if len(word) != 32:
+            raise ValueError(f"param {i}: expected ≤32 bytes, got {len(p)}")
+        code += b"\x7f" + word  # PUSH32 value
+        code += b"\x60" + bytes([i])  # PUSH1 i
+        code += b"\x5d"  # TSTORE
+    return code
+
 
 # Cached compiled MockToken bytecode (creation code only).
 # Uses MOCK_TOKEN_SOL from tests.live.sol_utils to avoid duplication.
@@ -268,10 +282,9 @@ def _get_interpreter_bin() -> bytes:
 
 
 # ---------------------------------------------------------------------------
-# DeFiVM contract binding (for ABI-encoding execute() calls)
+# DeFiVM contract binding
 # ---------------------------------------------------------------------------
-
-_DeFiVM: Contract = Contract.from_abi(["function execute(bytes calldata program) external payable"])
+# Reuses the canonical ABI from ``pydefi.abi.vm`` (imported as ``_DeFiVM``).
 
 #: Path to the real DeFiVM.sol (relative to repo root).
 _DEFI_VM_SOL_PATH = Path(__file__).parent.parent / "pydefi" / "vm" / "DeFiVM.sol"
@@ -331,6 +344,8 @@ class MiniEVMContext:
             base_fee_per_gas=Uint(1),
             time=U256(1),
             prev_randao=Bytes32(b"\x00" * 32),
+            excess_blob_gas=U64(0),
+            parent_beacon_block_root=Bytes32(b"\x00" * 32),
         )
         # Deploy the real Analog-Labs EVM interpreter + DeFiVM.
         interp_addr = self.deploy(_get_interpreter_bin())
@@ -350,6 +365,8 @@ class MiniEVMContext:
             gas=Uint(gas),
             access_list_addresses=set(),
             access_list_storage_keys=set(),
+            transient_storage=TransientStorage(),
+            blob_versioned_hashes=(),
             index_in_block=None,
             tx_hash=None,
         )
@@ -561,6 +578,7 @@ class MiniEVMContext:
         sender: Optional[bytes] = None,
         value: int = 0,
         gas: int = _CTX_DEFAULT_GAS,
+        params: Optional[list[bytes]] = None,
     ) -> EVMResult:
         """Execute a DeFiVM program via the deployed :class:`DeFiVM` contract.
 
@@ -574,11 +592,22 @@ class MiniEVMContext:
             sender:    ``msg.sender`` for the call; defaults to :attr:`deployer`.
             value:     ETH value (in wei) forwarded to the execution.
             gas:       Gas limit (default :data:`_CTX_DEFAULT_GAS`).
+            params:    If not ``None``, an inline TSTORE preamble is
+                       prepended to ``bytecode`` that writes each value to
+                       transient slot ``i``.  ``None`` skips the preamble so
+                       the program inherits any transient state from earlier
+                       in the tx.  Program reads via ``TLOAD(i)``.
 
         Returns:
             :class:`EVMResult` with ``.output``, ``.gas_used``, ``.is_error``.
         """
         effective_sender = sender if sender is not None else self.deployer
+        if params is not None:
+            # Prepend an inline TSTORE preamble that writes each param into
+            # the executor's transient slots before the actual program runs.
+            # Both run inside the same DELEGATECALL frame, so TLOAD(i) in
+            # the program reads what was just TSTORE'd.
+            bytecode = _tstore_preamble(params) + bytecode
         execute_calldata = _DeFiVM.fns.execute(bytecode).data
         comp = self._apply_computation(
             to=self.program_executor,
@@ -652,13 +681,15 @@ def evm_ctx() -> MiniEVMContext:
     Tests that need to deploy contracts or set up token balances before
     running DeFiVM programs should use this fixture::
 
+        from pydefi.vm import Program
+
         def test_token_balance(evm_ctx):
             token = evm_ctx.deploy_mock_token()
             evm_ctx.mint_token(token, evm_ctx.program_executor, 1000 * 10**18)
 
-            result = evm_ctx.run_program(
-                self_addr() + push_addr(token.hex()) + balance_of() + RETURN_TOP
-            )
+            p = Program()
+            p.return_word(p.erc20_balance_of(token, p.builder.address()))
+            result = evm_ctx.run_program(p.build())
             assert not result.is_error
     """
     return MiniEVMContext()
