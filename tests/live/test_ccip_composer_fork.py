@@ -28,18 +28,12 @@ import pytest
 import solcx
 from eth_contract import Contract
 from hexbytes import HexBytes
+from vyper.venom.basicblock import IRLiteral
 from web3 import AsyncWeb3, Web3
 from web3.exceptions import ContractLogicError, Web3RPCError
 
 from pydefi.types import Address
-from pydefi.vm.program import (
-    call,
-    pop,
-    push_addr,
-    push_bytes,
-    push_u256,
-    store_reg,
-)
+from pydefi.vm import Program
 from tests.live.sol_utils import compile_sol_file, deploy, ensure_solc
 
 # Reusable "this should revert" matcher for both anvil-direct and forked reverts.
@@ -52,7 +46,6 @@ _DEFAULT_MESSAGE_ID = b"\x00" * 32
 # ---------------------------------------------------------------------------
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SOL_FILE = REPO_ROOT / "pydefi" / "bridge" / "CCIPComposer.sol"
-DEFI_VM_SOL_FILE = REPO_ROOT / "pydefi" / "vm" / "DeFiVM.sol"
 
 # Spot-check a CCIP chain selector (Ethereum mainnet).
 _ETHEREUM_SELECTOR = 5009297550715157269
@@ -208,10 +201,6 @@ def _compile_ccip_composer() -> dict:
     return compile_sol_file(SOL_FILE, "CCIPComposer")
 
 
-def _compile_defi_vm() -> dict:
-    return compile_sol_file(DEFI_VM_SOL_FILE, "DeFiVM")
-
-
 async def _deploy(w3: AsyncWeb3, compiled: dict, deployer: Address, *args) -> Address:
     return await deploy(w3, compiled, deployer, *args)
 
@@ -237,25 +226,19 @@ def compiled_mocks():
 
 
 @pytest.fixture(scope="module")
-def compiled_defi_vm():
-    return _compile_defi_vm()
-
-
-@pytest.fixture(scope="module")
-async def ctx(ccip_fork_w3, compiled_ccip_composer, compiled_mocks, compiled_defi_vm, interpreter_addr):
-    """Deploy CCIPComposer, DeFiVM, and mock contracts once; share across tests."""
+async def ctx(ccip_fork_w3, compiled_ccip_composer, compiled_mocks, interpreter_addr):
+    """Deploy CCIPComposer and mock contracts once; share across tests."""
     w3 = ccip_fork_w3
     accounts = await w3.eth.accounts
     deployer = accounts[0]
 
     router_address = await _deploy(w3, compiled_mocks["MockRouter"], deployer)
-    vm_address = await _deploy(w3, compiled_defi_vm, deployer, interpreter_addr)
     composer_address = await _deploy(
         w3,
         compiled_ccip_composer,
         deployer,
         router_address,  # _router
-        vm_address,  # _vm
+        interpreter_addr,  # _interpreter
         deployer,  # _owner
         False,  # _allowlistEnabled — module-scoped fixture keeps the open
         #                                  default so existing tests can drive
@@ -281,7 +264,7 @@ async def ctx(ccip_fork_w3, compiled_ccip_composer, compiled_mocks, compiled_def
         "composer_address": composer_address,
         "router": router,
         "router_address": router_address,
-        "vm_address": vm_address,
+        "interpreter_addr": interpreter_addr,
         "token": token,
         "token_address": token_address,
         "target": target,
@@ -295,31 +278,49 @@ async def ctx(ccip_fork_w3, compiled_ccip_composer, compiled_mocks, compiled_def
 # ---------------------------------------------------------------------------
 
 
-def _call_target(target_address: Address, calldata: bytes, value: int = 0) -> bytes:
-    """DeFiVM bytecode for one external CALL that discards the success flag."""
-    return (
-        push_u256(0)
-        + push_u256(0)  # retLen=0, retOffset=0
-        + push_bytes(calldata)
-        + push_u256(value)
-        + push_addr(target_address)
-        + bytes([0x5A])  # GAS — forward all remaining gas
-        + call()
-        + pop()  # discard success flag
-    )
+def _start_program() -> tuple[Program, "object", "object"]:
+    """Start a compose program and read the two transient-storage params.
 
+    The CCIPComposer stages bridged parameters in transient storage:
+    slot 0 = amountReceived, slot 1 = sourceChainSelector.  The program
+    reads them via TLOAD.
 
-def _prologue(*body: bytes) -> bytes:
-    """Save the (sourceChainSelector, amountReceived) the composer pushes into
-    R0 / R1, then run *body*.  Every compose program in this file opens with
-    this prologue, so callers can stop repeating ``store_reg(0) + store_reg(1)``.
+    Returns ``(prog, amount_received, source_selector)``.
     """
-    return store_reg(0) + store_reg(1) + b"".join(body)
+    prog = Program()
+    amount_received = prog.builder.tload(IRLiteral(0))
+    source_selector = prog.builder.tload(IRLiteral(1))
+    return prog, amount_received, source_selector
 
 
-def _program_calling(target_address: Address, calldata: bytes, value: int = 0) -> bytes:
-    """Full compose program: standard prologue + a single CALL into *target*."""
-    return _prologue(_call_target(target_address, calldata, value))
+def _compose_noop() -> bytes:
+    """Minimal compose program: read prologue values, do nothing."""
+    prog, _amount, _selector = _start_program()
+    prog.builder.stop()
+    return prog.build()
+
+
+def _compose_single_call(target_address: Address, calldata: bytes, *, value: int = 0) -> bytes:
+    """Build a compose program that issues a single external call.
+
+    On CALL failure the outer ``ccipReceive`` reverts (matches legacy
+    ``call(require_success=True)``).
+    """
+    prog, _amount, _selector = _start_program()
+    success = prog.call_raw(target_address, calldata, value=value)
+    prog.assert_(success)
+    prog.builder.stop()
+    return prog.build()
+
+
+def _compose_multi_call(calls: list[tuple[Address, bytes]]) -> bytes:
+    """Build a compose program that issues N external calls in sequence."""
+    prog, _amount, _selector = _start_program()
+    for target, data in calls:
+        success = prog.call_raw(target, data)
+        prog.assert_(success)
+    prog.builder.stop()
+    return prog.build()
 
 
 async def _deliver(
@@ -400,10 +401,10 @@ class TestCCIPComposerFork:
         """ccipReceive runs a DeFiVM program that calls MockTarget.execute()."""
         target = ctx["target"]
         amount = 5 * 10**18
-        program = _program_calling(ctx["target_address"], target.fns.execute(b"ccip-hello").data)
+        program = _compose_single_call(ctx["target_address"], target.fns.execute(b"ccip-hello").data)
 
         pre_count = await target.fns.callCount().call(ctx["w3"])
-        pre_vm_bal = await ctx["token"].fns.balanceOf(ctx["vm_address"]).call(ctx["w3"])
+        pre_composer_bal = await ctx["token"].fns.balanceOf(ctx["composer_address"]).call(ctx["w3"])
 
         receipt = await _deliver(ctx, program, amount=amount)
         assert receipt["status"] == 1
@@ -411,17 +412,21 @@ class TestCCIPComposerFork:
         assert await target.fns.callCount().call(ctx["w3"]) == pre_count + 1
         assert await target.fns.lastData().call(ctx["w3"]) == b"ccip-hello"
 
-        # Composer transferred tokens to DeFiVM; composer keeps zero residual.
-        assert await ctx["token"].fns.balanceOf(ctx["composer_address"]).call(ctx["w3"]) == 0
-        assert await ctx["token"].fns.balanceOf(ctx["vm_address"]).call(ctx["w3"]) == pre_vm_bal + amount
+        # Program runs in the composer's own context via DELEGATECALL, so the
+        # router-delivered tokens stay on the composer until the program moves
+        # them out.  This compose program is a no-op transfer, so the balance
+        # increment exactly matches the bridged amount.
+        assert await ctx["token"].fns.balanceOf(ctx["composer_address"]).call(ctx["w3"]) == pre_composer_bal + amount
 
     async def test_multi_call_compose(self, ctx):
         """A program with two sequential CALL instructions increments callCount by 2."""
         target = ctx["target"]
         target_address = ctx["target_address"]
-        program = _prologue(
-            _call_target(target_address, target.fns.execute(b"call_a").data),
-            _call_target(target_address, target.fns.execute(b"call_b").data),
+        program = _compose_multi_call(
+            [
+                (target_address, target.fns.execute(b"call_a").data),
+                (target_address, target.fns.execute(b"call_b").data),
+            ]
         )
 
         before = await target.fns.callCount().call(ctx["w3"])
@@ -434,7 +439,7 @@ class TestCCIPComposerFork:
         target = ctx["target"]
         target_address = ctx["target_address"]
         eth_value = 5 * 10**15  # 0.005 ETH
-        program = _program_calling(target_address, target.fns.execute(b"with-eth").data, value=eth_value)
+        program = _compose_single_call(target_address, target.fns.execute(b"with-eth").data, value=eth_value)
 
         pre_target = await ctx["w3"].eth.get_balance(target_address)
         receipt = await _deliver(ctx, program, value=eth_value)
@@ -443,10 +448,10 @@ class TestCCIPComposerFork:
         assert await ctx["w3"].eth.get_balance(target_address) == pre_target + eth_value
         assert await target.fns.lastValue().call(ctx["w3"]) == eth_value
 
-    async def test_zero_amount_skips_token_transfer(self, ctx):
-        """ccipReceive with amount=0 skips the token transfer but still runs the program."""
+    async def test_zero_amount_runs_program(self, ctx):
+        """ccipReceive with amount=0 still runs the program."""
         target = ctx["target"]
-        program = _program_calling(ctx["target_address"], target.fns.execute(b"zero").data)
+        program = _compose_single_call(ctx["target_address"], target.fns.execute(b"zero").data)
 
         before = await target.fns.callCount().call(ctx["w3"])
         receipt = await _deliver(ctx, program, amount=0, mint=False)
@@ -457,7 +462,7 @@ class TestCCIPComposerFork:
         """Composed(sourceChainSelector, messageId, token, amountReceived) is emitted."""
         amount = 333 * 10**18
         message_id = b"\xab" * 32
-        program = _program_calling(ctx["target_address"], ctx["target"].fns.execute(b"event").data)
+        program = _compose_single_call(ctx["target_address"], ctx["target"].fns.execute(b"event").data)
 
         receipt = await _deliver(ctx, program, amount=amount, message_id=message_id)
         assert receipt["status"] == 1
@@ -480,7 +485,7 @@ class TestCCIPComposerFork:
             _DEFAULT_MESSAGE_ID,
             _ETHEREUM_SELECTOR,
             b"",  # sender
-            HexBytes(_prologue()),
+            HexBytes(_compose_noop()),
             ((ctx["token_address"], 0),),
         )
         with pytest.raises(_REVERT):
@@ -499,7 +504,7 @@ class TestCCIPComposerFork:
                     _DEFAULT_MESSAGE_ID,
                     _ETHEREUM_SELECTOR,
                     b"",
-                    HexBytes(_prologue()),
+                    HexBytes(_compose_noop()),
                     tokens,
                 )
                 .transact(ctx["w3"], ctx["deployer"])
@@ -511,16 +516,14 @@ class TestCCIPComposerFork:
         target_address = ctx["target_address"]
         reverting_address = ctx["reverting_address"]
 
-        # First sub-call succeeds; second goes to a reverting target.
-        program = _prologue(
-            _call_target(target_address, target.fns.execute(b"before-fail").data),
-            push_u256(0)
-            + push_u256(0)
-            + push_bytes(b"")
-            + push_u256(0)
-            + push_addr(reverting_address)
-            + bytes([0x5A])
-            + call(),
+        # First sub-call succeeds; second goes to a reverting target.  The
+        # second ``call_raw`` + ``assert_`` enforces require-success semantics,
+        # bubbling the revert up through ``ccipReceive``.
+        program = _compose_multi_call(
+            [
+                (target_address, target.fns.execute(b"before-fail").data),
+                (reverting_address, b""),
+            ]
         )
 
         before = await target.fns.callCount().call(ctx["w3"])
@@ -604,11 +607,29 @@ class TestCCIPComposerFork:
             await getattr(ctx["composer"].fns, fn_name)(*args).transact(ctx["w3"], non_owner)
 
     async def test_transfer_ownership(self, ctx):
-        """transferOwnership updates owner and emits OwnershipTransferred."""
-        composer = ctx["composer"]
+        """transferOwnership updates owner and emits OwnershipTransferred.
+
+        Deploys a dedicated composer rather than reusing the module-scoped
+        fixture: the ownership mutation must not leak into later tests if an
+        assertion below fails partway, which (combined with ``--reruns``) would
+        otherwise cascade ``CCIPComposer: not owner`` into every owner-gated
+        test that follows.
+        """
         w3 = ctx["w3"]
         deployer = ctx["deployer"]
         new_owner = ctx["accounts"][3]
+
+        compiled = _compile_ccip_composer()
+        composer_address = await deploy(
+            w3,
+            compiled,
+            deployer,
+            Web3.to_checksum_address(ctx["router_address"]),
+            Web3.to_checksum_address(ctx["interpreter_addr"]),
+            deployer,  # _owner
+            False,  # _allowlistEnabled
+        )
+        composer = Contract(abi=compiled["abi"], tx={"to": Web3.to_checksum_address(composer_address)})
 
         old_owner = await composer.fns.owner().call(w3)
         receipt = await composer.fns.transferOwnership(new_owner).transact(w3, deployer)
@@ -620,24 +641,24 @@ class TestCCIPComposerFork:
         assert HexBytes(events[0]["args"]["previousOwner"]) == HexBytes(old_owner)
         assert HexBytes(events[0]["args"]["newOwner"]) == HexBytes(new_owner)
 
-        # Restore ownership so subsequent tests in this module still pass.
-        await composer.fns.transferOwnership(deployer).transact(w3, new_owner)
-
     # ------------------------------------------------------------------
     # Constructor guards
     # ------------------------------------------------------------------
 
-    @pytest.mark.parametrize("zero_arg", ["router", "vm", "owner"])
+    @pytest.mark.parametrize("zero_arg", ["router", "owner"])
     async def test_constructor_rejects_zero_address(self, ctx, zero_arg):
-        """Deploying CCIPComposer with router/vm/owner = 0 reverts."""
+        """Deploying CCIPComposer with router/owner = 0 reverts.
+
+        The interpreter argument intentionally accepts ``address(0)`` as a
+        sentinel meaning "use the well-known Analog-Labs interpreter"
+        (see :class:`InterpreterRunner`), so it is not validated here.
+        """
         w3 = ctx["w3"]
         deployer = ctx["deployer"]
         compiled = _compile_ccip_composer()
 
-        # All three positions default to valid checksum addresses; flip one to zero.
         ctor_args: dict[str, str] = {
             "router": Web3.to_checksum_address(ctx["router_address"]),
-            "vm": Web3.to_checksum_address(ctx["vm_address"]),
             "owner": deployer,
         }
         ctor_args[zero_arg] = _ZERO_ADDRESS
@@ -645,7 +666,7 @@ class TestCCIPComposerFork:
         contract = w3.eth.contract(abi=compiled["abi"], bytecode=compiled["bin"])
         with pytest.raises(_REVERT):
             tx_hash = await contract.constructor(
-                ctor_args["router"], ctor_args["vm"], ctor_args["owner"], False
+                ctor_args["router"], ctx["interpreter_addr"], ctor_args["owner"], False
             ).transact({"from": deployer})
             await w3.eth.wait_for_transaction_receipt(tx_hash, timeout=30, poll_latency=0.1)
 
@@ -662,7 +683,7 @@ class TestCCIPComposerFork:
             compiled,
             deployer,
             Web3.to_checksum_address(ctx["router_address"]),
-            Web3.to_checksum_address(ctx["vm_address"]),
+            Web3.to_checksum_address(ctx["interpreter_addr"]),
             deployer,
             True,  # _allowlistEnabled
         )
@@ -674,7 +695,7 @@ class TestCCIPComposerFork:
         with pytest.raises(_REVERT):
             await _deliver(
                 ctx,
-                _prologue(),
+                _compose_noop(),
                 composer_address=hardened_address,
                 sender=b"\xaa" * 32,
             )
@@ -691,13 +712,13 @@ class TestCCIPComposerFork:
         """When the allowlist is on, an unregistered sender cannot trigger compose."""
         async with _allowlist_on(ctx):
             with pytest.raises(_REVERT):
-                await _deliver(ctx, _prologue(), sender=b"\xaa" * 32)
+                await _deliver(ctx, _compose_noop(), sender=b"\xaa" * 32)
 
     async def test_allowlist_admits_registered_sender(self, ctx):
         """A registered (selector, sender) pair passes the allowlist check."""
         sender_bytes = b"\xbb" * 32
         target = ctx["target"]
-        program = _program_calling(ctx["target_address"], target.fns.execute(b"allowed").data)
+        program = _compose_single_call(ctx["target_address"], target.fns.execute(b"allowed").data)
 
         async with _allowlist_on(ctx, register=(_ETHEREUM_SELECTOR, sender_bytes)):
             receipt = await _deliver(ctx, program, sender=sender_bytes)

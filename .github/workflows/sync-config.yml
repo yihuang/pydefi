@@ -1,0 +1,41 @@
+name: Sync config snapshots
+
+on:
+  schedule:
+    # Mondays 06:00 UTC.
+    - cron: "0 6 * * 1"
+  workflow_dispatch: {}
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # update.sh resolves the Aave address book via `deno eval` (npm: import).
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Refresh snapshots
+        run: bash pydefi/config/update.sh
+
+      # peter-evans/create-pull-request no-ops cleanly when the working tree
+      # has no changes, so no separate drift gate is needed.
+      - name: Open PR on drift
+        uses: peter-evans/create-pull-request@v7
+        with:
+          commit-message: "Problem: bundled config snapshots out of sync with upstream"
+          title: "Problem: bundled config snapshots out of sync with upstream"
+          body: |
+            Automated refresh produced by `pydefi/config/update.sh`.
+
+            See `pydefi/config/README.md` for sources and refresh instructions.
+          branch: sync/config-snapshots
+          delete-branch: true
+          add-paths: |
+            pydefi/config/**

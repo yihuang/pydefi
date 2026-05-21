@@ -9,6 +9,8 @@ Docs: https://docs.chain.link/ccip
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any
 
 from eth_abi import encode as abi_encode
@@ -23,41 +25,16 @@ from pydefi.types import ZERO_ADDRESS, Address, BridgeQuote, Token, TokenAmount
 # bytes4(keccak256("CCIP EVMExtraArgsV2")).
 EVM_EXTRA_ARGS_V2_TAG: bytes = bytes.fromhex("181dcf10")
 
+# CCIP chain data from https://docs.chain.link/api/ccip/v1/chains?environment=mainnet
+# pydefi/config/ccip-chains.json is ``data.evm`` from that API.
+_ccip_evm: dict[str, Any] = json.loads(
+    (Path(__file__).resolve().parent.parent / "config" / "ccip-chains.json").read_text()
+)
 
-# CCIP identifies destination chains by a 64-bit selector, distinct from the
-# EVM chain ID.  Source data:
-# https://github.com/smartcontractkit/documentation/blob/main/src/config/data/ccip/v1_2_0/mainnet/chains.json
-# Rendered: https://docs.chain.link/ccip/directory/mainnet
 _CCIP_CHAIN_SELECTOR: dict[int, int] = {
-    1: 5009297550715157269,  # Ethereum
-    10: 3734403246176062136,  # Optimism
-    56: 11344663589394136015,  # BNB Chain
-    137: 4051577828743386545,  # Polygon
-    8453: 15971525489660198786,  # Base
-    42161: 4949039107694359620,  # Arbitrum
-    43114: 6433500567565415381,  # Avalanche
-    59144: 4627098889531055414,  # Linea
-    324: 1562403441176082196,  # zkSync Era
-    534352: 13204309965629103672,  # Scroll
-    130: 1923510103922296319,  # Unichain
-    480: 2049429975587534727,  # World Chain
+    int(cid): int(e["selector"]) for cid, e in _ccip_evm.items() if e.get("supported")
 }
-
-# Canonical mainnet Router deployments.
-_CCIP_ROUTER: dict[int, str] = {
-    1: "0x80226fc0Ee2b096224EeAc085Bb9a8cba1146f7D",  # Ethereum
-    10: "0x3206695CaE29952f4b0c22a169725a865bc8Ce0f",  # Optimism
-    56: "0x34B03Cb9086d7D758AC55af71584F81A598759FE",  # BNB Chain
-    137: "0x849c5ED5a80F5B408Dd4969b78c2C8fdf0565Bfe",  # Polygon
-    8453: "0x881e3A65B4d4a04dD529061dd0071cf975F58bCD",  # Base
-    42161: "0x141fa059441E0ca23ce184B6A78bafD2A517DdE8",  # Arbitrum
-    43114: "0xF4c7E640EdA248ef95972845a62bdC74237805dB",  # Avalanche
-    59144: "0x549FEB73F2348F6cD99b9fc8c69252034897f06C",  # Linea
-    324: "0x748Fd769d81F5D94752bf8B0875E9301d0ba71bB",  # zkSync Era
-    534352: "0x9a55E8Cab6564eb7bbd7124238932963B8Af71DC",  # Scroll
-    130: "0x68891f5F96695ECd7dEdBE2289D1b73426ae7864",  # Unichain
-    480: "0x5fd9E4986187c56826A3064954Cfa2Cf250cfA0f",  # World Chain
-}
+_CCIP_ROUTER: dict[int, str] = {int(cid): e["router"] for cid, e in _ccip_evm.items() if e.get("supported")}
 
 
 def _ccip_chain_selector(evm_chain_id: int) -> int:

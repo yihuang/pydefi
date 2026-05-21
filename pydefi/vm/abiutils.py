@@ -164,7 +164,7 @@ def _load_primitive(value: Any, typ: VyperType) -> VyperValue:
     if isinstance(value, float) and isinstance(typ, DecimalT):
         return VyperValue.from_stack_op(IRLiteral(int(value * DECIMAL_DIVISOR)), typ)
 
-    if isinstance(value, str):
+    if isinstance(value, (str, bytes, bytearray)):
         int_val = int.from_bytes(HexBytes(value), "big")
 
         if isinstance(typ, AddressT):
