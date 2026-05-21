@@ -27,6 +27,7 @@ from pydefi.abi.lending import (
     AAVE_V3_DATA_PROVIDER,
     AAVE_V3_ORACLE,
     AAVE_V3_POOL,
+    ReserveDataLegacy,
 )
 from pydefi.exceptions import PydefiError
 from pydefi.lending.utils import SECONDS_PER_YEAR, UINT256_MAX, resolve_amount, to_tx
@@ -323,17 +324,11 @@ class AaveV3:
             AAVE_V3_DATA_PROVIDER.fns.getPaused(token.address).call(self.w3, to=self.data_provider_address),
             AAVE_V3_DATA_PROVIDER.fns.getTotalDebt(token.address).call(self.w3, to=self.data_provider_address),
         )
-        # balanceOf needs the aToken address out of getReserveData, so it runs second.
-        a_token_address = Address(reserve[8])
-        available_liquidity = await ERC20.fns.balanceOf(a_token_address).call(self.w3, to=token.address)
+        reserve = ReserveDataLegacy._make(reserve)
 
-        # Pool.getReserveData returns the ReserveDataLegacy tuple.
-        # Index layout matches ``ReserveDataLegacy`` in abi/lending.py.
-        liquidity_index = reserve[1]
-        current_liquidity_rate = reserve[2]
-        variable_borrow_index = reserve[3]
-        current_variable_borrow_rate = reserve[4]
-        variable_debt_token_address = Address(reserve[10])
+        # balanceOf needs the aToken address out of getReserveData, so it runs second.
+        a_token_address = Address(reserve.aTokenAddress)
+        available_liquidity = await ERC20.fns.balanceOf(a_token_address).call(self.w3, to=token.address)
 
         (
             _decimals,
@@ -354,15 +349,15 @@ class AaveV3:
 
         return ReserveData(
             token=token,
-            supply_apy=ray_rate_to_apy(current_liquidity_rate),
-            variable_borrow_apy=ray_rate_to_apy(current_variable_borrow_rate),
+            supply_apy=ray_rate_to_apy(reserve.currentLiquidityRate),
+            variable_borrow_apy=ray_rate_to_apy(reserve.currentVariableBorrowRate),
             utilization=utilization,
             available_liquidity=TokenAmount(token=token, amount=available_liquidity),
             total_debt=TokenAmount(token=token, amount=total_debt),
-            liquidity_index=liquidity_index,
-            variable_borrow_index=variable_borrow_index,
+            liquidity_index=reserve.liquidityIndex,
+            variable_borrow_index=reserve.variableBorrowIndex,
             a_token_address=a_token_address,
-            variable_debt_token_address=variable_debt_token_address,
+            variable_debt_token_address=Address(reserve.variableDebtTokenAddress),
             ltv=ltv,
             liquidation_threshold=liquidation_threshold,
             liquidation_bonus=liquidation_bonus,
