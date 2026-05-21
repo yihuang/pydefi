@@ -1,10 +1,12 @@
 """Unit tests for pydefi.lending (no live node required).
 
-Covers both protocols under the lending umbrella:
+Covers every protocol under the lending umbrella:
 
 * Aave V3 — pool-per-reserve model with aTokens, health factors, E-Mode.
 * Compound V3 (Comet) — one-base-asset-per-market model where supply /
   withdraw also handle borrow / repay through the same dispatch.
+* Morpho Blue — isolated markets keyed by ``MarketParams``.
+* Aave V4 — Hub-and-Spoke; reserves keyed by ``reserveId`` within a Spoke.
 """
 
 from __future__ import annotations
@@ -15,9 +17,15 @@ from typing import TYPE_CHECKING, Any
 import pytest
 from hexbytes import HexBytes
 
-from pydefi.abi.lending import AAVE_V3_POOL, COMPOUND_V3_COMET, MORPHO_BLUE
+from pydefi.abi.lending import (
+    AAVE_V3_POOL,
+    AAVE_V4_SPOKE,
+    AAVE_V4_TOKENIZATION_SPOKE,
+    COMPOUND_V3_COMET,
+    MORPHO_BLUE,
+)
 from pydefi.deployments import chains_for, comet_contract_names
-from pydefi.lending import AaveV3, UserAccountData
+from pydefi.lending import AaveV3, UserAccountData, aave_v4
 from pydefi.lending.aave_v3 import (
     RAY,
     SECONDS_PER_YEAR,
@@ -634,3 +642,195 @@ def test_morpho_blue_deployment_pinned(chain: int):
 
     addr = get_address("MORPHO_BLUE", chain)
     assert len(addr) == 42 and addr.startswith("0x"), f"MORPHO_BLUE on {chain}: {addr!r}"
+
+
+# ===========================================================================
+# Aave V4
+# ===========================================================================
+
+#: MAIN_SPOKE on Ethereum — the Spoke the unit-test client is bound to.
+AAVE_V4_SPOKE_ADDR = Address("0x94e7A5dCbE816e498b89aB752661904E2F56c485")
+
+#: Every pinned Aave V4 Hub / Spoke deployment name.
+_AAVE_V4_DEPLOYMENTS = [
+    "AAVE_V4_CORE_HUB",
+    "AAVE_V4_PLUS_HUB",
+    "AAVE_V4_PRIME_HUB",
+    "AAVE_V4_MAIN_SPOKE",
+    "AAVE_V4_BLUECHIP_SPOKE",
+    "AAVE_V4_TREASURY_SPOKE",
+    "AAVE_V4_GOLD_SPOKE",
+    "AAVE_V4_FOREX_SPOKE",
+    "AAVE_V4_LOMBARD_BTC_SPOKE",
+    "AAVE_V4_ETHENA_CORRELATED_SPOKE",
+    "AAVE_V4_ETHENA_ECOSYSTEM_SPOKE",
+    "AAVE_V4_ETHERFI_ESPOKE",
+    "AAVE_V4_KELP_ESPOKE",
+    "AAVE_V4_LIDO_ESPOKE",
+]
+
+
+# ---------------------------------------------------------------------------
+# Health-factor parsing
+# ---------------------------------------------------------------------------
+
+
+class TestAaveV4HealthFactor:
+    def test_finite(self):
+        assert aave_v4.parse_health_factor(15 * 10**17) == Decimal("1.5")
+
+    def test_infinite_when_no_debt(self):
+        assert aave_v4.parse_health_factor(UINT256_MAX).is_infinite()
+
+    def test_user_account_data_construction(self):
+        data = aave_v4.V4UserAccountData(
+            risk_premium=50,
+            avg_collateral_factor=8 * 10**17,
+            health_factor=Decimal("2"),
+            total_collateral_value=1_000,
+            total_debt_value_ray=500 * 10**27,
+            active_collateral_count=2,
+            borrow_count=1,
+        )
+        assert data.health_factor == Decimal("2")
+        assert data.borrow_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Tx-builder calldata encoding
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def aave_v4_spoke() -> aave_v4.AaveV4:
+    return aave_v4.AaveV4(
+        w3=None,  # type: ignore[arg-type]
+        chain_id=ChainId.ETHEREUM,
+        spoke_address=AAVE_V4_SPOKE_ADDR,
+    )
+
+
+class TestAaveV4BuildTxs:
+    @pytest.mark.parametrize(
+        "method, abi_fn",
+        [
+            ("build_supply_tx", AAVE_V4_SPOKE.fns.supply),
+            ("build_withdraw_tx", AAVE_V4_SPOKE.fns.withdraw),
+            ("build_borrow_tx", AAVE_V4_SPOKE.fns.borrow),
+            ("build_repay_tx", AAVE_V4_SPOKE.fns.repay),
+        ],
+        ids=["supply", "withdraw", "borrow", "repay"],
+    )
+    def test_amount_builders(self, aave_v4_spoke: aave_v4.AaveV4, method, abi_fn):
+        """supply / withdraw / borrow / repay all encode (reserveId, amount, onBehalfOf)."""
+        amount = TokenAmount.from_human(USDC, "1000")
+        tx = getattr(aave_v4_spoke, method)(7, amount, ETH_WHALE)
+        assert Address(tx["to"]) == AAVE_V4_SPOKE_ADDR
+        assert tx["value"] == "0"
+        reserve_id, raw_amount, on_behalf = decode_call(tx, abi_fn)
+        assert reserve_id == 7
+        assert raw_amount == amount.amount
+        assert on_behalf == ETH_WHALE
+
+    @pytest.mark.parametrize("flag", [True, False])
+    def test_set_collateral(self, aave_v4_spoke: aave_v4.AaveV4, flag: bool):
+        reserve_id, use_as_collateral, on_behalf = decode_call(
+            aave_v4_spoke.build_set_collateral_tx(3, flag, ETH_WHALE), AAVE_V4_SPOKE.fns.setUsingAsCollateral
+        )
+        assert reserve_id == 3
+        assert use_as_collateral is flag
+        assert on_behalf == ETH_WHALE
+
+    def test_liquidation_call(self, aave_v4_spoke: aave_v4.AaveV4):
+        amount = TokenAmount.from_human(USDC, "250")
+        collat_id, debt_id, user, debt_to_cover, receive_shares = decode_call(
+            aave_v4_spoke.build_liquidation_call_tx(0, 7, ETH_WHALE, amount, receive_shares=True),
+            AAVE_V4_SPOKE.fns.liquidationCall,
+        )
+        assert (collat_id, debt_id) == (0, 7)
+        assert user == ETH_WHALE
+        assert debt_to_cover == amount.amount
+        assert receive_shares is True
+
+    @pytest.mark.parametrize("approve", [True, False])
+    def test_set_position_manager(self, aave_v4_spoke: aave_v4.AaveV4, approve: bool):
+        manager = Address("0x" + "ad" * 20)
+        decoded_manager, decoded_approve = decode_call(
+            aave_v4_spoke.build_set_position_manager_tx(manager, approve), AAVE_V4_SPOKE.fns.setUserPositionManager
+        )
+        assert decoded_manager == manager
+        assert decoded_approve is approve
+
+    def test_from_chain_resolves_named_spoke(self):
+        from pydefi.deployments import get_address
+
+        spoke = aave_v4.AaveV4.from_chain(None, ChainId.ETHEREUM, "GOLD_SPOKE")  # type: ignore[arg-type]
+        assert Address(spoke.spoke_address) == Address(get_address("AAVE_V4_GOLD_SPOKE", ChainId.ETHEREUM))
+
+
+# ---------------------------------------------------------------------------
+# Deployment registry sanity
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("name", _AAVE_V4_DEPLOYMENTS)
+def test_aave_v4_deployment_pinned(name: str):
+    """Every pinned Aave V4 Hub / Spoke resolves to a 20-byte address."""
+    from pydefi.deployments import get_address
+
+    addr = get_address(name, ChainId.ETHEREUM)
+    assert len(addr) == 42 and addr.startswith("0x"), f"{name}: {addr!r}"
+
+
+# ---------------------------------------------------------------------------
+# Aave V4 — TokenizationSpoke (ERC-4626 vault)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def aave_v4_vault() -> aave_v4.AaveV4TokenizationSpoke:
+    return aave_v4.AaveV4TokenizationSpoke(
+        w3=None,  # type: ignore[arg-type]
+        chain_id=ChainId.ETHEREUM,
+        spoke_address=AAVE_V4_SPOKE_ADDR,
+        asset_token=USDC,
+    )
+
+
+class TestAaveV4TokenizationSpoke:
+    def test_to_and_value(self, aave_v4_vault: aave_v4.AaveV4TokenizationSpoke):
+        tx = aave_v4_vault.build_mint_tx(1_000, ETH_WHALE)
+        assert Address(tx["to"]) == AAVE_V4_SPOKE_ADDR
+        assert tx["value"] == "0"
+
+    def test_deposit(self, aave_v4_vault: aave_v4.AaveV4TokenizationSpoke):
+        amount = TokenAmount.from_human(USDC, "100")
+        assets, receiver = decode_call(
+            aave_v4_vault.build_deposit_tx(amount, ETH_WHALE), AAVE_V4_TOKENIZATION_SPOKE.fns.deposit
+        )
+        assert assets == amount.amount
+        assert receiver == ETH_WHALE
+
+    def test_mint(self, aave_v4_vault: aave_v4.AaveV4TokenizationSpoke):
+        shares, receiver = decode_call(
+            aave_v4_vault.build_mint_tx(12_345, ETH_WHALE), AAVE_V4_TOKENIZATION_SPOKE.fns.mint
+        )
+        assert shares == 12_345
+        assert receiver == ETH_WHALE
+
+    def test_withdraw(self, aave_v4_vault: aave_v4.AaveV4TokenizationSpoke):
+        amount = TokenAmount.from_human(USDC, "50")
+        assets, receiver, owner = decode_call(
+            aave_v4_vault.build_withdraw_tx(amount, ETH_WHALE, ETH_WHALE), AAVE_V4_TOKENIZATION_SPOKE.fns.withdraw
+        )
+        assert assets == amount.amount
+        assert receiver == ETH_WHALE
+        assert owner == ETH_WHALE
+
+    def test_redeem(self, aave_v4_vault: aave_v4.AaveV4TokenizationSpoke):
+        shares, receiver, owner = decode_call(
+            aave_v4_vault.build_redeem_tx(999, ETH_WHALE, ETH_WHALE), AAVE_V4_TOKENIZATION_SPOKE.fns.redeem
+        )
+        assert shares == 999
+        assert receiver == ETH_WHALE
+        assert owner == ETH_WHALE

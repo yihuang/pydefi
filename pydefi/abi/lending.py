@@ -289,3 +289,153 @@ MORPHO_ORACLE = Contract.from_abi(
         "function price() external view returns (uint256)",
     ]
 )
+
+
+# ---------------------------------------------------------------------------
+# Aave V4 — Spoke ABI struct definitions
+# ---------------------------------------------------------------------------
+
+
+class AaveV4Reserve(ABIStruct):
+    """Aave V4 ``ISpoke.Reserve`` — one borrowing unit inside a Spoke.
+
+    A reserve is keyed by ``reserveId`` (its index, 0..reserveCount-1), not
+    by asset address. ``flags`` is the on-chain ``ReserveFlags`` user-defined
+    value type, which is a ``uint8`` at the ABI level.
+    """
+
+    underlying: Annotated[str, "address"]
+    hub: Annotated[str, "address"]
+    assetId: Annotated[int, "uint16"]
+    decimals: Annotated[int, "uint8"]
+    collateralRisk: Annotated[int, "uint24"]
+    flags: Annotated[int, "uint8"]
+    dynamicConfigKey: Annotated[int, "uint32"]
+
+
+class AaveV4ReserveConfig(ABIStruct):
+    """Aave V4 ``ISpoke.ReserveConfig`` — a reserve's mutable flags."""
+
+    collateralRisk: Annotated[int, "uint24"]
+    paused: Annotated[bool, "bool"]
+    frozen: Annotated[bool, "bool"]
+    borrowable: Annotated[bool, "bool"]
+    receiveSharesEnabled: Annotated[bool, "bool"]
+
+
+class AaveV4UserAccountData(ABIStruct):
+    """Aave V4 ``ISpoke.UserAccountData`` — a user's aggregate position.
+
+    ``healthFactor`` is WAD-scaled (1e18 = 1.00); ``totalDebtValueRay`` is
+    RAY-scaled. ``riskPremium`` is in bps.
+    """
+
+    riskPremium: Annotated[int, "uint256"]
+    avgCollateralFactor: Annotated[int, "uint256"]
+    healthFactor: Annotated[int, "uint256"]
+    totalCollateralValue: Annotated[int, "uint256"]
+    totalDebtValueRay: Annotated[int, "uint256"]
+    activeCollateralCount: Annotated[int, "uint256"]
+    borrowCount: Annotated[int, "uint256"]
+
+
+# ---------------------------------------------------------------------------
+# Aave V4 — Spoke (the user-facing contract)
+# ---------------------------------------------------------------------------
+
+AAVE_V4_SPOKE = Contract.from_abi(
+    AaveV4Reserve.human_readable_abi()
+    + AaveV4ReserveConfig.human_readable_abi()
+    + AaveV4UserAccountData.human_readable_abi()
+    + [
+        # Writes — every call is scoped to a reserveId and an onBehalfOf.
+        "function supply(uint256 reserveId, uint256 amount, address onBehalfOf) external returns (uint256, uint256)",
+        "function withdraw(uint256 reserveId, uint256 amount, address onBehalfOf) external returns (uint256, uint256)",
+        "function borrow(uint256 reserveId, uint256 amount, address onBehalfOf) external returns (uint256, uint256)",
+        "function repay(uint256 reserveId, uint256 amount, address onBehalfOf) external returns (uint256, uint256)",
+        "function setUsingAsCollateral(uint256 reserveId, bool usingAsCollateral, address onBehalfOf) external",
+        "function liquidationCall(uint256 collateralReserveId, uint256 debtReserveId, address user, uint256 debtToCover, bool receiveShares) external",
+        "function setUserPositionManager(address positionManager, bool approve) external",
+        # Reads — reserve state.
+        "function getReserveCount() external view returns (uint256)",
+        "function getReserve(uint256 reserveId) external view returns (AaveV4Reserve)",
+        "function getReserveConfig(uint256 reserveId) external view returns (AaveV4ReserveConfig)",
+        "function getReserveSuppliedAssets(uint256 reserveId) external view returns (uint256)",
+        "function getReserveTotalDebt(uint256 reserveId) external view returns (uint256)",
+        "function getReserveId(address hub, uint256 assetId) external view returns (uint256)",
+        # Reads — user position. getUserReserveStatus returns
+        # (enabledAsCollateral, borrowed).
+        "function getUserSuppliedAssets(uint256 reserveId, address user) external view returns (uint256)",
+        "function getUserTotalDebt(uint256 reserveId, address user) external view returns (uint256)",
+        "function getUserReserveStatus(uint256 reserveId, address user) external view returns (bool, bool)",
+        "function getUserAccountData(address user) external view returns (AaveV4UserAccountData)",
+        "function isPositionManager(address user, address positionManager) external view returns (bool)",
+        "function isPositionManagerActive(address positionManager) external view returns (bool)",
+        "function ORACLE() external view returns (address)",
+    ]
+)
+
+
+class AaveV4Asset(ABIStruct):
+    """Aave V4 ``IHub.Asset`` — a Hub's per-asset liquidity accounting.
+
+    ``drawn`` (borrowed) assets equal ``drawnShares * drawnIndex / 1e27``;
+    Hub utilization is ``drawn / (liquidity + swept + drawn)``. ``drawnRate``
+    here can be stale — :func:`getAssetDrawnRate` returns the fresh value.
+    """
+
+    liquidity: Annotated[int, "uint120"]
+    realizedFees: Annotated[int, "uint120"]
+    decimals: Annotated[int, "uint8"]
+    addedShares: Annotated[int, "uint120"]
+    swept: Annotated[int, "uint120"]
+    premiumOffsetRay: Annotated[int, "int200"]
+    drawnShares: Annotated[int, "uint120"]
+    premiumShares: Annotated[int, "uint120"]
+    liquidityFee: Annotated[int, "uint16"]
+    drawnIndex: Annotated[int, "uint120"]
+    drawnRate: Annotated[int, "uint96"]
+    lastUpdateTimestamp: Annotated[int, "uint40"]
+    underlying: Annotated[str, "address"]
+    irStrategy: Annotated[str, "address"]
+    reinvestmentController: Annotated[str, "address"]
+    feeReceiver: Annotated[str, "address"]
+    deficitRay: Annotated[int, "uint200"]
+
+
+# ---------------------------------------------------------------------------
+# Aave V4 — Hub (the shared liquidity layer)
+# ---------------------------------------------------------------------------
+
+AAVE_V4_HUB = Contract.from_abi(
+    AaveV4Asset.human_readable_abi()
+    + [
+        # The "drawn rate" is the borrow rate, RAY-scaled and annualised —
+        # same convention as Aave V3's currentVariableBorrowRate.
+        "function getAssetDrawnRate(uint256 assetId) external view returns (uint256)",
+        "function getAsset(uint256 assetId) external view returns (AaveV4Asset)",
+    ]
+)
+
+
+# ---------------------------------------------------------------------------
+# Aave V4 — TokenizationSpoke (an ERC-4626 wrapper over one Spoke position)
+# ---------------------------------------------------------------------------
+
+AAVE_V4_TOKENIZATION_SPOKE = Contract.from_abi(
+    [
+        # ITokenizationSpoke is IERC4626 — a vault that tokenises a single
+        # (Hub, asset) supply position as a transferable share token.
+        "function deposit(uint256 assets, address receiver) external returns (uint256)",
+        "function mint(uint256 shares, address receiver) external returns (uint256)",
+        "function withdraw(uint256 assets, address receiver, address owner) external returns (uint256)",
+        "function redeem(uint256 shares, address receiver, address owner) external returns (uint256)",
+        "function asset() external view returns (address)",
+        "function totalAssets() external view returns (uint256)",
+        "function convertToShares(uint256 assets) external view returns (uint256)",
+        "function convertToAssets(uint256 shares) external view returns (uint256)",
+        "function balanceOf(address account) external view returns (uint256)",
+        "function hub() external view returns (address)",
+        "function assetId() external view returns (uint256)",
+    ]
+)

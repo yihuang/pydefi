@@ -137,9 +137,9 @@ _CONTRACTS: dict[str, dict[int, str]] = {
 def _merge_generated(contracts: dict[str, dict[int, str]], filename: str) -> None:
     """Merge a generated address file (config/<filename>) into *contracts*.
 
-    aave.json, compound.json and morpho.json are produced from upstream
-    registries by config/update.sh. Regenerate with ``bash config/update.sh``
-    if a file is missing/empty/corrupt."""
+    aave.json, aave_v4.json, compound.json and morpho.json are produced from
+    upstream registries by config/update.sh. Regenerate with
+    ``bash config/update.sh`` if a file is missing/empty/corrupt."""
     path = Path(__file__).resolve().parent / "config" / filename
     hint = "run config/update.sh to (re)generate it"
     if not path.exists():
@@ -156,6 +156,7 @@ def _merge_generated(contracts: dict[str, dict[int, str]], filename: str) -> Non
 
 
 _merge_generated(_CONTRACTS, "aave.json")
+_merge_generated(_CONTRACTS, "aave_v4.json")
 _merge_generated(_CONTRACTS, "compound.json")
 _merge_generated(_CONTRACTS, "morpho.json")
 

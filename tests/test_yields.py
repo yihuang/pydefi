@@ -25,7 +25,14 @@ from pydefi.yields import (
     rebalance_tick,
     wait_for_bridge_settlement,
 )
-from pydefi.yields.router import Protocol, Strategy, YieldStep, _morpho_id, _morpho_markets
+from pydefi.yields.router import (
+    Protocol,
+    Strategy,
+    YieldStep,
+    _aave_v4_ref,
+    _morpho_id,
+    _morpho_markets,
+)
 
 # ---------------------------------------------------------------------------
 # Tokens / addresses / canned tx dicts (shared across every test)
@@ -251,6 +258,34 @@ async def test_get_yield_markets_includes_morpho():
 
     assert [m.protocol for m in out] == ["morpho"]
     assert out[0].market_id == "morpho:8453:0x" + "c1" * 32
+
+
+# ---------------------------------------------------------------------------
+# Aave V4 discovery
+# ---------------------------------------------------------------------------
+
+
+def test_aave_v4_ref_parses_market_id():
+    market = dataclasses.replace(_market("aave_v4", ChainId.ETHEREUM, USDC_BASE), market_id="aave_v4:1:MAIN_SPOKE:7")
+    assert _aave_v4_ref(market) == ("MAIN_SPOKE", 7)
+
+
+def test_aave_v4_ref_rejects_non_v4_market():
+    with pytest.raises(ValueError):
+        _aave_v4_ref(_market("aave_v3", ChainId.ETHEREUM, USDC_BASE))
+
+
+@pytest.mark.asyncio
+async def test_get_yield_markets_skips_aave_v4_off_ethereum():
+    """Aave V4 is Ethereum-only — _aave_v4_market returns None elsewhere
+    without touching the RPC, so non-Ethereum scans stay V4-free."""
+    with (
+        patch("pydefi.yields.router._aave_market", new=AsyncMock(return_value=None)),
+        patch("pydefi.yields.router._compound_market", new=AsyncMock(return_value=None)),
+        patch("pydefi.yields.router._morpho_markets", new=AsyncMock(return_value=[])),
+    ):
+        out = await get_yield_markets("USDC", w3s={ChainId.BASE: object()}, chains=[ChainId.BASE])
+    assert out == []
 
 
 def test_yield_market_is_frozen_dataclass():
