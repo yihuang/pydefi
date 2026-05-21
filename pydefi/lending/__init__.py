@@ -89,6 +89,7 @@ from pydefi.lending.morpho import (
     MorphoPosition,
     accrue_interest,
     compute_health_factor,
+    supply_apy_from_borrow,
 )
 from pydefi.lending.utils import SECONDS_PER_YEAR, per_second_rate_to_apy
 
@@ -120,4 +121,5 @@ __all__ = [
     "compute_health_factor",
     "per_second_rate_to_apy",
     "ray_rate_to_apy",
+    "supply_apy_from_borrow",
 ]

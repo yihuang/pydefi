@@ -585,6 +585,14 @@ class TestMorphoAmountBuilders:
         with pytest.raises(ValueError):  # both
             build(MARKET, assets=TokenAmount.from_human(USDC, "1"), shares=1, on_behalf_of=ETH_WHALE, **extra)
 
+    def test_rejects_zero_amount(self, morpho: MorphoBlue, method, abi_fn, extra, trailing):
+        """A zero amount would encode the assets=0, shares=0 payload Morpho rejects."""
+        build = getattr(morpho, method)
+        with pytest.raises(ValueError):  # zero assets
+            build(MARKET, assets=TokenAmount(USDC, 0), on_behalf_of=ETH_WHALE, **extra)
+        with pytest.raises(ValueError):  # zero shares
+            build(MARKET, shares=0, on_behalf_of=ETH_WHALE, **extra)
+
 
 #: supply / withdraw collateral — ``(MarketParams, assets, onBehalf, data|receiver)``.
 _COLLATERAL_BUILDERS = [

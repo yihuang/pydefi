@@ -277,17 +277,23 @@ def supply_apy_from_borrow(borrow_rate_per_second: int, state: MarketState) -> D
 
 
 def _resolve_assets_shares(assets: TokenAmount | None, shares: int | None) -> tuple[int, int]:
-    """Validate the Morpho ``(assets, shares)`` pair — exactly one non-zero.
+    """Validate the Morpho ``(assets, shares)`` pair — exactly one, positive.
 
-    Morpho's supply / withdraw / borrow / repay take both an ``assets`` and
-    a ``shares`` argument and require exactly one to be zero. pydefi exposes
-    that as two optional keyword arguments; this enforces the XOR.
+    Morpho's supply / withdraw / borrow / repay take both an ``assets`` and a
+    ``shares`` argument and require exactly one to be non-zero. pydefi exposes
+    that as two optional keyword arguments; this enforces that exactly one is
+    passed and that its value is positive — a zero amount would encode the
+    ``assets=0, shares=0`` payload Morpho rejects on-chain.
     """
     if (assets is None) == (shares is None):
         raise ValueError("pass exactly one of assets= or shares=")
     if assets is not None:
+        if assets.amount <= 0:
+            raise ValueError("assets amount must be positive")
         return assets.amount, 0
     assert shares is not None  # narrowed by the XOR above
+    if shares <= 0:
+        raise ValueError("shares must be positive")
     return 0, shares
 
 

@@ -42,6 +42,7 @@ _TOKENS: dict[str, dict] = {
             _ETH: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
             _SEP: "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
             ChainId.MANTRA: "0x8f726A72e3a28d21f153F1698e60d6a97eFd1a00",
+            ChainId.BASE: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
         },
     },
     "USDC.e": {

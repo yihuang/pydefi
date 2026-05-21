@@ -42,12 +42,17 @@ _AAVE_V4_YIELD_SPOKE = "MAIN_SPOKE"
 # rather than an on-chain registry read.
 _MORPHO_API_URL = "https://blue-api.morpho.org/graphql"
 _MORPHO_API_TIMEOUT = 15.0
-# The ``first:`` page size below is the only cap on how many markets surface —
-# the UI sorts them client-side, so no extra per-chain trimming is needed.
+# The indexer ranks markets by total supply across every asset, so one page
+# would drop a less-liquid loan token's markets before they are seen —
+# _fetch_morpho_markets pages through the whole whitelisted set instead.
+# _MORPHO_MAX_PAGES is a safety bound far above the live count (~620).
+_MORPHO_PAGE_SIZE = 200
+_MORPHO_MAX_PAGES = 25
 _MORPHO_MARKETS_QUERY = """
-query Markets($chainIds: [Int!]) {
+query Markets($chainIds: [Int!], $first: Int!, $skip: Int!) {
   markets(
-    first: 200
+    first: $first
+    skip: $skip
     orderBy: SupplyAssetsUsd
     orderDirection: Desc
     where: { chainId_in: $chainIds, whitelisted: true }
@@ -139,7 +144,7 @@ def build_approve_tx(token: Token, spender: Address, amount: int, gas: int = _AP
     }
 
 
-def _morpho_id(market: YieldMarket) -> bytes:
+def morpho_id(market: YieldMarket) -> bytes:
     """Extract the bytes32 Morpho market Id from a ``morpho:<chain>:0x..`` id."""
     parts = market.market_id.split(":")
     if len(parts) != 3 or parts[0] != "morpho":
@@ -147,13 +152,13 @@ def _morpho_id(market: YieldMarket) -> bytes:
     return bytes.fromhex(parts[2].removeprefix("0x"))
 
 
-async def _morpho_params(morpho: MorphoBlue, market: YieldMarket) -> MarketParams:
+async def morpho_params(morpho: MorphoBlue, market: YieldMarket) -> MarketParams:
     """Resolve a Morpho market's immutable ``MarketParams`` from its Id. The
     loan token is already known; the collateral is read on-chain."""
-    return await morpho.get_market_params(_morpho_id(market), tokens={market.token.address: market.token})
+    return await morpho.get_market_params(morpho_id(market), tokens={market.token.address: market.token})
 
 
-def _aave_v4_ref(market: YieldMarket) -> tuple[str, int]:
+def aave_v4_ref(market: YieldMarket) -> tuple[str, int]:
     """Parse an ``aave_v4:<chain>:<spoke>:<reserveId>`` market_id into the
     Spoke name and reserve id."""
     parts = market.market_id.split(":")
@@ -169,11 +174,13 @@ async def _withdraw_tx(market: YieldMarket, user: Address, w3: AsyncWeb3, amount
     if market.protocol == "compound_v3":
         return CompoundV3.from_chain(w3, market.chain_id, market.token.symbol).build_withdraw_tx(amount)
     if market.protocol == "aave_v4":
-        spoke_name, reserve_id = _aave_v4_ref(market)
+        spoke_name, reserve_id = aave_v4_ref(market)
         return AaveV4.from_chain(w3, market.chain_id, spoke_name).build_withdraw_tx(reserve_id, amount, user)
-    morpho = MorphoBlue.from_chain(w3, market.chain_id)
-    params = await _morpho_params(morpho, market)
-    return morpho.build_withdraw_tx(params, assets=amount, on_behalf_of=user, receiver=user)
+    if market.protocol == "morpho":
+        morpho = MorphoBlue.from_chain(w3, market.chain_id)
+        params = await morpho_params(morpho, market)
+        return morpho.build_withdraw_tx(params, assets=amount, on_behalf_of=user, receiver=user)
+    raise ValueError(f"unknown protocol: {market.protocol!r}")
 
 
 async def _supply_steps(market: YieldMarket, user: Address, w3: AsyncWeb3, amount: TokenAmount) -> list[YieldStep]:
@@ -191,14 +198,16 @@ async def _supply_steps(market: YieldMarket, user: Address, w3: AsyncWeb3, amoun
         comet = CompoundV3.from_chain(w3, market.chain_id, market.token.symbol)
         spender, supply_tx = comet.comet_address, comet.build_supply_tx(amount)
     elif market.protocol == "aave_v4":
-        spoke_name, reserve_id = _aave_v4_ref(market)
+        spoke_name, reserve_id = aave_v4_ref(market)
         v4 = AaveV4.from_chain(w3, market.chain_id, spoke_name)
         spender, supply_tx = v4.spoke_address, v4.build_supply_tx(reserve_id, amount, user)
-    else:  # morpho
+    elif market.protocol == "morpho":
         morpho = MorphoBlue.from_chain(w3, market.chain_id)
-        params = await _morpho_params(morpho, market)
+        params = await morpho_params(morpho, market)
         spender = morpho.morpho_address
         supply_tx = morpho.build_supply_tx(params, assets=amount, on_behalf_of=user)
+    else:
+        raise ValueError(f"unknown protocol: {market.protocol!r}")
     return [
         YieldStep("approve", market.chain_id, build_approve_tx(amount.token, spender, amount.amount)),
         YieldStep("supply", market.chain_id, supply_tx),
@@ -299,27 +308,44 @@ async def _aave_v4_market(w3: AsyncWeb3, chain_id: int, token: Token) -> YieldMa
     )
 
 
+async def _fetch_morpho_page(session: aiohttp.ClientSession, chain_ids: list[int], skip: int) -> list[dict[str, Any]]:
+    """Fetch one ``_MORPHO_PAGE_SIZE`` page of the whitelisted-markets query."""
+    payload = {
+        "query": _MORPHO_MARKETS_QUERY,
+        "variables": {"chainIds": chain_ids, "first": _MORPHO_PAGE_SIZE, "skip": skip},
+    }
+    async with session.post(_MORPHO_API_URL, json=payload) as resp:
+        resp.raise_for_status()
+        data = await resp.json()
+    items = (((data or {}).get("data") or {}).get("markets") or {}).get("items") or []
+    return [m for m in items if isinstance(m, dict)]
+
+
 async def _fetch_morpho_markets(chain_ids: list[int]) -> list[dict[str, Any]]:
-    """Query the Morpho indexer for whitelisted markets on *chain_ids*,
+    """Query the Morpho indexer for every whitelisted market on *chain_ids*,
     deepest-supply first.
 
-    Returns ``[]`` on any failure so a Morpho API outage degrades the
-    markets list gracefully instead of breaking the whole response.
+    The indexer ranks markets by supply across all assets, so the result is
+    paged through in full — a single page would silently drop a less-liquid
+    loan token's markets. Returns ``[]`` on any failure so a Morpho API
+    outage degrades the markets list gracefully instead of breaking the
+    whole response.
     """
     if not chain_ids:
         return []
-    payload = {"query": _MORPHO_MARKETS_QUERY, "variables": {"chainIds": chain_ids}}
+    out: list[dict[str, Any]] = []
     try:
         timeout = aiohttp.ClientTimeout(total=_MORPHO_API_TIMEOUT)
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post(_MORPHO_API_URL, json=payload) as resp:
-                resp.raise_for_status()
-                data = await resp.json()
+            for page in range(_MORPHO_MAX_PAGES):
+                items = await _fetch_morpho_page(session, chain_ids, page * _MORPHO_PAGE_SIZE)
+                out.extend(items)
+                if len(items) < _MORPHO_PAGE_SIZE:
+                    break
     except (aiohttp.ClientError, TimeoutError, ValueError) as exc:
         logger.warning("Morpho market query failed: %s", exc)
         return []
-    items = (((data or {}).get("data") or {}).get("markets") or {}).get("items") or []
-    return [m for m in items if isinstance(m, dict)]
+    return out
 
 
 async def _morpho_markets(token_symbol: str, chain_ids: list[int]) -> list[YieldMarket]:
@@ -327,7 +353,7 @@ async def _morpho_markets(token_symbol: str, chain_ids: list[int]) -> list[Yield
     deepest-supply first (bounded only by the indexer query's page size).
 
     Each market's ``market_id`` is ``morpho:<chain_id>:<bytes32 Id>`` — the
-    Id is what :func:`_morpho_params` later resolves back into ``MarketParams``.
+    Id is what :func:`morpho_params` later resolves back into ``MarketParams``.
     """
     wanted = token_symbol.upper()
     chain_set = set(chain_ids)
@@ -345,12 +371,13 @@ async def _morpho_markets(token_symbol: str, chain_ids: list[int]) -> list[Yield
         if chain_id not in chain_set:
             continue
         unique_key = m.get("uniqueKey")
+        loan_address = loan.get("address")
         state = m.get("state") or {}
-        if not unique_key or state.get("supplyApy") is None:
+        if not unique_key or not loan_address or state.get("supplyApy") is None:
             continue
         token = Token(
             chain_id=chain_id,
-            address=decode_address(str(loan["address"]), chain_id),
+            address=decode_address(str(loan_address), chain_id),
             symbol=str(loan.get("symbol") or token_symbol),
             decimals=int(loan.get("decimals") or 18),
         )

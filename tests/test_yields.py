@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from web3 import AsyncWeb3, Web3
 
+from pydefi.deployments import get_token
 from pydefi.exceptions import BridgeError
 from pydefi.lending.aave_v3 import ReserveData
 from pydefi.types import Address, ChainId, Token, TokenAmount
@@ -29,9 +30,9 @@ from pydefi.yields.router import (
     Protocol,
     Strategy,
     YieldStep,
-    _aave_v4_ref,
-    _morpho_id,
     _morpho_markets,
+    aave_v4_ref,
+    morpho_id,
 )
 
 # ---------------------------------------------------------------------------
@@ -200,7 +201,7 @@ async def test_get_yield_markets_protocols_filter():
 # Morpho discovery
 # ---------------------------------------------------------------------------
 
-_USDC_BASE_ADDR = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+_USDC_BASE_ADDR = get_token("USDC", ChainId.BASE).address.to_0x_hex()
 
 
 def _morpho_api_item(unique_key: str, chain_id: int, symbol: str, address: str, decimals: int, apy: float) -> dict:
@@ -213,14 +214,14 @@ def _morpho_api_item(unique_key: str, chain_id: int, symbol: str, address: str, 
     }
 
 
-def test_morpho_id_round_trips_market_id():
+def testmorpho_id_round_trips_market_id():
     market = dataclasses.replace(_market("morpho", ChainId.BASE, USDC_BASE), market_id="morpho:8453:0x" + "ab" * 32)
-    assert _morpho_id(market) == bytes.fromhex("ab" * 32)
+    assert morpho_id(market) == bytes.fromhex("ab" * 32)
 
 
-def test_morpho_id_rejects_non_morpho_market():
+def testmorpho_id_rejects_non_morpho_market():
     with pytest.raises(ValueError):
-        _morpho_id(_market("aave_v3", ChainId.BASE, USDC_BASE))
+        morpho_id(_market("aave_v3", ChainId.BASE, USDC_BASE))
 
 
 @pytest.mark.asyncio
@@ -247,6 +248,34 @@ async def test_morpho_markets_filters_by_loan_symbol():
 
 
 @pytest.mark.asyncio
+async def test_morpho_markets_skips_malformed_items():
+    # A malformed indexer item — missing loanAsset.address — must be skipped,
+    # not raised on, so one bad row never breaks the whole markets list.
+    good = _morpho_api_item("0x" + "a1" * 32, 8453, "USDC", _USDC_BASE_ADDR, 6, 0.05)
+    no_address = _morpho_api_item("0x" + "a2" * 32, 8453, "USDC", _USDC_BASE_ADDR, 6, 0.04)
+    del no_address["loanAsset"]["address"]
+    with patch("pydefi.yields.router._fetch_morpho_markets", new=AsyncMock(return_value=[no_address, good])):
+        out = await _morpho_markets("USDC", [ChainId.BASE])
+
+    assert [m.market_id for m in out] == ["morpho:8453:0x" + "a1" * 32]
+
+
+@pytest.mark.asyncio
+async def test_fetch_morpho_markets_paginates_until_short_page():
+    # The indexer ranks across all assets, so discovery pages through every
+    # market — full pages accumulate and the walk stops on the first short one.
+    from pydefi.yields.router import _MORPHO_PAGE_SIZE, _fetch_morpho_markets
+
+    full = [{"uniqueKey": "k"}] * _MORPHO_PAGE_SIZE
+    pages = [full, full, [{"uniqueKey": "tail"}]]
+    with patch("pydefi.yields.router._fetch_morpho_page", new=AsyncMock(side_effect=pages)) as page:
+        out = await _fetch_morpho_markets([ChainId.BASE])
+
+    assert len(out) == 2 * _MORPHO_PAGE_SIZE + 1
+    assert page.await_count == 3  # stopped after the short final page
+
+
+@pytest.mark.asyncio
 async def test_get_yield_markets_includes_morpho():
     canned = [_morpho_api_item("0x" + "c1" * 32, 8453, "USDC", _USDC_BASE_ADDR, 6, 0.06)]
     with (
@@ -265,14 +294,14 @@ async def test_get_yield_markets_includes_morpho():
 # ---------------------------------------------------------------------------
 
 
-def test_aave_v4_ref_parses_market_id():
+def testaave_v4_ref_parses_market_id():
     market = dataclasses.replace(_market("aave_v4", ChainId.ETHEREUM, USDC_BASE), market_id="aave_v4:1:MAIN_SPOKE:7")
-    assert _aave_v4_ref(market) == ("MAIN_SPOKE", 7)
+    assert aave_v4_ref(market) == ("MAIN_SPOKE", 7)
 
 
-def test_aave_v4_ref_rejects_non_v4_market():
+def testaave_v4_ref_rejects_non_v4_market():
     with pytest.raises(ValueError):
-        _aave_v4_ref(_market("aave_v3", ChainId.ETHEREUM, USDC_BASE))
+        aave_v4_ref(_market("aave_v3", ChainId.ETHEREUM, USDC_BASE))
 
 
 @pytest.mark.asyncio
