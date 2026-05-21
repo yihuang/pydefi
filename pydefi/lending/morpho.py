@@ -144,7 +144,6 @@ class MorphoMarket:
         state: Raw :class:`MarketState` read on-chain.
         supply_apy: Annualised supply rate (``0.045`` = 4.5%).
         borrow_apy: Annualised borrow rate.
-        utilization: ``total_borrow_assets / total_supply_assets``.
         liquidity: Loan tokens idle in the market and immediately borrowable.
     """
 
@@ -152,8 +151,11 @@ class MorphoMarket:
     state: MarketState
     supply_apy: Decimal
     borrow_apy: Decimal
-    utilization: Decimal
     liquidity: TokenAmount
+
+    @property
+    def utilization(self) -> Decimal:
+        return self.state.utilization
 
 
 @dataclass
@@ -206,6 +208,18 @@ def _market_struct(state: MarketState) -> MorphoMarketStruct:
         totalBorrowShares=state.total_borrow_shares,
         lastUpdate=state.last_update,
         fee=state.fee,
+    )
+
+
+def _market_state(raw: tuple[Any, ...]) -> MarketState:
+    m = MorphoMarketStruct._make(raw)
+    return MarketState(
+        total_supply_assets=m.totalSupplyAssets,
+        total_supply_shares=m.totalSupplyShares,
+        total_borrow_assets=m.totalBorrowAssets,
+        total_borrow_shares=m.totalBorrowShares,
+        last_update=m.lastUpdate,
+        fee=m.fee,
     )
 
 
@@ -361,10 +375,10 @@ class MorphoBlue:
                 to ``"?"``.
         """
         tokens = tokens or {}
-        loan_raw, collateral_raw, oracle_raw, irm_raw, lltv = await MORPHO_BLUE.fns.idToMarketParams(market_id).call(
-            self.w3, to=self.morpho_address
+        raw = MorphoMarketParams._make(
+            await MORPHO_BLUE.fns.idToMarketParams(market_id).call(self.w3, to=self.morpho_address)
         )
-        loan_addr, collateral_addr = Address(loan_raw), Address(collateral_raw)
+        loan_addr, collateral_addr = Address(raw.loanToken), Address(raw.collateralToken)
         loan, collateral = await asyncio.gather(
             self._resolve_token(loan_addr, tokens),
             self._resolve_token(collateral_addr, tokens),
@@ -372,9 +386,9 @@ class MorphoBlue:
         return MarketParams(
             loan_token=loan,
             collateral_token=collateral,
-            oracle=Address(oracle_raw),
-            irm=Address(irm_raw),
-            lltv=lltv,
+            oracle=Address(raw.oracle),
+            irm=Address(raw.irm),
+            lltv=raw.lltv,
         )
 
     async def _resolve_token(self, address: Address, tokens: dict[Address, Token]) -> Token:
@@ -388,7 +402,7 @@ class MorphoBlue:
         """Return a market's raw on-chain :class:`MarketState`."""
         market_id = market.id if isinstance(market, MarketParams) else market
         raw = await MORPHO_BLUE.fns.market(market_id).call(self.w3, to=self.morpho_address)
-        return MarketState(*raw)
+        return _market_state(raw)
 
     async def get_borrow_rate(self, params: MarketParams, state: MarketState | None = None) -> int:
         """Return the per-second borrow rate (WAD-scaled) from the market's IRM.
@@ -418,7 +432,6 @@ class MorphoBlue:
             state=state,
             supply_apy=supply_apy_from_borrow(borrow_rate, state),
             borrow_apy=per_second_rate_to_apy(borrow_rate),
-            utilization=state.utilization,
             liquidity=TokenAmount(token=params.loan_token, amount=liquidity),
         )
 
@@ -441,7 +454,7 @@ class MorphoBlue:
         results = await asyncio.gather(*tasks)
 
         supply_shares, borrow_shares, collateral = results[0]
-        state = MarketState(*results[1])
+        state = _market_state(results[1])
         price = results[2] if has_oracle else 0
 
         # Shares → assets with the virtual shares/assets offsets (Morpho

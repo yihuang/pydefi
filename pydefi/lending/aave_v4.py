@@ -23,33 +23,32 @@ from typing import Any
 from eth_contract.erc20 import ERC20
 from web3 import AsyncWeb3
 
-from pydefi.abi.lending import AAVE_V4_HUB, AAVE_V4_SPOKE, AAVE_V4_TOKENIZATION_SPOKE
+from pydefi.abi.lending import (
+    AAVE_V4_HUB,
+    AAVE_V4_SPOKE,
+    AAVE_V4_TOKENIZATION_SPOKE,
+    AaveV4Asset,
+    AaveV4Reserve,
+    AaveV4ReserveConfig,
+    AaveV4UserAccountData,
+)
 from pydefi.lending.aave_v3 import RAY, ray_rate_to_apy
 from pydefi.lending.utils import UINT256_MAX, WAD, to_tx
 from pydefi.types import Address, Token, TokenAmount
 
 
-def _supply_apy(drawn_rate: int, asset: tuple[Any, ...]) -> Decimal:
+def _supply_apy(drawn_rate: int, asset: AaveV4Asset) -> Decimal:
     """Derive a Hub asset's supply APY from its accounting state.
 
     Suppliers earn the drawn (borrow) rate scaled by Hub utilization and net
     of the liquidity fee: ``supplyRate = drawnRate * utilization * (1 - fee)``.
     Excludes per-position risk-premium income, so it is a slight under-estimate.
     """
-    # AaveV4Asset layout: [0] liquidity, [4] swept, [6] drawnShares,
-    # [8] liquidityFee (bps), [9] drawnIndex (RAY).
-    liquidity, swept, drawn_shares, liquidity_fee, drawn_index = (
-        asset[0],
-        asset[4],
-        asset[6],
-        asset[8],
-        asset[9],
-    )
-    drawn = drawn_shares * drawn_index // RAY
-    total = liquidity + swept + drawn
+    drawn = asset.drawnShares * asset.drawnIndex // RAY
+    total = asset.liquidity + asset.swept + drawn
     if total == 0:
         return Decimal(0)
-    supply_rate = drawn_rate * drawn // total * (10_000 - liquidity_fee) // 10_000
+    supply_rate = drawn_rate * drawn // total * (10_000 - asset.liquidityFee) // 10_000
     return ray_rate_to_apy(supply_rate)
 
 
@@ -232,14 +231,16 @@ class AaveV4:
         decimals with ``symbol="?"``.
         """
         raw = await AAVE_V4_SPOKE.fns.getReserve(reserve_id).call(self.w3, to=self.spoke_address)
-        # Reserve: (underlying, hub, assetId, decimals, collateralRisk, flags, dynamicConfigKey)
-        underlying = token or Token(chain_id=self.chain_id, address=Address(raw[0]), symbol="?", decimals=raw[3])
+        raw = AaveV4Reserve._make(raw)
+        underlying = token or Token(
+            chain_id=self.chain_id, address=Address(raw.underlying), symbol="?", decimals=raw.decimals
+        )
         return V4Reserve(
             reserve_id=reserve_id,
             underlying=underlying,
-            hub=Address(raw[1]),
-            asset_id=raw[2],
-            collateral_risk=raw[4],
+            hub=Address(raw.hub),
+            asset_id=raw.assetId,
+            collateral_risk=raw.collateralRisk,
         )
 
     async def get_reserve_data(self, reserve_id: int, token: Token | None = None) -> V4ReserveData:
@@ -250,8 +251,7 @@ class AaveV4:
             AAVE_V4_SPOKE.fns.getReserveSuppliedAssets(reserve_id).call(self.w3, to=self.spoke_address),
             AAVE_V4_SPOKE.fns.getReserveTotalDebt(reserve_id).call(self.w3, to=self.spoke_address),
         )
-        # ReserveConfig: (collateralRisk, paused, frozen, borrowable, receiveSharesEnabled)
-        _collateral_risk, paused, frozen, borrowable, _receive_shares = config
+        config = AaveV4ReserveConfig._make(config)
         utilization = Decimal(total_debt) / Decimal(supplied) if supplied > 0 else Decimal(0)
         # Rates live on the Hub the reserve draws liquidity from: the fresh
         # drawn rate plus the Asset struct (for Hub utilization + the fee).
@@ -259,6 +259,7 @@ class AaveV4:
             AAVE_V4_HUB.fns.getAssetDrawnRate(reserve.asset_id).call(self.w3, to=reserve.hub),
             AAVE_V4_HUB.fns.getAsset(reserve.asset_id).call(self.w3, to=reserve.hub),
         )
+        asset = AaveV4Asset._make(asset)
         return V4ReserveData(
             reserve=reserve,
             supplied=TokenAmount(token=reserve.underlying, amount=supplied),
@@ -266,9 +267,9 @@ class AaveV4:
             utilization=utilization,
             borrow_apy=ray_rate_to_apy(drawn_rate),
             supply_apy=_supply_apy(drawn_rate, asset),
-            is_paused=paused,
-            is_frozen=frozen,
-            borrowable=borrowable,
+            is_paused=config.paused,
+            is_frozen=config.frozen,
+            borrowable=config.borrowable,
         )
 
     async def find_reserve_id(self, hub: Address, asset_id: int) -> int:
@@ -295,23 +296,16 @@ class AaveV4:
 
     async def get_user_account_data(self, user: Address) -> V4UserAccountData:
         """Return *user*'s aggregate position on this Spoke."""
-        (
-            risk_premium,
-            avg_collateral_factor,
-            health_factor_raw,
-            total_collateral_value,
-            total_debt_value_ray,
-            active_collateral_count,
-            borrow_count,
-        ) = await AAVE_V4_SPOKE.fns.getUserAccountData(user).call(self.w3, to=self.spoke_address)
+        raw = await AAVE_V4_SPOKE.fns.getUserAccountData(user).call(self.w3, to=self.spoke_address)
+        raw = AaveV4UserAccountData._make(raw)
         return V4UserAccountData(
-            risk_premium=risk_premium,
-            avg_collateral_factor=avg_collateral_factor,
-            health_factor=parse_health_factor(health_factor_raw),
-            total_collateral_value=total_collateral_value,
-            total_debt_value_ray=total_debt_value_ray,
-            active_collateral_count=active_collateral_count,
-            borrow_count=borrow_count,
+            risk_premium=raw.riskPremium,
+            avg_collateral_factor=raw.avgCollateralFactor,
+            health_factor=parse_health_factor(raw.healthFactor),
+            total_collateral_value=raw.totalCollateralValue,
+            total_debt_value_ray=raw.totalDebtValueRay,
+            active_collateral_count=raw.activeCollateralCount,
+            borrow_count=raw.borrowCount,
         )
 
     async def is_position_manager(self, user: Address, position_manager: Address) -> bool:
