@@ -37,6 +37,16 @@ from .bridge import (
     MessagingFee,
     OFTSendParam,
 )
+from .lending import (
+    AAVE_V3_ADDRESSES_PROVIDER,
+    AAVE_V3_DATA_PROVIDER,
+    AAVE_V3_ORACLE,
+    AAVE_V3_POOL,
+    COMPOUND_V3_COMET,
+    CometAssetInfo,
+    ReserveConfigurationMap,
+    ReserveDataLegacy,
+)
 from .vm import DeFiVM
 
 __all__ = [
@@ -68,6 +78,15 @@ __all__ = [
     "MayanSwiftOrderParams",
     "MessagingFee",
     "OFTSendParam",
+    # lending
+    "AAVE_V3_ADDRESSES_PROVIDER",
+    "AAVE_V3_DATA_PROVIDER",
+    "AAVE_V3_ORACLE",
+    "AAVE_V3_POOL",
+    "COMPOUND_V3_COMET",
+    "CometAssetInfo",
+    "ReserveConfigurationMap",
+    "ReserveDataLegacy",
     # vm
     "DeFiVM",
 ]

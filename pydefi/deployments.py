@@ -11,8 +11,12 @@ Usage::
 
 from __future__ import annotations
 
+import json
+import re
+from pathlib import Path
+
 from pydefi._utils import decode_address
-from pydefi.types import ChainId, Token
+from pydefi.types import Address, ChainId, Token
 
 _ETH = ChainId.ETHEREUM
 _SEP = ChainId.SEPOLIA
@@ -27,6 +31,8 @@ _TOKENS: dict[str, dict] = {
         "addresses": {
             _ETH: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
             _SEP: "0xfff9976782d46cc05630d1f6ebab18b2324d6b14",
+            ChainId.MANTRA: "0xEc09D14459e18fa15C1F916a8d8a2575eA5F7Ac4",
+            ChainId.KITE: "0x3D66d6c3201190952e8EA973F59c4428b32D5F9b",
         },
     },
     "USDC": {
@@ -35,6 +41,14 @@ _TOKENS: dict[str, dict] = {
         "addresses": {
             _ETH: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
             _SEP: "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
+            ChainId.MANTRA: "0x8f726A72e3a28d21f153F1698e60d6a97eFd1a00",
+        },
+    },
+    "USDC.e": {
+        "symbol": "USDC.e",
+        "decimals": 6,
+        "addresses": {
+            ChainId.KITE: "0x7aB6f3ed87C42eF0aDb67Ed95090f8bF5240149e",
         },
     },
     "DAI": {
@@ -49,6 +63,8 @@ _TOKENS: dict[str, dict] = {
         "decimals": 6,
         "addresses": {
             _ETH: "0xdAC17F958D2ee523a2206206994597C13D831ec7",
+            ChainId.MANTRA: "0x3806640578b710d8480910bF51510bc538d2F51A",
+            ChainId.KITE: "0x3Fdd283C4c43A60398bf93CA01a8a8BD773a755b",
         },
     },
     "UNI": {
@@ -97,7 +113,50 @@ _CONTRACTS: dict[str, dict[int, str]] = {
     "PAIR_WETH_DAI": {_ETH: "0xA478c2975Ab1Ea89e8196811F51A7B7Ade33eB11"},
     "PAIR_USDC_DAI": {_ETH: "0xAE461cA67B15dc8dc81CE7615e0320dA1A9aB8D5"},
     "PAIR_USDC_USDT": {_ETH: "0x3041CbD36888bECc7bbCBc0045E3B1f144466f5f"},
+    # Lucid AssetControllers — https://docs.lucidlabs.fi/developer-reference/deployed-contracts/controller-contracts
+    # MANTRA lanes: USDC/WETH -> Base,      USDT -> Optimism (Hyperlane adapter)
+    # Kite lanes:   USDC/WETH -> Avalanche, USDT -> Celo (LayerZero adapter)
+    "LUCID_USDC_CONTROLLER": {
+        ChainId.MANTRA: "0xFf54162d7061290A966119784a0F34663d00E190",
+        ChainId.KITE: "0x7144ADe61f4BEcD513658db3441a0CE286aE90fd",
+    },
+    "LUCID_WETH_CONTROLLER": {
+        ChainId.MANTRA: "0x47263861BD8E964425910FAA0870e9d0fb630876",
+        ChainId.KITE: "0x1324Be9339e1618387d2405C6f4CE660447cB582",
+    },
+    "LUCID_USDT_CONTROLLER": {
+        ChainId.MANTRA: "0x0569725992ee675f862bf0d25CA40fCfB2B69d6E",
+        ChainId.KITE: "0xc620C68Cb63EA35e9930e240051A6A7C02D568A1",
+    },
+    # Adapter addresses are not published by Lucid; discover via TransferRelayed
+    # event scan against any controller, then pass to LucidBridge(adapter_address=…).
+    "LUCID_LAYERZERO_ADAPTER": {ChainId.KITE: "0x5ef37628D45C80740Fb6Db7Ed9C0A753B4f85263"},
 }
+
+
+def _merge_generated(contracts: dict[str, dict[int, str]], filename: str) -> None:
+    """Merge a generated address file (config/<filename>) into *contracts*.
+
+    aave.json and compound.json are produced from upstream registries by
+    config/update.sh. Regenerate with ``bash config/update.sh`` if a file
+    is missing/empty/corrupt."""
+    path = Path(__file__).resolve().parent / "config" / filename
+    hint = "run config/update.sh to (re)generate it"
+    if not path.exists():
+        raise FileNotFoundError(f"{filename} not found: {path} \u2014 {hint}")
+    text = path.read_text()
+    if not text.strip():
+        raise ValueError(f"{filename} is empty: {path} \u2014 {hint}")
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{filename} is corrupt: {path} ({exc}) \u2014 {hint}") from exc
+    for name, chains in data.items():
+        contracts[name] = {int(cid): addr for cid, addr in chains.items()}
+
+
+_merge_generated(_CONTRACTS, "aave.json")
+_merge_generated(_CONTRACTS, "compound.json")
 
 
 def get_address(name: str, chain_id: int) -> str:
@@ -147,3 +206,28 @@ def chains_for(name: str) -> list[int]:
     if name in _TOKENS:
         return list(_TOKENS[name]["addresses"])
     raise KeyError(f"Unknown deployment name {name!r}")
+
+
+def address_for(name: str, chain_id: int) -> Address:
+    """Like :func:`get_address` but returns a chain-aware :class:`Address`
+    instead of a raw string — saves callers from wrapping in
+    ``Address(decode_address(...))`` at every call site."""
+    return Address(decode_address(get_address(name, chain_id), chain_id))
+
+
+def _normalize_symbol(token_symbol: str) -> str:
+    return re.sub(r"[^A-Za-z0-9]+", "_", token_symbol.upper()).strip("_")
+
+
+def comet_contract_names() -> list[str]:
+    """All ``COMPOUND_V3_*`` deployment names in the registry, sorted."""
+    return sorted(name for name in _CONTRACTS if name.startswith("COMPOUND_V3_"))
+
+
+def comet_contract_for(token_symbol: str) -> str:
+    """Comet deployment name for *token_symbol*, or :class:`ValueError`
+    listing supported symbols."""
+    name = f"COMPOUND_V3_{_normalize_symbol(token_symbol)}"
+    if name not in _CONTRACTS:
+        raise ValueError(f"Compound V3 has no market for token {token_symbol!r}; supported: {comet_contract_names()}")
+    return name
