@@ -19,7 +19,11 @@ from pydefi.lending.compound_v3 import CompoundV3
 from pydefi.types import Address, Token, TokenAmount
 
 Protocol = Literal["aave_v3", "compound_v3"]
-Strategy = Literal["withdraw_then_supply", "supply_then_bridge", "bridge_then_supply", "compose_supply"]
+# Strategies build_yield_route sequences directly into source-chain steps.
+RouteStrategy = Literal["withdraw_then_supply", "supply_then_bridge", "bridge_then_supply"]
+# Every strategy a YieldRoute can carry. "compose_supply" routes are built by
+# build_compose_supply_route (one-signature compose), not build_yield_route.
+Strategy = RouteStrategy | Literal["compose_supply"]
 StepKind = Literal["approve", "supply", "withdraw", "bridge"]
 
 # Generous; fits quirky tokens whose approve consumes more than the EIP-20 minimum.
@@ -375,7 +379,7 @@ async def _bridge_then_supply(
 
 
 async def build_yield_route(
-    strategy: Strategy,
+    strategy: RouteStrategy,
     user: Address,
     amount_in: TokenAmount,
     w3s: dict[int, AsyncWeb3],

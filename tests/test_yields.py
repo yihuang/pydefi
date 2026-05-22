@@ -31,7 +31,7 @@ from pydefi.yields import (
     rebalance_tick,
     wait_for_bridge_settlement,
 )
-from pydefi.yields.router import Protocol, Strategy, YieldStep
+from pydefi.yields.router import Protocol, RouteStrategy, YieldStep
 
 # ---------------------------------------------------------------------------
 # Tokens / addresses / canned tx dicts (shared across every test)
@@ -394,7 +394,7 @@ async def test_build_followup_route_rejects_token_mismatch():
 # pending.market.token on pending.chain_id.
 
 
-async def _cross_chain_route(strategy: Strategy, bridge: object) -> YieldRoute:
+async def _cross_chain_route(strategy: RouteStrategy, bridge: object) -> YieldRoute:
     """Build a cross-chain route through *bridge* for either cross-chain strategy."""
     dst = _market("compound_v3", ChainId.BASE, USDC_BASE, apy="0.06")
     amount = TokenAmount(USDC_MANTRA, 1_000_000)
@@ -410,7 +410,7 @@ async def _cross_chain_route(strategy: Strategy, bridge: object) -> YieldRoute:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("strategy", ["withdraw_then_supply", "bridge_then_supply"])
-async def test_cross_chain_route_bridges_into_the_pending_token(strategy: Strategy):
+async def test_cross_chain_route_bridges_into_the_pending_token(strategy: RouteStrategy):
     """The bridge delivers exactly the token route.pending names, on the chain
     it names — so a skipped follow-up strands nothing."""
     bridge = _fake_bridge(ChainId.MANTRA, ChainId.BASE)
@@ -588,7 +588,7 @@ async def test_build_yield_route_validation_errors(strategy: str, kw: dict, err:
     target = _market("aave_v3", ChainId.BASE, USDC_BASE)
     with pytest.raises(ValueError, match=err):
         await build_yield_route(
-            cast(Strategy, strategy),  # "supply_then_borrow" is intentionally not in Strategy
+            cast(RouteStrategy, strategy),  # "supply_then_borrow" is intentionally not in RouteStrategy
             _USER,
             TokenAmount.from_human(USDC_BASE, "1"),
             w3s={ChainId.BASE: cast(AsyncWeb3, object())},
@@ -606,7 +606,7 @@ async def test_build_yield_route_rejects_token_mismatch():
     dai_m = _market("compound_v3", ChainId.BASE, dai)
     w3s: dict[int, AsyncWeb3] = {ChainId.BASE: cast(AsyncWeb3, object())}
 
-    cases: list[tuple[Strategy, Token, YieldMarket, YieldMarket, str]] = [
+    cases: list[tuple[RouteStrategy, Token, YieldMarket, YieldMarket, str]] = [
         ("withdraw_then_supply", dai, usdc_m, usdc_m, "amount_in.token must match source_market.token"),
         ("withdraw_then_supply", USDC_BASE, usdc_m, dai_m, "target_market.token must match amount_in.token"),
         ("supply_then_bridge", dai, usdc_m, usdc_m, "amount_in.token must match target_market.token"),
