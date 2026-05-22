@@ -1,13 +1,17 @@
 """Fork tests for :mod:`pydefi.yields` against an Anvil mainnet fork.
 
-Covers the two strategies whose source-chain leg is fully built today:
+Covers the route flows whose on-chain steps are fully built today:
 
 * ``supply_then_bridge`` — entry leg (approve + supply). The bridge tail
   is deferred and not exercised here.
 * ``withdraw_then_supply`` — same-chain rebalance from Aave V3 to
   Compound V3 USDC.
+* :func:`build_followup_route` — the deferred destination leg of a
+  cross-chain route, built from a ``PendingLeg`` and broadcast.
+* A full cross-chain route — ``build_yield_route`` → relay → ``build_followup_route``
+  — executed end to end across two Anvil nodes with a ``MockBridge`` double.
 
-Both reuse :data:`tests.addrs.ETH_WHALE` (vitalik) as the user, top its
+All reuse :data:`tests.addrs.ETH_WHALE` (vitalik) as the user, top its
 ETH balance for gas, and seed USDC from :data:`tests.addrs.USDC_WHALE`.
 
 Run with::
@@ -18,17 +22,22 @@ Run with::
 from __future__ import annotations
 
 from decimal import Decimal
+from typing import Any
 
 import pytest
+from eth_contract import Contract
 from eth_contract.erc20 import ERC20
 
+from pydefi.bridge.base import BaseBridge
 from pydefi.deployments import get_address
 from pydefi.lending import AaveV3, CompoundV3
-from pydefi.types import Address, ChainId, TokenAmount
-from pydefi.yields import YieldMarket, YieldRoute, build_yield_route
+from pydefi.lending.utils import to_tx
+from pydefi.types import Address, ChainId, Token, TokenAmount
+from pydefi.yields import PendingLeg, YieldMarket, YieldRoute, build_followup_route, build_yield_route
 from pydefi.yields.router import Protocol
 from tests.addrs import ETH_WHALE, USDC
 from tests.live.anvil_helpers import fund_usdc, impersonate, send_tx, set_balance
+from tests.live.sol_utils import MOCK_TOKEN_SOL, compile_sol_source, deploy
 
 # ---------------------------------------------------------------------------
 # Pinned addresses + per-test constants
@@ -37,6 +46,82 @@ from tests.live.anvil_helpers import fund_usdc, impersonate, send_tx, set_balanc
 COMET_USDC = Address(get_address("COMPOUND_V3_USDC", ChainId.ETHEREUM))
 
 USDC_TEST_AMOUNT = 1_000 * 10**6  # 1000 USDC
+
+# Aave's rayDiv/rayMul both round half-up, so an aToken balance read straight
+# after a supply can sit a couple of wei below the principal — the exact
+# shortfall depends on the fork block's liquidity index. A small slack keeps
+# the "~1:1" assertions stable across fork blocks.
+_ATOKEN_SUPPLY_SLACK = 5
+
+
+# ---------------------------------------------------------------------------
+# MockBridge — a BaseBridge test double for the cross-chain end-to-end test
+# ---------------------------------------------------------------------------
+
+#: ``bridge`` pulls the token on the source chain; ``deliver`` releases it on
+#: the destination — the relay leg the test drives itself.
+MOCK_BRIDGE_SOL = """\
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+
+interface IERC20 {
+    function transfer(address to, uint256 amount) external returns (bool);
+    function transferFrom(address from, address to, uint256 amount) external returns (bool);
+}
+
+contract MockBridge {
+    event Bridged(address token, uint256 amount, address recipient);
+
+    function bridge(address token, uint256 amount, address recipient) external {
+        IERC20(token).transferFrom(msg.sender, address(this), amount);
+        emit Bridged(token, amount, recipient);
+    }
+
+    function deliver(address token, uint256 amount, address recipient) external {
+        IERC20(token).transfer(recipient, amount);
+    }
+}
+"""
+
+_MOCK_TOKEN = Contract.from_abi(["function mint(address to, uint256 amount) external"])
+_MOCK_BRIDGE = Contract.from_abi(
+    [
+        "function bridge(address token, uint256 amount, address recipient) external",
+        "function deliver(address token, uint256 amount, address recipient) external",
+    ]
+)
+
+
+class _MockBridge(BaseBridge):
+    """A :class:`BaseBridge` double backed by a ``MockBridge.sol`` on the
+    source chain — the test drives the relay to the destination."""
+
+    def __init__(self, src_chain_id: int, dst_chain_id: int, contract: Address) -> None:
+        super().__init__(src_chain_id, dst_chain_id)
+        self._contract = contract
+
+    @property
+    def protocol_name(self) -> str:
+        return "MockBridge"
+
+    @property
+    def spender(self) -> Address:
+        return self._contract
+
+    async def get_quote(self, *args: object, **kwargs: object) -> object:
+        raise NotImplementedError  # build_yield_route never calls get_quote
+
+    async def build_bridge_tx(
+        self,
+        token_in: Token,
+        token_out: Token,
+        amount_in: TokenAmount,
+        recipient: Address,
+        slippage_bps: int = 50,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        data = _MOCK_BRIDGE.fns.bridge(token_in.address, amount_in.amount, recipient).data
+        return to_tx(self._contract, data)
 
 
 # ---------------------------------------------------------------------------
@@ -79,10 +164,16 @@ async def _seed_aave_position(fork_w3, amount: int) -> None:
     assert r["status"] == 1, "Aave supply reverted"
 
 
+async def _send_ok(w3, sender: Address, tx: dict[str, Any], label: str) -> dict:
+    """Broadcast *tx* via :func:`send_tx` and assert it did not revert."""
+    receipt = await send_tx(w3, sender, tx)
+    assert receipt["status"] == 1, f"{label} reverted"
+    return receipt
+
+
 async def _broadcast(fork_w3, route: YieldRoute) -> None:
     for step in route.steps:
-        receipt = await send_tx(fork_w3, ETH_WHALE, step.tx)
-        assert receipt["status"] == 1, f"{step.kind} step reverted"
+        await _send_ok(fork_w3, ETH_WHALE, step.tx, f"{step.kind} step")
 
 
 async def _a_usdc_balance(fork_w3) -> int:
@@ -117,8 +208,7 @@ class TestYieldRouterFork:
         assert [s.kind for s in route.steps] == ["approve", "supply"]
         await _broadcast(fork_w3, route)
 
-        # aUSDC mints ~1:1 with supplied principal (Aave may round by ±1 unit).
-        assert (await _a_usdc_balance(fork_w3)) - before >= USDC_TEST_AMOUNT - 1
+        assert (await _a_usdc_balance(fork_w3)) - before >= USDC_TEST_AMOUNT - _ATOKEN_SUPPLY_SLACK
 
     async def test_withdraw_then_supply_rebalances_aave_to_compound(self, fork_w3):
         """A withdraw_then_supply route must move the whale's USDC from Aave V3
@@ -155,3 +245,92 @@ class TestYieldRouterFork:
         _ROUNDING_SLACK = 100  # 0.0001 USDC
         assert a_before - a_after >= rebalance_amount - _ROUNDING_SLACK
         assert comet_after - comet_before >= rebalance_amount - _ROUNDING_SLACK
+
+    async def test_build_followup_route_supplies_destination(self, fork_w3):
+        """build_followup_route turns a cross-chain route's PendingLeg into an
+        [approve, supply] leg that, broadcast, mints the destination's aToken.
+
+        A cross-chain route needs a bridge — absent on a single-chain fork —
+        so the post-settlement state is built directly: a YieldRoute carrying
+        a PendingLeg, exactly what build_followup_route expects once the bridge
+        has confirmed and the received amount is known."""
+        await _seed_whale_with_usdc(fork_w3, USDC_TEST_AMOUNT)
+        before = await _a_usdc_balance(fork_w3)
+
+        market = _usdc_market("aave_v3")
+        cross_chain_route = YieldRoute(
+            strategy="bridge_then_supply",
+            source_chain=ChainId.ETHEREUM,
+            steps=(),
+            route_id="bridge_then_supply:fork",
+            target_market=market,
+            target_chain=ChainId.ETHEREUM,
+            pending=PendingLeg(ChainId.ETHEREUM, market),
+        )
+        received = TokenAmount(USDC, USDC_TEST_AMOUNT)
+        followup = await build_followup_route(cross_chain_route, ETH_WHALE, received, w3s={ChainId.ETHEREUM: fork_w3})
+
+        assert followup.pending is None
+        assert followup.route_id == "followup:bridge_then_supply:fork"
+        assert [s.kind for s in followup.steps] == ["approve", "supply"]
+        await _broadcast(fork_w3, followup)
+        assert (await _a_usdc_balance(fork_w3)) - before >= USDC_TEST_AMOUNT - _ATOKEN_SUPPLY_SLACK
+
+    async def test_cross_chain_route_executes_end_to_end(self, fork_w3, plain_anvil_w3):
+        """A full cross-chain route across two Anvil nodes: build_yield_route →
+        broadcast source leg → relay → build_followup_route → broadcast.
+
+        ``fork_w3`` is the destination (Ethereum fork, real Aave V3); a
+        MockBridge double carries the value and the test drives the relay."""
+        dest_w3, src_w3 = fork_w3, plain_anvil_w3
+        src_accounts = await src_w3.eth.accounts
+        deployer, user = Address(src_accounts[0]), Address(src_accounts[1])
+
+        # Source chain: deploy a mock token + the MockBridge, mint to the user.
+        token_artifact = compile_sol_source(MOCK_TOKEN_SOL, "MockToken")
+        bridge_artifact = compile_sol_source(MOCK_BRIDGE_SOL, "MockBridge")
+        src_token_addr = await deploy(src_w3, token_artifact, deployer)
+        src_bridge_addr = await deploy(src_w3, bridge_artifact, deployer)
+        mint = _MOCK_TOKEN.fns.mint(user, USDC_TEST_AMOUNT).data
+        await _send_ok(src_w3, deployer, to_tx(src_token_addr, mint), "mint source token")
+
+        # Destination chain: deploy the MockBridge, pre-fund it with the USDC
+        # the relay releases once the bridge "settles".
+        dst_bridge_addr = await deploy(dest_w3, bridge_artifact, deployer)
+        await fund_usdc(dest_w3, USDC.address, dst_bridge_addr, USDC_TEST_AMOUNT)
+
+        # Source leg: build the cross-chain route and broadcast it.
+        src_token = Token(chain_id=ChainId.BASE, address=src_token_addr, symbol="USDC", decimals=6)
+        dst_market = _usdc_market("aave_v3")
+        bridge = _MockBridge(ChainId.BASE, ChainId.ETHEREUM, src_bridge_addr)
+        route = await build_yield_route(
+            "bridge_then_supply",
+            user=user,
+            amount_in=TokenAmount(src_token, USDC_TEST_AMOUNT),
+            w3s={ChainId.BASE: src_w3},
+            target_market=dst_market,
+            bridge=bridge,
+        )
+        assert [s.kind for s in route.steps] == ["approve", "bridge"]
+        assert route.pending == PendingLeg(ChainId.ETHEREUM, dst_market)
+        await _send_ok(src_w3, user, route.steps[0].tx, "approve (source)")
+        bridge_receipt = await _send_ok(src_w3, user, route.steps[1].tx, "bridge (source)")
+        assert bridge_receipt["logs"], "MockBridge.bridge emitted no Bridged event"
+
+        # Relay: deliver the bridged value on the destination chain.
+        deliver = _MOCK_BRIDGE.fns.deliver(USDC.address, USDC_TEST_AMOUNT, user).data
+        await _send_ok(dest_w3, deployer, to_tx(dst_bridge_addr, deliver), "relay deliver")
+
+        # Destination leg: build_followup_route against what actually arrived.
+        received = TokenAmount(USDC, int(await ERC20.fns.balanceOf(user).call(dest_w3, to=USDC.address)))
+        assert received.amount == USDC_TEST_AMOUNT, "relay did not deliver the bridged amount"
+        followup = await build_followup_route(route, user, received, w3s={ChainId.ETHEREUM: dest_w3})
+        assert [s.kind for s in followup.steps] == ["approve", "supply"]
+
+        aave = await AaveV3.from_chain(dest_w3, ChainId.ETHEREUM)
+        a_usdc = (await aave.get_reserve_data(USDC)).a_token_address
+        a_before = int(await ERC20.fns.balanceOf(user).call(dest_w3, to=a_usdc))
+        for step in followup.steps:
+            await _send_ok(dest_w3, user, step.tx, f"{step.kind} (destination)")
+        a_after = int(await ERC20.fns.balanceOf(user).call(dest_w3, to=a_usdc))
+        assert a_after - a_before >= USDC_TEST_AMOUNT - _ATOKEN_SUPPLY_SLACK

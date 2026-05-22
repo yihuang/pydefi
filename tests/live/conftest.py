@@ -121,21 +121,27 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
-@pytest.fixture
-async def fork_w3(request: pytest.FixtureRequest):
-    """Start a temporary Anvil fork of Ethereum mainnet and return an AsyncWeb3 client.
+def _terminate(proc: subprocess.Popen) -> None:
+    """Stop a local-node subprocess (Anvil or surfpool), escalating to
+    SIGKILL if it does not exit on SIGTERM."""
+    proc.terminate()
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
 
-    The fixture:
 
-    1. Finds a free local TCP port.
-    2. Launches ``anvil --fork-url <ETH_RPC_URL>`` as a subprocess.
-    3. Polls the JSON-RPC endpoint until the node is ready (up to 30 s).
-    4. Yields an :class:`~web3.AsyncWeb3` instance connected to the fork.
-    5. Terminates the Anvil process on fixture teardown.
+async def _start_anvil_w3(extra_args: list[str]) -> tuple[subprocess.Popen, AsyncWeb3]:
+    """Launch an Anvil node with *extra_args*, poll until it answers, and
+    return its process and a connected :class:`~web3.AsyncWeb3`.
 
-    The fixture is automatically skipped when the ``anvil`` binary is not
-    found on ``$PATH`` so that the test suite can still run in environments
-    where Foundry is not installed.
+    Skips the test when ``anvil`` is not on ``$PATH``; fails it when the node
+    does not come up within 30 s. The connection errors until the process is
+    fully started, so every exception during the poll is expected.
     """
     import shutil
 
@@ -143,26 +149,12 @@ async def fork_w3(request: pytest.FixtureRequest):
         pytest.skip("anvil not found on PATH — install Foundry to run fork tests")
 
     port = _free_port()
-    url = f"http://127.0.0.1:{port}"
-
     proc = subprocess.Popen(
-        [
-            "anvil",
-            "--fork-url",
-            ETH_RPC_URL,
-            "--port",
-            str(port),
-            "--silent",
-        ],
+        ["anvil", "--port", str(port), "--silent", *extra_args],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-
-    # Poll until anvil is ready (up to 30 seconds).  The connection will
-    # actively fail (ConnectionRefusedError, HTTP errors, web3 wrapping
-    # exceptions) until the process is fully started, so we intentionally
-    # swallow all exceptions here.
-    w3 = AsyncWeb3(AsyncWeb3.AsyncHTTPProvider(url))
+    w3 = AsyncWeb3(AsyncWeb3.AsyncHTTPProvider(f"http://127.0.0.1:{port}"))
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
         try:
@@ -171,88 +163,35 @@ async def fork_w3(request: pytest.FixtureRequest):
         except Exception:  # noqa: BLE001 — expected during startup
             await asyncio.sleep(0.25)
     else:
-        proc.terminate()
-        try:
-            proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                pass
+        _terminate(proc)
         pytest.fail("Anvil did not start within 30 seconds")
-
     w3.codec = codec
-    yield w3
+    return proc, w3
 
-    proc.terminate()
-    try:
-        proc.wait(timeout=10)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            pass
+
+@pytest.fixture
+async def fork_w3():
+    """Function-scoped Anvil fork of Ethereum mainnet (forks ``ETH_RPC_URL``)."""
+    proc, w3 = await _start_anvil_w3(["--fork-url", ETH_RPC_URL])
+    yield w3
+    _terminate(proc)
+
+
+@pytest.fixture
+async def plain_anvil_w3():
+    """A plain (non-forked) Anvil node — a fast, empty second chain for tests
+    that need a source chain alongside ``fork_w3``."""
+    proc, w3 = await _start_anvil_w3([])
+    yield w3
+    _terminate(proc)
 
 
 @pytest.fixture(scope="module")
 async def fork_w3_module():
-    """Module-scoped Anvil mainnet fork.  Same as ``fork_w3`` but shared across
-    an entire test module to avoid per-test process startup costs."""
-    import shutil
-
-    if shutil.which("anvil") is None:
-        pytest.skip("anvil not found on PATH — install Foundry to run fork tests")
-
-    port = _free_port()
-    url = f"http://127.0.0.1:{port}"
-
-    proc = subprocess.Popen(
-        [
-            "anvil",
-            "--fork-url",
-            ETH_RPC_URL,
-            "--port",
-            str(port),
-            "--silent",
-        ],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-
-    w3 = AsyncWeb3(AsyncWeb3.AsyncHTTPProvider(url))
-    deadline = time.monotonic() + 30
-    while time.monotonic() < deadline:
-        try:
-            await w3.eth.chain_id
-            break
-        except Exception:  # noqa: BLE001 — expected during startup
-            await asyncio.sleep(0.25)
-    else:
-        proc.terminate()
-        try:
-            proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                pass
-        pytest.fail("Anvil did not start within 60 seconds")
-
-    w3.codec = codec
+    """Module-scoped ``fork_w3`` — one mainnet fork shared across a module."""
+    proc, w3 = await _start_anvil_w3(["--fork-url", ETH_RPC_URL])
     yield w3
-
-    proc.terminate()
-    try:
-        proc.wait(timeout=10)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            pass
+    _terminate(proc)
 
 
 @pytest.fixture
@@ -306,25 +245,8 @@ async def surfpool_rpc():
         await asyncio.sleep(1)
 
     if not ready:
-        proc.terminate()
-        try:
-            proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                pass
+        _terminate(proc)
         pytest.fail("surfpool did not start within 60 seconds")
 
     yield url
-
-    proc.terminate()
-    try:
-        proc.wait(timeout=10)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            pass
+    _terminate(proc)
