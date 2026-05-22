@@ -49,10 +49,35 @@ class YieldStep:
 
 
 @dataclass(frozen=True)
+class PendingLeg:
+    """The deferred destination-chain supply of a cross-chain route.
+
+    A cross-chain :class:`YieldRoute` carries only source-chain steps: the
+    destination supply cannot be built until the bridge settles and the
+    received amount is known. This records what that follow-up will do —
+    pass it, with the settled amount, to :func:`build_followup_route`.
+
+    Until the follow-up runs the user simply holds ``market.token`` on
+    ``chain_id``; a partially completed cross-chain route never strands
+    funds, it leaves them as the bridged token.
+
+    Attributes:
+        chain_id: The destination chain the supply will run on.
+        market: The :class:`YieldMarket` the bridged funds will be supplied to.
+    """
+
+    chain_id: int
+    market: YieldMarket
+
+
+@dataclass(frozen=True)
 class YieldRoute:
-    """Sequenced plan. Cross-chain follow-ups (destination supply after a
-    bridge settles) are not pre-built — caller invokes the router again
-    once the prior leg confirms."""
+    """Sequenced plan of source-chain steps.
+
+    For a cross-chain route the destination supply is not pre-built — the
+    bridged amount is unknown until the bridge settles. :attr:`pending`
+    describes that deferred leg; build it with :func:`build_followup_route`
+    once the funds arrive. A same-chain route has ``pending is None``."""
 
     strategy: Strategy
     source_chain: int
@@ -60,6 +85,7 @@ class YieldRoute:
     route_id: str
     target_market: YieldMarket | None = None
     target_chain: int | None = None
+    pending: PendingLeg | None = None
 
     def build_transactions(self) -> list[dict[str, Any]]:
         return [s.tx for s in self.steps]
@@ -281,6 +307,7 @@ async def _withdraw_then_supply(
         route_id=f"withdraw_then_supply:{source_market.market_id}->{target_market.market_id}",
         target_market=target_market,
         target_chain=None if same_chain else target_market.chain_id,
+        pending=None if same_chain else PendingLeg(target_market.chain_id, target_market),
     )
 
 
@@ -344,6 +371,7 @@ async def _bridge_then_supply(
         route_id=f"bridge_then_supply:chain:{bridge.src_chain_id}->{target_market.market_id}",
         target_market=target_market,
         target_chain=bridge.dst_chain_id,
+        pending=PendingLeg(target_market.chain_id, target_market),
     )
 
 
@@ -370,6 +398,9 @@ async def build_yield_route(
       is recorded on the route but not built.
     * ``bridge_then_supply`` — source-chain ``[approve, bridge]``; the
       destination supply runs on a follow-up call. Requires ``bridge``.
+
+    A cross-chain route carries a :class:`PendingLeg` in ``route.pending``;
+    feed it to :func:`build_followup_route` once the bridge settles.
     """
     if strategy == "withdraw_then_supply":
         return await _withdraw_then_supply(user, amount_in, w3s, target_market, source_market, bridge)
@@ -378,3 +409,39 @@ async def build_yield_route(
     if strategy == "bridge_then_supply":
         return await _bridge_then_supply(user, amount_in, target_market, bridge)
     raise ValueError(f"unknown strategy: {strategy!r}")
+
+
+async def build_followup_route(
+    route: YieldRoute,
+    user: Address,
+    received: TokenAmount,
+    w3s: dict[int, AsyncWeb3],
+) -> YieldRoute:
+    """Build the deferred destination leg of a cross-chain *route*.
+
+    Call this once the bridge settles, with *received* set to the amount of
+    the destination token that actually arrived — read it from the user's
+    on-chain balance, since bridge fees mean it is not known in advance.
+    Returns a same-chain :class:`YieldRoute` of ``[approve, supply]`` on the
+    destination chain.
+
+    Raises :class:`ValueError` if *route* has no :attr:`~YieldRoute.pending`
+    leg (it was same-chain, or already a follow-up), or if *received* is not
+    the pending market's token.
+    """
+    pending = route.pending
+    if pending is None:
+        raise ValueError(f"route {route.route_id!r} has no pending destination leg")
+    _require_token(
+        received.token,
+        pending.market.token,
+        "build_followup_route: received.token must match the pending market token",
+    )
+    steps = await _supply_steps(pending.market, user, w3s[pending.chain_id], received)
+    return YieldRoute(
+        strategy=route.strategy,
+        source_chain=pending.chain_id,
+        steps=tuple(steps),
+        route_id=f"followup:{route.route_id}",
+        target_market=pending.market,
+    )

@@ -14,9 +14,12 @@ from pydefi.exceptions import BridgeError
 from pydefi.lending.aave_v3 import ReserveData
 from pydefi.types import Address, ChainId, Token, TokenAmount
 from pydefi.yields import (
+    PendingLeg,
     Position,
     YieldMarket,
+    YieldRoute,
     build_approve_tx,
+    build_followup_route,
     build_yield_route,
     expected_apy_gain,
     find_best_rebalance,
@@ -245,6 +248,7 @@ async def test_withdraw_then_supply_same_chain():
     assert route.strategy == "withdraw_then_supply"
     assert route.source_chain == ChainId.BASE
     assert [s.kind for s in route.steps] == ["withdraw", "approve", "supply"]
+    assert route.pending is None  # same-chain — nothing deferred
     txs = route.build_transactions()
     assert txs[0]["data"] == _STUB_WITHDRAW["data"]
     assert txs[2]["data"] == _STUB_SUPPLY["data"]
@@ -269,6 +273,7 @@ async def test_withdraw_then_supply_cross_chain_emits_bridge():
     assert [s.kind for s in route.steps] == ["withdraw", "approve", "bridge"]
     assert route.source_chain == ChainId.MANTRA
     assert route.target_chain == ChainId.BASE
+    assert route.pending == PendingLeg(ChainId.BASE, dst)  # deferred destination supply
 
 
 # ---------------------------------------------------------------------------
@@ -292,6 +297,8 @@ async def test_supply_then_bridge_entry_leg():
     assert [s.kind for s in route.steps] == ["approve", "supply"]
     assert route.target_chain == ChainId.KITE
     assert all(s.kind != "bridge" for s in route.steps)
+    # The exit is a withdraw+bridge, not a deferred supply — no pending leg.
+    assert route.pending is None
 
 
 @pytest.mark.asyncio
@@ -310,9 +317,149 @@ async def test_bridge_then_supply_emits_approve_and_bridge():
     assert [s.kind for s in route.steps] == ["approve", "bridge"]
     assert route.source_chain == ChainId.MANTRA
     assert route.target_chain == ChainId.BASE
+    assert route.pending == PendingLeg(ChainId.BASE, target)  # deferred destination supply
     txs = route.build_transactions()
     assert txs[0]["to"] == USDC_MANTRA.address  # approve targets the source token
     assert txs[1]["to"] == controller  # bridge targets the controller
+
+
+# ---------------------------------------------------------------------------
+# build_followup_route — the deferred destination leg
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_build_followup_route_builds_destination_supply():
+    """The follow-up is [approve, supply] on the destination, built against
+    the amount that actually arrived."""
+    dst = _market("compound_v3", ChainId.BASE, USDC_BASE, apy="0.06")
+    route = YieldRoute(
+        strategy="withdraw_then_supply",
+        source_chain=ChainId.MANTRA,
+        steps=(),
+        route_id="withdraw_then_supply:src->dst",
+        target_market=dst,
+        target_chain=ChainId.BASE,
+        pending=PendingLeg(ChainId.BASE, dst),
+    )
+    received = TokenAmount(USDC_BASE, 990_000)  # post-bridge balance, < amount sent
+    with patch("pydefi.yields.router._supply_steps", new=AsyncMock(return_value=_STUB_SUPPLY_STEPS)) as supply:
+        followup = await build_followup_route(route, _USER, received, w3s={ChainId.BASE: object()})
+
+    assert [s.kind for s in followup.steps] == ["approve", "supply"]
+    assert followup.source_chain == ChainId.BASE
+    assert followup.target_market == dst
+    assert followup.pending is None  # nothing left to defer
+    assert followup.route_id == "followup:withdraw_then_supply:src->dst"
+    # _supply_steps(market, user, w3, amount) — built against the received amount.
+    assert supply.await_args.args[0] == dst
+    assert supply.await_args.args[3] == received
+
+
+@pytest.mark.asyncio
+async def test_build_followup_route_rejects_route_without_pending():
+    route = YieldRoute(
+        strategy="withdraw_then_supply",
+        source_chain=ChainId.BASE,
+        steps=(),
+        route_id="same-chain",
+    )
+    with pytest.raises(ValueError, match="no pending destination leg"):
+        await build_followup_route(route, _USER, TokenAmount(USDC_BASE, 1), w3s={ChainId.BASE: object()})
+
+
+@pytest.mark.asyncio
+async def test_build_followup_route_rejects_token_mismatch():
+    dst = _market("compound_v3", ChainId.BASE, USDC_BASE)
+    route = YieldRoute(
+        strategy="withdraw_then_supply",
+        source_chain=ChainId.MANTRA,
+        steps=(),
+        route_id="r",
+        pending=PendingLeg(ChainId.BASE, dst),
+    )
+    dai = Token(chain_id=ChainId.BASE, address=Address("0x" + "DD" * 20), symbol="DAI", decimals=18)
+    with pytest.raises(ValueError, match="received.token must match"):
+        await build_followup_route(route, _USER, TokenAmount(dai, 1), w3s={ChainId.BASE: object()})
+
+
+# ---------------------------------------------------------------------------
+# Recovery story — a partial cross-chain route never strands funds
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_withdraw_then_supply_bridges_into_the_pending_token():
+    src = _market("aave_v3", ChainId.MANTRA, USDC_MANTRA)
+    dst = _market("compound_v3", ChainId.BASE, USDC_BASE, apy="0.06")
+    bridge = _fake_bridge(ChainId.MANTRA, ChainId.BASE)
+    with patch("pydefi.yields.router._withdraw_tx", new=AsyncMock(return_value=_STUB_WITHDRAW)):
+        route = await build_yield_route(
+            "withdraw_then_supply",
+            _USER,
+            TokenAmount(USDC_MANTRA, 1_000_000),
+            w3s={ChainId.MANTRA: object()},
+            source_market=src,
+            target_market=dst,
+            bridge=bridge,
+        )
+
+    assert route.pending is not None
+    # _bridge_steps calls build_bridge_tx(src_token, target_token, amount, user)
+    # — the token the bridge delivers to the user is positional arg 1.
+    bridge.build_bridge_tx.assert_awaited_once()
+    delivered_token = bridge.build_bridge_tx.await_args.args[1]
+    # The asset the user is left holding IS the one pending names, on the
+    # chain pending names — so skipping the follow-up strands nothing.
+    assert delivered_token == route.pending.market.token == USDC_BASE
+    assert route.pending.chain_id == delivered_token.chain_id == ChainId.BASE
+
+
+@pytest.mark.asyncio
+async def test_bridge_then_supply_bridges_into_the_pending_token():
+    """Same recovery invariant for bridge_then_supply."""
+    bridge = _fake_bridge(ChainId.MANTRA, ChainId.BASE)
+    target = _market("aave_v3", ChainId.BASE, USDC_BASE)
+    route = await build_yield_route(
+        "bridge_then_supply",
+        _USER,
+        TokenAmount(USDC_MANTRA, 1_000_000),
+        w3s={ChainId.MANTRA: object()},
+        target_market=target,
+        bridge=bridge,
+    )
+
+    assert route.pending is not None
+    delivered_token = bridge.build_bridge_tx.await_args.args[1]
+    assert delivered_token == route.pending.market.token == USDC_BASE
+    assert route.pending.chain_id == ChainId.BASE
+
+
+@pytest.mark.asyncio
+async def test_followup_route_consumes_the_token_the_user_was_left_holding():
+    """Closes the recovery loop: the token a skipped cross-chain route leaves
+    the user holding (route.pending.market.token) is exactly what
+    build_followup_route accepts — so the recovered funds stay actionable."""
+    src = _market("aave_v3", ChainId.MANTRA, USDC_MANTRA)
+    dst = _market("compound_v3", ChainId.BASE, USDC_BASE, apy="0.06")
+    bridge = _fake_bridge(ChainId.MANTRA, ChainId.BASE)
+    with patch("pydefi.yields.router._withdraw_tx", new=AsyncMock(return_value=_STUB_WITHDRAW)):
+        route = await build_yield_route(
+            "withdraw_then_supply",
+            _USER,
+            TokenAmount(USDC_MANTRA, 1_000_000),
+            w3s={ChainId.MANTRA: object()},
+            source_market=src,
+            target_market=dst,
+            bridge=bridge,
+        )
+    assert route.pending is not None
+
+    # The user holds pending.market.token; feed exactly that to the follow-up.
+    held = TokenAmount(route.pending.market.token, 990_000)  # post-bridge balance
+    with patch("pydefi.yields.router._supply_steps", new=AsyncMock(return_value=_STUB_SUPPLY_STEPS)):
+        followup = await build_followup_route(route, _USER, held, w3s={ChainId.BASE: object()})
+    assert [s.kind for s in followup.steps] == ["approve", "supply"]
 
 
 # ---------------------------------------------------------------------------
