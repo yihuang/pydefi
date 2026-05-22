@@ -12,7 +12,7 @@ from typing import Any, Literal
 from eth_contract.erc20 import ERC20
 from web3 import AsyncWeb3
 
-from pydefi.bridge.lucid import LucidBridge
+from pydefi.bridge.base import BaseBridge
 from pydefi.deployments import chains_for, comet_contract_for, get_token
 from pydefi.lending.aave_v3 import AaveV3
 from pydefi.lending.compound_v3 import CompoundV3
@@ -150,15 +150,14 @@ async def _supply_steps(market: YieldMarket, user: Address, w3: AsyncWeb3, amoun
     ]
 
 
-async def _bridge_steps(
-    bridge: LucidBridge, user: Address, amount: TokenAmount, target_token: Token
-) -> list[YieldStep]:
-    """``[approve, bridge]`` — approve the Lucid controller, then bridge."""
+async def _bridge_steps(bridge: BaseBridge, user: Address, amount: TokenAmount, target_token: Token) -> list[YieldStep]:
+    """``[approve, bridge]`` — approve the bridge's token spender, then bridge."""
+    spender = bridge.spender
+    if spender is None:
+        raise ValueError(f"{bridge.protocol_name} bridge exposes no ERC-20 spender — it cannot carry a yield route")
     bridge_tx = await bridge.build_bridge_tx(amount.token, target_token, amount, user)
     return [
-        YieldStep(
-            "approve", bridge.src_chain_id, build_approve_tx(amount.token, bridge.controller_address, amount.amount)
-        ),
+        YieldStep("approve", bridge.src_chain_id, build_approve_tx(amount.token, spender, amount.amount)),
         YieldStep("bridge", bridge.src_chain_id, bridge_tx),
     ]
 
@@ -258,7 +257,7 @@ async def _withdraw_then_supply(
     w3s: dict[int, AsyncWeb3],
     target_market: YieldMarket,
     source_market: YieldMarket | None,
-    bridge: LucidBridge | None,
+    bridge: BaseBridge | None,
 ) -> YieldRoute:
     if source_market is None:
         raise ValueError("withdraw_then_supply requires source_market")
@@ -275,7 +274,7 @@ async def _withdraw_then_supply(
         )
     elif bridge is None:
         raise ValueError(
-            "cross-chain withdraw_then_supply requires a configured LucidBridge "
+            "cross-chain withdraw_then_supply requires a configured bridge "
             f"(source={source_market.chain_id}, target={target_market.chain_id})"
         )
     elif bridge.src_chain_id != source_market.chain_id:
@@ -348,10 +347,10 @@ async def _bridge_then_supply(
     user: Address,
     amount_in: TokenAmount,
     target_market: YieldMarket,
-    bridge: LucidBridge | None,
+    bridge: BaseBridge | None,
 ) -> YieldRoute:
     if bridge is None:
-        raise ValueError("bridge_then_supply requires a configured LucidBridge")
+        raise ValueError("bridge_then_supply requires a configured bridge")
     if amount_in.token.chain_id != bridge.src_chain_id:
         raise ValueError(
             "bridge_then_supply expects amount_in.token on the bridge's source chain "
@@ -383,7 +382,7 @@ async def build_yield_route(
     *,
     target_market: YieldMarket,
     source_market: YieldMarket | None = None,
-    bridge: LucidBridge | None = None,
+    bridge: BaseBridge | None = None,
     target_chain: int | None = None,
 ) -> YieldRoute:
     """Source-chain steps only; cross-chain follow-ups are deferred to a

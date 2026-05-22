@@ -75,6 +75,19 @@ class BaseBridge(ABC):
             (``to``, ``data``, ``value``, ``gas``).
         """
 
+    @property
+    def spender(self) -> Address | None:
+        """The contract the source ERC-20 must be approved to before
+        :meth:`build_bridge_tx` can pull it.
+
+        ``None`` — the default — for bridges that move only the native asset
+        (nothing to approve) or expose no single approval target. A bridge
+        with no spender cannot carry an ERC-20 route through
+        :func:`~pydefi.yields.build_yield_route`; token-pulling bridges
+        override this with their entrypoint address.
+        """
+        return None
+
     def _apply_slippage(self, amount: int, slippage_bps: int) -> int:
         """Return minimum amount after applying slippage."""
         return int(amount * (10_000 - slippage_bps) // 10_000)

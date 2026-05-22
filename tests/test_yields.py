@@ -67,15 +67,14 @@ def _market(protocol: Protocol, chain_id: int, token: Token, apy: str = "0.04") 
     )
 
 
-def _fake_bridge(src_chain: int, dst_chain: int, controller: Address = Address("0x" + "CC" * 20)) -> object:
-    """Stand-in for LucidBridge — exposes only the attributes build_yield_route reads."""
+def _fake_bridge(src_chain: int, dst_chain: int, spender: Address = Address("0x" + "CC" * 20)) -> object:
+    """Stand-in for a BaseBridge — exposes only the attributes build_yield_route reads."""
     bridge = AsyncMock()
     bridge.src_chain_id = src_chain
     bridge.dst_chain_id = dst_chain
-    bridge.controller_address = controller
-    bridge.build_bridge_tx = AsyncMock(
-        return_value={"to": controller, "data": "0xfeed", "value": "1000", "gas": "500000"}
-    )
+    bridge.spender = spender
+    bridge.protocol_name = "FakeBridge"
+    bridge.build_bridge_tx = AsyncMock(return_value={"to": spender, "data": "0xfeed", "value": "1000", "gas": "500000"})
     return bridge
 
 
@@ -386,80 +385,103 @@ async def test_build_followup_route_rejects_token_mismatch():
 # ---------------------------------------------------------------------------
 # Recovery story — a partial cross-chain route never strands funds
 # ---------------------------------------------------------------------------
+#
+# The guarantee rests on one invariant: the bridge delivers exactly the token
+# route.pending names. Skip build_followup_route and the user simply holds
+# pending.market.token on pending.chain_id.
+
+
+async def _cross_chain_route(strategy: Strategy, bridge: object) -> YieldRoute:
+    """Build a cross-chain route through *bridge* for either cross-chain strategy."""
+    dst = _market("compound_v3", ChainId.BASE, USDC_BASE, apy="0.06")
+    amount = TokenAmount(USDC_MANTRA, 1_000_000)
+    w3s = {ChainId.MANTRA: object()}
+    if strategy == "withdraw_then_supply":
+        src = _market("aave_v3", ChainId.MANTRA, USDC_MANTRA)
+        with patch("pydefi.yields.router._withdraw_tx", new=AsyncMock(return_value=_STUB_WITHDRAW)):
+            return await build_yield_route(
+                strategy, _USER, amount, w3s=w3s, source_market=src, target_market=dst, bridge=bridge
+            )
+    return await build_yield_route(strategy, _USER, amount, w3s=w3s, target_market=dst, bridge=bridge)
 
 
 @pytest.mark.asyncio
-async def test_withdraw_then_supply_bridges_into_the_pending_token():
-    src = _market("aave_v3", ChainId.MANTRA, USDC_MANTRA)
-    dst = _market("compound_v3", ChainId.BASE, USDC_BASE, apy="0.06")
+@pytest.mark.parametrize("strategy", ["withdraw_then_supply", "bridge_then_supply"])
+async def test_cross_chain_route_bridges_into_the_pending_token(strategy: Strategy):
+    """The bridge delivers exactly the token route.pending names, on the chain
+    it names — so a skipped follow-up strands nothing."""
     bridge = _fake_bridge(ChainId.MANTRA, ChainId.BASE)
-    with patch("pydefi.yields.router._withdraw_tx", new=AsyncMock(return_value=_STUB_WITHDRAW)):
-        route = await build_yield_route(
-            "withdraw_then_supply",
-            _USER,
-            TokenAmount(USDC_MANTRA, 1_000_000),
-            w3s={ChainId.MANTRA: object()},
-            source_market=src,
-            target_market=dst,
-            bridge=bridge,
-        )
+    route = await _cross_chain_route(strategy, bridge)
 
     assert route.pending is not None
-    # _bridge_steps calls build_bridge_tx(src_token, target_token, amount, user)
-    # — the token the bridge delivers to the user is positional arg 1.
-    bridge.build_bridge_tx.assert_awaited_once()
+    # _bridge_steps calls build_bridge_tx(src_token, target_token, ...) — the
+    # delivered token is positional arg 1.
     delivered_token = bridge.build_bridge_tx.await_args.args[1]
-    # The asset the user is left holding IS the one pending names, on the
-    # chain pending names — so skipping the follow-up strands nothing.
     assert delivered_token == route.pending.market.token == USDC_BASE
     assert route.pending.chain_id == delivered_token.chain_id == ChainId.BASE
 
 
 @pytest.mark.asyncio
-async def test_bridge_then_supply_bridges_into_the_pending_token():
-    """Same recovery invariant for bridge_then_supply."""
+async def test_followup_route_consumes_the_token_the_user_holds():
+    """build_followup_route accepts exactly the token a skipped cross-chain
+    route leaves the user holding — the recovered funds stay actionable."""
     bridge = _fake_bridge(ChainId.MANTRA, ChainId.BASE)
-    target = _market("aave_v3", ChainId.BASE, USDC_BASE)
-    route = await build_yield_route(
-        "bridge_then_supply",
-        _USER,
-        TokenAmount(USDC_MANTRA, 1_000_000),
-        w3s={ChainId.MANTRA: object()},
-        target_market=target,
-        bridge=bridge,
-    )
-
-    assert route.pending is not None
-    delivered_token = bridge.build_bridge_tx.await_args.args[1]
-    assert delivered_token == route.pending.market.token == USDC_BASE
-    assert route.pending.chain_id == ChainId.BASE
-
-
-@pytest.mark.asyncio
-async def test_followup_route_consumes_the_token_the_user_was_left_holding():
-    """Closes the recovery loop: the token a skipped cross-chain route leaves
-    the user holding (route.pending.market.token) is exactly what
-    build_followup_route accepts — so the recovered funds stay actionable."""
-    src = _market("aave_v3", ChainId.MANTRA, USDC_MANTRA)
-    dst = _market("compound_v3", ChainId.BASE, USDC_BASE, apy="0.06")
-    bridge = _fake_bridge(ChainId.MANTRA, ChainId.BASE)
-    with patch("pydefi.yields.router._withdraw_tx", new=AsyncMock(return_value=_STUB_WITHDRAW)):
-        route = await build_yield_route(
-            "withdraw_then_supply",
-            _USER,
-            TokenAmount(USDC_MANTRA, 1_000_000),
-            w3s={ChainId.MANTRA: object()},
-            source_market=src,
-            target_market=dst,
-            bridge=bridge,
-        )
+    route = await _cross_chain_route("withdraw_then_supply", bridge)
     assert route.pending is not None
 
-    # The user holds pending.market.token; feed exactly that to the follow-up.
-    held = TokenAmount(route.pending.market.token, 990_000)  # post-bridge balance
+    held = TokenAmount(route.pending.market.token, 990_000)
     with patch("pydefi.yields.router._supply_steps", new=AsyncMock(return_value=_STUB_SUPPLY_STEPS)):
         followup = await build_followup_route(route, _USER, held, w3s={ChainId.BASE: object()})
     assert [s.kind for s in followup.steps] == ["approve", "supply"]
+
+
+# ---------------------------------------------------------------------------
+# build_yield_route — bridge-agnostic (any BaseBridge, not just Lucid)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_bridge_then_supply_accepts_a_ccip_bridge():
+    """build_yield_route takes any BaseBridge — here a real CCIP instance, not
+    a LucidBridge. The route's approve grants the CCIP Router, proving the
+    router reads bridge.spender generically with no Lucid-specific coupling."""
+    from pydefi.bridge import CCIP
+
+    usdc_eth = Token(chain_id=ChainId.ETHEREUM, address=Address("0x" + "E7" * 20), symbol="USDC", decimals=6)
+    usdc_arb = Token(chain_id=42161, address=Address("0x" + "A7" * 20), symbol="USDC", decimals=6)
+    bridge = CCIP(w3=None, src_chain_id=ChainId.ETHEREUM, dst_chain_id=42161)  # type: ignore[arg-type]
+    bridge.build_bridge_tx = AsyncMock(  # type: ignore[method-assign]
+        return_value={"to": "0xrouter", "data": "0xc0de", "value": "0", "gas": "500000"}
+    )
+    route = await build_yield_route(
+        "bridge_then_supply",
+        _USER,
+        TokenAmount(usdc_eth, 1_000_000),
+        w3s={ChainId.ETHEREUM: object()},
+        target_market=_market("aave_v3", 42161, usdc_arb),
+        bridge=bridge,
+    )
+    assert [s.kind for s in route.steps] == ["approve", "bridge"]
+    # The approve encodes the CCIP Router (bridge.spender) as the spender.
+    assert bridge.spender in Address(route.steps[0].tx["data"])
+
+
+@pytest.mark.asyncio
+async def test_cross_chain_route_rejects_bridge_without_spender():
+    """A bridge that exposes no ERC-20 spender (the BaseBridge default) cannot
+    carry a yield route — rejected before any transaction is built."""
+    bridge = _fake_bridge(ChainId.MANTRA, ChainId.BASE)
+    bridge.spender = None
+    bridge.protocol_name = "NativeOnly"
+    with pytest.raises(ValueError, match="NativeOnly bridge exposes no ERC-20 spender"):
+        await build_yield_route(
+            "bridge_then_supply",
+            _USER,
+            TokenAmount(USDC_MANTRA, 1_000_000),
+            w3s={ChainId.MANTRA: object()},
+            target_market=_market("aave_v3", ChainId.BASE, USDC_BASE),
+            bridge=bridge,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -469,7 +491,7 @@ async def test_followup_route_consumes_the_token_the_user_was_left_holding():
 
 @pytest.mark.asyncio
 async def test_withdraw_then_supply_cross_chain_requires_bridge():
-    with pytest.raises(ValueError, match="cross-chain.*requires a configured LucidBridge"):
+    with pytest.raises(ValueError, match="cross-chain.*requires a configured bridge"):
         await build_yield_route(
             "withdraw_then_supply",
             _USER,
@@ -526,7 +548,7 @@ async def test_bridge_then_supply_validation_errors(bridge_src, bridge_dst, targ
     "strategy,kw,err",
     [
         ("withdraw_then_supply", {}, "requires source_market"),
-        ("bridge_then_supply", {}, "requires a configured LucidBridge"),
+        ("bridge_then_supply", {}, "requires a configured bridge"),
         ("supply_then_bridge", {}, "requires target_chain"),
         ("supply_then_borrow", {}, "unknown strategy"),
     ],

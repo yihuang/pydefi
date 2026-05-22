@@ -273,6 +273,22 @@ class TestBaseBridge:
         with pytest.raises(TypeError):
             BaseBridge(src_chain_id=1, dst_chain_id=42161)
 
+    def test_spender_defaults_to_none(self):
+        """A bridge that doesn't override `spender` inherits the None default."""
+
+        class _NativeBridge(BaseBridge):
+            @property
+            def protocol_name(self) -> str:
+                return "native"
+
+            async def get_quote(self, *args: object, **kwargs: object) -> object:
+                raise NotImplementedError
+
+            async def build_bridge_tx(self, *args: object, **kwargs: object) -> dict:
+                raise NotImplementedError
+
+        assert _NativeBridge(src_chain_id=1, dst_chain_id=42161).spender is None
+
 
 # ---------------------------------------------------------------------------
 # Mayan tests
@@ -1072,6 +1088,9 @@ class TestCCIP:
     def test_router_address_defaults_to_registry(self, ccip):
         assert ccip.router_address == _CCIP_ROUTER[1]
 
+    def test_spender_is_the_router(self, ccip):
+        assert ccip.spender == Address(ccip.router_address)
+
     def test_router_address_override(self):
         custom = "0x" + "11" * 20
         assert CCIP(w3=None, src_chain_id=1, dst_chain_id=42161, router_address=custom).router_address == custom
@@ -1604,6 +1623,9 @@ class TestLucidBridge:
         assert b.dst_chain_id == lucid.dst
         assert b.controller_address == lucid.ctrl
         assert b.adapter_address == lucid.adapter
+
+    def test_spender_is_the_controller(self, lucid):
+        assert lucid.bridge.spender == lucid.ctrl
 
     def test_encode_bridge_options_shape(self, lucid):
         # 64 bytes total; gasLimit lives in the low bytes of the second word

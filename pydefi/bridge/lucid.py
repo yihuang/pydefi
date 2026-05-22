@@ -136,6 +136,11 @@ class LucidBridge(BaseBridge):
     def protocol_name(self) -> str:
         return "Lucid"
 
+    @property
+    def spender(self) -> Address:
+        """The Lucid controller — the contract that pulls ``token_in``."""
+        return self.controller_address
+
     @staticmethod
     def _encode_transfer_message(
         nonce: int,

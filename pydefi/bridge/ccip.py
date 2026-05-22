@@ -109,6 +109,11 @@ class CCIP(BaseBridge):
     def protocol_name(self) -> str:
         return "CCIP"
 
+    @property
+    def spender(self) -> Address:
+        """The CCIP Router — the contract ``ccipSend`` pulls ``token_in`` through."""
+        return Address(self.router_address)
+
     def _build_message(
         self,
         recipient: Address,
