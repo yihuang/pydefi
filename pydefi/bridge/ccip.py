@@ -267,7 +267,6 @@ class CCIP(BaseBridge):
 
     async def build_bridge_compose_tx(
         self,
-        token_in: Token,
         amount_in: TokenAmount,
         composer_address: Address,
         program: bytes,
@@ -288,6 +287,7 @@ class CCIP(BaseBridge):
         """
         if not program:
             raise BridgeError("CCIP: program must not be empty for compose transactions.")
+        token_in = amount_in.token
         message = self._build_message(
             recipient=composer_address,
             token_in=token_in,

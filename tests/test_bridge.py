@@ -1322,26 +1322,21 @@ class TestCCIPCompose:
     async def test_rejects_empty_program(self, ccip, amount_in):
         with _patched_quote_fee(ccip, 10**15):
             with pytest.raises(BridgeError, match="program"):
-                await ccip.build_bridge_compose_tx(CCIP_USDC_ETH, amount_in, _CCIP_COMPOSER, program=b"")
+                await ccip.build_bridge_compose_tx(amount_in, _CCIP_COMPOSER, program=b"")
 
     @pytest.mark.asyncio
     async def test_embeds_program_in_data(self, ccip, amount_in):
         """The DeFiVM bytecode appears verbatim inside the ccipSend calldata."""
         program = b"\xde\xad\xbe\xef" * 16
         with _patched_quote_fee(ccip, 10**15):
-            tx = await ccip.build_bridge_compose_tx(CCIP_USDC_ETH, amount_in, _CCIP_COMPOSER, program)
+            tx = await ccip.build_bridge_compose_tx(amount_in, _CCIP_COMPOSER, program)
         assert tx["data"].startswith("0x" + _CCIP_SEND_SELECTOR)
         assert program.hex() in tx["data"].lower()
 
     @pytest.mark.asyncio
     async def test_receiver_is_composer(self, ccip, amount_in):
         with _patched_quote_fee(ccip, 10**15):
-            tx = await ccip.build_bridge_compose_tx(
-                CCIP_USDC_ETH,
-                amount_in,
-                _CCIP_COMPOSER,
-                program=b"\x01\x02\x03\x04",
-            )
+            tx = await ccip.build_bridge_compose_tx(amount_in, _CCIP_COMPOSER, program=b"\x01\x02\x03\x04")
         assert _CCIP_COMPOSER.hex().lower() in tx["data"].lower()
 
     @pytest.mark.asyncio
@@ -1350,13 +1345,7 @@ class TestCCIPCompose:
         program = b"\xaa" * 64
         spy = AsyncMock(return_value=10**15)
         with patch.object(ccip, "quote_fee", new=spy):
-            await ccip.build_bridge_compose_tx(
-                CCIP_USDC_ETH,
-                amount_in,
-                _CCIP_COMPOSER,
-                program,
-                gas_limit=1_500_000,
-            )
+            await ccip.build_bridge_compose_tx(amount_in, _CCIP_COMPOSER, program, gas_limit=1_500_000)
         spy.assert_called_once()
         assert spy.call_args.kwargs["data"] == program
         assert spy.call_args.kwargs["gas_limit"] == 1_500_000
@@ -1364,12 +1353,7 @@ class TestCCIPCompose:
     @pytest.mark.asyncio
     async def test_native_fee_attaches_value(self, ccip, amount_in):
         with _patched_quote_fee(ccip, 7 * 10**15):
-            tx = await ccip.build_bridge_compose_tx(
-                CCIP_USDC_ETH,
-                amount_in,
-                _CCIP_COMPOSER,
-                program=b"\xff" * 32,
-            )
+            tx = await ccip.build_bridge_compose_tx(amount_in, _CCIP_COMPOSER, program=b"\xff" * 32)
         assert tx["value"] == str(7 * 10**15)
 
     @pytest.mark.asyncio
@@ -1378,12 +1362,7 @@ class TestCCIPCompose:
         link = Address("0x" + "DD" * 20)
         c = CCIP(w3=None, src_chain_id=1, dst_chain_id=42161, fee_token=link)
         with _patched_quote_fee(c, 20 * 10**18):
-            tx = await c.build_bridge_compose_tx(
-                CCIP_USDC_ETH,
-                amount_in,
-                _CCIP_COMPOSER,
-                program=b"\xff" * 32,
-            )
+            tx = await c.build_bridge_compose_tx(amount_in, _CCIP_COMPOSER, program=b"\xff" * 32)
         assert tx["value"] == "0"
         assert link.hex().lower() in tx["data"].lower()
 

@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from web3 import AsyncWeb3, Web3
 
+from pydefi.bridge import CCIP, CCTP, BaseBridge, LucidBridge
 from pydefi.exceptions import BridgeError
 from pydefi.lending.aave_v3 import ReserveData
 from pydefi.types import Address, ChainId, Token, TokenAmount
@@ -19,7 +20,9 @@ from pydefi.yields import (
     YieldMarket,
     YieldRoute,
     build_approve_tx,
+    build_compose_supply_route,
     build_followup_route,
+    build_supply_program,
     build_yield_route,
     expected_apy_gain,
     find_best_rebalance,
@@ -440,29 +443,56 @@ async def test_followup_route_consumes_the_token_the_user_holds():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_bridge_then_supply_accepts_a_ccip_bridge():
-    """build_yield_route takes any BaseBridge — here a real CCIP instance, not
-    a LucidBridge. The route's approve grants the CCIP Router, proving the
-    router reads bridge.spender generically with no Lucid-specific coupling."""
-    from pydefi.bridge import CCIP
+def _ccip_bridge_case() -> tuple[BaseBridge, Token, Token]:
+    """A real CCIP bridge with its source / destination USDC tokens."""
+    src = Token(chain_id=ChainId.ETHEREUM, address=Address("0x" + "E7" * 20), symbol="USDC", decimals=6)
+    dst = Token(chain_id=42161, address=Address("0x" + "A7" * 20), symbol="USDC", decimals=6)
+    return CCIP(w3=None, src_chain_id=ChainId.ETHEREUM, dst_chain_id=42161), src, dst  # type: ignore[arg-type]
 
-    usdc_eth = Token(chain_id=ChainId.ETHEREUM, address=Address("0x" + "E7" * 20), symbol="USDC", decimals=6)
-    usdc_arb = Token(chain_id=42161, address=Address("0x" + "A7" * 20), symbol="USDC", decimals=6)
-    bridge = CCIP(w3=None, src_chain_id=ChainId.ETHEREUM, dst_chain_id=42161)  # type: ignore[arg-type]
+
+def _lucid_bridge_case() -> tuple[BaseBridge, Token, Token]:
+    """A real LucidBridge with its source / destination USDC tokens."""
+    src = Token(chain_id=ChainId.MANTRA, address=Address("0x" + "E8" * 20), symbol="USDC", decimals=6)
+    dst = Token(chain_id=ChainId.BASE, address=Address("0x" + "A8" * 20), symbol="USDC", decimals=6)
+    bridge = LucidBridge(
+        w3=None,  # type: ignore[arg-type]
+        src_chain_id=ChainId.MANTRA,
+        dst_chain_id=ChainId.BASE,
+        controller_address=Address("0x" + "C0" * 20),
+        adapter_address=Address("0x" + "AD" * 20),
+    )
+    return bridge, src, dst
+
+
+def _cctp_bridge_case() -> tuple[BaseBridge, Token, Token]:
+    """A real CCTP bridge with its source / destination USDC tokens."""
+    src = Token(chain_id=ChainId.ETHEREUM, address=Address("0x" + "E9" * 20), symbol="USDC", decimals=6)
+    dst = Token(chain_id=42161, address=Address("0x" + "A9" * 20), symbol="USDC", decimals=6)
+    return CCTP(w3=None, src_chain_id=ChainId.ETHEREUM, dst_chain_id=42161), src, dst  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "make_case", [_ccip_bridge_case, _lucid_bridge_case, _cctp_bridge_case], ids=["ccip", "lucid", "cctp"]
+)
+async def test_build_yield_route_accepts_any_concrete_bridge(make_case):
+    """build_yield_route works with every BaseBridge that exposes a spender —
+    CCIP, Lucid, and CCTP — encoding that bridge's own spender (Router /
+    controller / TokenMessenger) into the approve step, with no per-bridge
+    coupling."""
+    bridge, src_token, dst_token = make_case()
     bridge.build_bridge_tx = AsyncMock(  # type: ignore[method-assign]
-        return_value={"to": "0xrouter", "data": "0xc0de", "value": "0", "gas": "500000"}
+        return_value={"to": "0xbridge", "data": "0xc0de", "value": "0", "gas": "500000"}
     )
     route = await build_yield_route(
         "bridge_then_supply",
         _USER,
-        TokenAmount(usdc_eth, 1_000_000),
-        w3s={ChainId.ETHEREUM: object()},
-        target_market=_market("aave_v3", 42161, usdc_arb),
+        TokenAmount(src_token, 1_000_000),
+        w3s={src_token.chain_id: object()},
+        target_market=_market("aave_v3", dst_token.chain_id, dst_token),
         bridge=bridge,
     )
     assert [s.kind for s in route.steps] == ["approve", "bridge"]
-    # The approve encodes the CCIP Router (bridge.spender) as the spender.
     assert bridge.spender in Address(route.steps[0].tx["data"])
 
 
@@ -816,3 +846,76 @@ async def test_rebalance_tick_forwards_thresholds():
     assert kwargs["min_apy_gain_bps"] == 10
     assert kwargs["positions"] == positions
     assert kwargs["markets"] == [candidate]
+
+
+# ---------------------------------------------------------------------------
+# Compose route — one-signature cross-chain yield deposit (CCTP / CCIP)
+# ---------------------------------------------------------------------------
+
+USDC_ETH = Token(chain_id=ChainId.ETHEREUM, address=Address("0x" + "E7" * 20), symbol="USDC", decimals=6)
+
+
+def _compose_bridge(kind: str) -> BaseBridge:
+    """A compose-capable bridge moving USDC from Ethereum to Base."""
+    if kind == "cctp":
+        return CCTP(w3=None, src_chain_id=ChainId.ETHEREUM, dst_chain_id=ChainId.BASE)
+    return CCIP(w3=None, src_chain_id=ChainId.ETHEREUM, dst_chain_id=ChainId.BASE)
+
+
+@pytest.mark.parametrize("protocol", ["aave_v3", "compound_v3"])
+def test_build_supply_program_compiles(protocol):
+    """build_supply_program emits DeFiVM bytecode for each supported protocol."""
+    program = build_supply_program(protocol, Address("0x" + "A0" * 20), USDC_ETH, _USER)
+    assert isinstance(program, bytes) and len(program) > 0
+
+
+def test_build_supply_program_rejects_unsupported_protocol():
+    with pytest.raises(ValueError, match="unsupported protocol"):
+        build_supply_program("morpho", Address("0x" + "A0" * 20), USDC_ETH, _USER)  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bridge_kind", ["cctp", "ccip"])
+async def test_build_compose_supply_route_is_single_signature(bridge_kind):
+    """A compose-supply route is [approve, bridge] on the source chain only —
+    the destination supply rides in the bridge's compose hook, so there is no
+    pending leg. The route shape is identical for every compose-capable bridge."""
+    bridge = _compose_bridge(bridge_kind)
+    target = _market("aave_v3", ChainId.BASE, USDC_BASE)
+    pool = Address("0x" + "A0" * 20)
+    with (
+        patch("pydefi.yields.compose._supply_target", new=AsyncMock(return_value=pool)),
+        patch.object(CCIP, "quote_fee", new=AsyncMock(return_value=10**15)),
+    ):
+        route = await build_compose_supply_route(
+            _USER,
+            TokenAmount(USDC_ETH, 1_000_000),
+            target,
+            composer_address=Address("0x" + "C0" * 20),
+            bridge=bridge,
+            w3s={ChainId.BASE: object()},
+        )
+
+    assert route.strategy == "compose_supply"
+    assert route.pending is None  # the destination supply runs inside the hook
+    assert [s.kind for s in route.steps] == ["approve", "bridge"]
+    approve_tx, bridge_tx = route.build_transactions()
+    # The approve targets USDC and grants the bridge entrypoint the compose tx hits.
+    assert Address(approve_tx["to"]) == USDC_ETH.address
+    assert Address(bridge_tx["to"]) in Address(approve_tx["data"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bridge_kind", ["cctp", "ccip"])
+async def test_build_compose_supply_route_validates_chains(bridge_kind):
+    """The bridge's src / dst must match the amount and target chains."""
+    bridge = _compose_bridge(bridge_kind)
+    with pytest.raises(ValueError, match="bridge source"):
+        await build_compose_supply_route(
+            _USER,
+            TokenAmount(USDC_BASE, 1),  # source token on Base, but the bridge sources Ethereum
+            _market("aave_v3", ChainId.BASE, USDC_BASE),
+            composer_address=Address("0x" + "C0" * 20),
+            bridge=bridge,
+            w3s={ChainId.BASE: object()},
+        )

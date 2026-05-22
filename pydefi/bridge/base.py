@@ -75,6 +75,37 @@ class BaseBridge(ABC):
             (``to``, ``data``, ``value``, ``gas``).
         """
 
+    async def build_bridge_compose_tx(
+        self,
+        amount_in: TokenAmount,
+        composer_address: Address,
+        program: bytes,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """Build the source-chain tx that bridges *amount_in* and runs *program*.
+
+        One-signature cross-chain compose: the bridge moves *amount_in* to
+        *composer_address* on the destination chain and, the instant the funds
+        land, runs the embedded DeFiVM *program* — there is no follow-up leg.
+        This is the bridge-agnostic entrypoint
+        :func:`~pydefi.yields.build_compose_supply_route` builds on; bridges
+        that support compose (CCTP, CCIP) override it.
+
+        Args:
+            amount_in: Token amount to bridge from the source chain.
+            composer_address: The composer contract on the destination chain
+                that receives the funds and executes *program*.
+            program: Raw DeFiVM bytecode to run once the funds arrive.
+            **kwargs: Bridge-specific parameters.
+
+        Returns:
+            A transaction dict (``to``, ``data``, ``value``, ``gas``).
+
+        Raises:
+            NotImplementedError: For bridges with no compose path.
+        """
+        raise NotImplementedError(f"{self.protocol_name} bridge has no compose path")
+
     @property
     def spender(self) -> Address | None:
         """The contract the source ERC-20 must be approved to before

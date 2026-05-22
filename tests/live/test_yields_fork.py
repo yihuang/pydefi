@@ -10,6 +10,8 @@ Covers the route flows whose on-chain steps are fully built today:
   cross-chain route, built from a ``PendingLeg`` and broadcast.
 * A full cross-chain route — ``build_yield_route`` → relay → ``build_followup_route``
   — executed end to end across two Anvil nodes with a ``MockBridge`` double.
+* :func:`build_compose_supply_route` — its ``[approve, depositForBurnWithHook]``
+  source leg broadcast against the live CCTP v2 TokenMessenger.
 
 All reuse :data:`tests.addrs.ETH_WHALE` (vitalik) as the user, top its
 ETH balance for gas, and seed USDC from :data:`tests.addrs.USDC_WHALE`.
@@ -23,17 +25,27 @@ from __future__ import annotations
 
 from decimal import Decimal
 from typing import Any
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from eth_contract import Contract
 from eth_contract.erc20 import ERC20
 
-from pydefi.bridge.base import BaseBridge
+from pydefi.bridge import CCIP, CCTP, BaseBridge
 from pydefi.deployments import get_address
+from pydefi.exceptions import BridgeError
 from pydefi.lending import AaveV3, CompoundV3
 from pydefi.lending.utils import to_tx
 from pydefi.types import Address, ChainId, Token, TokenAmount
-from pydefi.yields import PendingLeg, YieldMarket, YieldRoute, build_followup_route, build_yield_route
+from pydefi.yields import (
+    PendingLeg,
+    YieldMarket,
+    YieldRoute,
+    build_compose_supply_route,
+    build_followup_route,
+    build_supply_program,
+    build_yield_route,
+)
 from pydefi.yields.router import Protocol
 from tests.addrs import ETH_WHALE, USDC
 from tests.live.anvil_helpers import fund_usdc, impersonate, send_tx, set_balance
@@ -129,17 +141,23 @@ class _MockBridge(BaseBridge):
 # ---------------------------------------------------------------------------
 
 
-def _usdc_market(protocol: Protocol, apy: str = "0.04") -> YieldMarket:
+def _usdc_market(
+    protocol: Protocol,
+    apy: str = "0.04",
+    *,
+    chain_id: int = ChainId.ETHEREUM,
+    token: Token = USDC,
+) -> YieldMarket:
     """Synthesized YieldMarket — APY/util/liquidity are placeholders since
     build_yield_route doesn't read them; live versions live in get_yield_markets."""
     return YieldMarket(
         protocol=protocol,
-        chain_id=ChainId.ETHEREUM,
-        token=USDC,
+        chain_id=chain_id,
+        token=token,
         supply_apy=Decimal(apy),
         utilization=Decimal("0.7"),
-        available_liquidity=TokenAmount(USDC, 10**18),
-        market_id=f"{protocol}:{ChainId.ETHEREUM}:USDC",
+        available_liquidity=TokenAmount(token, 10**18),
+        market_id=f"{protocol}:{chain_id}:{token.symbol}",
     )
 
 
@@ -334,3 +352,75 @@ class TestYieldRouterFork:
             await _send_ok(dest_w3, user, step.tx, f"{step.kind} (destination)")
         a_after = int(await ERC20.fns.balanceOf(user).call(dest_w3, to=a_usdc))
         assert a_after - a_before >= USDC_TEST_AMOUNT - _ATOKEN_SUPPLY_SLACK
+
+    async def test_bridge_then_supply_broadcasts_a_real_ccip_send(self, fork_w3):
+        """A bridge_then_supply route built with a real CCIP bridge: its
+        [approve, ccipSend] source leg must be accepted by the live CCIP
+        Router on the mainnet fork — CCIP's off-chain delivery is out of scope.
+
+        Skipped if the Ethereum->Arbitrum lane rejects the USDC transfer
+        (not pool-allowlisted / rate-limited) — a CCIP fact, not a pydefi bug."""
+        await _seed_whale_with_usdc(fork_w3, USDC_TEST_AMOUNT)
+
+        usdc_arb = Token(chain_id=ChainId.ARBITRUM, address=USDC.address, symbol="USDC", decimals=6)
+        bridge = CCIP(fork_w3, src_chain_id=ChainId.ETHEREUM, dst_chain_id=ChainId.ARBITRUM)
+        try:
+            route = await build_yield_route(
+                "bridge_then_supply",
+                user=ETH_WHALE,
+                amount_in=TokenAmount(USDC, USDC_TEST_AMOUNT),
+                w3s={ChainId.ETHEREUM: fork_w3},
+                target_market=_usdc_market("aave_v3", chain_id=ChainId.ARBITRUM, token=usdc_arb),
+                bridge=bridge,
+            )
+        except BridgeError as exc:
+            pytest.skip(f"CCIP Ethereum->Arbitrum lane rejected the USDC transfer: {exc}")
+
+        assert [s.kind for s in route.steps] == ["approve", "bridge"]
+        approve_step, bridge_step = route.steps
+        assert Address(bridge_step.tx["to"]) == bridge.spender  # the real CCIP Router
+
+        await _send_ok(fork_w3, ETH_WHALE, approve_step.tx, "approve (CCIP)")
+        receipt = await _send_ok(fork_w3, ETH_WHALE, bridge_step.tx, "ccipSend")
+        assert receipt["logs"], "ccipSend accepted but emitted no CCIPMessageSent"
+
+    async def test_compose_supply_broadcasts_a_real_cctp_burn(self, fork_w3):
+        """A compose_supply route built with a real CCTP bridge: its
+        [approve, depositForBurnWithHook] source leg — the burn carrying a real
+        build_supply_program DeFiVM program as hookData — must be accepted by
+        the live CCTP v2 TokenMessenger on the mainnet fork. CCTP's off-chain
+        attestation and the destination compose are out of scope; the
+        CCTPComposer side is covered by test_cctp_composer_fork.py."""
+        await _seed_whale_with_usdc(fork_w3, USDC_TEST_AMOUNT)
+
+        # The destination Aave Pool is resolved on the dst chain, which a
+        # single-chain Ethereum fork can't reach — pin it to the live mainnet
+        # Aave V3 Pool so build_supply_program emits genuine DeFiVM bytecode.
+        # The program rides as opaque CCTP hookData; this source leg never runs it.
+        pool = (await AaveV3.from_chain(fork_w3, ChainId.ETHEREUM)).pool_address
+        usdc_base = Token(
+            chain_id=ChainId.BASE, address=Address(CCTP.usdc_address(ChainId.BASE)), symbol="USDC", decimals=6
+        )
+        bridge = CCTP(fork_w3, src_chain_id=ChainId.ETHEREUM, dst_chain_id=ChainId.BASE)
+
+        with patch("pydefi.yields.compose._supply_target", new=AsyncMock(return_value=pool)):
+            route = await build_compose_supply_route(
+                user=ETH_WHALE,
+                amount_in=TokenAmount(USDC, USDC_TEST_AMOUNT),
+                target_market=_usdc_market("aave_v3", chain_id=ChainId.BASE, token=usdc_base),
+                composer_address=Address("0x" + "C0" * 20),
+                bridge=bridge,
+                w3s={ChainId.BASE: fork_w3},
+            )
+
+        assert route.strategy == "compose_supply"
+        assert route.pending is None  # the destination supply rides in the hook
+        assert [s.kind for s in route.steps] == ["approve", "bridge"]
+        approve_step, bridge_step = route.steps
+        assert Address(bridge_step.tx["to"]) == Address(bridge.token_messenger_address)
+        program = build_supply_program("aave_v3", pool, usdc_base, ETH_WHALE)
+        assert program.hex() in bridge_step.tx["data"].lower(), "hookData does not carry the supply program"
+
+        await _send_ok(fork_w3, ETH_WHALE, approve_step.tx, "approve (CCTP)")
+        receipt = await _send_ok(fork_w3, ETH_WHALE, bridge_step.tx, "depositForBurnWithHook")
+        assert receipt["logs"], "depositForBurnWithHook accepted but emitted no MessageSent"

@@ -2,6 +2,7 @@
 :mod:`pydefi.bridge`. No new on-chain primitive; everything composes the
 existing readers / tx builders."""
 
+from pydefi.yields.compose import build_compose_supply_route, build_supply_program
 from pydefi.yields.rebalance import expected_apy_gain, find_best_rebalance, rebalance_tick
 from pydefi.yields.router import (
     PendingLeg,
@@ -22,7 +23,9 @@ __all__ = [
     "YieldRoute",
     "YieldStep",
     "build_approve_tx",
+    "build_compose_supply_route",
     "build_followup_route",
+    "build_supply_program",
     "build_yield_route",
     "expected_apy_gain",
     "find_best_rebalance",

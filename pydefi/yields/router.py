@@ -19,7 +19,7 @@ from pydefi.lending.compound_v3 import CompoundV3
 from pydefi.types import Address, Token, TokenAmount
 
 Protocol = Literal["aave_v3", "compound_v3"]
-Strategy = Literal["withdraw_then_supply", "supply_then_bridge", "bridge_then_supply"]
+Strategy = Literal["withdraw_then_supply", "supply_then_bridge", "bridge_then_supply", "compose_supply"]
 StepKind = Literal["approve", "supply", "withdraw", "bridge"]
 
 # Generous; fits quirky tokens whose approve consumes more than the EIP-20 minimum.
