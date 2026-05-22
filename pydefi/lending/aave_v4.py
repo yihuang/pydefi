@@ -28,9 +28,6 @@ from pydefi.abi.lending import (
     AAVE_V4_SPOKE,
     AAVE_V4_TOKENIZATION_SPOKE,
     AaveV4Asset,
-    AaveV4Reserve,
-    AaveV4ReserveConfig,
-    AaveV4UserAccountData,
 )
 from pydefi.lending.aave_v3 import RAY, ray_rate_to_apy
 from pydefi.lending.utils import UINT256_MAX, WAD, to_tx
@@ -231,7 +228,6 @@ class AaveV4:
         decimals with ``symbol="?"``.
         """
         raw = await AAVE_V4_SPOKE.fns.getReserve(reserve_id).call(self.w3, to=self.spoke_address)
-        raw = AaveV4Reserve._make(raw)
         underlying = token or Token(
             chain_id=self.chain_id, address=Address(raw.underlying), symbol="?", decimals=raw.decimals
         )
@@ -251,7 +247,6 @@ class AaveV4:
             AAVE_V4_SPOKE.fns.getReserveSuppliedAssets(reserve_id).call(self.w3, to=self.spoke_address),
             AAVE_V4_SPOKE.fns.getReserveTotalDebt(reserve_id).call(self.w3, to=self.spoke_address),
         )
-        config = AaveV4ReserveConfig._make(config)
         utilization = Decimal(total_debt) / Decimal(supplied) if supplied > 0 else Decimal(0)
         # Rates live on the Hub the reserve draws liquidity from: the fresh
         # drawn rate plus the Asset struct (for Hub utilization + the fee).
@@ -259,7 +254,6 @@ class AaveV4:
             AAVE_V4_HUB.fns.getAssetDrawnRate(reserve.asset_id).call(self.w3, to=reserve.hub),
             AAVE_V4_HUB.fns.getAsset(reserve.asset_id).call(self.w3, to=reserve.hub),
         )
-        asset = AaveV4Asset._make(asset)
         return V4ReserveData(
             reserve=reserve,
             supplied=TokenAmount(token=reserve.underlying, amount=supplied),
@@ -297,7 +291,6 @@ class AaveV4:
     async def get_user_account_data(self, user: Address) -> V4UserAccountData:
         """Return *user*'s aggregate position on this Spoke."""
         raw = await AAVE_V4_SPOKE.fns.getUserAccountData(user).call(self.w3, to=self.spoke_address)
-        raw = AaveV4UserAccountData._make(raw)
         return V4UserAccountData(
             risk_premium=raw.riskPremium,
             avg_collateral_factor=raw.avgCollateralFactor,

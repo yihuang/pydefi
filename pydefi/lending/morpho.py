@@ -211,8 +211,7 @@ def _market_struct(state: MarketState) -> MorphoMarketStruct:
     )
 
 
-def _market_state(raw: tuple[Any, ...]) -> MarketState:
-    m = MorphoMarketStruct._make(raw)
+def _market_state(m: MorphoMarketStruct) -> MarketState:
     return MarketState(
         total_supply_assets=m.totalSupplyAssets,
         total_supply_shares=m.totalSupplyShares,
@@ -375,9 +374,7 @@ class MorphoBlue:
                 to ``"?"``.
         """
         tokens = tokens or {}
-        raw = MorphoMarketParams._make(
-            await MORPHO_BLUE.fns.idToMarketParams(market_id).call(self.w3, to=self.morpho_address)
-        )
+        raw = await MORPHO_BLUE.fns.idToMarketParams(market_id).call(self.w3, to=self.morpho_address)
         loan_addr, collateral_addr = Address(raw.loanToken), Address(raw.collateralToken)
         loan, collateral = await asyncio.gather(
             self._resolve_token(loan_addr, tokens),
