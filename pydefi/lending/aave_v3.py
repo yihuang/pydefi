@@ -28,6 +28,7 @@ from pydefi.abi.lending import (
     AAVE_V3_ORACLE,
     AAVE_V3_POOL,
 )
+from pydefi.deployments import get_address
 from pydefi.exceptions import PydefiError
 from pydefi.lending.utils import SECONDS_PER_YEAR, UINT256_MAX, resolve_amount, to_tx
 from pydefi.types import Address, Token, TokenAmount
@@ -258,8 +259,6 @@ class AaveV3:
 
     @classmethod
     async def from_chain(cls, w3: AsyncWeb3, chain_id: int, protocol_name: str = "AaveV3") -> AaveV3:
-        from pydefi.deployments import get_address
-
         return await cls.from_addresses_provider(
             w3, chain_id, get_address("AAVE_V3_ADDRESSES_PROVIDER", chain_id), protocol_name
         )

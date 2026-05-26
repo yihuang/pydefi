@@ -26,6 +26,7 @@ from eth_utils import keccak
 from web3 import AsyncWeb3
 
 from pydefi.abi.lending import MORPHO_BLUE, MORPHO_IRM, MORPHO_ORACLE, MorphoMarketParams, MorphoMarketStruct
+from pydefi.deployments import get_address
 from pydefi.lending.utils import WAD, per_second_rate_to_apy, to_tx
 from pydefi.types import ZERO_ADDRESS, Address, Token, TokenAmount
 
@@ -346,8 +347,6 @@ class MorphoBlue:
         Synchronous — the Morpho Blue core is an immutable singleton, so
         nothing has to be resolved on-chain (unlike ``AaveV3.from_chain``).
         """
-        from pydefi.deployments import get_address
-
         return cls(
             w3=w3,
             chain_id=chain_id,

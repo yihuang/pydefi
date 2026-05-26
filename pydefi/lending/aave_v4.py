@@ -29,6 +29,7 @@ from pydefi.abi.lending import (
     AAVE_V4_TOKENIZATION_SPOKE,
     AaveV4Asset,
 )
+from pydefi.deployments import get_address
 from pydefi.lending.aave_v3 import RAY, ray_rate_to_apy
 from pydefi.lending.utils import UINT256_MAX, WAD, to_tx
 from pydefi.types import Address, Token, TokenAmount
@@ -203,8 +204,6 @@ class AaveV4:
         *spoke* is the registry suffix — ``"MAIN_SPOKE"``, ``"BLUECHIP_SPOKE"``,
         ``"GOLD_SPOKE"``, … — resolved to ``AAVE_V4_<spoke>``.
         """
-        from pydefi.deployments import get_address
-
         return cls(
             w3=w3,
             chain_id=chain_id,
@@ -425,8 +424,6 @@ class AaveV4TokenizationSpoke:
     ) -> AaveV4TokenizationSpoke:
         """Construct from the registry — *spoke* is a name like
         ``"CORE_WETH_TOKENIZATION_SPOKE"`` (resolved to ``AAVE_V4_<spoke>``)."""
-        from pydefi.deployments import get_address
-
         return cls(
             w3=w3,
             chain_id=chain_id,

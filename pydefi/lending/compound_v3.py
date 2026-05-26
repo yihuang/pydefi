@@ -31,6 +31,7 @@ from typing import Any, Literal
 from web3 import AsyncWeb3
 
 from pydefi.abi.lending import COMPOUND_V3_COMET
+from pydefi.deployments import comet_contract_for, get_address
 from pydefi.lending.utils import (
     SECONDS_PER_YEAR,
     UINT256_MAX,
@@ -170,8 +171,6 @@ class CompoundV3:
         base_token: Token | None = None,
         protocol_name: str = "CompoundV3",
     ) -> CompoundV3:
-        from pydefi.deployments import get_address, comet_contract_for
-
         return cls(
             w3=w3,
             chain_id=chain_id,
