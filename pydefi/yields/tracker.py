@@ -12,7 +12,7 @@ from eth_contract.erc20 import ERC20
 from web3 import AsyncWeb3
 
 from pydefi.abi.lending import COMPOUND_V3_COMET
-from pydefi.deployments import get_address, comet_contract_for
+from pydefi.deployments import comet_contract_for, get_address
 from pydefi.exceptions import BridgeError
 from pydefi.lending.aave_v3 import AaveV3
 from pydefi.lending.aave_v4 import AaveV4
