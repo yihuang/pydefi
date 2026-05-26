@@ -48,14 +48,14 @@ async def src(request) -> tuple[int, AsyncWeb3]:
 
 
 def _ctrl_addr(name: str, src_chain_id: int) -> Address:
-    return Address(bytes.fromhex(get_address(name, src_chain_id)[2:]))
+    return get_address(name, src_chain_id)
 
 
 async def _adapter_addr(src_chain_id: int, w3: AsyncWeb3, controller: Address) -> Address:
     # Kite has the LZ adapter pinned in deployments.py; MANTRA's Hyperlane
     # adapter isn't published, so discover it from on-chain events.
     if src_chain_id == ChainId.KITE:
-        return Address(bytes.fromhex(get_address("LUCID_LAYERZERO_ADAPTER", src_chain_id)[2:]))
+        return get_address("LUCID_LAYERZERO_ADAPTER", src_chain_id)
     return await discover_adapter(w3, controller)
 
 

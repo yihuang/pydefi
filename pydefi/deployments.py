@@ -4,7 +4,7 @@ Usage::
 
     from pydefi.deployments import get_address, get_token
 
-    factory = get_address("UNISWAP_V3_FACTORY", chain_id=1)
+    factory = get_address("UNISWAP_V3_FACTORY", chain_id=1)  # returns Address
     weth    = get_token("WETH", chain_id=1)
     chains  = chains_for("UNISWAP_V3_FACTORY")  # [1, 11155111, ...]
 """
@@ -162,8 +162,8 @@ _merge_generated(_CONTRACTS, "compound.json")
 _merge_generated(_CONTRACTS, "morpho.json")
 
 
-def get_address(name: str, chain_id: int) -> str:
-    """Return the deployed address of *name* on *chain_id*.
+def get_address(name: str, chain_id: int) -> Address:
+    """Return the deployed :class:`~pydefi.types.Address` of *name* on *chain_id*.
 
     Searches contracts first, then token addresses.
 
@@ -174,13 +174,13 @@ def get_address(name: str, chain_id: int) -> str:
         addr = _CONTRACTS[name].get(chain_id)
         if addr is None:
             raise KeyError(f"{name!r} has no deployment on chain {chain_id}")
-        return addr
+        return decode_address(addr, chain_id)
 
     if name in _TOKENS:
         addr = _TOKENS[name]["addresses"].get(chain_id)
         if addr is None:
             raise KeyError(f"Token {name!r} has no deployment on chain {chain_id}")
-        return addr
+        return decode_address(addr, chain_id)
 
     raise KeyError(f"Unknown deployment name {name!r}")
 
@@ -212,10 +212,8 @@ def chains_for(name: str) -> list[int]:
 
 
 def address_for(name: str, chain_id: int) -> Address:
-    """Like :func:`get_address` but returns a chain-aware :class:`Address`
-    instead of a raw string — saves callers from wrapping in
-    ``Address(decode_address(...))`` at every call site."""
-    return Address(decode_address(get_address(name, chain_id), chain_id))
+    """Alias for :func:`get_address` — returns a chain-aware :class:`Address`."""
+    return get_address(name, chain_id)
 
 
 def _normalize_symbol(token_symbol: str) -> str:
