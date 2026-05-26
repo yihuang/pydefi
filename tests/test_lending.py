@@ -773,7 +773,7 @@ class TestAaveV4BuildTxs:
         from pydefi.deployments import get_address
 
         spoke = aave_v4.AaveV4.from_chain(None, ChainId.ETHEREUM, "GOLD_SPOKE")  # type: ignore[arg-type]
-        assert Address(spoke.spoke_address) == get_address("AAVE_V4_GOLD_SPOKE", ChainId.ETHEREUM)
+        assert spoke.spoke_address == get_address("AAVE_V4_GOLD_SPOKE", ChainId.ETHEREUM)
 
 
 # ---------------------------------------------------------------------------
