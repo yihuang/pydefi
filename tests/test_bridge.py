@@ -1932,5 +1932,3 @@ class TestEureka:
         kwargs = dict(amount=1, receiver="r", source_client="c", timeout_timestamp=1)
         ref = encode_send_transfer_calldata(denom=Address(b"\x11" * 20), **kwargs)
         assert encode_send_transfer_calldata(denom=denom, **kwargs) == ref
-
-

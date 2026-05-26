@@ -14,6 +14,12 @@ Usage::
 
 from pydefi.vm.context import Operand, Program, ProgramContext
 from pydefi.vm.dag import build_execution_program_for_dag, build_quote_program_for_dag
+from pydefi.vm.eureka import (
+    IIBC_SENDER_CALLBACKS_INTERFACE_ID,
+    approve_then_send_transfer,
+    encode_send_and_compose_calldata,
+    send_transfer,
+)
 from pydefi.vm.swap import (
     V2_AMOUNT_OUT_OFFSET,
     V3_AMOUNT_OUT_OFFSET,
@@ -35,14 +41,18 @@ __all__ = [
     # Swap composer
     "SwapHop",
     "SwapProtocol",
+    "IIBC_SENDER_CALLBACKS_INTERFACE_ID",
     "V2_AMOUNT_OUT_OFFSET",
     "V3_AMOUNT_OUT_OFFSET",
+    "approve_then_send_transfer",
     "build_execution_program_for_dag",
+    "encode_send_and_compose_calldata",
     "build_quote_program_for_dag",
     "build_swap_transaction",
     "encode_v2_callback_data",
     "encode_v3_callback_data",
     "encode_v3_path",
+    "send_transfer",
     "swap_route_to_hops",
     "v3_pool_swap_calldata",
 ]
