@@ -128,9 +128,12 @@ _CONTRACTS: dict[str, dict[int, str]] = {
         ChainId.MANTRA: "0x0569725992ee675f862bf0d25CA40fCfB2B69d6E",
         ChainId.KITE: "0xc620C68Cb63EA35e9930e240051A6A7C02D568A1",
     },
-    # Adapter addresses are not published by Lucid; discover via TransferRelayed
-    # event scan against any controller, then pass to LucidBridge(adapter_address=…).
+    # Lucid adapters aren't published (factory-deployed); pinned here from a
+    # one-time TransferRelayed scan to avoid re-scan on every run.
+    # https://kitescan.ai/address/0x5ef37628D45C80740Fb6Db7Ed9C0A753B4f85263
     "LUCID_LAYERZERO_ADAPTER": {ChainId.KITE: "0x5ef37628D45C80740Fb6Db7Ed9C0A753B4f85263"},
+    # https://blockscout.mantrascan.io/address/0xA9bD5559531fe372E866AD4337599962d5810E01
+    "LUCID_HYPERLANE_ADAPTER": {ChainId.MANTRA: "0xA9bD5559531fe372E866AD4337599962d5810E01"},
 }
 
 
