@@ -4,7 +4,7 @@ Usage::
 
     from pydefi.deployments import get_address, get_token
 
-    factory = get_address("UNISWAP_V3_FACTORY", chain_id=1)  # returns Address
+    factory = get_address("UNISWAP_V3_FACTORY", chain_id=1)
     weth    = get_token("WETH", chain_id=1)
     chains  = chains_for("UNISWAP_V3_FACTORY")  # [1, 11155111, ...]
 """
