@@ -258,10 +258,10 @@ class AaveV3:
 
     @classmethod
     async def from_chain(cls, w3: AsyncWeb3, chain_id: int, protocol_name: str = "AaveV3") -> AaveV3:
-        from pydefi.deployments import address_for
+        from pydefi.deployments import get_address
 
         return await cls.from_addresses_provider(
-            w3, chain_id, address_for("AAVE_V3_ADDRESSES_PROVIDER", chain_id), protocol_name
+            w3, chain_id, get_address("AAVE_V3_ADDRESSES_PROVIDER", chain_id), protocol_name
         )
 
     @classmethod

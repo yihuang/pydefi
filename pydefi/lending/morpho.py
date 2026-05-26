@@ -346,12 +346,12 @@ class MorphoBlue:
         Synchronous — the Morpho Blue core is an immutable singleton, so
         nothing has to be resolved on-chain (unlike ``AaveV3.from_chain``).
         """
-        from pydefi.deployments import address_for
+        from pydefi.deployments import get_address
 
         return cls(
             w3=w3,
             chain_id=chain_id,
-            morpho_address=address_for("MORPHO_BLUE", chain_id),
+            morpho_address=get_address("MORPHO_BLUE", chain_id),
             protocol_name=protocol_name,
         )
 

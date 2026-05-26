@@ -203,12 +203,12 @@ class AaveV4:
         *spoke* is the registry suffix — ``"MAIN_SPOKE"``, ``"BLUECHIP_SPOKE"``,
         ``"GOLD_SPOKE"``, … — resolved to ``AAVE_V4_<spoke>``.
         """
-        from pydefi.deployments import address_for
+        from pydefi.deployments import get_address
 
         return cls(
             w3=w3,
             chain_id=chain_id,
-            spoke_address=address_for(f"AAVE_V4_{spoke}", chain_id),
+            spoke_address=get_address(f"AAVE_V4_{spoke}", chain_id),
             protocol_name=protocol_name,
         )
 
@@ -425,12 +425,12 @@ class AaveV4TokenizationSpoke:
     ) -> AaveV4TokenizationSpoke:
         """Construct from the registry — *spoke* is a name like
         ``"CORE_WETH_TOKENIZATION_SPOKE"`` (resolved to ``AAVE_V4_<spoke>``)."""
-        from pydefi.deployments import address_for
+        from pydefi.deployments import get_address
 
         return cls(
             w3=w3,
             chain_id=chain_id,
-            spoke_address=address_for(f"AAVE_V4_{spoke}", chain_id),
+            spoke_address=get_address(f"AAVE_V4_{spoke}", chain_id),
             asset_token=asset_token,
         )
 

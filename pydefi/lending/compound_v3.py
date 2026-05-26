@@ -170,12 +170,12 @@ class CompoundV3:
         base_token: Token | None = None,
         protocol_name: str = "CompoundV3",
     ) -> CompoundV3:
-        from pydefi.deployments import address_for, comet_contract_for
+        from pydefi.deployments import get_address, comet_contract_for
 
         return cls(
             w3=w3,
             chain_id=chain_id,
-            comet_address=address_for(comet_contract_for(token_symbol), chain_id),
+            comet_address=get_address(comet_contract_for(token_symbol), chain_id),
             base_token=base_token,
             protocol_name=protocol_name,
         )

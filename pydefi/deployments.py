@@ -211,11 +211,6 @@ def chains_for(name: str) -> list[int]:
     raise KeyError(f"Unknown deployment name {name!r}")
 
 
-def address_for(name: str, chain_id: int) -> Address:
-    """Alias for :func:`get_address` — returns a chain-aware :class:`Address`."""
-    return get_address(name, chain_id)
-
-
 def _normalize_symbol(token_symbol: str) -> str:
     return re.sub(r"[^A-Za-z0-9]+", "_", token_symbol.upper()).strip("_")
 

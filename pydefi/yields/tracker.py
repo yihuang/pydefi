@@ -12,7 +12,7 @@ from eth_contract.erc20 import ERC20
 from web3 import AsyncWeb3
 
 from pydefi.abi.lending import COMPOUND_V3_COMET
-from pydefi.deployments import address_for, comet_contract_for
+from pydefi.deployments import get_address, comet_contract_for
 from pydefi.exceptions import BridgeError
 from pydefi.lending.aave_v3 import AaveV3
 from pydefi.lending.aave_v4 import AaveV4
@@ -41,7 +41,7 @@ async def _aave_balance(market: YieldMarket, user: Address, w3: AsyncWeb3) -> To
 async def _compound_balance(market: YieldMarket, user: Address, w3: AsyncWeb3) -> TokenAmount:
     # Direct balanceOf — get_user_position would also iterate every collateral
     # via collateralBalanceOf, wasted RPC for a pure supply read.
-    comet_address = address_for(comet_contract_for(market.token.symbol), market.chain_id)
+    comet_address = get_address(comet_contract_for(market.token.symbol), market.chain_id)
     balance = await COMPOUND_V3_COMET.fns.balanceOf(user).call(w3, to=comet_address)
     return TokenAmount(token=market.token, amount=int(balance))
 
