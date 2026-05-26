@@ -31,7 +31,13 @@ from typing import Any, Literal
 from web3 import AsyncWeb3
 
 from pydefi.abi.lending import COMPOUND_V3_COMET
-from pydefi.lending.utils import SECONDS_PER_YEAR, UINT256_MAX, resolve_amount, to_tx
+from pydefi.lending.utils import (
+    SECONDS_PER_YEAR,
+    UINT256_MAX,
+    per_second_rate_to_apy,
+    resolve_amount,
+    to_tx,
+)
 from pydefi.types import Address, Token, TokenAmount
 
 #: Compound III scales rates and factors by 1e18 (no separate "RAY").
@@ -117,33 +123,6 @@ class CompoundUserPosition:
     base_borrow: TokenAmount
     collateral: dict[Address, TokenAmount]
     is_liquidatable: bool
-
-
-# ---------------------------------------------------------------------------
-# Rate model helper
-# ---------------------------------------------------------------------------
-
-
-def per_second_rate_to_apy(rate_per_second_1e18: int) -> Decimal:
-    """Compound III returns rates as **per-second** values, scaled by 1e18.
-
-    Annualised APY is then ``(1 + r) ** SECONDS_PER_YEAR - 1`` where
-    ``r = rate_per_second_1e18 / 1e18``. Matches the formula on
-    `compound.finance <https://docs.compound.finance/interest-rates/>`_.
-    """
-    if rate_per_second_1e18 == 0:
-        return Decimal(0)
-    from decimal import getcontext
-
-    ctx = getcontext()
-    prev = ctx.prec
-    ctx.prec = max(prev, 50)
-    try:
-        per_second = Decimal(rate_per_second_1e18) / Decimal(COMET_SCALE)
-        apy = (Decimal(1) + per_second) ** SECONDS_PER_YEAR - Decimal(1)
-    finally:
-        ctx.prec = prev
-    return apy
 
 
 # ---------------------------------------------------------------------------

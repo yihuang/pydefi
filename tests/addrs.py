@@ -61,6 +61,13 @@ PAIR_USDC_USDT: Address = Address(get_address("PAIR_USDC_USDT", ChainId.ETHEREUM
 
 AAVE_ADDRESSES_PROVIDER: Address = Address(get_address("AAVE_V3_ADDRESSES_PROVIDER", ChainId.ETHEREUM))
 
+# ── Morpho Blue mainnet ───────────────────────────────────────────────────────
+# Morpho Blue is an immutable singleton; the AdaptiveCurveIRM is the standard
+# interest-rate model used by virtually every market.
+
+MORPHO_BLUE: Address = Address(get_address("MORPHO_BLUE", ChainId.ETHEREUM))
+MORPHO_IRM: Address = Address(get_address("MORPHO_ADAPTIVE_CURVE_IRM", ChainId.ETHEREUM))
+
 # ── Lucid Labs ────────────────────────────────────────────────────────────────
 
 LUCID_USDC_CTRL_MANTRA: Address = Address(get_address("LUCID_USDC_CONTROLLER", ChainId.MANTRA))

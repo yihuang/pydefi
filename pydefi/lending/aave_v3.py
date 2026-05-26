@@ -27,7 +27,6 @@ from pydefi.abi.lending import (
     AAVE_V3_DATA_PROVIDER,
     AAVE_V3_ORACLE,
     AAVE_V3_POOL,
-    ReserveDataLegacy,
 )
 from pydefi.exceptions import PydefiError
 from pydefi.lending.utils import SECONDS_PER_YEAR, UINT256_MAX, resolve_amount, to_tx
@@ -324,7 +323,6 @@ class AaveV3:
             AAVE_V3_DATA_PROVIDER.fns.getPaused(token.address).call(self.w3, to=self.data_provider_address),
             AAVE_V3_DATA_PROVIDER.fns.getTotalDebt(token.address).call(self.w3, to=self.data_provider_address),
         )
-        reserve = ReserveDataLegacy._make(reserve)
 
         # balanceOf needs the aToken address out of getReserveData, so it runs second.
         a_token_address = Address(reserve.aTokenAddress)

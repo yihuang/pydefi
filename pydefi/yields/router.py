@@ -4,21 +4,29 @@ Caller supplies a per-chain ``AsyncWeb3`` map and broadcasts the steps."""
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
+import logging
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Literal
 
+import aiohttp
 from eth_contract.erc20 import ERC20
 from web3 import AsyncWeb3
 
+from pydefi._utils import decode_address
 from pydefi.bridge.base import BaseBridge
 from pydefi.deployments import chains_for, comet_contract_for, get_token
 from pydefi.lending.aave_v3 import AaveV3
+from pydefi.lending.aave_v4 import AaveV4
 from pydefi.lending.compound_v3 import CompoundV3
-from pydefi.types import Address, Token, TokenAmount
+from pydefi.lending.morpho import MarketParams, MorphoBlue
+from pydefi.types import Address, ChainId, Token, TokenAmount
 
-Protocol = Literal["aave_v3", "compound_v3"]
+logger = logging.getLogger(__name__)
+
+Protocol = Literal["aave_v3", "compound_v3", "morpho", "aave_v4"]
 # Strategies build_yield_route sequences directly into source-chain steps.
 RouteStrategy = Literal["withdraw_then_supply", "supply_then_bridge", "bridge_then_supply"]
 # Every strategy a YieldRoute can carry. "compose_supply" routes are built by
@@ -28,6 +36,40 @@ StepKind = Literal["approve", "supply", "withdraw", "bridge"]
 
 # Generous; fits quirky tokens whose approve consumes more than the EIP-20 minimum.
 _APPROVE_GAS = 100_000
+
+# Aave V4 is Ethereum-only; yield markets are surfaced from the MAIN_SPOKE —
+# the broad-asset Spoke that carries WETH / USDC / WBTC / etc.
+_AAVE_V4_YIELD_SPOKE = "MAIN_SPOKE"
+
+# Morpho markets are isolated (one collateral + one loan token each) and not
+# keyed by token symbol, so discovery goes through the Morpho indexer API
+# rather than an on-chain registry read.
+_MORPHO_API_URL = "https://blue-api.morpho.org/graphql"
+_MORPHO_API_TIMEOUT = 15.0
+# The indexer ranks markets by total supply across every asset, so one page
+# would drop a less-liquid loan token's markets before they are seen —
+# _fetch_morpho_markets pages through the whole whitelisted set instead.
+# _MORPHO_MAX_PAGES is a safety bound far above the live count (~620).
+_MORPHO_PAGE_SIZE = 200
+_MORPHO_MAX_PAGES = 25
+_MORPHO_MARKETS_QUERY = """
+query Markets($chainIds: [Int!], $first: Int!, $skip: Int!) {
+  markets(
+    first: $first
+    skip: $skip
+    orderBy: SupplyAssetsUsd
+    orderDirection: Desc
+    where: { chainId_in: $chainIds, whitelisted: true }
+  ) {
+    items {
+      uniqueKey
+      morphoBlue { chain { id } }
+      loanAsset { symbol address decimals }
+      state { supplyApy utilization liquidityAssets }
+    }
+  }
+}
+"""
 
 
 @dataclass(frozen=True)
@@ -97,9 +139,13 @@ class YieldRoute:
 
 def _candidate_chains(token_symbol: str) -> list[int]:
     aave = set(chains_for("AAVE_V3_ADDRESSES_PROVIDER"))
-    comet_name = comet_contract_for(token_symbol)
-    comet = set(chains_for(comet_name)) if comet_name else set()
-    return sorted(aave | comet)
+    try:
+        comet = set(chains_for(comet_contract_for(token_symbol)))
+    except (ValueError, KeyError):
+        # Compound III has no market for this token — Aave / Morpho may still.
+        comet = set()
+    morpho = set(chains_for("MORPHO_BLUE"))
+    return sorted(aave | comet | morpho)
 
 
 def _same_token_identity(a: Token, b: Token) -> bool:
@@ -128,26 +174,70 @@ def build_approve_tx(token: Token, spender: Address, amount: int, gas: int = _AP
     }
 
 
+def morpho_id(market: YieldMarket) -> bytes:
+    """Extract the bytes32 Morpho market Id from a ``morpho:<chain>:0x..`` id."""
+    parts = market.market_id.split(":")
+    if len(parts) != 3 or parts[0] != "morpho":
+        raise ValueError(f"not a Morpho market_id: {market.market_id!r}")
+    return bytes.fromhex(parts[2].removeprefix("0x"))
+
+
+async def morpho_params(morpho: MorphoBlue, market: YieldMarket) -> MarketParams:
+    """Resolve a Morpho market's immutable ``MarketParams`` from its Id. The
+    loan token is already known; the collateral is read on-chain."""
+    return await morpho.get_market_params(morpho_id(market), tokens={market.token.address: market.token})
+
+
+def aave_v4_ref(market: YieldMarket) -> tuple[str, int]:
+    """Parse an ``aave_v4:<chain>:<spoke>:<reserveId>`` market_id into the
+    Spoke name and reserve id."""
+    parts = market.market_id.split(":")
+    if len(parts) != 4 or parts[0] != "aave_v4":
+        raise ValueError(f"not an Aave V4 market_id: {market.market_id!r}")
+    return parts[2], int(parts[3])
+
+
 async def _withdraw_tx(market: YieldMarket, user: Address, w3: AsyncWeb3, amount: TokenAmount) -> dict[str, Any]:
     if market.protocol == "aave_v3":
         aave = await AaveV3.from_chain(w3, market.chain_id)
         return aave.build_withdraw_tx(user, amount)
-    return CompoundV3.from_chain(w3, market.chain_id, market.token.symbol).build_withdraw_tx(amount)
+    if market.protocol == "compound_v3":
+        return CompoundV3.from_chain(w3, market.chain_id, market.token.symbol).build_withdraw_tx(amount)
+    if market.protocol == "aave_v4":
+        spoke_name, reserve_id = aave_v4_ref(market)
+        return AaveV4.from_chain(w3, market.chain_id, spoke_name).build_withdraw_tx(reserve_id, amount, user)
+    if market.protocol == "morpho":
+        morpho = MorphoBlue.from_chain(w3, market.chain_id)
+        params = await morpho_params(morpho, market)
+        return morpho.build_withdraw_tx(params, assets=amount, on_behalf_of=user, receiver=user)
+    raise ValueError(f"unknown protocol: {market.protocol!r}")
 
 
 async def _supply_steps(market: YieldMarket, user: Address, w3: AsyncWeb3, amount: TokenAmount) -> list[YieldStep]:
     """``[approve, supply]`` — approve the market's spender, then supply.
 
     The ERC-20 ``approve`` spender is the contract that pulls the funds —
-    the Aave V3 ``Pool`` or the Compound III ``Comet``. Both come off the
-    constructed client, so the approval always targets the exact contract
-    the supply call hits."""
+    the Aave V3 ``Pool``, the Compound III ``Comet``, the Morpho Blue
+    singleton, or the Aave V4 ``Spoke``. Each comes off the constructed
+    client, so the approval always targets the exact contract the supply
+    call hits."""
     if market.protocol == "aave_v3":
         aave = await AaveV3.from_chain(w3, market.chain_id)
         spender, supply_tx = aave.pool_address, aave.build_supply_tx(user, amount)
-    else:
+    elif market.protocol == "compound_v3":
         comet = CompoundV3.from_chain(w3, market.chain_id, market.token.symbol)
         spender, supply_tx = comet.comet_address, comet.build_supply_tx(amount)
+    elif market.protocol == "aave_v4":
+        spoke_name, reserve_id = aave_v4_ref(market)
+        v4 = AaveV4.from_chain(w3, market.chain_id, spoke_name)
+        spender, supply_tx = v4.spoke_address, v4.build_supply_tx(reserve_id, amount, user)
+    elif market.protocol == "morpho":
+        morpho = MorphoBlue.from_chain(w3, market.chain_id)
+        params = await morpho_params(morpho, market)
+        spender = morpho.morpho_address
+        supply_tx = morpho.build_supply_tx(params, assets=amount, on_behalf_of=user)
+    else:
+        raise ValueError(f"unknown protocol: {market.protocol!r}")
     return [
         YieldStep("approve", market.chain_id, build_approve_tx(amount.token, spender, amount.amount)),
         YieldStep("supply", market.chain_id, supply_tx),
@@ -192,8 +282,11 @@ async def _aave_market(w3: AsyncWeb3, chain_id: int, token: Token, token_symbol:
 
 
 async def _compound_market(w3: AsyncWeb3, chain_id: int, token_symbol: str) -> YieldMarket | None:
-    name = comet_contract_for(token_symbol)
-    if name is None or chain_id not in chains_for(name):
+    try:
+        name = comet_contract_for(token_symbol)
+    except ValueError:
+        return None  # Compound III has no Comet market for this token.
+    if chain_id not in chains_for(name):
         return None
     market = await CompoundV3.from_chain(w3, chain_id, token_symbol).get_market_data()
     # Comet's baseToken() has no symbol(); restore the real ticker so downstream
@@ -214,17 +307,135 @@ async def _compound_market(w3: AsyncWeb3, chain_id: int, token_symbol: str) -> Y
     )
 
 
+async def _aave_v4_market(w3: AsyncWeb3, chain_id: int, token: Token) -> YieldMarket | None:
+    """The Aave V4 ``MAIN_SPOKE`` reserve for *token*, if one is listed.
+
+    V4 is Ethereum-only and reserves are keyed by index, not asset address,
+    so the matching reserve is found by scanning the Spoke's reserve list.
+    """
+    if chain_id != ChainId.ETHEREUM:
+        return None
+    spoke = AaveV4.from_chain(w3, chain_id, _AAVE_V4_YIELD_SPOKE)
+    count = await spoke.get_reserve_count()
+    reserves = await asyncio.gather(*(spoke.get_reserve(rid) for rid in range(count)))
+    reserve_id = next((r.reserve_id for r in reserves if r.underlying.address == token.address), None)
+    if reserve_id is None:
+        return None
+    data = await spoke.get_reserve_data(reserve_id, token)
+    # A paused / frozen reserve cannot accept supplies.
+    if data.is_paused or data.is_frozen:
+        return None
+    available = max(0, data.supplied.amount - data.total_debt.amount)
+    return YieldMarket(
+        protocol="aave_v4",
+        chain_id=chain_id,
+        token=token,
+        supply_apy=data.supply_apy,
+        utilization=data.utilization,
+        available_liquidity=TokenAmount(token=token, amount=available),
+        market_id=f"aave_v4:{chain_id}:{_AAVE_V4_YIELD_SPOKE}:{reserve_id}",
+    )
+
+
+async def _fetch_morpho_page(session: aiohttp.ClientSession, chain_ids: list[int], skip: int) -> list[dict[str, Any]]:
+    """Fetch one ``_MORPHO_PAGE_SIZE`` page of the whitelisted-markets query."""
+    payload = {
+        "query": _MORPHO_MARKETS_QUERY,
+        "variables": {"chainIds": chain_ids, "first": _MORPHO_PAGE_SIZE, "skip": skip},
+    }
+    async with session.post(_MORPHO_API_URL, json=payload) as resp:
+        resp.raise_for_status()
+        data = await resp.json()
+    items = (((data or {}).get("data") or {}).get("markets") or {}).get("items") or []
+    return [m for m in items if isinstance(m, dict)]
+
+
+async def _fetch_morpho_markets(chain_ids: list[int]) -> list[dict[str, Any]]:
+    """Query the Morpho indexer for every whitelisted market on *chain_ids*,
+    deepest-supply first.
+
+    The indexer ranks markets by supply across all assets, so the result is
+    paged through in full — a single page would silently drop a less-liquid
+    loan token's markets. Returns ``[]`` on any failure so a Morpho API
+    outage degrades the markets list gracefully instead of breaking the
+    whole response.
+    """
+    if not chain_ids:
+        return []
+    out: list[dict[str, Any]] = []
+    try:
+        timeout = aiohttp.ClientTimeout(total=_MORPHO_API_TIMEOUT)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            for page in range(_MORPHO_MAX_PAGES):
+                items = await _fetch_morpho_page(session, chain_ids, page * _MORPHO_PAGE_SIZE)
+                out.extend(items)
+                if len(items) < _MORPHO_PAGE_SIZE:
+                    break
+    except (aiohttp.ClientError, TimeoutError, ValueError) as exc:
+        logger.warning("Morpho market query failed: %s", exc)
+        return []
+    return out
+
+
+async def _morpho_markets(token_symbol: str, chain_ids: list[int]) -> list[YieldMarket]:
+    """Every Morpho market on *chain_ids* whose loan asset is *token_symbol*,
+    deepest-supply first (bounded only by the indexer query's page size).
+
+    Each market's ``market_id`` is ``morpho:<chain_id>:<bytes32 Id>`` — the
+    Id is what :func:`morpho_params` later resolves back into ``MarketParams``.
+    """
+    wanted = token_symbol.upper()
+    chain_set = set(chain_ids)
+    raw = await _fetch_morpho_markets(sorted(chain_set))
+    out: list[YieldMarket] = []
+    for m in raw:  # the API already orders by supply, deepest first
+        loan = m.get("loanAsset") or {}
+        if (loan.get("symbol") or "").upper() != wanted:
+            continue
+        chain = (m.get("morphoBlue") or {}).get("chain") or {}
+        try:
+            chain_id = int(chain.get("id"))
+        except (TypeError, ValueError):
+            continue
+        if chain_id not in chain_set:
+            continue
+        unique_key = m.get("uniqueKey")
+        loan_address = loan.get("address")
+        state = m.get("state") or {}
+        if not unique_key or not loan_address or state.get("supplyApy") is None:
+            continue
+        token = Token(
+            chain_id=chain_id,
+            address=decode_address(str(loan_address), chain_id),
+            symbol=str(loan.get("symbol") or token_symbol),
+            decimals=int(loan.get("decimals") or 18),
+        )
+        out.append(
+            YieldMarket(
+                protocol="morpho",
+                chain_id=chain_id,
+                token=token,
+                supply_apy=Decimal(str(state.get("supplyApy") or 0)),
+                utilization=Decimal(str(state.get("utilization") or 0)),
+                available_liquidity=TokenAmount(token, int(state.get("liquidityAssets") or 0)),
+                market_id=f"morpho:{chain_id}:{unique_key}",
+            )
+        )
+    return out
+
+
 async def get_yield_markets(
     token_symbol: str,
     w3s: dict[int, AsyncWeb3],
     chains: list[int] | None = None,
     protocols: list[Protocol] | None = None,
 ) -> list[YieldMarket]:
-    """Enumerate Aave V3 + Compound V3 supply markets for *token_symbol*,
-    sorted by APY descending. Chains absent from ``w3s`` are skipped
-    silently — the caller decides which RPCs to spend on. Inactive /
-    frozen / paused Aave reserves are omitted."""
-    selected: tuple[Protocol, ...] = tuple(protocols or ("aave_v3", "compound_v3"))
+    """Enumerate Aave V3 + Compound V3 + Morpho + Aave V4 supply markets for
+    *token_symbol*, sorted by APY descending. Chains absent from ``w3s`` are
+    skipped silently — the caller decides which RPCs to spend on. Inactive /
+    frozen / paused Aave reserves are omitted; Morpho markets are discovered
+    via the Morpho indexer API."""
+    selected: tuple[Protocol, ...] = tuple(protocols or ("aave_v3", "compound_v3", "morpho", "aave_v4"))
     candidates = chains if chains is not None else _candidate_chains(token_symbol)
 
     out: list[YieldMarket] = []
@@ -245,6 +456,16 @@ async def get_yield_markets(
             market = await _compound_market(w3, chain_id, token_symbol)
             if market is not None:
                 out.append(market)
+        if "aave_v4" in selected:
+            market = await _aave_v4_market(w3, chain_id, token)
+            if market is not None:
+                out.append(market)
+
+    # Morpho discovery is a single indexer query covering every candidate
+    # chain the caller has an RPC for, so it runs once outside the loop.
+    if "morpho" in selected:
+        morpho_chains = sorted(c for c in candidates if c in w3s)
+        out.extend(await _morpho_markets(token_symbol, morpho_chains))
 
     out.sort(key=lambda m: m.supply_apy, reverse=True)
     return out
