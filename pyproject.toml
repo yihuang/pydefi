@@ -44,6 +44,9 @@ dev = [
 where = ["."]
 include = ["pydefi*"]
 
+[tool.setuptools.package-data]
+"pydefi.config" = ["*.json"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "module"
