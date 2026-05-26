@@ -259,7 +259,7 @@ def test_aave_v3_deployment_pinned(chain: int):
     from pydefi.deployments import get_address
 
     addr = get_address("AAVE_V3_ADDRESSES_PROVIDER", chain)
-    assert len(addr) == 42 and addr.startswith("0x"), f"AAVE_V3_ADDRESSES_PROVIDER on {chain}: {addr!r}"
+    assert len(addr) == 20, f"AAVE_V3_ADDRESSES_PROVIDER on {chain}: {addr.hex()!r}"
 
 
 # ===========================================================================
@@ -385,7 +385,7 @@ def test_compound_v3_market_pinned(name: str, chain: int):
     from pydefi.deployments import get_address
 
     addr = get_address(name, chain)
-    assert len(addr) == 42 and addr.startswith("0x"), f"{name} on {chain}: {addr!r}"
+    assert len(addr) == 20, f"{name} on {chain}: {addr.hex()!r}"
 
 
 # ===========================================================================
@@ -649,7 +649,7 @@ def test_morpho_blue_deployment_pinned(chain: int):
     from pydefi.deployments import get_address
 
     addr = get_address("MORPHO_BLUE", chain)
-    assert len(addr) == 42 and addr.startswith("0x"), f"MORPHO_BLUE on {chain}: {addr!r}"
+    assert len(addr) == 20, f"MORPHO_BLUE on {chain}: {addr.hex()!r}"
 
 
 # ===========================================================================
@@ -773,7 +773,7 @@ class TestAaveV4BuildTxs:
         from pydefi.deployments import get_address
 
         spoke = aave_v4.AaveV4.from_chain(None, ChainId.ETHEREUM, "GOLD_SPOKE")  # type: ignore[arg-type]
-        assert Address(spoke.spoke_address) == Address(get_address("AAVE_V4_GOLD_SPOKE", ChainId.ETHEREUM))
+        assert spoke.spoke_address == get_address("AAVE_V4_GOLD_SPOKE", ChainId.ETHEREUM)
 
 
 # ---------------------------------------------------------------------------
@@ -787,7 +787,7 @@ def test_aave_v4_deployment_pinned(name: str):
     from pydefi.deployments import get_address
 
     addr = get_address(name, ChainId.ETHEREUM)
-    assert len(addr) == 42 and addr.startswith("0x"), f"{name}: {addr!r}"
+    assert len(addr) == 20, f"{name}: {addr.hex()!r}"
 
 
 # ---------------------------------------------------------------------------

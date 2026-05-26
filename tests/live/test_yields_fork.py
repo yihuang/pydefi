@@ -55,7 +55,7 @@ from tests.live.sol_utils import MOCK_TOKEN_SOL, compile_sol_source, deploy
 # Pinned addresses + per-test constants
 # ---------------------------------------------------------------------------
 
-COMET_USDC = Address(get_address("COMPOUND_V3_USDC", ChainId.ETHEREUM))
+COMET_USDC = get_address("COMPOUND_V3_USDC", ChainId.ETHEREUM)
 
 USDC_TEST_AMOUNT = 1_000 * 10**6  # 1000 USDC
 
