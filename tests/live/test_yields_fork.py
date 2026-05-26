@@ -24,7 +24,7 @@ from eth_contract.erc20 import ERC20
 
 from pydefi.deployments import get_address
 from pydefi.lending import AaveV3, CompoundV3
-from pydefi.types import Address, ChainId, TokenAmount
+from pydefi.types import ChainId, TokenAmount
 from pydefi.yields import YieldMarket, YieldRoute, build_yield_route
 from pydefi.yields.router import Protocol
 from tests.addrs import ETH_WHALE, USDC
