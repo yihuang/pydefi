@@ -19,6 +19,11 @@ from pydefi.bridge.cctp import (
     HYPERCORE_DEX_SPOT,
     encode_cctp_forward_hook_data,
 )
+from pydefi.bridge.eureka import (
+    ICS20_DEFAULT_PORT,
+    Eureka,
+    encode_send_transfer_calldata,
+)
 from pydefi.bridge.gaszip import _SUPPORTED_CHAINS, GasZip
 from pydefi.bridge.layerzero_oft import _LZ_EID, LayerZeroOFT
 from pydefi.bridge.lucid import LucidBridge, discover_adapter
@@ -1794,3 +1799,138 @@ class TestLucidAdapter:
                 controller_address=LUCID_USDC_CTRL_MANTRA,
                 to_block="finalized",  # type: ignore[arg-type]
             )
+
+
+# ---------------------------------------------------------------------------
+# Eureka (IBC v2) tests
+# ---------------------------------------------------------------------------
+
+_EUREKA_ICS20 = Address("0x" + "11" * 20)
+_EUREKA_CLIENT = "07-tendermint-0"
+_EUREKA_RECIPIENT = Address("0x" + "CC" * 20)
+_SEND_TRANSFER_TUPLE = "(address,uint256,string,string,string,uint64,string)"
+
+
+def _decode_send_transfer(data) -> tuple:
+    """ABI-decode the body of an encoded ``sendTransfer((...))`` call.
+    Accepts a 0x-string (from a tx dict) or raw bytes."""
+    from eth_abi import decode as abi_decode
+
+    return abi_decode([_SEND_TRANSFER_TUPLE], bytes(HexBytes(data))[4:])[0]
+
+
+@pytest.fixture
+def eureka() -> Eureka:
+    return Eureka(
+        src_chain_id=1,
+        dst_chain_id=ChainId.MANTRA,
+        ics20_transfer_addr=_EUREKA_ICS20,
+        source_client_id=_EUREKA_CLIENT,
+    )
+
+
+class TestEureka:
+    def test_protocol_name(self, eureka):
+        assert eureka.protocol_name == "Eureka"
+        assert eureka.src_chain_id == 1
+        assert eureka.dst_chain_id == ChainId.MANTRA
+
+    def test_rejects_short_ics20_addr(self):
+        with pytest.raises(ValueError, match="20-byte"):
+            Eureka(
+                src_chain_id=1,
+                dst_chain_id=ChainId.MANTRA,
+                ics20_transfer_addr=Address(b"\x11" * 19),  # type: ignore[arg-type]
+                source_client_id=_EUREKA_CLIENT,
+            )
+
+    @pytest.mark.asyncio
+    async def test_get_quote_same_decimals_is_amount_preserving(self, eureka):
+        amount_in = TokenAmount.from_human(USDC, "1000")
+        quote = await eureka.get_quote(USDC, USDC_MANTRA, amount_in)
+        # ICS-20 doesn't charge a per-tx fee on the EVM side.
+        assert quote.protocol == "Eureka"
+        assert quote.amount_out.amount == amount_in.amount
+        assert quote.bridge_fee.amount == 0
+        assert quote.estimated_time_seconds == 60
+
+    @pytest.mark.asyncio
+    async def test_get_quote_rescales_on_decimal_mismatch(self, eureka):
+        token_out = Token(
+            chain_id=ChainId.MANTRA,
+            address=Address("0x" + "AA" * 20),
+            symbol="USDC",
+            decimals=8,  # vs USDC's 6
+        )
+        amount_in = TokenAmount.from_human(USDC, "1")  # 1_000_000 base
+        quote = await eureka.get_quote(USDC, token_out, amount_in)
+        assert quote.amount_out.amount == amount_in.amount * 100
+
+    @pytest.mark.asyncio
+    async def test_get_quote_amount_in_token_must_match(self, eureka):
+        # amount_in is in WETH but token_in is USDC — should raise.
+        amount_in = TokenAmount.from_human(WETH, "1")
+        with pytest.raises(BridgeError, match="must match token_in"):
+            await eureka.get_quote(USDC, USDC_MANTRA, amount_in)
+
+    @pytest.mark.asyncio
+    async def test_build_bridge_tx_calldata_decodes(self, eureka):
+        amount_in = TokenAmount.from_human(USDC, "1000")
+        tx = await eureka.build_bridge_tx(
+            USDC,
+            USDC_MANTRA,
+            amount_in,
+            _EUREKA_RECIPIENT,
+            now=1_700_000_000,
+            receiver="mantra1qqqqqq",
+            memo="pfm hop",
+        )
+        # Header — `to` is the Address itself, matching Stargate/CCTP convention.
+        assert tx["to"] == _EUREKA_ICS20
+        assert tx["value"] == "0"
+
+        # Decode the call back and verify field-by-field. The decoder is the
+        # source of truth for tuple ordering — if SendTransferMsg moves a
+        # field, this fails loudly rather than producing wrong calldata.
+        denom, amount, receiver, src_client, dest_port, ts, memo = _decode_send_transfer(tx["data"])
+        assert denom.lower() == "0x" + bytes(USDC.address).hex().lower()
+        assert amount == amount_in.amount
+        assert receiver == "mantra1qqqqqq"
+        assert src_client == _EUREKA_CLIENT
+        assert dest_port == ICS20_DEFAULT_PORT
+        assert ts == 1_700_000_000 + eureka.timeout_seconds
+        assert memo == "pfm hop"
+
+    @pytest.mark.asyncio
+    async def test_build_bridge_tx_defaults_receiver_to_hex_recipient(self, eureka):
+        amount_in = TokenAmount.from_human(USDC, "10")
+        tx = await eureka.build_bridge_tx(USDC, USDC_MANTRA, amount_in, _EUREKA_RECIPIENT)
+        _, _, receiver, *_ = _decode_send_transfer(tx["data"])
+        assert receiver.lower() == "0x" + bytes(_EUREKA_RECIPIENT).hex().lower()
+
+    @pytest.mark.asyncio
+    async def test_build_bridge_tx_rejects_native_token(self, eureka):
+        # Eureka requires an ERC-20 — native gas must be wrapped first.
+        native = Token(chain_id=1, address=Address(b"\xee" * 20), symbol="ETH", decimals=18)
+        amount_in = TokenAmount.from_human(native, "1")
+        with pytest.raises(BridgeError, match="require an ERC-20"):
+            await eureka.build_bridge_tx(native, USDC_MANTRA, amount_in, ETH_WHALE)
+
+    def test_encode_send_transfer_validates_denom_length(self):
+        with pytest.raises(ValueError, match="20-byte"):
+            encode_send_transfer_calldata(
+                denom=Address(b"\x11" * 19),
+                amount=1,
+                receiver="r",
+                source_client="c",
+                timeout_timestamp=1,
+            )
+
+    @pytest.mark.parametrize("denom", [Address(b"\x11" * 20), "0x" + "11" * 20])
+    def test_encode_send_transfer_accepts_address_or_hex_string(self, denom):
+        # Both forms must encode to the same bytes.
+        kwargs = dict(amount=1, receiver="r", source_client="c", timeout_timestamp=1)
+        ref = encode_send_transfer_calldata(denom=Address(b"\x11" * 20), **kwargs)
+        assert encode_send_transfer_calldata(denom=denom, **kwargs) == ref
+
+
