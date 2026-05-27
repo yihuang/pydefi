@@ -1,10 +1,12 @@
 """Unit tests for pydefi.lending (no live node required).
 
-Covers both protocols under the lending umbrella:
+Covers every protocol under the lending umbrella:
 
 * Aave V3 — pool-per-reserve model with aTokens, health factors, E-Mode.
 * Compound V3 (Comet) — one-base-asset-per-market model where supply /
   withdraw also handle borrow / repay through the same dispatch.
+* Morpho Blue — isolated markets keyed by ``MarketParams``.
+* Aave V4 — Hub-and-Spoke; reserves keyed by ``reserveId`` within a Spoke.
 """
 
 from __future__ import annotations
@@ -15,9 +17,15 @@ from typing import TYPE_CHECKING, Any
 import pytest
 from hexbytes import HexBytes
 
-from pydefi.abi.lending import AAVE_V3_POOL, COMPOUND_V3_COMET
+from pydefi.abi.lending import (
+    AAVE_V3_POOL,
+    AAVE_V4_SPOKE,
+    AAVE_V4_TOKENIZATION_SPOKE,
+    COMPOUND_V3_COMET,
+    MORPHO_BLUE,
+)
 from pydefi.deployments import chains_for, comet_contract_names
-from pydefi.lending import AaveV3, UserAccountData
+from pydefi.lending import AaveV3, UserAccountData, aave_v4
 from pydefi.lending.aave_v3 import (
     RAY,
     SECONDS_PER_YEAR,
@@ -29,6 +37,14 @@ from pydefi.lending.compound_v3 import (
     COMET_SCALE,
     CompoundV3,
     per_second_rate_to_apy,
+)
+from pydefi.lending.morpho import (
+    MarketParams,
+    MarketState,
+    MorphoBlue,
+    accrue_interest,
+    compute_health_factor,
+    supply_apy_from_borrow,
 )
 from pydefi.types import Address, ChainId, TokenAmount
 from tests.addrs import ETH_WHALE, USDC, WETH
@@ -243,7 +259,7 @@ def test_aave_v3_deployment_pinned(chain: int):
     from pydefi.deployments import get_address
 
     addr = get_address("AAVE_V3_ADDRESSES_PROVIDER", chain)
-    assert len(addr) == 42 and addr.startswith("0x"), f"AAVE_V3_ADDRESSES_PROVIDER on {chain}: {addr!r}"
+    assert len(addr) == 20, f"AAVE_V3_ADDRESSES_PROVIDER on {chain}: {addr.hex()!r}"
 
 
 # ===========================================================================
@@ -369,4 +385,460 @@ def test_compound_v3_market_pinned(name: str, chain: int):
     from pydefi.deployments import get_address
 
     addr = get_address(name, chain)
-    assert len(addr) == 42 and addr.startswith("0x"), f"{name} on {chain}: {addr!r}"
+    assert len(addr) == 20, f"{name} on {chain}: {addr.hex()!r}"
+
+
+# ===========================================================================
+# Morpho Blue
+# ===========================================================================
+
+MORPHO_BLUE_ADDR = Address("0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb")
+MORPHO_IRM_ADDR = Address("0x870aC11D48B15DB9a138Cf899d20F13F79Ba00BC")
+MORPHO_ORACLE_ADDR = Address("0x2a01EB9496094dA03c4E364Def50f5aD1280AD72")
+
+#: An enabled standard LLTV (86%), WAD-scaled.
+LLTV_86 = 860_000_000_000_000_000
+
+#: ``keccak256(abi.encode(MARKET))`` computed offline (see docs/plan_morpho.md)
+#: — a fixed regression vector independent of the production code path.
+EXPECTED_MARKET_ID = bytes.fromhex("68e2c12cb7f73414a223441f15f6f5e0bf3019a80ed6752f1b75a4fc3642f006")
+
+#: A WETH-collateral / USDC-loan market used across the Morpho tests.
+MARKET = MarketParams(
+    loan_token=USDC,
+    collateral_token=WETH,
+    oracle=MORPHO_ORACLE_ADDR,
+    irm=MORPHO_IRM_ADDR,
+    lltv=LLTV_86,
+)
+
+
+# ---------------------------------------------------------------------------
+# Market Id
+# ---------------------------------------------------------------------------
+
+
+class TestMorphoMarketId:
+    def test_matches_offline_vector(self):
+        assert MARKET.id == EXPECTED_MARKET_ID
+
+    def test_cross_check_against_eth_abi(self):
+        """Independent path: raw eth_abi.encode + keccak, not the ABIStruct."""
+        from eth_abi import encode
+        from eth_utils import keccak
+
+        expected = keccak(
+            encode(
+                ["address", "address", "address", "address", "uint256"],
+                [bytes(USDC.address), bytes(WETH.address), bytes(MORPHO_ORACLE_ADDR), bytes(MORPHO_IRM_ADDR), LLTV_86],
+            )
+        )
+        assert MARKET.id == expected
+
+    def test_field_order_matters(self):
+        """Swapping loan / collateral must yield a different market."""
+        swapped = MarketParams(
+            loan_token=WETH,
+            collateral_token=USDC,
+            oracle=MORPHO_ORACLE_ADDR,
+            irm=MORPHO_IRM_ADDR,
+            lltv=LLTV_86,
+        )
+        assert swapped.id != MARKET.id
+
+
+# ---------------------------------------------------------------------------
+# Interest accrual
+# ---------------------------------------------------------------------------
+
+
+def _state(*, fee: int = 0) -> MarketState:
+    return MarketState(
+        total_supply_assets=1_000_000,
+        total_supply_shares=1_000_000,
+        total_borrow_assets=500_000,
+        total_borrow_shares=500_000,
+        last_update=1_700_000_000,
+        fee=fee,
+    )
+
+
+class TestMorphoAccrueInterest:
+    def test_zero_elapsed_is_noop(self):
+        state = _state()
+        assert accrue_interest(state, 10**9, 0) is state
+
+    def test_no_debt_is_noop(self):
+        no_debt = MarketState(1_000_000, 1_000_000, 0, 0, 1_700_000_000, 0)
+        assert accrue_interest(no_debt, 10**9, 3_600) is no_debt
+
+    def test_interest_grows_both_sides_equally(self):
+        accrued = accrue_interest(_state(), 10**9, SECONDS_PER_YEAR)
+        borrow_interest = accrued.total_borrow_assets - 500_000
+        assert borrow_interest > 0
+        # With no fee, every unit of borrow interest is credited to suppliers.
+        assert accrued.total_supply_assets - 1_000_000 == borrow_interest
+        assert accrued.total_supply_shares == 1_000_000
+
+    def test_fee_mints_supply_shares(self):
+        accrued = accrue_interest(_state(fee=10**17), 10**9, SECONDS_PER_YEAR)
+        assert accrued.total_supply_shares > 1_000_000
+
+
+# ---------------------------------------------------------------------------
+# Health factor
+# ---------------------------------------------------------------------------
+
+# Oracle price of WETH (18 dec) in USDC (6 dec), 1e36-scaled: $3000 -> 3000e24.
+_WETH_PRICE = 3_000 * 10**24
+
+
+class TestMorphoHealthFactor:
+    def test_no_debt_is_infinite(self):
+        assert compute_health_factor(10**18, 0, _WETH_PRICE, LLTV_86).is_infinite()
+
+    def test_known_value(self):
+        # 1 WETH collateral @ $3000, 86% LLTV -> max borrow 2580 USDC.
+        # Borrowing 1290 USDC leaves a health factor of exactly 2.
+        hf = compute_health_factor(10**18, 1_290 * 10**6, _WETH_PRICE, LLTV_86)
+        assert hf == Decimal(2)
+
+    def test_liquidatable_below_one(self):
+        hf = compute_health_factor(10**18, 2_600 * 10**6, _WETH_PRICE, LLTV_86)
+        assert hf < Decimal(1)
+
+
+# ---------------------------------------------------------------------------
+# Supply APY derivation
+# ---------------------------------------------------------------------------
+
+
+class TestMorphoSupplyApy:
+    def test_empty_market_is_zero(self):
+        assert supply_apy_from_borrow(10**9, MarketState(0, 0, 0, 0, 0, 0)) == Decimal(0)
+
+    def test_below_borrow_apy_when_partially_utilized(self):
+        # 50% utilization -> suppliers earn strictly less than the borrow rate.
+        half_used = MarketState(2_000_000, 2_000_000, 1_000_000, 1_000_000, 0, 0)
+        supply_apy = supply_apy_from_borrow(10**9, half_used)
+        assert Decimal(0) < supply_apy < per_second_rate_to_apy(10**9)
+
+
+# ---------------------------------------------------------------------------
+# Tx-builder calldata encoding
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def morpho() -> MorphoBlue:
+    return MorphoBlue(
+        w3=None,  # type: ignore[arg-type]
+        chain_id=ChainId.ETHEREUM,
+        morpho_address=MORPHO_BLUE_ADDR,
+    )
+
+
+def _assert_market_struct(struct: tuple) -> None:
+    """Assert a decoded MarketParams struct matches :data:`MARKET`."""
+    loan, collateral, oracle, irm, lltv = struct
+    assert Address(loan) == USDC.address
+    assert Address(collateral) == WETH.address
+    assert Address(oracle) == MORPHO_ORACLE_ADDR
+    assert Address(irm) == MORPHO_IRM_ADDR
+    assert lltv == LLTV_86
+
+
+#: supply / withdraw / borrow / repay share one calldata shape —
+#: ``(MarketParams, assets, shares, onBehalf, data|receiver)``. ``extra`` is
+#: the builder-specific trailing kwarg; ``trailing`` its expected decoded value.
+_AMOUNT_BUILDERS = [
+    pytest.param("build_supply_tx", MORPHO_BLUE.fns.supply, {}, b"", id="supply"),
+    pytest.param("build_withdraw_tx", MORPHO_BLUE.fns.withdraw, {"receiver": ETH_WHALE}, ETH_WHALE, id="withdraw"),
+    pytest.param("build_borrow_tx", MORPHO_BLUE.fns.borrow, {"receiver": ETH_WHALE}, ETH_WHALE, id="borrow"),
+    pytest.param("build_repay_tx", MORPHO_BLUE.fns.repay, {}, b"", id="repay"),
+]
+
+
+@pytest.mark.parametrize("method, abi_fn, extra, trailing", _AMOUNT_BUILDERS)
+class TestMorphoAmountBuilders:
+    """supply / withdraw / borrow / repay — MarketParams + an assets-XOR-shares
+    amount, all encoded the same way."""
+
+    def test_by_assets(self, morpho: MorphoBlue, method, abi_fn, extra, trailing):
+        amount = TokenAmount.from_human(USDC, "1000")
+        tx = getattr(morpho, method)(MARKET, assets=amount, on_behalf_of=ETH_WHALE, **extra)
+        assert Address(tx["to"]) == MORPHO_BLUE_ADDR
+        assert tx["value"] == "0"
+        struct, assets, shares, on_behalf, last = decode_call(tx, abi_fn)
+        _assert_market_struct(struct)
+        assert (assets, shares, on_behalf, last) == (amount.amount, 0, ETH_WHALE, trailing)
+
+    def test_by_shares(self, morpho: MorphoBlue, method, abi_fn, extra, trailing):
+        tx = getattr(morpho, method)(MARKET, shares=12_345, on_behalf_of=ETH_WHALE, **extra)
+        _struct, assets, shares, *_ = decode_call(tx, abi_fn)
+        assert (assets, shares) == (0, 12_345)
+
+    def test_requires_exactly_one_amount(self, morpho: MorphoBlue, method, abi_fn, extra, trailing):
+        build = getattr(morpho, method)
+        with pytest.raises(ValueError):  # neither assets nor shares
+            build(MARKET, on_behalf_of=ETH_WHALE, **extra)
+        with pytest.raises(ValueError):  # both
+            build(MARKET, assets=TokenAmount.from_human(USDC, "1"), shares=1, on_behalf_of=ETH_WHALE, **extra)
+
+    def test_rejects_zero_amount(self, morpho: MorphoBlue, method, abi_fn, extra, trailing):
+        """A zero amount would encode the assets=0, shares=0 payload Morpho rejects."""
+        build = getattr(morpho, method)
+        with pytest.raises(ValueError):  # zero assets
+            build(MARKET, assets=TokenAmount(USDC, 0), on_behalf_of=ETH_WHALE, **extra)
+        with pytest.raises(ValueError):  # zero shares
+            build(MARKET, shares=0, on_behalf_of=ETH_WHALE, **extra)
+
+
+#: supply / withdraw collateral — ``(MarketParams, assets, onBehalf, data|receiver)``.
+_COLLATERAL_BUILDERS = [
+    pytest.param("build_supply_collateral_tx", MORPHO_BLUE.fns.supplyCollateral, (ETH_WHALE,), b"", id="supply"),
+    pytest.param(
+        "build_withdraw_collateral_tx",
+        MORPHO_BLUE.fns.withdrawCollateral,
+        (ETH_WHALE, ETH_WHALE),
+        ETH_WHALE,
+        id="withdraw",
+    ),
+]
+
+
+@pytest.mark.parametrize("method, abi_fn, args, trailing", _COLLATERAL_BUILDERS)
+def test_morpho_collateral_builder(morpho: MorphoBlue, method, abi_fn, args, trailing):
+    amount = TokenAmount.from_human(WETH, "2")
+    struct, assets, on_behalf, last = decode_call(getattr(morpho, method)(MARKET, amount, *args), abi_fn)
+    _assert_market_struct(struct)
+    assert (assets, on_behalf, last) == (amount.amount, ETH_WHALE, trailing)
+
+
+class TestMorphoBuildOtherTxs:
+    @pytest.mark.parametrize("flag", [True, False])
+    def test_set_authorization(self, morpho: MorphoBlue, flag: bool):
+        authorized, is_authorized = decode_call(
+            morpho.build_set_authorization_tx(ETH_WHALE, flag), MORPHO_BLUE.fns.setAuthorization
+        )
+        assert authorized == ETH_WHALE
+        assert is_authorized is flag
+
+    def test_create_market(self, morpho: MorphoBlue):
+        tx = morpho.build_create_market_tx(MARKET)
+        # createMarket has a single struct input, which decode_input unwraps.
+        struct = MORPHO_BLUE.fns.createMarket.decode_input(HexBytes(tx["data"]))
+        _assert_market_struct(struct)
+
+    def test_flashloan(self, morpho: MorphoBlue):
+        amount = TokenAmount.from_human(USDC, "10000")
+        token, raw_amount, data = decode_call(morpho.build_flashloan_tx(USDC, amount), MORPHO_BLUE.fns.flashLoan)
+        assert token == USDC.address
+        assert raw_amount == amount.amount
+        assert data == b""
+
+
+# ---------------------------------------------------------------------------
+# Deployment registry sanity
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("chain", chains_for("MORPHO_BLUE"))
+def test_morpho_blue_deployment_pinned(chain: int):
+    """Every pinned Morpho Blue address resolves to a 20-byte address."""
+    from pydefi.deployments import get_address
+
+    addr = get_address("MORPHO_BLUE", chain)
+    assert len(addr) == 20, f"MORPHO_BLUE on {chain}: {addr.hex()!r}"
+
+
+# ===========================================================================
+# Aave V4
+# ===========================================================================
+
+#: MAIN_SPOKE on Ethereum — the Spoke the unit-test client is bound to.
+AAVE_V4_SPOKE_ADDR = Address("0x94e7A5dCbE816e498b89aB752661904E2F56c485")
+
+#: Every pinned Aave V4 Hub / Spoke deployment name.
+_AAVE_V4_DEPLOYMENTS = [
+    "AAVE_V4_CORE_HUB",
+    "AAVE_V4_PLUS_HUB",
+    "AAVE_V4_PRIME_HUB",
+    "AAVE_V4_MAIN_SPOKE",
+    "AAVE_V4_BLUECHIP_SPOKE",
+    "AAVE_V4_TREASURY_SPOKE",
+    "AAVE_V4_GOLD_SPOKE",
+    "AAVE_V4_FOREX_SPOKE",
+    "AAVE_V4_LOMBARD_BTC_SPOKE",
+    "AAVE_V4_ETHENA_CORRELATED_SPOKE",
+    "AAVE_V4_ETHENA_ECOSYSTEM_SPOKE",
+    "AAVE_V4_ETHERFI_ESPOKE",
+    "AAVE_V4_KELP_ESPOKE",
+    "AAVE_V4_LIDO_ESPOKE",
+]
+
+
+# ---------------------------------------------------------------------------
+# Health-factor parsing
+# ---------------------------------------------------------------------------
+
+
+class TestAaveV4HealthFactor:
+    def test_finite(self):
+        assert aave_v4.parse_health_factor(15 * 10**17) == Decimal("1.5")
+
+    def test_infinite_when_no_debt(self):
+        assert aave_v4.parse_health_factor(UINT256_MAX).is_infinite()
+
+    def test_user_account_data_construction(self):
+        data = aave_v4.V4UserAccountData(
+            risk_premium=50,
+            avg_collateral_factor=8 * 10**17,
+            health_factor=Decimal("2"),
+            total_collateral_value=1_000,
+            total_debt_value_ray=500 * 10**27,
+            active_collateral_count=2,
+            borrow_count=1,
+        )
+        assert data.health_factor == Decimal("2")
+        assert data.borrow_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Tx-builder calldata encoding
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def aave_v4_spoke() -> aave_v4.AaveV4:
+    return aave_v4.AaveV4(
+        w3=None,  # type: ignore[arg-type]
+        chain_id=ChainId.ETHEREUM,
+        spoke_address=AAVE_V4_SPOKE_ADDR,
+    )
+
+
+class TestAaveV4BuildTxs:
+    @pytest.mark.parametrize(
+        "method, abi_fn",
+        [
+            ("build_supply_tx", AAVE_V4_SPOKE.fns.supply),
+            ("build_withdraw_tx", AAVE_V4_SPOKE.fns.withdraw),
+            ("build_borrow_tx", AAVE_V4_SPOKE.fns.borrow),
+            ("build_repay_tx", AAVE_V4_SPOKE.fns.repay),
+        ],
+        ids=["supply", "withdraw", "borrow", "repay"],
+    )
+    def test_amount_builders(self, aave_v4_spoke: aave_v4.AaveV4, method, abi_fn):
+        """supply / withdraw / borrow / repay all encode (reserveId, amount, onBehalfOf)."""
+        amount = TokenAmount.from_human(USDC, "1000")
+        tx = getattr(aave_v4_spoke, method)(7, amount, ETH_WHALE)
+        assert Address(tx["to"]) == AAVE_V4_SPOKE_ADDR
+        assert tx["value"] == "0"
+        reserve_id, raw_amount, on_behalf = decode_call(tx, abi_fn)
+        assert reserve_id == 7
+        assert raw_amount == amount.amount
+        assert on_behalf == ETH_WHALE
+
+    @pytest.mark.parametrize("flag", [True, False])
+    def test_set_collateral(self, aave_v4_spoke: aave_v4.AaveV4, flag: bool):
+        reserve_id, use_as_collateral, on_behalf = decode_call(
+            aave_v4_spoke.build_set_collateral_tx(3, flag, ETH_WHALE), AAVE_V4_SPOKE.fns.setUsingAsCollateral
+        )
+        assert reserve_id == 3
+        assert use_as_collateral is flag
+        assert on_behalf == ETH_WHALE
+
+    def test_liquidation_call(self, aave_v4_spoke: aave_v4.AaveV4):
+        amount = TokenAmount.from_human(USDC, "250")
+        collat_id, debt_id, user, debt_to_cover, receive_shares = decode_call(
+            aave_v4_spoke.build_liquidation_call_tx(0, 7, ETH_WHALE, amount, receive_shares=True),
+            AAVE_V4_SPOKE.fns.liquidationCall,
+        )
+        assert (collat_id, debt_id) == (0, 7)
+        assert user == ETH_WHALE
+        assert debt_to_cover == amount.amount
+        assert receive_shares is True
+
+    @pytest.mark.parametrize("approve", [True, False])
+    def test_set_position_manager(self, aave_v4_spoke: aave_v4.AaveV4, approve: bool):
+        manager = Address("0x" + "ad" * 20)
+        decoded_manager, decoded_approve = decode_call(
+            aave_v4_spoke.build_set_position_manager_tx(manager, approve), AAVE_V4_SPOKE.fns.setUserPositionManager
+        )
+        assert decoded_manager == manager
+        assert decoded_approve is approve
+
+    def test_from_chain_resolves_named_spoke(self):
+        from pydefi.deployments import get_address
+
+        spoke = aave_v4.AaveV4.from_chain(None, ChainId.ETHEREUM, "GOLD_SPOKE")  # type: ignore[arg-type]
+        assert spoke.spoke_address == get_address("AAVE_V4_GOLD_SPOKE", ChainId.ETHEREUM)
+
+
+# ---------------------------------------------------------------------------
+# Deployment registry sanity
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("name", _AAVE_V4_DEPLOYMENTS)
+def test_aave_v4_deployment_pinned(name: str):
+    """Every pinned Aave V4 Hub / Spoke resolves to a 20-byte address."""
+    from pydefi.deployments import get_address
+
+    addr = get_address(name, ChainId.ETHEREUM)
+    assert len(addr) == 20, f"{name}: {addr.hex()!r}"
+
+
+# ---------------------------------------------------------------------------
+# Aave V4 — TokenizationSpoke (ERC-4626 vault)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def aave_v4_vault() -> aave_v4.AaveV4TokenizationSpoke:
+    return aave_v4.AaveV4TokenizationSpoke(
+        w3=None,  # type: ignore[arg-type]
+        chain_id=ChainId.ETHEREUM,
+        spoke_address=AAVE_V4_SPOKE_ADDR,
+        asset_token=USDC,
+    )
+
+
+class TestAaveV4TokenizationSpoke:
+    def test_to_and_value(self, aave_v4_vault: aave_v4.AaveV4TokenizationSpoke):
+        tx = aave_v4_vault.build_mint_tx(1_000, ETH_WHALE)
+        assert Address(tx["to"]) == AAVE_V4_SPOKE_ADDR
+        assert tx["value"] == "0"
+
+    def test_deposit(self, aave_v4_vault: aave_v4.AaveV4TokenizationSpoke):
+        amount = TokenAmount.from_human(USDC, "100")
+        assets, receiver = decode_call(
+            aave_v4_vault.build_deposit_tx(amount, ETH_WHALE), AAVE_V4_TOKENIZATION_SPOKE.fns.deposit
+        )
+        assert assets == amount.amount
+        assert receiver == ETH_WHALE
+
+    def test_mint(self, aave_v4_vault: aave_v4.AaveV4TokenizationSpoke):
+        shares, receiver = decode_call(
+            aave_v4_vault.build_mint_tx(12_345, ETH_WHALE), AAVE_V4_TOKENIZATION_SPOKE.fns.mint
+        )
+        assert shares == 12_345
+        assert receiver == ETH_WHALE
+
+    def test_withdraw(self, aave_v4_vault: aave_v4.AaveV4TokenizationSpoke):
+        amount = TokenAmount.from_human(USDC, "50")
+        assets, receiver, owner = decode_call(
+            aave_v4_vault.build_withdraw_tx(amount, ETH_WHALE, ETH_WHALE), AAVE_V4_TOKENIZATION_SPOKE.fns.withdraw
+        )
+        assert assets == amount.amount
+        assert receiver == ETH_WHALE
+        assert owner == ETH_WHALE
+
+    def test_redeem(self, aave_v4_vault: aave_v4.AaveV4TokenizationSpoke):
+        shares, receiver, owner = decode_call(
+            aave_v4_vault.build_redeem_tx(999, ETH_WHALE, ETH_WHALE), AAVE_V4_TOKENIZATION_SPOKE.fns.redeem
+        )
+        assert shares == 999
+        assert receiver == ETH_WHALE
+        assert owner == ETH_WHALE

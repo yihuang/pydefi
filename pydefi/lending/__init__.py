@@ -1,18 +1,26 @@
 """
 Lending protocol integrations.
 
-There is no shared abstract base — Aave V3 and Compound III have
-incompatible models (per-reserve markets with aTokens vs single-base-asset
-Comet proxies), so each protocol lives as its own self-contained module:
+There is no shared abstract base — Aave V3, Compound III, Morpho Blue and
+Aave V4 have incompatible models (per-reserve pool with aTokens vs
+single-base-asset Comet proxies vs isolated markets keyed by
+``MarketParams`` vs Hub-and-Spoke), so each protocol lives as its own
+self-contained module:
 
 * :mod:`pydefi.lending.aave_v3` — Aave V3 client, the Aave-specific
   ``ReserveData`` / ``UserAccountData`` / ``EModeCategory`` types, and
   the RAY rate-model helper (``ray_rate_to_apy``).
 * :mod:`pydefi.lending.compound_v3` — Compound III (Comet) client plus
-  its own ``CompoundMarketData`` / ``CompoundUserPosition`` types and
-  per-second rate-model helper.
+  its own ``CompoundMarketData`` / ``CompoundUserPosition`` types.
+* :mod:`pydefi.lending.morpho` — Morpho Blue client, the ``MarketParams``
+  / ``MarketState`` / ``MorphoMarket`` / ``MorphoPosition`` types, and the
+  pure shares / interest / health-factor math.
+* :mod:`pydefi.lending.aave_v4` — Aave V4 client (Hub-and-Spoke), the
+  ``V4Reserve`` / ``V4ReserveData`` / ``V4UserReserve`` /
+  ``V4UserAccountData`` types.
 * :mod:`pydefi.lending.utils` — shared helpers (``UINT256_MAX``,
-  ``SECONDS_PER_YEAR``, ``resolve_amount``, ``to_tx``).
+  ``SECONDS_PER_YEAR``, ``resolve_amount``, ``to_tx``, and the per-second
+  ``per_second_rate_to_apy`` used by both Compound III and Morpho).
 
 Quick-start::
 
@@ -43,7 +51,10 @@ Three ways to construct a client:
 
 ``CompoundV3`` mirrors the first and third: ``CompoundV3.from_chain(w3,
 chain_id, "USDC")`` (Comet markets are keyed by base asset) or the
-explicit ``CompoundV3(w3, chain_id, comet_address)``.
+explicit ``CompoundV3(w3, chain_id, comet_address)``. ``MorphoBlue`` is
+constructed with ``MorphoBlue.from_chain(w3, chain_id)`` (the Morpho core
+is one immutable singleton per chain) and every call is scoped to a
+``MarketParams``.
 """
 
 from pydefi.lending.aave_v3 import (
@@ -55,25 +66,60 @@ from pydefi.lending.aave_v3 import (
     UserReserveData,
     ray_rate_to_apy,
 )
+from pydefi.lending.aave_v4 import (
+    AaveV4,
+    AaveV4TokenizationSpoke,
+    V4Reserve,
+    V4ReserveData,
+    V4TokenizedPosition,
+    V4UserAccountData,
+    V4UserReserve,
+)
 from pydefi.lending.compound_v3 import (
     CompoundCollateralInfo,
     CompoundMarketData,
     CompoundUserPosition,
     CompoundV3,
 )
-from pydefi.lending.utils import SECONDS_PER_YEAR
+from pydefi.lending.morpho import (
+    MarketParams,
+    MarketState,
+    MorphoBlue,
+    MorphoMarket,
+    MorphoPosition,
+    accrue_interest,
+    compute_health_factor,
+    supply_apy_from_borrow,
+)
+from pydefi.lending.utils import SECONDS_PER_YEAR, per_second_rate_to_apy
 
 __all__ = [
     "AaveV3",
+    "AaveV4",
+    "AaveV4TokenizationSpoke",
     "CompoundCollateralInfo",
     "CompoundMarketData",
     "CompoundUserPosition",
     "CompoundV3",
     "EModeCategory",
+    "MarketParams",
+    "MarketState",
+    "MorphoBlue",
+    "MorphoMarket",
+    "MorphoPosition",
     "ReserveData",
     "UserAccountData",
     "UserReserveData",
+    "V4Reserve",
+    "V4ReserveData",
+    "V4TokenizedPosition",
+    "V4UserAccountData",
+    "V4UserReserve",
     "RAY",
     "SECONDS_PER_YEAR",
+    "accrue_interest",
+    "compute_health_factor",
+    "per_second_rate_to_apy",
     "ray_rate_to_apy",
+    "supply_apy_from_borrow",
 ]

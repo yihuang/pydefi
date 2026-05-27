@@ -2,8 +2,7 @@
 
 Parametrized over both supported source chains:
 
-* MANTRA (5888) — Hyperlane adapter, discovered at runtime via
-  :func:`pydefi.bridge.lucid.discover_adapter`.
+* MANTRA (5888) — Hyperlane adapter, pinned in ``deployments.py``.
 * Kite (2366) — LayerZero adapter, pinned in ``deployments.py``.
 
 Run with::
@@ -17,7 +16,7 @@ import pytest
 from web3 import AsyncWeb3
 
 from pydefi.abi.bridge import LUCID_ASSET_CONTROLLER
-from pydefi.bridge.lucid import LucidBridge, discover_adapter
+from pydefi.bridge.lucid import LucidBridge
 from pydefi.deployments import get_address, get_token
 from pydefi.rpc import get_w3
 from pydefi.types import Address, ChainId, TokenAmount
@@ -48,15 +47,17 @@ async def src(request) -> tuple[int, AsyncWeb3]:
 
 
 def _ctrl_addr(name: str, src_chain_id: int) -> Address:
-    return Address(bytes.fromhex(get_address(name, src_chain_id)[2:]))
+    return get_address(name, src_chain_id)
 
 
-async def _adapter_addr(src_chain_id: int, w3: AsyncWeb3, controller: Address) -> Address:
-    # Kite has the LZ adapter pinned in deployments.py; MANTRA's Hyperlane
-    # adapter isn't published, so discover it from on-chain events.
-    if src_chain_id == ChainId.KITE:
-        return Address(bytes.fromhex(get_address("LUCID_LAYERZERO_ADAPTER", src_chain_id)[2:]))
-    return await discover_adapter(w3, controller)
+_ADAPTER_BY_SRC = {
+    ChainId.KITE: "LUCID_LAYERZERO_ADAPTER",
+    ChainId.MANTRA: "LUCID_HYPERLANE_ADAPTER",
+}
+
+
+def _adapter_addr(src_chain_id: int) -> Address:
+    return get_address(_ADAPTER_BY_SRC[src_chain_id], src_chain_id)
 
 
 def _all_controllers() -> list[tuple[int, str]]:
@@ -107,14 +108,12 @@ class TestLucidBridgeLive:
     """End-to-end exercise of ``LucidBridge`` against live contracts on each source."""
 
     async def _client(self, src_chain_id: int, w3: AsyncWeb3, controller_name: str) -> LucidBridge:
-        ctrl = _ctrl_addr(controller_name, src_chain_id)
-        adapter = await _adapter_addr(src_chain_id, w3, ctrl)
         return LucidBridge(
             w3=w3,
             src_chain_id=src_chain_id,
             dst_chain_id=_LANES[src_chain_id][controller_name][1],
-            controller_address=ctrl,
-            adapter_address=adapter,
+            controller_address=_ctrl_addr(controller_name, src_chain_id),
+            adapter_address=_adapter_addr(src_chain_id),
         )
 
     async def test_quote_native_fee_positive_usdc(self, src):

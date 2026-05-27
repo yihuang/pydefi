@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from web3 import AsyncWeb3, Web3
 
+from pydefi.deployments import get_token
 from pydefi.exceptions import BridgeError
 from pydefi.lending.aave_v3 import ReserveData
 from pydefi.types import Address, ChainId, Token, TokenAmount
@@ -25,7 +26,14 @@ from pydefi.yields import (
     rebalance_tick,
     wait_for_bridge_settlement,
 )
-from pydefi.yields.router import Protocol, Strategy, YieldStep
+from pydefi.yields.router import (
+    Protocol,
+    Strategy,
+    YieldStep,
+    _morpho_markets,
+    aave_v4_ref,
+    morpho_id,
+)
 
 # ---------------------------------------------------------------------------
 # Tokens / addresses / canned tx dicts (shared across every test)
@@ -126,6 +134,7 @@ async def test_get_yield_markets_sorts_by_apy_descending():
         patch("pydefi.yields.router.get_token", side_effect=_stub_get_token),
         patch("pydefi.yields.router._aave_market", new=fake_aave),
         patch("pydefi.yields.router._compound_market", new=fake_comet),
+        patch("pydefi.yields.router._morpho_markets", new=AsyncMock(return_value=[])),
     ):
         out = await get_yield_markets(
             "USDC", w3s={ChainId.BASE: object(), ChainId.OPTIMISM: object()}, chains=[ChainId.BASE, ChainId.OPTIMISM]
@@ -166,6 +175,7 @@ async def test_get_yield_markets_skips_unscannable_chains(w3s, chains):
     with (
         patch("pydefi.yields.router._aave_market", new=aave),
         patch("pydefi.yields.router._compound_market", new=comet),
+        patch("pydefi.yields.router._morpho_markets", new=AsyncMock(return_value=[])),
     ):
         out = await get_yield_markets("USDC", w3s=w3s, chains=chains)
     assert out == []
@@ -185,6 +195,126 @@ async def test_get_yield_markets_protocols_filter():
         await get_yield_markets("USDC", w3s={ChainId.BASE: object()}, chains=[ChainId.BASE], protocols=["aave_v3"])
     assert aave.await_count == 1
     assert comet.await_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Morpho discovery
+# ---------------------------------------------------------------------------
+
+_USDC_BASE_ADDR = get_token("USDC", ChainId.BASE).address.to_0x_hex()
+
+
+def _morpho_api_item(unique_key: str, chain_id: int, symbol: str, address: str, decimals: int, apy: float) -> dict:
+    """One raw item shaped like the Morpho indexer's ``markets.items[]``."""
+    return {
+        "uniqueKey": unique_key,
+        "morphoBlue": {"chain": {"id": chain_id}},
+        "loanAsset": {"symbol": symbol, "address": address, "decimals": decimals},
+        "state": {"supplyApy": apy, "utilization": 0.8, "liquidityAssets": "1000000"},
+    }
+
+
+def testmorpho_id_round_trips_market_id():
+    market = dataclasses.replace(_market("morpho", ChainId.BASE, USDC_BASE), market_id="morpho:8453:0x" + "ab" * 32)
+    assert morpho_id(market) == bytes.fromhex("ab" * 32)
+
+
+def testmorpho_id_rejects_non_morpho_market():
+    with pytest.raises(ValueError):
+        morpho_id(_market("aave_v3", ChainId.BASE, USDC_BASE))
+
+
+@pytest.mark.asyncio
+async def test_morpho_markets_filters_by_loan_symbol():
+    # The indexer returns markets for every loan asset; only USDC-loan ones
+    # are surfaced, and the indexer's deepest-supply-first order is preserved.
+    canned = [
+        _morpho_api_item("0x" + "a1" * 32, 8453, "USDC", _USDC_BASE_ADDR, 6, 0.05),
+        _morpho_api_item("0x" + "a2" * 32, 8453, "USDC", _USDC_BASE_ADDR, 6, 0.04),
+        _morpho_api_item("0x" + "b1" * 32, 8453, "WETH", "0x" + "ee" * 20, 18, 0.09),
+        _morpho_api_item("0x" + "a3" * 32, 8453, "USDC", _USDC_BASE_ADDR, 6, 0.03),
+    ]
+    with patch("pydefi.yields.router._fetch_morpho_markets", new=AsyncMock(return_value=canned)):
+        out = await _morpho_markets("USDC", [ChainId.BASE])
+
+    assert [m.market_id for m in out] == [
+        "morpho:8453:0x" + "a1" * 32,
+        "morpho:8453:0x" + "a2" * 32,
+        "morpho:8453:0x" + "a3" * 32,
+    ]
+    assert all(m.protocol == "morpho" and m.token.symbol == "USDC" and m.token.decimals == 6 for m in out)
+    assert out[0].supply_apy == Decimal("0.05")
+    assert out[0].available_liquidity.amount == 1_000_000
+
+
+@pytest.mark.asyncio
+async def test_morpho_markets_skips_malformed_items():
+    # A malformed indexer item — missing loanAsset.address — must be skipped,
+    # not raised on, so one bad row never breaks the whole markets list.
+    good = _morpho_api_item("0x" + "a1" * 32, 8453, "USDC", _USDC_BASE_ADDR, 6, 0.05)
+    no_address = _morpho_api_item("0x" + "a2" * 32, 8453, "USDC", _USDC_BASE_ADDR, 6, 0.04)
+    del no_address["loanAsset"]["address"]
+    with patch("pydefi.yields.router._fetch_morpho_markets", new=AsyncMock(return_value=[no_address, good])):
+        out = await _morpho_markets("USDC", [ChainId.BASE])
+
+    assert [m.market_id for m in out] == ["morpho:8453:0x" + "a1" * 32]
+
+
+@pytest.mark.asyncio
+async def test_fetch_morpho_markets_paginates_until_short_page():
+    # The indexer ranks across all assets, so discovery pages through every
+    # market — full pages accumulate and the walk stops on the first short one.
+    from pydefi.yields.router import _MORPHO_PAGE_SIZE, _fetch_morpho_markets
+
+    full = [{"uniqueKey": "k"}] * _MORPHO_PAGE_SIZE
+    pages = [full, full, [{"uniqueKey": "tail"}]]
+    with patch("pydefi.yields.router._fetch_morpho_page", new=AsyncMock(side_effect=pages)) as page:
+        out = await _fetch_morpho_markets([ChainId.BASE])
+
+    assert len(out) == 2 * _MORPHO_PAGE_SIZE + 1
+    assert page.await_count == 3  # stopped after the short final page
+
+
+@pytest.mark.asyncio
+async def test_get_yield_markets_includes_morpho():
+    canned = [_morpho_api_item("0x" + "c1" * 32, 8453, "USDC", _USDC_BASE_ADDR, 6, 0.06)]
+    with (
+        patch("pydefi.yields.router._aave_market", new=AsyncMock(return_value=None)),
+        patch("pydefi.yields.router._compound_market", new=AsyncMock(return_value=None)),
+        patch("pydefi.yields.router._fetch_morpho_markets", new=AsyncMock(return_value=canned)),
+    ):
+        out = await get_yield_markets("USDC", w3s={ChainId.BASE: object()}, chains=[ChainId.BASE])
+
+    assert [m.protocol for m in out] == ["morpho"]
+    assert out[0].market_id == "morpho:8453:0x" + "c1" * 32
+
+
+# ---------------------------------------------------------------------------
+# Aave V4 discovery
+# ---------------------------------------------------------------------------
+
+
+def testaave_v4_ref_parses_market_id():
+    market = dataclasses.replace(_market("aave_v4", ChainId.ETHEREUM, USDC_BASE), market_id="aave_v4:1:MAIN_SPOKE:7")
+    assert aave_v4_ref(market) == ("MAIN_SPOKE", 7)
+
+
+def testaave_v4_ref_rejects_non_v4_market():
+    with pytest.raises(ValueError):
+        aave_v4_ref(_market("aave_v3", ChainId.ETHEREUM, USDC_BASE))
+
+
+@pytest.mark.asyncio
+async def test_get_yield_markets_skips_aave_v4_off_ethereum():
+    """Aave V4 is Ethereum-only — _aave_v4_market returns None elsewhere
+    without touching the RPC, so non-Ethereum scans stay V4-free."""
+    with (
+        patch("pydefi.yields.router._aave_market", new=AsyncMock(return_value=None)),
+        patch("pydefi.yields.router._compound_market", new=AsyncMock(return_value=None)),
+        patch("pydefi.yields.router._morpho_markets", new=AsyncMock(return_value=[])),
+    ):
+        out = await get_yield_markets("USDC", w3s={ChainId.BASE: object()}, chains=[ChainId.BASE])
+    assert out == []
 
 
 def test_yield_market_is_frozen_dataclass():

@@ -24,7 +24,7 @@ from eth_contract.erc20 import ERC20
 
 from pydefi.deployments import get_address
 from pydefi.lending import AaveV3, CompoundV3
-from pydefi.types import Address, ChainId, TokenAmount
+from pydefi.types import ChainId, TokenAmount
 from pydefi.yields import YieldMarket, YieldRoute, build_yield_route
 from pydefi.yields.router import Protocol
 from tests.addrs import ETH_WHALE, USDC
@@ -34,7 +34,7 @@ from tests.live.anvil_helpers import fund_usdc, impersonate, send_tx, set_balanc
 # Pinned addresses + per-test constants
 # ---------------------------------------------------------------------------
 
-COMET_USDC = Address(get_address("COMPOUND_V3_USDC", ChainId.ETHEREUM))
+COMET_USDC = get_address("COMPOUND_V3_USDC", ChainId.ETHEREUM)
 
 USDC_TEST_AMOUNT = 1_000 * 10**6  # 1000 USDC
 

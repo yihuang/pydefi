@@ -12,11 +12,13 @@ from eth_contract.erc20 import ERC20
 from web3 import AsyncWeb3
 
 from pydefi.abi.lending import COMPOUND_V3_COMET
-from pydefi.deployments import address_for, comet_contract_for
+from pydefi.deployments import comet_contract_for, get_address
 from pydefi.exceptions import BridgeError
 from pydefi.lending.aave_v3 import AaveV3
+from pydefi.lending.aave_v4 import AaveV4
+from pydefi.lending.morpho import MorphoBlue
 from pydefi.types import Address, TokenAmount
-from pydefi.yields.router import Protocol, YieldMarket, get_yield_markets
+from pydefi.yields.router import Protocol, YieldMarket, aave_v4_ref, get_yield_markets, morpho_params
 
 logger = logging.getLogger(__name__)
 
@@ -39,9 +41,22 @@ async def _aave_balance(market: YieldMarket, user: Address, w3: AsyncWeb3) -> To
 async def _compound_balance(market: YieldMarket, user: Address, w3: AsyncWeb3) -> TokenAmount:
     # Direct balanceOf — get_user_position would also iterate every collateral
     # via collateralBalanceOf, wasted RPC for a pure supply read.
-    comet_address = address_for(comet_contract_for(market.token.symbol), market.chain_id)
+    comet_address = get_address(comet_contract_for(market.token.symbol), market.chain_id)
     balance = await COMPOUND_V3_COMET.fns.balanceOf(user).call(w3, to=comet_address)
     return TokenAmount(token=market.token, amount=int(balance))
+
+
+async def _morpho_balance(market: YieldMarket, user: Address, w3: AsyncWeb3) -> TokenAmount:
+    morpho = MorphoBlue.from_chain(w3, market.chain_id)
+    params = await morpho_params(morpho, market)
+    position = await morpho.get_position(user, params)
+    return position.supply_assets
+
+
+async def _aave_v4_balance(market: YieldMarket, user: Address, w3: AsyncWeb3) -> TokenAmount:
+    spoke_name, reserve_id = aave_v4_ref(market)
+    v4 = AaveV4.from_chain(w3, market.chain_id, spoke_name)
+    return (await v4.get_user_reserve(reserve_id, user, market.token)).supplied
 
 
 async def get_positions(
@@ -60,8 +75,14 @@ async def get_positions(
         w3 = w3s[market.chain_id]
         if market.protocol == "aave_v3":
             balance = await _aave_balance(market, user, w3)
-        else:
+        elif market.protocol == "compound_v3":
             balance = await _compound_balance(market, user, w3)
+        elif market.protocol == "aave_v4":
+            balance = await _aave_v4_balance(market, user, w3)
+        elif market.protocol == "morpho":
+            balance = await _morpho_balance(market, user, w3)
+        else:
+            raise ValueError(f"unknown protocol: {market.protocol!r}")
         if balance.amount > 0:
             logger.debug("get_positions: %s balance=%s", market.market_id, balance.amount)
             out.append(Position(market=market, balance=balance))
