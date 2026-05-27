@@ -750,39 +750,51 @@ class TestAggregationGas:
 
     async def test_fan_in_dag(self, bench_ctx: dict) -> None:
         """Fan-in DAG: 2-leg split → both end in USDC → merged USDC → DAI.
-        SSA-only — multicall can't pass sum-of-prior-legs to a downstream call."""
+        SSA via composer; OKX via DagRouter.dagSwapTo (true DAG executor
+        with per-edge input/output indices); Uniswap multicall can't feed
+        sum-of-prior-legs into a downstream call."""
         w3 = bench_ctx["w3"]
         user = bench_ctx["user"]
         vm_address = bench_ctx["vm_address"]
         dag = await _build_fan_in_dag(w3)
         _print_dag_shape(dag, label="fan-in")
 
-        bal_before = await _balance(w3, DAI.address, user)
-        async with _snapshot_revert(w3):
-            tx = encode_ssa(
-                dag,
-                amount_in=_AMOUNT_IN,
-                min_amount_out=0,
-                recipient=user,
-                vm_address=vm_address,
-            )
-            receipt = await send_ok(
-                w3,
-                user,
-                {"to": tx.to, "data": "0x" + tx.data.hex(), "value": tx.value},
-                "ssa fan-in",
-            )
-            bal_after = await _balance(w3, DAI.address, user)
-            row = BenchRow(
-                path="fan_in_dag",
-                encoder="ssa",
-                gas_used=int(receipt["gasUsed"]),
-                calldata_bytes=len(tx.data),
-                amount_out=int(bal_after - bal_before),
-            )
+        async def run(encoder_name: str, encode: Callable[[], EncodedTx]) -> BenchRow:
+            async with _snapshot_revert(w3):
+                return await _run_encoder(
+                    bench_ctx,
+                    path_name="fan_in_dag",
+                    encoder_name=encoder_name,
+                    token_out=DAI,
+                    encode=encode,
+                )
 
-        _print_table([row])
-        assert row.amount_out > 0, f"expected positive DAI output, got {row.amount_out}"
+        rows = [
+            await run(
+                "ssa",
+                lambda: encode_ssa(
+                    dag,
+                    amount_in=_AMOUNT_IN,
+                    min_amount_out=0,
+                    recipient=user,
+                    vm_address=vm_address,
+                ),
+            ),
+            await run(
+                "okx",
+                lambda: encode_okx(
+                    dag,
+                    amount_in=_AMOUNT_IN,
+                    min_amount_out=0,
+                    recipient=user,
+                    router_address=OKX_DEX_ROUTER_ETHEREUM,
+                    v3_adapter_address=bench_ctx["uni_v3_adapter"],
+                    deadline=_DEADLINE,
+                ),
+            ),
+        ]
+        _print_table(rows)
+        _assert_amount_out_consistent(rows)
 
 
 def _assert_amount_out_consistent(rows: list[BenchRow], *, threshold: float = 0.001) -> None:

@@ -29,8 +29,10 @@ from pydefi.vm.dag import _build_dag_actions
 from pydefi.vm.swap import _pool_to_swap_protocol
 from tests.bench.okx_router_abi import (
     ADDRESS_MASK,
+    INPUT_INDEX_SHIFT,
     OKX_DEX_ROUTER,
     ONE_FOR_ZERO_MASK,
+    OUTPUT_INDEX_SHIFT,
     WEIGHT_SHIFT,
     BaseRequest,
     RouterPath,
@@ -408,6 +410,115 @@ def _encode_okx_smart_batched(
     return EncodedTx(to=router_address, data=bytes(data), value=0)
 
 
+def _dag_raw_data(*, pool: Address, weight_bps: int, input_idx: int, output_idx: int) -> int:
+    """``rawData`` for one DagRouter edge: pool | weight | output_idx | input_idx."""
+    return (
+        _addr_to_uint160(pool)
+        | (weight_bps << WEIGHT_SHIFT)
+        | ((output_idx & 0xFF) << OUTPUT_INDEX_SHIFT)
+        | ((input_idx & 0xFF) << INPUT_INDEX_SHIFT)
+    )
+
+
+def _v3_dag_node(
+    *,
+    swaps: list[tuple[V3PoolEdge, int]],
+    input_idx: int,
+    output_idx: int,
+    from_token: Address,
+    to_token: Address,
+    v3_adapter: bytes,
+) -> RouterPath:
+    """Build one DagRouter node from V3 ``(pool, weight_bps)`` edges that all
+    consume from ``input_idx`` and produce into ``output_idx``."""
+    n = len(swaps)
+    return RouterPath(
+        mixAdapters=[v3_adapter] * n,
+        assetTo=[v3_adapter] * n,
+        rawData=[
+            _dag_raw_data(pool=p.pool_address, weight_bps=w, input_idx=input_idx, output_idx=output_idx)
+            for p, w in swaps
+        ],
+        extraData=[_v3_extra_data(from_token, to_token, p.fee_bps) for p, _ in swaps],
+        fromToken=_addr_to_uint160(from_token),
+    )
+
+
+def _encode_okx_dag_fan_in(
+    *,
+    dag: RouteDAG,
+    split: RouteSplit,
+    downstream: RouteSwap,
+    amount_in: int,
+    min_amount_out: int,
+    recipient: Address,
+    router_address: Address,
+    v3_adapter_address: Address,
+    deadline: int,
+    order_id: int,
+) -> EncodedTx:
+    """Fan-in via ``dagSwapTo`` — node 0 parallels the split into the merge
+    token (multiple edges → output_idx=1), node 1 swaps merge→final."""
+    assert dag.token_in is not None  # checked by encode_okx dispatcher
+    assert isinstance(downstream.pool, V3PoolEdge)  # checked by _is_v3_fan_in
+    token_in = dag.token_in.address
+    merge_token = split.token_out.address
+    final_token = downstream.token_out.address
+    v3_adapter = bytes(v3_adapter_address)
+
+    leg_swaps: list[tuple[V3PoolEdge, int]] = []
+    for leg in split.legs:
+        action = leg.actions[0]
+        assert isinstance(action, RouteSwap) and isinstance(action.pool, V3PoolEdge)
+        leg_swaps.append((action.pool, leg.fraction_bps))
+
+    node0 = _v3_dag_node(
+        swaps=leg_swaps,
+        input_idx=0,
+        output_idx=1,
+        from_token=token_in,
+        to_token=merge_token,
+        v3_adapter=v3_adapter,
+    )
+    node1 = _v3_dag_node(
+        swaps=[(downstream.pool, 10_000)],
+        input_idx=1,
+        output_idx=2,  # == nodeNum → routes to receiver
+        from_token=merge_token,
+        to_token=final_token,
+        v3_adapter=v3_adapter,
+    )
+
+    data = OKX_DEX_ROUTER.fns.dagSwapTo(
+        order_id,
+        bytes(recipient),
+        _build_base_request(
+            token_in=token_in,
+            token_out=final_token,
+            amount_in=amount_in,
+            min_amount_out=min_amount_out,
+            deadline=deadline,
+        ),
+        [node0, node1],
+    ).data
+    return EncodedTx(to=router_address, data=bytes(data), value=0)
+
+
+def _is_v3_fan_in(dag: RouteDAG) -> tuple[RouteSplit, RouteSwap] | None:
+    """``[RouteSplit(all V3 single-hop), RouteSwap(V3)]`` — DagRouter 2-node fan-in."""
+    if len(dag.actions) != 2:
+        return None
+    split, downstream = dag.actions
+    if (
+        isinstance(split, RouteSplit)
+        and isinstance(downstream, RouteSwap)
+        and _is_v3_swap(downstream)
+        and all(len(leg.actions) == 1 and _is_v3_swap(leg.actions[0]) for leg in split.legs)
+    ):
+        return split, downstream
+    return None
+
+
 def encode_okx(
     dag: RouteDAG,
     *,
@@ -420,9 +531,8 @@ def encode_okx(
     order_id: int = 0,
 ) -> EncodedTx:
     """Pick the best OKX entry for the DAG: uniswapV3SwapTo for pure-V3
-    linear; smartSwapTo (1-batch parallel or N-batch) for V3 splits.
-    smartSwapTo honors the caller-supplied recipient (smartSwapByOrderId
-    would silently send to msg.sender)."""
+    linear; smartSwapTo (1-batch parallel or N-batch) for V3 splits;
+    dagSwapTo for [split → merge → downstream swap] fan-in."""
     if _is_pure_v3_linear(dag):
         return encode_okx_v3(
             dag,
@@ -435,6 +545,25 @@ def encode_okx(
 
     if dag.token_in is None:
         raise ValueError("encode_okx: DAG missing token_in")
+
+    fan_in = _is_v3_fan_in(dag)
+    if fan_in is not None:
+        if v3_adapter_address is None:
+            raise ValueError("encode_okx: dag path requires v3_adapter_address")
+        split, downstream = fan_in
+        return _encode_okx_dag_fan_in(
+            dag=dag,
+            split=split,
+            downstream=downstream,
+            amount_in=amount_in,
+            min_amount_out=min_amount_out,
+            recipient=recipient,
+            router_address=router_address,
+            v3_adapter_address=v3_adapter_address,
+            deadline=deadline,
+            order_id=order_id,
+        )
+
     if len(dag.actions) != 1 or not isinstance(dag.actions[0], RouteSplit):
         raise ValueError("encode_okx: smart path expects one top-level RouteSplit")
     split = dag.actions[0]

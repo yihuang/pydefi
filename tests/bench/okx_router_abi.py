@@ -23,6 +23,12 @@ WETH_UNWRAP_MASK: int = 1 << 253
 # RouterPath.rawData: bits 0..159 pool | 160..175 weight (bps) | bit 255 reverse.
 WEIGHT_SHIFT: int = 160
 
+# DagRouter.rawData extends RouterPath.rawData with bits 176..183 outputIndex
+# (which DAG node this edge feeds into) and bits 184..191 inputIndex (which
+# node this edge consumes from). See DagRouter.sol::_exeNode.
+OUTPUT_INDEX_SHIFT: int = 176
+INPUT_INDEX_SHIFT: int = 184
+
 
 class BaseRequest(ABIStruct):
     """``fromToken`` is uint256 (upper bits = commission flags); pass plain
@@ -67,6 +73,8 @@ OKX_DEX_ROUTER = Contract.from_abi(
         "function unxswapByOrderId(uint256 srcToken, uint256 amount, uint256 minReturn, bytes32[] pools) external payable returns (uint256 returnAmount)",
         "function smartSwapByOrderId(uint256 orderId, BaseRequest baseRequest, uint256[] batchesAmount, RouterPath[][] batches, PMMSwapRequest[] extraData) external payable returns (uint256 returnAmount)",
         "function smartSwapTo(uint256 orderId, address receiver, BaseRequest baseRequest, uint256[] batchesAmount, RouterPath[][] batches, PMMSwapRequest[] extraData) external payable returns (uint256 returnAmount)",
+        "function dagSwapByOrderId(uint256 orderId, BaseRequest baseRequest, RouterPath[] paths) external payable returns (uint256 returnAmount)",
+        "function dagSwapTo(uint256 orderId, address receiver, BaseRequest baseRequest, RouterPath[] paths) external payable returns (uint256 returnAmount)",
     ]
 )
 
