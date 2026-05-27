@@ -19,10 +19,11 @@ def ensure_solc(version: str = "0.8.24") -> None:
         solcx.install_solc(version, show_progress=False)
 
 
-def compile_sol_file(path: Path, contract_name: str, *, evm_version: str = "cancun") -> dict:
+def compile_sol_file(path: Path, contract_name: str, *, evm_version: str = "cancun", via_ir: bool = False) -> dict:
     """Compile a Solidity file and return ABI + bytecode for *contract_name*.
 
     Defaults to ``cancun`` so DeFiVM's TSTORE/TLOAD parameter channel compiles.
+    Pass ``via_ir=True`` for stack-heavy contracts.
     """
     ensure_solc("0.8.24")
     result = solcx.compile_files(
@@ -32,6 +33,7 @@ def compile_sol_file(path: Path, contract_name: str, *, evm_version: str = "canc
         optimize=True,
         optimize_runs=200,
         evm_version=evm_version,
+        via_ir=via_ir,
     )
     key = next(k for k in result if k.endswith(f":{contract_name}"))
     return result[key]

@@ -701,6 +701,318 @@ class TestOpenOcean:
         assert route.steps[0].protocol == "OpenOcean"
 
 
+# ---------------------------------------------------------------------------
+# OKX DexRouter encoder tests
+# ---------------------------------------------------------------------------
+
+
+class TestOKXRouterEncoder:
+    """Tests for the OKX DexRouter calldata encoder."""
+
+    def test_encode_edge_raw_data_defaults(self):
+        from hexbytes import HexBytes
+        from pydefi.aggregator.okx_router_encoder import encode_edge_raw_data
+
+        pool = HexBytes("0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640")
+        raw = encode_edge_raw_data(pool)
+
+        # Defaults: weight=10000, input_index=0, output_index=1, reverse=False
+
+        # Verify extraction with contract masks
+        _ADDRESS_MASK = 0x000000000000000000000000FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
+        _WEIGHT_MASK = 0x00000000000000000000FFFF0000000000000000000000000000000000000000
+        _OUTPUT_INDEX_MASK = 0x000000000000000000FF00000000000000000000000000000000000000000000
+        _INPUT_INDEX_MASK = 0x0000000000000000FF0000000000000000000000000000000000000000000000
+        _REVERSE_MASK = 0x8000000000000000000000000000000000000000000000000000000000000000
+
+        assert (raw & _ADDRESS_MASK) == int.from_bytes(pool, "big")
+        assert (raw & _WEIGHT_MASK) >> 160 == 10000
+        assert (raw & _INPUT_INDEX_MASK) >> 184 == 0
+        assert (raw & _OUTPUT_INDEX_MASK) >> 176 == 1
+        assert not bool(raw & _REVERSE_MASK)
+
+    def test_encode_edge_raw_data_reverse(self):
+        from hexbytes import HexBytes
+        from pydefi.aggregator.okx_router_encoder import encode_edge_raw_data
+
+        _REVERSE_MASK = 0x8000000000000000000000000000000000000000000000000000000000000000
+        pool = HexBytes("0x" + "FF" * 20)
+        raw = encode_edge_raw_data(pool, reverse=True, weight_bps=5000, input_index=2, output_index=3)
+
+        assert bool(raw & _REVERSE_MASK)
+        _WEIGHT_MASK = 0x00000000000000000000FFFF0000000000000000000000000000000000000000
+        assert (raw & _WEIGHT_MASK) >> 160 == 5000
+        _INPUT_INDEX_MASK = 0x0000000000000000FF0000000000000000000000000000000000000000000000
+        _OUTPUT_INDEX_MASK = 0x000000000000000000FF00000000000000000000000000000000000000000000
+        assert (raw & _INPUT_INDEX_MASK) >> 184 == 2
+        assert (raw & _OUTPUT_INDEX_MASK) >> 176 == 3
+
+    def test_encode_edge_raw_data_validation(self):
+        from hexbytes import HexBytes
+        from pydefi.aggregator.okx_router_encoder import encode_edge_raw_data
+
+        pool = HexBytes("0x" + "00" * 20)
+
+        with pytest.raises(ValueError):
+            encode_edge_raw_data(pool, weight_bps=10001)
+        with pytest.raises(ValueError):
+            encode_edge_raw_data(pool, weight_bps=-1)
+        with pytest.raises(ValueError):
+            encode_edge_raw_data(pool, input_index=256)
+        with pytest.raises(ValueError):
+            encode_edge_raw_data(pool, output_index=256)
+        with pytest.raises(ValueError):
+            encode_edge_raw_data(HexBytes("0x" + "00" * 10))
+
+    def test_build_dag_swap_calldata(self):
+        from hexbytes import HexBytes
+        from pydefi.abi.dex_aggregator import OKX_DEX_ROUTER
+        from pydefi.aggregator.okx_router_encoder import (
+            RouterPathDescriptor,
+            build_dag_swap_calldata,
+            encode_edge_raw_data,
+        )
+
+        pool = HexBytes("0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640")
+        from_token = HexBytes("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2")
+        to_token = HexBytes("0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48")
+        receiver = HexBytes("0x" + "AB" * 20)
+        adapter = HexBytes("0x" + "99" * 20)
+
+        raw_data = encode_edge_raw_data(pool, weight_bps=10000)
+        calldata = build_dag_swap_calldata(
+            order_id=42,
+            receiver=receiver,
+            from_token=from_token,
+            to_token=to_token,
+            amount=10**18,
+            min_return=9 * 10**8,
+            deadline=2_000_000_000,
+            paths=[
+                RouterPathDescriptor(
+                    mix_adapters=[adapter],
+                    asset_to=[pool],
+                    raw_data=[raw_data],
+                    from_token=from_token,
+                ),
+            ],
+        )
+
+        # Verify selector matches the ABI definition
+        expected_selector = OKX_DEX_ROUTER.fns.dagSwapTo.selector
+        assert calldata[:4] == expected_selector
+        assert len(calldata) > 4 + 128  # at minimum: selector + 4 arg words
+
+    def test_build_dag_swap_calldata_empty_paths_raises(self):
+        from hexbytes import HexBytes
+        from pydefi.aggregator.okx_router_encoder import build_dag_swap_calldata
+
+        with pytest.raises(ValueError, match="at least one"):
+            build_dag_swap_calldata(
+                order_id=0,
+                receiver=HexBytes("0x" + "00" * 20),
+                from_token=HexBytes("0x" + "00" * 20),
+                to_token=HexBytes("0x" + "00" * 20),
+                amount=1,
+                min_return=0,
+                deadline=9999999999,
+                paths=[],
+            )
+
+    def test_route_dag_to_router_paths_linear(self):
+        """A simple linear RouteDAG (two swaps) produces two RouterPath nodes."""
+        from hexbytes import HexBytes
+        from pydefi.aggregator.okx_router_encoder import route_dag_to_router_paths
+        from pydefi.pathfinder.graph import PoolEdge, V3PoolEdge
+        from pydefi.types import ChainId, RouteDAG, Token
+
+        t0 = Token(chain_id=ChainId.ETHEREUM, address=HexBytes("0x" + "01" * 20), symbol="T0")
+        t1 = Token(chain_id=ChainId.ETHEREUM, address=HexBytes("0x" + "02" * 20), symbol="T1")
+        t2 = Token(chain_id=ChainId.ETHEREUM, address=HexBytes("0x" + "03" * 20), symbol="T2")
+
+        pool_a = HexBytes("0x" + "0A" * 20)
+        pool_b = HexBytes("0x" + "0B" * 20)
+
+        edge_a = PoolEdge(
+            token_in=t0,
+            token_out=t1,
+            pool_address=pool_a,
+            protocol="UniswapV2",
+            fee_bps=30,
+            extra={"is_token0_in": True},
+        )
+        edge_b = PoolEdge(
+            token_in=t1,
+            token_out=t2,
+            pool_address=pool_b,
+            protocol="UniswapV2",
+            fee_bps=30,
+            extra={"is_token0_in": True},
+        )
+
+        dag = RouteDAG().from_token(t0).swap(t1, edge_a).swap(t2, edge_b)
+        paths = route_dag_to_router_paths(dag)
+
+        assert len(paths) == 2
+        # First node
+        assert paths[0].from_token == t0.address
+        assert len(paths[0].mix_adapters) == 1
+        assert paths[0].raw_data[0] & 0xFF == pool_a[19]  # part of address in raw
+        # Second node
+        assert paths[1].from_token == t1.address
+        assert len(paths[1].mix_adapters) == 1
+
+    def test_route_dag_to_router_paths_with_split(self):
+        """A split RouteDAG (one split with two legs) produces one split node + one subsequent node."""
+        from hexbytes import HexBytes
+        from pydefi.aggregator.okx_router_encoder import route_dag_to_router_paths
+        from pydefi.pathfinder.graph import PoolEdge
+        from pydefi.types import ChainId, RouteDAG, Token
+
+        t0 = Token(chain_id=ChainId.ETHEREUM, address=HexBytes("0x" + "01" * 20), symbol="T0")
+        t1 = Token(chain_id=ChainId.ETHEREUM, address=HexBytes("0x" + "02" * 20), symbol="T1")
+        t2 = Token(chain_id=ChainId.ETHEREUM, address=HexBytes("0x" + "03" * 20), symbol="T2")
+
+        pool_a = HexBytes("0x" + "0A" * 20)
+        pool_b = HexBytes("0x" + "0B" * 20)
+
+        edge_a = PoolEdge(
+            token_in=t0,
+            token_out=t1,
+            pool_address=pool_a,
+            protocol="UniswapV2",
+            extra={"is_token0_in": True},
+        )
+        edge_b = PoolEdge(
+            token_in=t0,
+            token_out=t1,
+            pool_address=pool_b,
+            protocol="UniswapV2",
+            extra={"is_token0_in": True},
+        )
+
+        dag = (
+            RouteDAG()
+            .from_token(t0)
+            .split()
+            .leg(5000)
+            .swap(t1, edge_a)
+            .leg(5000)
+            .swap(t1, edge_b)
+            .merge()
+        )
+        paths = route_dag_to_router_paths(dag)
+
+        assert len(paths) == 1
+        # Split node
+        node = paths[0]
+        assert len(node.mix_adapters) == 2
+        assert len(node.raw_data) == 2
+        assert node.from_token == t0.address
+
+    def test_route_dag_rejects_multi_hop_leg(self):
+        """A leg with more than one swap inside a split must raise."""
+        from hexbytes import HexBytes
+        from pydefi.aggregator.okx_router_encoder import route_dag_to_router_paths
+        from pydefi.pathfinder.graph import PoolEdge
+        from pydefi.types import ChainId, RouteDAG, Token
+
+        t0 = Token(chain_id=ChainId.ETHEREUM, address=HexBytes("0x" + "01" * 20), symbol="T0")
+        t1 = Token(chain_id=ChainId.ETHEREUM, address=HexBytes("0x" + "02" * 20), symbol="T1")
+        t2 = Token(chain_id=ChainId.ETHEREUM, address=HexBytes("0x" + "03" * 20), symbol="T2")
+
+        pool_a = HexBytes("0x" + "0A" * 20)
+        pool_b = HexBytes("0x" + "0B" * 20)
+
+        edge_a = PoolEdge(
+            token_in=t0,
+            token_out=t1,
+            pool_address=pool_a,
+            protocol="UniswapV2",
+            extra={"is_token0_in": True},
+        )
+        edge_b = PoolEdge(
+            token_in=t1,
+            token_out=t2,
+            pool_address=pool_b,
+            protocol="UniswapV2",
+            extra={"is_token0_in": True},
+        )
+        edge_t0_to_t2 = PoolEdge(
+            token_in=t0,
+            token_out=t2,
+            pool_address=pool_b,
+            protocol="UniswapV2",
+            extra={"is_token0_in": True},
+        )
+
+        dag = (
+            RouteDAG()
+            .from_token(t0)
+            .split()
+            .leg(5000)
+            .swap(t1, edge_a)
+            .swap(t2, edge_b)  # second swap — multi-hop
+            .leg(5000)
+            .swap(t2, edge_t0_to_t2)  # single swap, same end token
+            .merge()
+        )
+
+        with pytest.raises(ValueError, match="exactly one RouteSwap"):
+            route_dag_to_router_paths(dag)
+
+    def test_route_dag_rejects_unknown_protocol(self):
+        """A RouteSwap with an unsupported protocol raises ValueError."""
+        from hexbytes import HexBytes
+        from pydefi.aggregator.okx_router_encoder import route_dag_to_router_paths
+        from pydefi.pathfinder.graph import PoolEdge
+        from pydefi.types import ChainId, RouteDAG, Token
+
+        t0 = Token(chain_id=ChainId.ETHEREUM, address=HexBytes("0x" + "01" * 20), symbol="T0")
+        t1 = Token(chain_id=ChainId.ETHEREUM, address=HexBytes("0x" + "02" * 20), symbol="T1")
+
+        edge = PoolEdge(
+            token_in=t0,
+            token_out=t1,
+            pool_address=HexBytes("0x" + "0C" * 20),
+            protocol="Curve",  # no adapter registered
+            extra={"is_token0_in": True},
+        )
+
+        dag = RouteDAG().from_token(t0).swap(t1, edge)
+
+        with pytest.raises(ValueError, match="adapter"):
+            route_dag_to_router_paths(dag)
+
+    def test_adapter_overrides_work(self):
+        """Custom adapter addresses via adapter_overrides."""
+        from hexbytes import HexBytes
+        from pydefi.aggregator.okx_router_encoder import (
+            _protocol_to_adapter,
+            route_dag_to_router_paths,
+        )
+        from pydefi.pathfinder.graph import PoolEdge
+        from pydefi.types import ChainId, RouteDAG, Token
+
+        custom_addr = HexBytes("0x" + "CA" * 20)
+
+        t0 = Token(chain_id=ChainId.ETHEREUM, address=HexBytes("0x" + "01" * 20), symbol="T0")
+        t1 = Token(chain_id=ChainId.ETHEREUM, address=HexBytes("0x" + "02" * 20), symbol="T1")
+
+        edge = PoolEdge(
+            token_in=t0,
+            token_out=t1,
+            pool_address=HexBytes("0x" + "0A" * 20),
+            protocol="UniswapV2",
+            extra={"is_token0_in": True},
+        )
+
+        dag = RouteDAG().from_token(t0).swap(t1, edge)
+        paths = route_dag_to_router_paths(dag, adapter_overrides={"uniswap_v2": custom_addr})
+
+        assert paths[0].mix_adapters[0] == custom_addr
+
+
 class TestAggregatorQuote:
     def test_creation(self):
         amount_in = TokenAmount.from_human(WETH, "1")

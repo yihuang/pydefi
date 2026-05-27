@@ -23,6 +23,7 @@ from .amm import (
     QuoteExactInputSingleParams,
     QuoteExactOutputSingleParams,
 )
+from .dex_aggregator import OKX_DEX_ROUTER, BaseRequest, RouterPath
 from .bridge import (
     ACROSS_SPOKE_POOL,
     CCTP_TOKEN_MESSENGER_V2,
@@ -65,6 +66,10 @@ __all__ = [
     "ExactOutputSingleParams",
     "QuoteExactInputSingleParams",
     "QuoteExactOutputSingleParams",
+    # dex aggregator
+    "OKX_DEX_ROUTER",
+    "BaseRequest",
+    "RouterPath",
     # bridge
     "ACROSS_SPOKE_POOL",
     "CCTP_TOKEN_MESSENGER_V2",
