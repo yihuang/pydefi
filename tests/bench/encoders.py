@@ -1,0 +1,607 @@
+"""Calldata encoders for the DEX aggregation gas benchmark.
+
+Every encoder prepends a ``transferFrom(token_in, caller, executor, amount)``
+so all three caller models (DeFiVM / OKX TokenApprove / SwapRouter02) are
+self-contained and their gas numbers are directly comparable.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from eth_abi import encode as abi_encode
+from eth_contract import Contract
+
+from pydefi.abi.amm import UNISWAP_V3_ROUTER, ExactInputParams, ExactInputSingleParams
+from pydefi.abi.vm import DeFiVM
+from pydefi.amm.universal_router import UniversalRouter
+from pydefi.pathfinder.graph import V3PoolEdge
+from pydefi.types import (
+    Address,
+    RouteDAG,
+    RouteSplit,
+    RouteSwap,
+    SwapProtocol,
+    TokenAmount,
+)
+from pydefi.vm import Program
+from pydefi.vm.dag import _build_dag_actions
+from pydefi.vm.swap import _pool_to_swap_protocol
+from tests.bench.okx_router_abi import (
+    ADDRESS_MASK,
+    OKX_DEX_ROUTER,
+    ONE_FOR_ZERO_MASK,
+    WEIGHT_SHIFT,
+    BaseRequest,
+    RouterPath,
+)
+
+# SwapRouter02.multicall — not in pydefi.abi.amm.UNISWAP_V3_ROUTER.
+_UNISWAP_V3_MULTICALL = Contract.from_abi(
+    ["function multicall(bytes[] data) external payable returns (bytes[] results)"]
+)
+
+
+def encode_universal_router(
+    dag: RouteDAG,
+    *,
+    amount_in: int,
+    min_amount_out: int,
+    recipient: Address,
+    router_address: Address,
+    deadline: int,
+) -> EncodedTx:
+    """Linear pure-V3 via UR V3_SWAP_EXACT_IN. Permit2 setup happens in the
+    bench fixture; not counted in gas."""
+    if dag.token_in is None:
+        raise ValueError("encode_universal_router: DAG missing token_in")
+    if not _is_pure_v3_linear(dag):
+        raise ValueError("encode_universal_router: pure-V3 linear paths only")
+
+    ur = UniversalRouter(router_address)
+    if len(dag.actions) == 1:
+        swap = dag.actions[0]
+        assert isinstance(swap, RouteSwap)
+        assert isinstance(swap.pool, V3PoolEdge)
+        tx = ur.build_v3_exact_in_transaction(
+            amount_in=TokenAmount(token=dag.token_in, amount=amount_in),
+            token_out=swap.token_out,
+            recipient=recipient,
+            amount_out_minimum=min_amount_out,
+            fee=swap.pool.fee_bps * 100,
+            deadline=deadline,
+            payer_is_user=True,
+        )
+    else:
+        tokens = [dag.token_in]
+        fees: list[int] = []
+        for action in dag.actions:
+            assert isinstance(action, RouteSwap)
+            assert isinstance(action.pool, V3PoolEdge)
+            fees.append(action.pool.fee_bps * 100)
+            tokens.append(action.token_out)
+        tx = ur.build_v3_multihop_exact_in_transaction(
+            amount_in=TokenAmount(token=dag.token_in, amount=amount_in),
+            path=tokens,
+            fees=fees,
+            recipient=recipient,
+            amount_out_minimum=min_amount_out,
+            deadline=deadline,
+            payer_is_user=True,
+        )
+    return EncodedTx(to=tx.to, data=bytes(tx.data), value=0)
+
+
+# ---------------------------------------------------------------------------
+# EncodedTx — uniform return type
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class EncodedTx:
+    to: Address
+    data: bytes
+    value: int
+
+
+# ---------------------------------------------------------------------------
+# SSA composer
+# ---------------------------------------------------------------------------
+
+
+def encode_ssa(
+    dag: RouteDAG,
+    *,
+    amount_in: int,
+    min_amount_out: int,
+    recipient: Address,
+    vm_address: Address,
+) -> EncodedTx:
+    """Compile the RouteDAG to DeFiVM bytecode with a ``transferFrom`` prelude
+    so the swap tx is self-contained (matches OKX/Uniswap caller model)."""
+    if dag.token_in is None:
+        raise ValueError("encode_ssa: DAG missing token_in")
+    if not dag.actions:
+        raise ValueError("encode_ssa: DAG must contain at least one action")
+
+    prog = Program()
+    success = prog.call_contract(
+        bytes(dag.token_in.address),
+        "transferFrom(address,address,uint256)",
+        prog.builder.caller(),
+        prog.builder.address(),
+        amount_in,
+    )
+    prog.assert_(success, "ssa: pull failed")
+
+    final_out = _build_dag_actions(
+        prog,
+        prog.const(amount_in),
+        dag.actions,
+        vm_address=vm_address,
+        terminal_recipient=recipient,
+    )
+    if min_amount_out > 0:
+        prog.assert_ge(final_out, min_amount_out, "slippage")
+    prog.builder.stop()
+
+    bytecode = prog.build()
+    data = DeFiVM.fns.execute(bytecode).data
+    return EncodedTx(to=vm_address, data=bytes(data), value=0)
+
+
+# ---------------------------------------------------------------------------
+# Heterogeneous bundle — swap + Aave V3 supply in one tx
+# ---------------------------------------------------------------------------
+
+
+def encode_ssa_swap_then_aave_supply(
+    dag: RouteDAG,
+    *,
+    amount_in: int,
+    min_amount_out: int,
+    recipient: Address,
+    vm_address: Address,
+    aave_pool: Address,
+) -> EncodedTx:
+    """Pull token_in, swap, then supply the output to Aave V3 on the user's
+    behalf — one tx, one approval, one min-out. Swap terminus is the VM so
+    the output is held locally for approve+supply; Aave's ``onBehalfOf``
+    routes aToken back to the user."""
+    if dag.token_in is None:
+        raise ValueError("encode_ssa_swap_then_aave_supply: DAG missing token_in")
+    if not dag.actions:
+        raise ValueError("encode_ssa_swap_then_aave_supply: DAG must contain at least one action")
+
+    last = dag.actions[-1]
+    if isinstance(last, RouteSplit):
+        out_token_addr = bytes(last.token_out.address)
+    else:
+        assert isinstance(last, RouteSwap)
+        out_token_addr = bytes(last.token_out.address)
+
+    prog = Program()
+    success = prog.call_contract(
+        bytes(dag.token_in.address),
+        "transferFrom(address,address,uint256)",
+        prog.builder.caller(),
+        prog.builder.address(),
+        amount_in,
+    )
+    prog.assert_(success, "ssa-supply: pull failed")
+
+    swap_out = _build_dag_actions(
+        prog,
+        prog.const(amount_in),
+        dag.actions,
+        vm_address=vm_address,
+        terminal_recipient=vm_address,
+    )
+    if min_amount_out > 0:
+        prog.assert_ge(swap_out, min_amount_out, "slippage")
+
+    # snapshot/revert harness resets allowance, so each run pays cold SSTORE ~22.1K.
+    approve_ok = prog.call_contract(
+        out_token_addr,
+        "approve(address,uint256)",
+        bytes(aave_pool),
+        2**256 - 1,
+    )
+    prog.assert_(approve_ok, "ssa-supply: approve failed")
+
+    supply_ok = prog.call_contract(
+        bytes(aave_pool),
+        "supply(address,uint256,address,uint16)",
+        out_token_addr,
+        swap_out,
+        bytes(recipient),
+        0,
+    )
+    prog.assert_(supply_ok, "ssa-supply: supply failed")
+    prog.builder.stop()
+
+    bytecode = prog.build()
+    data = DeFiVM.fns.execute(bytecode).data
+    return EncodedTx(to=vm_address, data=bytes(data), value=0)
+
+
+# ---------------------------------------------------------------------------
+# OKX router
+# ---------------------------------------------------------------------------
+
+
+def _is_v3_swap(action) -> bool:
+    if not isinstance(action, RouteSwap):
+        return False
+    try:
+        return _pool_to_swap_protocol(action.pool.protocol) == SwapProtocol.UNISWAP_V3
+    except ValueError:
+        return False
+
+
+def _is_pure_v3_linear(dag: RouteDAG) -> bool:
+    """True iff every action is a V3 swap (no splits)."""
+    return all(_is_v3_swap(a) for a in dag.actions)
+
+
+def _addr_to_uint160(addr: Address) -> int:
+    return int.from_bytes(addr, "big") & ADDRESS_MASK
+
+
+def _v3_pool_word(edge: V3PoolEdge) -> int:
+    """Pack V3 pool into uniswapV3SwapTo word: low 160 bits = pool, bit 255 = one-for-zero."""
+    word = _addr_to_uint160(edge.pool_address)
+    if not edge.is_token0_in:
+        word |= ONE_FOR_ZERO_MASK
+    return word
+
+
+def encode_okx_v3(
+    dag: RouteDAG,
+    *,
+    amount_in: int,
+    min_amount_out: int,
+    recipient: Address,
+    router_address: Address,
+    order_id: int = 0,
+) -> EncodedTx:
+    """Pure-V3 linear via ``DexRouter.uniswapV3SwapTo`` (fast path)."""
+    if not _is_pure_v3_linear(dag):
+        raise ValueError("encode_okx_v3: DAG must be a linear sequence of V3 swaps")
+    if dag.token_in is None:
+        raise ValueError("encode_okx_v3: DAG missing token_in")
+
+    pools: list[int] = []
+    for action in dag.actions:
+        assert isinstance(action, RouteSwap)
+        assert isinstance(action.pool, V3PoolEdge)
+        pools.append(_v3_pool_word(action.pool))
+
+    # receiver: low 160 bits address, upper 96 bits orderId
+    receiver_word = _addr_to_uint160(recipient) | (order_id << 160)
+    data = OKX_DEX_ROUTER.fns.uniswapV3SwapTo(
+        receiver_word,
+        amount_in,
+        min_amount_out,
+        pools,
+    ).data
+    return EncodedTx(to=router_address, data=bytes(data), value=0)
+
+
+def _v3_extra_data(token_in: Address, token_out: Address, fee_bps: int) -> bytes:
+    """``abi.encode(uint160 sqrtX96=0, abi.encode(fromToken, toToken, fee))``."""
+    inner = abi_encode(
+        ["address", "address", "uint24"],
+        [bytes(token_in), bytes(token_out), fee_bps * 100],
+    )
+    return abi_encode(["uint160", "bytes"], [0, inner])
+
+
+def _build_base_request(
+    *, token_in: Address, token_out: Address, amount_in: int, min_amount_out: int, deadline: int
+) -> BaseRequest:
+    return BaseRequest(
+        fromToken=_addr_to_uint160(token_in),
+        toToken=bytes(token_out),
+        fromTokenAmount=amount_in,
+        minReturnAmount=min_amount_out,
+        deadLine=deadline,
+    )
+
+
+def _v3_hop_router_path(*, swap: RouteSwap, v3_adapter: bytes) -> RouterPath:
+    """One V3 hop, single adapter @ 100% weight. Used in N-batch layout."""
+    assert isinstance(swap.pool, V3PoolEdge)
+    return RouterPath(
+        mixAdapters=[v3_adapter],
+        assetTo=[v3_adapter],
+        rawData=[_addr_to_uint160(swap.pool.pool_address) | (10_000 << WEIGHT_SHIFT)],
+        extraData=[_v3_extra_data(swap.pool.token_in.address, swap.pool.token_out.address, swap.pool.fee_bps)],
+        fromToken=_addr_to_uint160(swap.pool.token_in.address),
+    )
+
+
+def _encode_okx_smart_parallel(
+    *,
+    dag: RouteDAG,
+    split: RouteSplit,
+    amount_in: int,
+    min_amount_out: int,
+    recipient: Address,
+    router_address: Address,
+    v3_adapter_address: Address,
+    deadline: int,
+    order_id: int,
+) -> EncodedTx:
+    """1-batch parallel-adapters layout (single-hop legs only) — cheapest
+    OKX smart encoding for that shape."""
+    token_in_addr = dag.token_in.address
+    token_out_addr = split.token_out.address
+    v3_adapter = bytes(v3_adapter_address)
+
+    raw_data: list[int] = []
+    extra_data: list[bytes] = []
+    for leg in split.legs:
+        swap = leg.actions[0]
+        assert isinstance(swap, RouteSwap) and isinstance(swap.pool, V3PoolEdge)
+        raw_data.append(_addr_to_uint160(swap.pool.pool_address) | (leg.fraction_bps << WEIGHT_SHIFT))
+        extra_data.append(_v3_extra_data(token_in_addr, token_out_addr, swap.pool.fee_bps))
+
+    n = len(split.legs)
+    router_path = RouterPath(
+        mixAdapters=[v3_adapter] * n,
+        assetTo=[v3_adapter] * n,
+        rawData=raw_data,
+        extraData=extra_data,
+        fromToken=_addr_to_uint160(token_in_addr),
+    )
+    data = OKX_DEX_ROUTER.fns.smartSwapTo(
+        order_id,
+        bytes(recipient),
+        _build_base_request(
+            token_in=token_in_addr,
+            token_out=token_out_addr,
+            amount_in=amount_in,
+            min_amount_out=min_amount_out,
+            deadline=deadline,
+        ),
+        [amount_in],
+        [[router_path]],
+        [],
+    ).data
+    return EncodedTx(to=router_address, data=bytes(data), value=0)
+
+
+def _encode_okx_smart_batched(
+    *,
+    dag: RouteDAG,
+    split: RouteSplit,
+    amount_in: int,
+    min_amount_out: int,
+    recipient: Address,
+    router_address: Address,
+    v3_adapter_address: Address,
+    deadline: int,
+    order_id: int,
+) -> EncodedTx:
+    """N-batch layout — one batch per leg, hops as the batch's RouterPath[].
+    Required when any leg is multi-hop."""
+    v3_adapter = bytes(v3_adapter_address)
+    batches_amount = [amount_in * leg.fraction_bps // 10_000 for leg in split.legs]
+    batches = [
+        [_v3_hop_router_path(swap=action, v3_adapter=v3_adapter) for action in leg.actions] for leg in split.legs
+    ]
+    data = OKX_DEX_ROUTER.fns.smartSwapTo(
+        order_id,
+        bytes(recipient),
+        _build_base_request(
+            token_in=dag.token_in.address,
+            token_out=split.token_out.address,
+            amount_in=amount_in,
+            min_amount_out=min_amount_out,
+            deadline=deadline,
+        ),
+        batches_amount,
+        batches,
+        [],
+    ).data
+    return EncodedTx(to=router_address, data=bytes(data), value=0)
+
+
+def encode_okx(
+    dag: RouteDAG,
+    *,
+    amount_in: int,
+    min_amount_out: int,
+    recipient: Address,
+    router_address: Address,
+    v3_adapter_address: Address | None = None,
+    deadline: int,
+    order_id: int = 0,
+) -> EncodedTx:
+    """Pick the best OKX entry for the DAG: uniswapV3SwapTo for pure-V3
+    linear; smartSwapTo (1-batch parallel or N-batch) for V3 splits.
+    smartSwapTo honors the caller-supplied recipient (smartSwapByOrderId
+    would silently send to msg.sender)."""
+    if _is_pure_v3_linear(dag):
+        return encode_okx_v3(
+            dag,
+            amount_in=amount_in,
+            min_amount_out=min_amount_out,
+            recipient=recipient,
+            router_address=router_address,
+            order_id=order_id,
+        )
+
+    if dag.token_in is None:
+        raise ValueError("encode_okx: DAG missing token_in")
+    if len(dag.actions) != 1 or not isinstance(dag.actions[0], RouteSplit):
+        raise ValueError("encode_okx: smart path expects one top-level RouteSplit")
+    split = dag.actions[0]
+    for leg in split.legs:
+        if not leg.actions:
+            raise ValueError("encode_okx: leg must contain at least one action")
+        if not all(_is_v3_swap(a) for a in leg.actions):
+            raise ValueError("encode_okx: every leg's action must be a Uniswap V3 swap")
+    if v3_adapter_address is None:
+        raise ValueError("encode_okx: smart-swap path requires v3_adapter_address")
+
+    all_single_hop = all(len(leg.actions) == 1 for leg in split.legs)
+    impl = _encode_okx_smart_parallel if all_single_hop else _encode_okx_smart_batched
+    return impl(
+        dag=dag,
+        split=split,
+        amount_in=amount_in,
+        min_amount_out=min_amount_out,
+        recipient=recipient,
+        router_address=router_address,
+        v3_adapter_address=v3_adapter_address,
+        deadline=deadline,
+        order_id=order_id,
+    )
+
+
+# Back-compat alias.
+encode_okx_smart = encode_okx
+
+
+# ---------------------------------------------------------------------------
+# Uniswap baseline
+# ---------------------------------------------------------------------------
+
+
+def _v3_path_bytes(token_in: Address, actions) -> bytes:
+    """``tokenIn || fee || tokenOut[1] || fee || tokenOut[2] || ...``"""
+    chunks: list[bytes] = [bytes(token_in)]
+    for action in actions:
+        assert isinstance(action, RouteSwap)
+        assert isinstance(action.pool, V3PoolEdge)
+        chunks.append((action.pool.fee_bps * 100).to_bytes(3, "big"))
+        chunks.append(bytes(action.token_out.address))
+    return b"".join(chunks)
+
+
+def _exact_input_calldata(
+    *,
+    path: bytes,
+    recipient: Address,
+    deadline: int,
+    amount_in: int,
+    min_amount_out: int,
+) -> bytes:
+    params = ExactInputParams(
+        path=path,
+        recipient=recipient,
+        deadline=deadline,
+        amountIn=amount_in,
+        amountOutMinimum=min_amount_out,
+    )
+    return bytes(UNISWAP_V3_ROUTER.fns.exactInput(params).data)
+
+
+def _exact_input_single_calldata(
+    *,
+    token_in: Address,
+    token_out: Address,
+    fee_bps: int,
+    recipient: Address,
+    deadline: int,
+    amount_in: int,
+    min_amount_out: int,
+) -> bytes:
+    params = ExactInputSingleParams(
+        tokenIn=token_in,
+        tokenOut=token_out,
+        fee=fee_bps * 100,
+        recipient=recipient,
+        deadline=deadline,
+        amountIn=amount_in,
+        amountOutMinimum=min_amount_out,
+        sqrtPriceLimitX96=0,
+    )
+    return bytes(UNISWAP_V3_ROUTER.fns.exactInputSingle(params).data)
+
+
+def encode_uniswap(
+    dag: RouteDAG,
+    *,
+    amount_in: int,
+    min_amount_out: int,
+    recipient: Address,
+    router_address: Address,
+    deadline: int,
+) -> EncodedTx:
+    """Linear → exactInput[Single]; split → multicall of per-leg exactInput[Single]."""
+    if dag.token_in is None:
+        raise ValueError("encode_uniswap: DAG missing token_in")
+
+    if len(dag.actions) == 1 and isinstance(dag.actions[0], RouteSplit):
+        split = dag.actions[0]
+        for leg in split.legs:
+            if not leg.actions or not all(_is_v3_swap(a) for a in leg.actions):
+                raise ValueError("encode_uniswap split: every leg's actions must be V3 swaps")
+        # SwapRouter02.multicall has no whole-route min-out — per-leg
+        # amountOutMinimum doesn't compose into "sum ≥ X". Refuse rather than
+        # silently weaken to per-leg 0; callers should use encode_ssa.
+        if min_amount_out > 0:
+            raise ValueError(
+                "encode_uniswap split: SwapRouter02.multicall has no whole-route "
+                "min-out. Pass min_amount_out=0 or use encode_ssa."
+            )
+        leg_calls: list[bytes] = []
+        for leg in split.legs:
+            leg_amount = amount_in * leg.fraction_bps // 10_000
+            if len(leg.actions) == 1:
+                swap = leg.actions[0]
+                assert isinstance(swap, RouteSwap)
+                assert isinstance(swap.pool, V3PoolEdge)
+                leg_calls.append(
+                    _exact_input_single_calldata(
+                        token_in=dag.token_in.address,
+                        token_out=swap.token_out.address,
+                        fee_bps=swap.pool.fee_bps,
+                        recipient=recipient,
+                        deadline=deadline,
+                        amount_in=leg_amount,
+                        min_amount_out=0,
+                    )
+                )
+            else:
+                path = _v3_path_bytes(dag.token_in.address, leg.actions)
+                leg_calls.append(
+                    _exact_input_calldata(
+                        path=path,
+                        recipient=recipient,
+                        deadline=deadline,
+                        amount_in=leg_amount,
+                        min_amount_out=0,
+                    )
+                )
+        data = _UNISWAP_V3_MULTICALL.fns.multicall(leg_calls).data
+        return EncodedTx(to=router_address, data=bytes(data), value=0)
+
+    if not _is_pure_v3_linear(dag):
+        raise ValueError("encode_uniswap: baseline only handles V3 (linear or split)")
+
+    if len(dag.actions) == 1:
+        swap = dag.actions[0]
+        assert isinstance(swap, RouteSwap)
+        assert isinstance(swap.pool, V3PoolEdge)
+        data = _exact_input_single_calldata(
+            token_in=dag.token_in.address,
+            token_out=swap.token_out.address,
+            fee_bps=swap.pool.fee_bps,
+            recipient=recipient,
+            deadline=deadline,
+            amount_in=amount_in,
+            min_amount_out=min_amount_out,
+        )
+    else:
+        data = _exact_input_calldata(
+            path=_v3_path_bytes(dag.token_in.address, dag.actions),
+            recipient=recipient,
+            deadline=deadline,
+            amount_in=amount_in,
+            min_amount_out=min_amount_out,
+        )
+    return EncodedTx(to=router_address, data=bytes(data), value=0)
