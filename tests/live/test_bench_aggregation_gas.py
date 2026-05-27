@@ -46,6 +46,7 @@ from tests.addrs import (
 from tests.bench.encoders import (
     EncodedTx,
     encode_okx,
+    encode_okx_swap_then_aave_supply,
     encode_ssa,
     encode_ssa_swap_then_aave_supply,
     encode_uniswap,
@@ -55,7 +56,7 @@ from tests.bench.okx_router_abi import (
     OKX_DEX_ROUTER_ETHEREUM,
     OKX_TOKEN_APPROVE_ETHEREUM,
 )
-from tests.bench.sol_sources import UNI_V2_ADAPTER_SOL, UNI_V3_ADAPTER_SOL
+from tests.bench.sol_sources import AAVE_V3_ADAPTER_SOL, UNI_V2_ADAPTER_SOL, UNI_V3_ADAPTER_SOL
 from tests.live.anvil_helpers import (
     erc20_approve,
     fund_usdc,
@@ -100,11 +101,11 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
-async def _deploy_adapter(w3: AsyncWeb3, deployer: str, source: str, name: str) -> Address:
-    """Compile a no-arg-constructor Solidity contract and deploy from ``deployer``."""
+async def _deploy_adapter(w3: AsyncWeb3, deployer: str, source: str, name: str, *args) -> Address:
+    """Compile a Solidity contract and deploy from ``deployer`` with ``args``."""
     compiled = compile_sol_source(source, name)
     contract = w3.eth.contract(abi=compiled["abi"], bytecode=compiled["bin"])
-    tx = await contract.constructor().transact({"from": deployer})
+    tx = await contract.constructor(*args).transact({"from": deployer})
     receipt = await w3.eth.wait_for_transaction_receipt(tx, timeout=60, poll_latency=0.1)
     return Address(receipt["contractAddress"])
 
@@ -177,9 +178,16 @@ async def bench_ctx(bench_fork_w3: AsyncWeb3) -> dict:
     receipt = await w3.eth.wait_for_transaction_receipt(tx, timeout=60, poll_latency=0.1)
     vm_address = Address(receipt["contractAddress"])
 
-    # MinimalUniV3 / V2 adapters used by OKX smart-swap path.
+    # MinimalUniV3 / V2 / AaveV3 adapters used by OKX smart-swap path.
     uni_v3_adapter_address = await _deploy_adapter(w3, deployer, UNI_V3_ADAPTER_SOL, "MinimalUniV3Adapter")
     uni_v2_adapter_address = await _deploy_adapter(w3, deployer, UNI_V2_ADAPTER_SOL, "MinimalUniV2Adapter")
+    aave_v3_adapter_address = await _deploy_adapter(
+        w3,
+        deployer,
+        AAVE_V3_ADAPTER_SOL,
+        "MinimalAaveV3Adapter",
+        AAVE_V3_POOL_ETHEREUM,
+    )
 
     await impersonate(w3, _TEST_USER)
     await set_balance(w3, _TEST_USER, 100 * 10**21)
@@ -215,6 +223,7 @@ async def bench_ctx(bench_fork_w3: AsyncWeb3) -> dict:
         "vm_address": vm_address,
         "uni_v3_adapter": uni_v3_adapter_address,
         "uni_v2_adapter": uni_v2_adapter_address,
+        "aave_v3_adapter": aave_v3_adapter_address,
         "user": _TEST_USER,
     }
 
@@ -389,14 +398,16 @@ async def _run_encoder(
     *,
     path_name: str,
     encoder_name: str,
-    token_out: Token,
+    token_out: Token | Address,
     encode: Callable[[], EncodedTx],
 ) -> BenchRow:
-    """Execute one (path, encoder) cell of the bench matrix."""
+    """Execute one (path, encoder) cell of the bench matrix. ``token_out``
+    can be a ``Token`` (V3 paths) or a raw ``Address`` (e.g. aUSDC)."""
     w3 = bench_ctx["w3"]
     user = bench_ctx["user"]
+    out_addr = token_out.address if isinstance(token_out, Token) else token_out
 
-    bal_before = await _balance(w3, token_out.address, user)
+    bal_before = await _balance(w3, out_addr, user)
     tx = encode()
     receipt = await send_ok(
         w3,
@@ -404,7 +415,7 @@ async def _run_encoder(
         {"to": tx.to, "data": "0x" + tx.data.hex(), "value": tx.value},
         f"{encoder_name} swap on {path_name}",
     )
-    bal_after = await _balance(w3, token_out.address, user)
+    bal_after = await _balance(w3, out_addr, user)
     return BenchRow(
         path=path_name,
         encoder=encoder_name,
@@ -562,42 +573,55 @@ class TestAggregationGas:
 
     async def test_swap_then_aave_supply(self, bench_ctx: dict) -> None:
         """Heterogeneous bundle: WETH → USDC → Aave supply, one atomic tx.
-        SSA-only — OKX/Uniswap routers have no Aave hook."""
+        SSA via composer; OKX via smartSwapTo with [V3 adapter, MinimalAaveV3Adapter]
+        sequential hops (V3 pool output routed directly into the Aave adapter,
+        which calls pool.supply(USDC, amount, recipient, 0) → aUSDC to user)."""
         w3 = bench_ctx["w3"]
         user = bench_ctx["user"]
         vm_address = bench_ctx["vm_address"]
         dag = await _build_single_v3_dag(w3)
+        au_usdc = Address("0x98C23E9d8f34FEFb1B7BD6a91B7FF122F4e16F5c")
 
-        # aUSDC on Aave V3 mainnet — verify user received it, not just success.
-        au_usdc: str = "0x98C23E9d8f34FEFb1B7BD6a91B7FF122F4e16F5c"
-        bal_before = await _balance(w3, au_usdc, user)
+        async def run(encoder_name: str, encode: Callable[[], EncodedTx]) -> BenchRow:
+            async with _snapshot_revert(w3):
+                return await _run_encoder(
+                    bench_ctx,
+                    path_name="swap_aave_supply",
+                    encoder_name=encoder_name,
+                    token_out=au_usdc,
+                    encode=encode,
+                )
 
-        async with _snapshot_revert(w3):
-            tx = encode_ssa_swap_then_aave_supply(
-                dag,
-                amount_in=_AMOUNT_IN,
-                min_amount_out=0,
-                recipient=user,
-                vm_address=vm_address,
-                aave_pool=AAVE_V3_POOL_ETHEREUM,
-            )
-            receipt = await send_ok(
-                w3,
-                user,
-                {"to": tx.to, "data": "0x" + tx.data.hex(), "value": tx.value},
-                "ssa swap+aave supply",
-            )
-            bal_after = await _balance(w3, au_usdc, user)
-            row = BenchRow(
-                path="swap_aave_supply",
-                encoder="ssa",
-                gas_used=int(receipt["gasUsed"]),
-                calldata_bytes=len(tx.data),
-                amount_out=int(bal_after - bal_before),
-            )
-
-        _print_table([row])
-        assert row.amount_out > 0, f"expected positive aUSDC balance, got {row.amount_out}"
+        rows = [
+            await run(
+                "ssa",
+                lambda: encode_ssa_swap_then_aave_supply(
+                    dag,
+                    amount_in=_AMOUNT_IN,
+                    min_amount_out=0,
+                    recipient=user,
+                    vm_address=vm_address,
+                    aave_pool=AAVE_V3_POOL_ETHEREUM,
+                ),
+            ),
+            await run(
+                "okx",
+                lambda: encode_okx_swap_then_aave_supply(
+                    dag,
+                    amount_in=_AMOUNT_IN,
+                    min_amount_out=0,
+                    recipient=user,
+                    router_address=OKX_DEX_ROUTER_ETHEREUM,
+                    v3_adapter_address=bench_ctx["uni_v3_adapter"],
+                    aave_adapter_address=bench_ctx["aave_v3_adapter"],
+                    aave_pool=AAVE_V3_POOL_ETHEREUM,
+                    aave_atoken=au_usdc,
+                    deadline=_DEADLINE,
+                ),
+            ),
+        ]
+        _print_table(rows)
+        _assert_amount_out_consistent(rows)
 
     async def test_min_out_overhead(self, bench_ctx: dict) -> None:
         """Whole-route min-out gas + semantic comparison on split_v3_two_pools.

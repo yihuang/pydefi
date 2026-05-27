@@ -119,3 +119,52 @@ contract MinimalUniV2Adapter {
     }
 }
 """
+
+
+AAVE_V3_ADAPTER_SOL = """\
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.24;
+
+interface IAaveV3Pool {
+    function supply(address asset, uint256 amount, address onBehalfOf, uint16 referralCode) external;
+    function withdraw(address asset, uint256 amount, address to) external returns (uint256);
+}
+
+interface IERC20Min {
+    function balanceOf(address) external view returns (uint256);
+    function approve(address, uint256) external returns (bool);
+}
+
+/// Minimal Aave V3 adapter compatible with OKX DexRouter.smartSwap.
+/// Port of Web3-DEX-Router-EVM-V1/contracts/8/adapter/AaveV3Adapter.sol.
+/// extraData = abi.encode(address tokenIn, address tokenOut, bool tokenToAtoken).
+/// tokenToAtoken=true: supply tokenIn to Aave; recipient gets aTokens.
+/// tokenToAtoken=false: withdraw tokenOut from Aave to recipient.
+contract MinimalAaveV3Adapter {
+    address public immutable AAVEV3_POOL;
+
+    constructor(address aaveV3Pool) {
+        AAVEV3_POOL = aaveV3Pool;
+    }
+
+    function sellBase(address to, address, bytes calldata moreInfo) external {
+        _aave(to, moreInfo);
+    }
+
+    function sellQuote(address to, address, bytes calldata moreInfo) external {
+        _aave(to, moreInfo);
+    }
+
+    function _aave(address to, bytes calldata moreInfo) internal {
+        (address tokenIn, address tokenOut, bool tokenToAtoken) = abi.decode(moreInfo, (address, address, bool));
+        if (tokenToAtoken) {
+            uint256 amount = IERC20Min(tokenIn).balanceOf(address(this));
+            IERC20Min(tokenIn).approve(AAVEV3_POOL, amount);
+            IAaveV3Pool(AAVEV3_POOL).supply(tokenIn, amount, to, 0);
+        } else {
+            uint256 amount = IERC20Min(tokenIn).balanceOf(address(this));
+            IAaveV3Pool(AAVEV3_POOL).withdraw(tokenOut, amount, to);
+        }
+    }
+}
+"""

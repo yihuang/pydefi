@@ -669,6 +669,65 @@ def encode_okx(
 encode_okx_smart = encode_okx
 
 
+def encode_okx_swap_then_aave_supply(
+    dag: RouteDAG,
+    *,
+    amount_in: int,
+    min_amount_out: int,
+    recipient: Address,
+    router_address: Address,
+    v3_adapter_address: Address,
+    aave_adapter_address: Address,
+    aave_pool: Address,
+    aave_atoken: Address,
+    deadline: int,
+    order_id: int = 0,
+) -> EncodedTx:
+    """OKX smart-swap V3 swap → Aave supply (2 sequential hops in 1 batch).
+
+    DexRouter routes the V3 pool output straight into the Aave adapter
+    (next-hop-assetTo optimization); the Aave adapter then calls
+    ``pool.supply(token, amount, recipient, 0)`` which mints aTokens to
+    the user. ``aave_atoken`` is the ``BaseRequest.toToken`` so DexRouter's
+    end-of-swap balance check measures the aToken delta.
+    """
+    if len(dag.actions) != 1 or not _is_v3_swap(dag.actions[0]):
+        raise ValueError("encode_okx_swap_then_aave_supply: expect a single V3 swap")
+    if dag.token_in is None:
+        raise ValueError("encode_okx_swap_then_aave_supply: DAG missing token_in")
+    swap = dag.actions[0]
+    assert isinstance(swap, RouteSwap) and isinstance(swap.pool, V3PoolEdge)
+    middle = swap.token_out.address
+    aave_adapter = bytes(aave_adapter_address)
+
+    hop_v3 = _v3_hop_router_path(swap=swap, v3_adapter=bytes(v3_adapter_address))
+    # Adapter ignores poolAddress (uses immutable AAVEV3_POOL); the Aave pool
+    # itself goes in the low 160 bits for semantic clarity.
+    hop_aave = RouterPath(
+        mixAdapters=[aave_adapter],
+        assetTo=[aave_adapter],
+        rawData=[_addr_to_uint160(aave_pool) | (10_000 << WEIGHT_SHIFT)],
+        extraData=[abi_encode(["address", "address", "bool"], [bytes(middle), bytes(middle), True])],
+        fromToken=_addr_to_uint160(middle),
+    )
+
+    data = OKX_DEX_ROUTER.fns.smartSwapTo(
+        order_id,
+        bytes(recipient),
+        _build_base_request(
+            token_in=dag.token_in.address,
+            token_out=aave_atoken,
+            amount_in=amount_in,
+            min_amount_out=min_amount_out,
+            deadline=deadline,
+        ),
+        [amount_in],
+        [[hop_v3, hop_aave]],
+        [],
+    ).data
+    return EncodedTx(to=router_address, data=bytes(data), value=0)
+
+
 # ---------------------------------------------------------------------------
 # Uniswap baseline
 # ---------------------------------------------------------------------------
