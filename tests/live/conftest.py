@@ -28,12 +28,15 @@ Run fork tests with::
 
 import asyncio
 import os
+import re
 import socket
 import subprocess
 import time
+from pathlib import Path
 
 import aiohttp
 import pytest
+from eth_utils import keccak
 from web3 import AsyncWeb3
 
 from pydefi.abi.codec import codec
@@ -55,23 +58,16 @@ ETH_RPC_URL = os.environ.get("ETH_RPC_URL") or "https://eth.drpc.org"
 SOLANA_RPC_URL = os.environ.get("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com")
 
 
-async def _ensure_interpreter(w3: AsyncWeb3, deployer: str) -> Address:
-    """Return EVM interpreter address, compiling + deploying one if needed.
-
-    If the Analog-Labs interpreter is pre-deployed on this fork, returns its
-    well-known address.  Otherwise compiles and deploys a fresh copy of
-    ``Interpreter.sol`` so tests can run on any fork network.
-    """
-    code = await w3.eth.get_code(INTERPRETER_ADDR)
-    if code and len(code) > 1:
-        return INTERPRETER_ADDR
-
-    compiled = await asyncio.to_thread(compile_interpreter_sync)
-    key = "<stdin>:Interpreter"
-    contract = w3.eth.contract(abi=compiled[key]["abi"], bytecode=compiled[key]["bin"])
-    tx_hash = await contract.constructor().transact({"from": deployer})
-    receipt = await w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60, poll_latency=0.1)
-    return Address(receipt["contractAddress"])
+def _expected_interpreter_codehash() -> bytes:
+    """Parse ``PATCHED_INTERPRETER_CODEHASH`` from the auto-generated PatchedInterpreterConstants.sol."""
+    constants_path = Path(__file__).resolve().parents[2] / "pydefi" / "vm" / "PatchedInterpreterConstants.sol"
+    m = re.search(
+        r"constant\s+PATCHED_INTERPRETER_CODEHASH\s*=\s*\n?\s*(0x[0-9a-fA-F]{64})",
+        constants_path.read_text(),
+    )
+    if not m:
+        raise RuntimeError(f"could not find PATCHED_INTERPRETER_CODEHASH in {constants_path}")
+    return bytes.fromhex(m.group(1)[2:])
 
 
 # ---------------------------------------------------------------------------
@@ -83,14 +79,36 @@ async def _ensure_interpreter(w3: AsyncWeb3, deployer: str) -> Address:
 async def interpreter_addr(fork_w3_module) -> Address:
     """Return EVM interpreter address for this fork's Anvil instance.
 
-    If the Analog-Labs interpreter is already deployed at its well-known
-    CREATE2 address, that address is returned.  Otherwise a fresh copy of
-    ``Interpreter.sol`` is compiled with py-solcx and deployed so that fork
-    tests run on any network without needing a mainnet fork.
+    If the **pydefi-patched** interpreter is already deployed at the
+    deterministic CREATE2 address :data:`INTERPRETER_ADDR` **and the
+    deployed code's keccak256 matches** ``PATCHED_INTERPRETER_CODEHASH``,
+    returns that address.
+
+    Otherwise (no code, or wrong code at that slot) compiles
+    :file:`pydefi/vm/PatchedInterpreter.sol` and deploys a fresh copy at a
+    new address so tests run against a known-good interpreter.
+
+    The codehash check matters because the deterministic address is
+    pydefi-specific: on arbitrary forks there's a non-zero chance something
+    unrelated has been deployed at that slot.  Without it, tests could
+    silently run against an unintended contract that happens to live at
+    the same salt + initcode-hash address.
     """
-    accounts = await fork_w3_module.eth.accounts
+    w3 = fork_w3_module
+    code = await w3.eth.get_code(INTERPRETER_ADDR)
+    if code and len(code) > 1 and keccak(code) == _expected_interpreter_codehash():
+        return INTERPRETER_ADDR
+
+    accounts = await w3.eth.accounts
     deployer = accounts[0]
-    return await _ensure_interpreter(fork_w3_module, deployer)
+    compiled = await asyncio.to_thread(compile_interpreter_sync)
+    contract = w3.eth.contract(
+        abi=compiled["<stdin>:Interpreter"]["abi"],
+        bytecode=compiled["<stdin>:Interpreter"]["bin"],
+    )
+    tx_hash = await contract.constructor().transact({"from": deployer})
+    receipt = await w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60, poll_latency=0.1)
+    return Address(receipt["contractAddress"])
 
 
 @pytest.fixture

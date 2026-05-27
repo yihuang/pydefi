@@ -22,8 +22,14 @@ ETH_WHALE: Address = Address("0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045")
 #: Polygon PoS bridge escrow — $1 B+ in mainnet USDC, stable across forks
 #: and never moves spontaneously, so impersonation transfers are reliable.
 USDC_WHALE: Address = Address("0x40ec5B33f54e0E8A33A975908C5BA1c14e5BbbDf")
-#: Analog-Labs EVM interpreter — pre-deployed via CREATE2 on mainnet.
-INTERPRETER_ADDR: Address = Address("0x0000000000001e3F4F615cd5e20c681Cf7d85e8D")
+#: pydefi-patched EVM interpreter — deterministic CREATE2 address from
+#: ``pydefi/vm/PatchedInterpreterConstants.sol``.  The patched build rejects
+#: SLOAD / SSTORE / CALLCODE / DELEGATECALL / SELFDESTRUCT at the opcode-
+#: dispatch level (issue #138).  Tests must run against this, not the
+#: upstream Analog-Labs interpreter, so production code paths are exercised
+#: faithfully — e.g. a swap program that accidentally emits SLOAD should
+#: fail in tests too, not silently succeed against an unpatched runtime.
+INTERPRETER_ADDR: Address = Address("0x64fE558B0F9a5dC18D4A36c85Ba99c3f222F7bde")
 
 # ── Ethereum mainnet tokens ───────────────────────────────────────────────────
 
