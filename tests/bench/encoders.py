@@ -8,6 +8,7 @@ self-contained and their gas numbers are directly comparable.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import NamedTuple
 
 from eth_abi import encode as abi_encode
 from eth_contract import Contract
@@ -15,7 +16,7 @@ from eth_contract import Contract
 from pydefi.abi.amm import UNISWAP_V3_ROUTER, ExactInputParams, ExactInputSingleParams
 from pydefi.abi.vm import DeFiVM
 from pydefi.amm.universal_router import UniversalRouter
-from pydefi.pathfinder.graph import V3PoolEdge
+from pydefi.pathfinder.graph import PoolEdge, V3PoolEdge
 from pydefi.types import (
     Address,
     RouteDAG,
@@ -33,6 +34,7 @@ from tests.bench.okx_router_abi import (
     OKX_DEX_ROUTER,
     ONE_FOR_ZERO_MASK,
     OUTPUT_INDEX_SHIFT,
+    REVERSE_MASK,
     WEIGHT_SHIFT,
     BaseRequest,
     RouterPath,
@@ -241,6 +243,15 @@ def _is_v3_swap(action) -> bool:
         return False
 
 
+def _is_v2_swap(action) -> bool:
+    if not isinstance(action, RouteSwap):
+        return False
+    try:
+        return _pool_to_swap_protocol(action.pool.protocol) == SwapProtocol.UNISWAP_V2
+    except ValueError:
+        return False
+
+
 def _is_pure_v3_linear(dag: RouteDAG) -> bool:
     """True iff every action is a V3 swap (no splits)."""
     return all(_is_v3_swap(a) for a in dag.actions)
@@ -323,6 +334,48 @@ def _v3_hop_router_path(*, swap: RouteSwap, v3_adapter: bytes) -> RouterPath:
     )
 
 
+class _SmartLeg(NamedTuple):
+    """One row of a smart-swap ``RouterPath``: which adapter, where DexRouter
+    pre-funds, packed pool/weight word, and adapter-specific extraData."""
+
+    adapter: bytes
+    asset_to: bytes
+    raw_data: int
+    extra_data: bytes
+
+
+def _encode_smart_leg(
+    *,
+    swap: RouteSwap,
+    weight_bps: int,
+    token_in: Address,
+    token_out: Address,
+    v3_adapter: bytes,
+    v2_adapter: bytes | None,
+) -> _SmartLeg:
+    """One smart-swap leg.
+
+    - V3: DexRouter pre-funds the adapter; extraData carries (from, to, fee).
+    - V2: DexRouter pre-funds the pool (assetTo = pool); reverse bit
+      dispatches sellBase vs sellQuote; extraData is empty.
+    """
+    pool_word = _addr_to_uint160(swap.pool.pool_address) | (weight_bps << WEIGHT_SHIFT)
+    if _is_v3_swap(swap):
+        extra = _v3_extra_data(token_in, token_out, swap.pool.fee_bps)
+        return _SmartLeg(v3_adapter, v3_adapter, pool_word, extra)
+    if _is_v2_swap(swap):
+        if v2_adapter is None:
+            raise ValueError("encode_okx: V2 leg requires v2_adapter_address")
+        assert isinstance(swap.pool, PoolEdge)
+        is_token0_in = swap.pool.extra.get("is_token0_in")
+        if is_token0_in is None:
+            raise ValueError("encode_okx: V2 pool edge missing extra['is_token0_in']")
+        if not is_token0_in:
+            pool_word |= REVERSE_MASK  # sellQuote dispatch
+        return _SmartLeg(v2_adapter, bytes(swap.pool.pool_address), pool_word, b"")
+    raise ValueError(f"encode_okx: unsupported leg protocol {swap.pool.protocol}")
+
+
 def _encode_okx_smart_parallel(
     *,
     dag: RouteDAG,
@@ -332,29 +385,36 @@ def _encode_okx_smart_parallel(
     recipient: Address,
     router_address: Address,
     v3_adapter_address: Address,
+    v2_adapter_address: Address | None,
     deadline: int,
     order_id: int,
 ) -> EncodedTx:
     """1-batch parallel-adapters layout (single-hop legs only) — cheapest
-    OKX smart encoding for that shape."""
+    OKX smart encoding for that shape. Mixed V2 + V3 legs supported."""
     token_in_addr = dag.token_in.address
     token_out_addr = split.token_out.address
     v3_adapter = bytes(v3_adapter_address)
+    v2_adapter = bytes(v2_adapter_address) if v2_adapter_address is not None else None
 
-    raw_data: list[int] = []
-    extra_data: list[bytes] = []
+    legs: list[_SmartLeg] = []
     for leg in split.legs:
         swap = leg.actions[0]
-        assert isinstance(swap, RouteSwap) and isinstance(swap.pool, V3PoolEdge)
-        raw_data.append(_addr_to_uint160(swap.pool.pool_address) | (leg.fraction_bps << WEIGHT_SHIFT))
-        extra_data.append(_v3_extra_data(token_in_addr, token_out_addr, swap.pool.fee_bps))
-
-    n = len(split.legs)
+        assert isinstance(swap, RouteSwap)
+        legs.append(
+            _encode_smart_leg(
+                swap=swap,
+                weight_bps=leg.fraction_bps,
+                token_in=token_in_addr,
+                token_out=token_out_addr,
+                v3_adapter=v3_adapter,
+                v2_adapter=v2_adapter,
+            )
+        )
     router_path = RouterPath(
-        mixAdapters=[v3_adapter] * n,
-        assetTo=[v3_adapter] * n,
-        rawData=raw_data,
-        extraData=extra_data,
+        mixAdapters=[L.adapter for L in legs],
+        assetTo=[L.asset_to for L in legs],
+        rawData=[L.raw_data for L in legs],
+        extraData=[L.extra_data for L in legs],
         fromToken=_addr_to_uint160(token_in_addr),
     )
     data = OKX_DEX_ROUTER.fns.smartSwapTo(
@@ -527,12 +587,13 @@ def encode_okx(
     recipient: Address,
     router_address: Address,
     v3_adapter_address: Address | None = None,
+    v2_adapter_address: Address | None = None,
     deadline: int,
     order_id: int = 0,
 ) -> EncodedTx:
     """Pick the best OKX entry for the DAG: uniswapV3SwapTo for pure-V3
-    linear; smartSwapTo (1-batch parallel or N-batch) for V3 splits;
-    dagSwapTo for [split → merge → downstream swap] fan-in."""
+    linear; smartSwapTo (1-batch parallel, V2 + V3 mixed; or N-batch for
+    multi-hop legs); dagSwapTo for ``[split, downstream swap]`` fan-in."""
     if _is_pure_v3_linear(dag):
         return encode_okx_v3(
             dag,
@@ -570,14 +631,27 @@ def encode_okx(
     for leg in split.legs:
         if not leg.actions:
             raise ValueError("encode_okx: leg must contain at least one action")
-        if not all(_is_v3_swap(a) for a in leg.actions):
-            raise ValueError("encode_okx: every leg's action must be a Uniswap V3 swap")
+        if not all(_is_v3_swap(a) or _is_v2_swap(a) for a in leg.actions):
+            raise ValueError("encode_okx: every leg's action must be a Uniswap V2 or V3 swap")
     if v3_adapter_address is None:
         raise ValueError("encode_okx: smart-swap path requires v3_adapter_address")
 
     all_single_hop = all(len(leg.actions) == 1 for leg in split.legs)
-    impl = _encode_okx_smart_parallel if all_single_hop else _encode_okx_smart_batched
-    return impl(
+    if not all_single_hop:
+        if any(_is_v2_swap(a) for leg in split.legs for a in leg.actions):
+            raise ValueError("encode_okx: V2 multi-hop legs not supported yet")
+        return _encode_okx_smart_batched(
+            dag=dag,
+            split=split,
+            amount_in=amount_in,
+            min_amount_out=min_amount_out,
+            recipient=recipient,
+            router_address=router_address,
+            v3_adapter_address=v3_adapter_address,
+            deadline=deadline,
+            order_id=order_id,
+        )
+    return _encode_okx_smart_parallel(
         dag=dag,
         split=split,
         amount_in=amount_in,
@@ -585,6 +659,7 @@ def encode_okx(
         recipient=recipient,
         router_address=router_address,
         v3_adapter_address=v3_adapter_address,
+        v2_adapter_address=v2_adapter_address,
         deadline=deadline,
         order_id=order_id,
     )

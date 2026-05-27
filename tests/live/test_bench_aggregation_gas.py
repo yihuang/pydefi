@@ -55,7 +55,7 @@ from tests.bench.okx_router_abi import (
     OKX_DEX_ROUTER_ETHEREUM,
     OKX_TOKEN_APPROVE_ETHEREUM,
 )
-from tests.bench.sol_sources import UNI_V3_ADAPTER_SOL
+from tests.bench.sol_sources import UNI_V2_ADAPTER_SOL, UNI_V3_ADAPTER_SOL
 from tests.live.anvil_helpers import (
     erc20_approve,
     fund_usdc,
@@ -98,6 +98,15 @@ def _free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
+
+
+async def _deploy_adapter(w3: AsyncWeb3, deployer: str, source: str, name: str) -> Address:
+    """Compile a no-arg-constructor Solidity contract and deploy from ``deployer``."""
+    compiled = compile_sol_source(source, name)
+    contract = w3.eth.contract(abi=compiled["abi"], bytecode=compiled["bin"])
+    tx = await contract.constructor().transact({"from": deployer})
+    receipt = await w3.eth.wait_for_transaction_receipt(tx, timeout=60, poll_latency=0.1)
+    return Address(receipt["contractAddress"])
 
 
 @pytest.fixture(scope="module")
@@ -168,12 +177,9 @@ async def bench_ctx(bench_fork_w3: AsyncWeb3) -> dict:
     receipt = await w3.eth.wait_for_transaction_receipt(tx, timeout=60, poll_latency=0.1)
     vm_address = Address(receipt["contractAddress"])
 
-    # MinimalUniV3Adapter used by OKX smart-swap path.
-    adap_compiled = compile_sol_source(UNI_V3_ADAPTER_SOL, "MinimalUniV3Adapter")
-    adap = w3.eth.contract(abi=adap_compiled["abi"], bytecode=adap_compiled["bin"])
-    tx = await adap.constructor().transact({"from": deployer})
-    receipt = await w3.eth.wait_for_transaction_receipt(tx, timeout=60, poll_latency=0.1)
-    uni_v3_adapter_address = Address(receipt["contractAddress"])
+    # MinimalUniV3 / V2 adapters used by OKX smart-swap path.
+    uni_v3_adapter_address = await _deploy_adapter(w3, deployer, UNI_V3_ADAPTER_SOL, "MinimalUniV3Adapter")
+    uni_v2_adapter_address = await _deploy_adapter(w3, deployer, UNI_V2_ADAPTER_SOL, "MinimalUniV2Adapter")
 
     await impersonate(w3, _TEST_USER)
     await set_balance(w3, _TEST_USER, 100 * 10**21)
@@ -201,12 +207,14 @@ async def bench_ctx(bench_fork_w3: AsyncWeb3) -> dict:
     # USDC for cross-protocol V3+V2 split (USDC→DAI). 6 decimals.
     await fund_usdc(w3, USDC.address, _TEST_USER, 10_000 * 10**6)
     await erc20_approve(w3, USDC.address, _TEST_USER, vm_address, _MAX_UINT)
+    await erc20_approve(w3, USDC.address, _TEST_USER, OKX_TOKEN_APPROVE_ETHEREUM, _MAX_UINT)
 
     return {
         "w3": w3,
         "deployer": deployer,
         "vm_address": vm_address,
         "uni_v3_adapter": uni_v3_adapter_address,
+        "uni_v2_adapter": uni_v2_adapter_address,
         "user": _TEST_USER,
     }
 
@@ -670,9 +678,10 @@ class TestAggregationGas:
         print(f"  uni(multicall)  raised: {uni_refused[:80]}...")
 
     async def test_cross_protocol_v3_v2_split(self, bench_ctx: dict) -> None:
-        """USDC → DAI, 50/50 V3 (fee=100) + V2. Cross-protocol atomic — SSA-only;
-        V3-only routers can't express it. ``pydefi.vm.swap._build_route_swap``
-        already dispatches V2/V3 per split leg, so encode_ssa works as-is."""
+        """USDC → DAI, 50/50 V3 (fee=100) + V2. SSA via composer; OKX via
+        smartSwapTo with mixed [V3 adapter, V2 adapter] (V2 funds go to
+        pool, V3 funds go to adapter); Uniswap V3-only routers can't
+        express V2."""
         w3 = bench_ctx["w3"]
         user = bench_ctx["user"]
         vm_address = bench_ctx["vm_address"]
@@ -680,31 +689,44 @@ class TestAggregationGas:
         _print_dag_shape(dag, label="cross-protocol")
 
         usdc_in = 100 * 10**6  # 100 USDC, 6 decimals
-        bal_before = await _balance(w3, DAI.address, user)
-        async with _snapshot_revert(w3):
-            tx = encode_ssa(
-                dag,
-                amount_in=usdc_in,
-                min_amount_out=0,
-                recipient=user,
-                vm_address=vm_address,
-            )
-            receipt = await send_ok(
-                w3,
-                user,
-                {"to": tx.to, "data": "0x" + tx.data.hex(), "value": tx.value},
-                "ssa cross-protocol V3+V2",
-            )
-            bal_after = await _balance(w3, DAI.address, user)
-            row = BenchRow(
-                path="cross_protocol_v3_v2",
-                encoder="ssa",
-                gas_used=int(receipt["gasUsed"]),
-                calldata_bytes=len(tx.data),
-                amount_out=int(bal_after - bal_before),
-            )
-        _print_table([row])
-        assert row.amount_out > 0, f"expected positive DAI output, got {row.amount_out}"
+
+        async def run(encoder_name: str, encode: Callable[[], EncodedTx]) -> BenchRow:
+            async with _snapshot_revert(w3):
+                return await _run_encoder(
+                    bench_ctx,
+                    path_name="cross_protocol_v3_v2",
+                    encoder_name=encoder_name,
+                    token_out=DAI,
+                    encode=encode,
+                )
+
+        rows = [
+            await run(
+                "ssa",
+                lambda: encode_ssa(
+                    dag,
+                    amount_in=usdc_in,
+                    min_amount_out=0,
+                    recipient=user,
+                    vm_address=vm_address,
+                ),
+            ),
+            await run(
+                "okx",
+                lambda: encode_okx(
+                    dag,
+                    amount_in=usdc_in,
+                    min_amount_out=0,
+                    recipient=user,
+                    router_address=OKX_DEX_ROUTER_ETHEREUM,
+                    v3_adapter_address=bench_ctx["uni_v3_adapter"],
+                    v2_adapter_address=bench_ctx["uni_v2_adapter"],
+                    deadline=_DEADLINE,
+                ),
+            ),
+        ]
+        _print_table(rows)
+        _assert_amount_out_consistent(rows)
 
     async def test_universal_router_v3(self, bench_ctx: dict) -> None:
         """Modern Uniswap baseline (SR02 is now legacy). UR uses command-byte
