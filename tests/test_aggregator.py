@@ -4,16 +4,25 @@ from decimal import Decimal
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from hexbytes import HexBytes
 
+from pydefi.abi.dex_aggregator import OKX_DEX_ROUTER
 from pydefi.aggregator.base import AggregatorQuote
 from pydefi.aggregator.okx import OKX
+from pydefi.aggregator.okx_router_encoder import (
+    RouterPathDescriptor,
+    build_dag_swap_calldata,
+    encode_edge_raw_data,
+    route_dag_to_router_paths,
+)
 from pydefi.aggregator.oneinch import OneInch
 from pydefi.aggregator.openocean import OpenOcean
 from pydefi.aggregator.paraswap import ParaSwap
 from pydefi.aggregator.uniswap import UniswapAPI
 from pydefi.aggregator.zerox import ZeroX
 from pydefi.exceptions import AggregatorError
-from pydefi.types import Address, TokenAmount
+from pydefi.pathfinder.graph import PoolEdge
+from pydefi.types import Address, ChainId, RouteDAG, Token, TokenAmount
 from tests.addrs import USDC, WETH
 
 # ---------------------------------------------------------------------------
@@ -710,8 +719,6 @@ class TestOKXRouterEncoder:
     """Tests for the OKX DexRouter calldata encoder."""
 
     def test_encode_edge_raw_data_defaults(self):
-        from hexbytes import HexBytes
-        from pydefi.aggregator.okx_router_encoder import encode_edge_raw_data
 
         pool = HexBytes("0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640")
         raw = encode_edge_raw_data(pool)
@@ -732,8 +739,6 @@ class TestOKXRouterEncoder:
         assert not bool(raw & _REVERSE_MASK)
 
     def test_encode_edge_raw_data_reverse(self):
-        from hexbytes import HexBytes
-        from pydefi.aggregator.okx_router_encoder import encode_edge_raw_data
 
         _REVERSE_MASK = 0x8000000000000000000000000000000000000000000000000000000000000000
         pool = HexBytes("0x" + "FF" * 20)
@@ -748,8 +753,6 @@ class TestOKXRouterEncoder:
         assert (raw & _OUTPUT_INDEX_MASK) >> 176 == 3
 
     def test_encode_edge_raw_data_validation(self):
-        from hexbytes import HexBytes
-        from pydefi.aggregator.okx_router_encoder import encode_edge_raw_data
 
         pool = HexBytes("0x" + "00" * 20)
 
@@ -765,13 +768,6 @@ class TestOKXRouterEncoder:
             encode_edge_raw_data(HexBytes("0x" + "00" * 10))
 
     def test_build_dag_swap_calldata(self):
-        from hexbytes import HexBytes
-        from pydefi.abi.dex_aggregator import OKX_DEX_ROUTER
-        from pydefi.aggregator.okx_router_encoder import (
-            RouterPathDescriptor,
-            build_dag_swap_calldata,
-            encode_edge_raw_data,
-        )
 
         pool = HexBytes("0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640")
         from_token = HexBytes("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2")
@@ -804,8 +800,6 @@ class TestOKXRouterEncoder:
         assert len(calldata) > 4 + 128  # at minimum: selector + 4 arg words
 
     def test_build_dag_swap_calldata_empty_paths_raises(self):
-        from hexbytes import HexBytes
-        from pydefi.aggregator.okx_router_encoder import build_dag_swap_calldata
 
         with pytest.raises(ValueError, match="at least one"):
             build_dag_swap_calldata(
@@ -821,10 +815,6 @@ class TestOKXRouterEncoder:
 
     def test_route_dag_to_router_paths_linear(self):
         """A simple linear RouteDAG (two swaps) produces two RouterPath nodes."""
-        from hexbytes import HexBytes
-        from pydefi.aggregator.okx_router_encoder import route_dag_to_router_paths
-        from pydefi.pathfinder.graph import PoolEdge, V3PoolEdge
-        from pydefi.types import ChainId, RouteDAG, Token
 
         t0 = Token(chain_id=ChainId.ETHEREUM, address=HexBytes("0x" + "01" * 20), symbol="T0")
         t1 = Token(chain_id=ChainId.ETHEREUM, address=HexBytes("0x" + "02" * 20), symbol="T1")
@@ -864,10 +854,6 @@ class TestOKXRouterEncoder:
 
     def test_route_dag_to_router_paths_with_split(self):
         """A split RouteDAG (one split with two legs) produces one split node + one subsequent node."""
-        from hexbytes import HexBytes
-        from pydefi.aggregator.okx_router_encoder import route_dag_to_router_paths
-        from pydefi.pathfinder.graph import PoolEdge
-        from pydefi.types import ChainId, RouteDAG, Token
 
         t0 = Token(chain_id=ChainId.ETHEREUM, address=HexBytes("0x" + "01" * 20), symbol="T0")
         t1 = Token(chain_id=ChainId.ETHEREUM, address=HexBytes("0x" + "02" * 20), symbol="T1")
@@ -912,10 +898,6 @@ class TestOKXRouterEncoder:
 
     def test_route_dag_rejects_multi_hop_leg(self):
         """A leg with more than one swap inside a split must raise."""
-        from hexbytes import HexBytes
-        from pydefi.aggregator.okx_router_encoder import route_dag_to_router_paths
-        from pydefi.pathfinder.graph import PoolEdge
-        from pydefi.types import ChainId, RouteDAG, Token
 
         t0 = Token(chain_id=ChainId.ETHEREUM, address=HexBytes("0x" + "01" * 20), symbol="T0")
         t1 = Token(chain_id=ChainId.ETHEREUM, address=HexBytes("0x" + "02" * 20), symbol="T1")
@@ -963,10 +945,6 @@ class TestOKXRouterEncoder:
 
     def test_route_dag_rejects_unknown_protocol(self):
         """A RouteSwap with an unsupported protocol raises ValueError."""
-        from hexbytes import HexBytes
-        from pydefi.aggregator.okx_router_encoder import route_dag_to_router_paths
-        from pydefi.pathfinder.graph import PoolEdge
-        from pydefi.types import ChainId, RouteDAG, Token
 
         t0 = Token(chain_id=ChainId.ETHEREUM, address=HexBytes("0x" + "01" * 20), symbol="T0")
         t1 = Token(chain_id=ChainId.ETHEREUM, address=HexBytes("0x" + "02" * 20), symbol="T1")
@@ -986,14 +964,6 @@ class TestOKXRouterEncoder:
 
     def test_adapter_overrides_work(self):
         """Custom adapter addresses via adapter_overrides."""
-        from hexbytes import HexBytes
-        from pydefi.aggregator.okx_router_encoder import (
-            _protocol_to_adapter,
-            route_dag_to_router_paths,
-        )
-        from pydefi.pathfinder.graph import PoolEdge
-        from pydefi.types import ChainId, RouteDAG, Token
-
         custom_addr = HexBytes("0x" + "CA" * 20)
 
         t0 = Token(chain_id=ChainId.ETHEREUM, address=HexBytes("0x" + "01" * 20), symbol="T0")
