@@ -59,6 +59,7 @@ Usage
 
 from __future__ import annotations
 
+from pydefi import Token
 from pydefi.abi.dex_aggregator import OKX_DEX_ROUTER, BaseRequest, RouterPath
 from pydefi.types import MAX_BPS, Address, RouteAction, RouteDAG, RouteSplit, RouteSwap, SwapProtocol
 
@@ -87,6 +88,42 @@ _MODE_PERMIT2: int = 1 << 249
 # dagSwapTo function selector
 _DAG_SWAP_TO_SELECTOR: bytes = OKX_DEX_ROUTER.fns.dagSwapTo.selector
 
+
+class RouterPathDescriptor:
+    """Descriptor for one DAG node passed to :func:`build_dag_swap_calldata`.
+
+    Attributes:
+        mix_adapters: Adapter contract addresses, one per edge.
+            Must be known a priori (chain-specific OKX adapter deployments).
+        asset_to: Destination for each edge's pre-swap token transfer.
+            Typically the pool/pair address.
+        raw_data: Encoded edge parameters, one ``uint256`` per edge.
+            Use :func:`encode_edge_raw_data` to build each word.
+        extra_data: Bytes passed to the adapter's ``sellBase``/``sellQuote``.
+            Usually empty for standard V2/V3 swaps.
+        from_token: Source token address for this node (20 raw bytes).
+        mode: Transfer mode for this node's fromToken.
+            Defaults to ``_MODE_LEGACY``.
+    """
+
+    __slots__ = ("mix_adapters", "asset_to", "raw_data", "extra_data", "from_token", "mode")
+
+    def __init__(
+        self,
+        mix_adapters: list[Address],
+        asset_to: list[Address],
+        raw_data: list[int],
+        *,
+        extra_data: list[bytes] | None = None,
+        from_token: Address,
+        mode: int = _MODE_LEGACY,
+    ) -> None:
+        self.mix_adapters = mix_adapters
+        self.asset_to = asset_to
+        self.raw_data = raw_data
+        self.extra_data = extra_data or [b""] * len(mix_adapters)
+        self.from_token = from_token
+        self.mode = mode
 
 # ---------------------------------------------------------------------------
 # RawData encoder
@@ -214,43 +251,6 @@ def build_dag_swap_calldata(
         )
 
     return OKX_DEX_ROUTER.fns.dagSwapTo(order_id, receiver, base_req, router_paths).data
-
-
-class RouterPathDescriptor:
-    """Descriptor for one DAG node passed to :func:`build_dag_swap_calldata`.
-
-    Attributes:
-        mix_adapters: Adapter contract addresses, one per edge.
-            Must be known a priori (chain-specific OKX adapter deployments).
-        asset_to: Destination for each edge's pre-swap token transfer.
-            Typically the pool/pair address.
-        raw_data: Encoded edge parameters, one ``uint256`` per edge.
-            Use :func:`encode_edge_raw_data` to build each word.
-        extra_data: Bytes passed to the adapter's ``sellBase``/``sellQuote``.
-            Usually empty for standard V2/V3 swaps.
-        from_token: Source token address for this node (20 raw bytes).
-        mode: Transfer mode for this node's fromToken.
-            Defaults to ``_MODE_LEGACY``.
-    """
-
-    __slots__ = ("mix_adapters", "asset_to", "raw_data", "extra_data", "from_token", "mode")
-
-    def __init__(
-        self,
-        mix_adapters: list[Address],
-        asset_to: list[Address],
-        raw_data: list[int],
-        *,
-        extra_data: list[bytes] | None = None,
-        from_token: Address,
-        mode: int = _MODE_LEGACY,
-    ) -> None:
-        self.mix_adapters = mix_adapters
-        self.asset_to = asset_to
-        self.raw_data = raw_data
-        self.extra_data = extra_data or [b""] * len(mix_adapters)
-        self.from_token = from_token
-        self.mode = mode
 
 
 # ---------------------------------------------------------------------------
@@ -389,7 +389,7 @@ def _walk_actions(
                         "Multi-hop legs are not supported by the OKX RouterPath format."
                     )
             result.append(
-                _split_to_node(action, idx, current_mode, adapter_overrides)
+                _split_to_node(action, current_token, idx, current_mode, adapter_overrides)
             )
             current_token = action.token_out
             idx += 1
@@ -403,7 +403,7 @@ def _walk_actions(
 
 def _swap_to_node(
     swap: RouteSwap,
-    from_token,
+    from_token: Token,
     node_index: int,
     mode: int,
     adapter_overrides: dict[str, str] | None,
@@ -430,6 +430,7 @@ def _swap_to_node(
 
 def _split_to_node(
     split: RouteSplit,
+    from_token: Token,
     node_index: int,
     mode: int,
     adapter_overrides: dict[str, str] | None,
@@ -438,15 +439,11 @@ def _split_to_node(
     adapters: list[Address] = []
     asset_tos: list[Address] = []
     raw_datas: list[int] = []
-    from_token: Address | None = None
 
     for leg in split.legs:
         swap = leg.actions[0]  # guaranteed single swap by caller
         pool = swap.pool
         adapter = _protocol_to_adapter(pool.protocol, adapter_overrides)
-
-        if from_token is None:
-            from_token = pool.token_in.address
 
         adapters.append(adapter)
         asset_tos.append(pool.pool_address)
@@ -460,13 +457,10 @@ def _split_to_node(
             )
         )
 
-    if from_token is None:
-        raise ValueError("split has no legs")
-
     return RouterPathDescriptor(
         mix_adapters=adapters,
         asset_to=asset_tos,
         raw_data=raw_datas,
-        from_token=from_token,
+        from_token=from_token.address,
         mode=mode,
     )
