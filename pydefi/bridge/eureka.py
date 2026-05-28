@@ -10,13 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from eth_abi import encode as abi_encode
-
-from pydefi.abi.bridge import (
-    ICS20_DEFAULT_PORT,
-    ICS20_SEND_TRANSFER_SELECTOR,
-    ICS20_SEND_TRANSFER_TUPLE_TYPES,
-)
+from pydefi.abi.bridge import ICS20_DEFAULT_PORT, ICS20_TRANSFER
 from pydefi.bridge.base import BaseBridge
 from pydefi.exceptions import BridgeError
 from pydefi.types import Address, BridgeQuote, Token, TokenAmount
@@ -46,11 +40,11 @@ def encode_send_transfer_calldata(
     if timeout_timestamp < 0 or timeout_timestamp >> 64:
         raise ValueError(f"timeout_timestamp {timeout_timestamp} out of uint64 range")
 
-    encoded_msg = abi_encode(
-        [f"({','.join(ICS20_SEND_TRANSFER_TUPLE_TYPES)})"],
-        [(denom_bytes, amount, receiver, source_client, dest_port, timeout_timestamp, memo)],
+    return bytes(
+        ICS20_TRANSFER.fns.sendTransfer(
+            (denom_bytes, amount, receiver, source_client, dest_port, timeout_timestamp, memo)
+        ).data
     )
-    return ICS20_SEND_TRANSFER_SELECTOR + encoded_msg
 
 
 class Eureka(BaseBridge):

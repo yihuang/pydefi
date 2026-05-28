@@ -12,10 +12,10 @@ Usage::
     bytecode = prog.build()
 """
 
+from pydefi.abi.bridge import IIBC_SENDER_CALLBACKS_INTERFACE_ID
 from pydefi.vm.context import Operand, Program, ProgramContext
 from pydefi.vm.dag import build_execution_program_for_dag, build_quote_program_for_dag
 from pydefi.vm.eureka import (
-    IIBC_SENDER_CALLBACKS_INTERFACE_ID,
     approve_then_send_transfer,
     encode_send_and_compose_calldata,
     send_transfer,

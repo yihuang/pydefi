@@ -17,7 +17,6 @@ from __future__ import annotations
 from typing import Annotated
 
 from eth_contract import ABIStruct, Contract
-from eth_utils import function_signature_to_4byte_selector
 
 # ---------------------------------------------------------------------------
 # Circle CCTP v2
@@ -258,24 +257,39 @@ LUCID_LAYERZERO_ADAPTER = Contract.from_abi(
 )
 
 # ---------------------------------------------------------------------------
-# IBC v2 (Eureka) — ICS20Transfer
+# IBC v2 (Eureka) — ICS20Transfer + EurekaComposer
 # ---------------------------------------------------------------------------
-#
-# Hand-rolled signature/selector/tuple-types because ``pydefi.vm.eureka``
-# needs to patch ``amount`` / ``timeoutTimestamp`` into the encoded calldata
-# at known ABI offsets (``call_raw`` path, not ``call_contract``). Field order
-# matches solidity-ibc-eureka/contracts/msgs/IICS20TransferMsgs.sol.
+# Field order matches solidity-ibc-eureka/contracts/msgs/IICS20TransferMsgs.sol.
 
 ICS20_DEFAULT_PORT = "transfer"
 
-ICS20_SEND_TRANSFER_SIG = "sendTransfer((address,uint256,string,string,string,uint64,string))"
-ICS20_SEND_TRANSFER_SELECTOR = function_signature_to_4byte_selector(ICS20_SEND_TRANSFER_SIG)
-ICS20_SEND_TRANSFER_TUPLE_TYPES = (
-    "address",
-    "uint256",
-    "string",
-    "string",
-    "string",
-    "uint64",
-    "string",
+
+class ICS20SendTransferMsg(ABIStruct):
+    """``IICS20TransferMsgs.SendTransferMsg`` — input to ``sendTransfer`` /
+    ``sendTransferAndCompose``."""
+
+    denom: Annotated[str, "address"]
+    amount: Annotated[int, "uint256"]
+    receiver: Annotated[str, "string"]
+    sourceClient: Annotated[str, "string"]
+    destPort: Annotated[str, "string"]
+    timeoutTimestamp: Annotated[int, "uint64"]
+    memo: Annotated[str, "string"]
+
+
+ICS20_TRANSFER = Contract.from_abi(
+    ICS20SendTransferMsg.human_readable_abi()
+    + [
+        "function sendTransfer(ICS20SendTransferMsg msg_) external returns (uint64)",
+    ]
 )
+
+EUREKA_COMPOSER = Contract.from_abi(
+    ICS20SendTransferMsg.human_readable_abi()
+    + [
+        "function sendTransferAndCompose(ICS20SendTransferMsg msg_, bytes program) external returns (uint64)",
+    ]
+)
+
+# ERC-165 ``IIBCSenderCallbacks`` id (onAckPacket ^ onTimeoutPacket selectors).
+IIBC_SENDER_CALLBACKS_INTERFACE_ID: bytes = bytes.fromhex("d3ce6f1b")

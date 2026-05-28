@@ -14,33 +14,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from eth_abi import encode as abi_encode
 from eth_contract.erc20 import ERC20
-from eth_utils import function_signature_to_4byte_selector
 
+from pydefi.abi.bridge import EUREKA_COMPOSER
 from pydefi.bridge.eureka import ICS20_DEFAULT_PORT, encode_send_transfer_calldata
 from pydefi.types import Address
 from pydefi.vm.context import Operand, Program, ValueLike
-
-# ERC-165 interface id for IIBCSenderCallbacks = XOR of the onAckPacket /
-# onTimeoutPacket selectors. EurekaComposer.sol hard-codes the same constant.
-_ON_ACK_SIG = "onAckPacket(bool,(string,string,uint64,(string,string,string,string,bytes),bytes,address))"
-_ON_TIMEOUT_SIG = "onTimeoutPacket((string,string,uint64,(string,string,string,string,bytes),address))"
-IIBC_SENDER_CALLBACKS_INTERFACE_ID: bytes = bytes(
-    a ^ b
-    for a, b in zip(
-        function_signature_to_4byte_selector(_ON_ACK_SIG),
-        function_signature_to_4byte_selector(_ON_TIMEOUT_SIG),
-    )
-)
-
-
-_SEND_AND_COMPOSE_SIG = "sendTransferAndCompose((address,uint256,string,string,string,uint64,string),bytes)"
-_SEND_AND_COMPOSE_SELECTOR = function_signature_to_4byte_selector(_SEND_AND_COMPOSE_SIG)
-_SEND_AND_COMPOSE_TYPES = (
-    "(address,uint256,string,string,string,uint64,string)",
-    "bytes",
-)
 
 
 def encode_send_and_compose_calldata(
@@ -69,14 +48,12 @@ def encode_send_and_compose_calldata(
     if timeout_timestamp < 0 or timeout_timestamp >> 64:
         raise ValueError(f"timeout_timestamp {timeout_timestamp} out of uint64 range")
 
-    encoded = abi_encode(
-        list(_SEND_AND_COMPOSE_TYPES),
-        [
+    return bytes(
+        EUREKA_COMPOSER.fns.sendTransferAndCompose(
             (denom_bytes, amount, receiver, source_client, dest_port, timeout_timestamp, memo),
             program,
-        ],
+        ).data
     )
-    return _SEND_AND_COMPOSE_SELECTOR + encoded
 
 
 # ABI offsets within the encoded ``sendTransfer((address,uint256,string,string,string,uint64,string))``
@@ -109,6 +86,7 @@ def _resolve_timeout(
         raise ValueError("supply exactly one of timeout_timestamp / timeout_seconds")
     if timeout_timestamp is not None:
         return timeout_timestamp
+    assert timeout_seconds is not None  # XOR above guarantees this
     return prog.add(prog.builder.timestamp(), timeout_seconds)
 
 
