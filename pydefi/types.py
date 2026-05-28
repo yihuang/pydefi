@@ -480,7 +480,7 @@ class RouteDAG:
 def _freeze_actions(actions: Sequence[RouteAction]) -> tuple[RouteAction, ...]:
     frozen: list[RouteAction] = []
     for action in actions:
-        if isinstance(action, RouteSwap):
+        if isinstance(action, (RouteSwap, RouteBridge)):
             frozen.append(action)
             continue
         frozen.append(

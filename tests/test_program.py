@@ -519,6 +519,12 @@ class TestRouteBridge:
         # compiles — quote-time eval of the new action variant doesn't choke.
         assert len(build_quote_program_for_dag(_bridge_dag(), amount_in=10**6).build()) > 0
 
+    def test_to_dict_preserves_bridge_action(self):
+        dag = _bridge_dag()
+        out = dag.to_dict()
+        assert len(out["actions"]) == 1
+        assert isinstance(out["actions"][0], RouteBridge)
+
 
 # ---------------------------------------------------------------------------
 # Returndata access
