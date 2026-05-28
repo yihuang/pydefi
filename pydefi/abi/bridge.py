@@ -17,6 +17,7 @@ from __future__ import annotations
 from typing import Annotated
 
 from eth_contract import ABIStruct, Contract
+from eth_utils import function_signature_to_4byte_selector
 
 # ---------------------------------------------------------------------------
 # Circle CCTP v2
@@ -254,4 +255,27 @@ LUCID_LAYERZERO_ADAPTER = Contract.from_abi(
         "function isChainIdSupported(uint256 chainId) external view returns (bool)",
         "function paused() external view returns (bool)",
     ]
+)
+
+# ---------------------------------------------------------------------------
+# IBC v2 (Eureka) — ICS20Transfer
+# ---------------------------------------------------------------------------
+#
+# Hand-rolled signature/selector/tuple-types because ``pydefi.vm.eureka``
+# needs to patch ``amount`` / ``timeoutTimestamp`` into the encoded calldata
+# at known ABI offsets (``call_raw`` path, not ``call_contract``). Field order
+# matches solidity-ibc-eureka/contracts/msgs/IICS20TransferMsgs.sol.
+
+ICS20_DEFAULT_PORT = "transfer"
+
+ICS20_SEND_TRANSFER_SIG = "sendTransfer((address,uint256,string,string,string,uint64,string))"
+ICS20_SEND_TRANSFER_SELECTOR = function_signature_to_4byte_selector(ICS20_SEND_TRANSFER_SIG)
+ICS20_SEND_TRANSFER_TUPLE_TYPES = (
+    "address",
+    "uint256",
+    "string",
+    "string",
+    "string",
+    "uint64",
+    "string",
 )

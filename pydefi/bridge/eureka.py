@@ -11,18 +11,15 @@ from __future__ import annotations
 from typing import Any
 
 from eth_abi import encode as abi_encode
-from eth_utils import function_signature_to_4byte_selector
 
+from pydefi.abi.bridge import (
+    ICS20_DEFAULT_PORT,
+    ICS20_SEND_TRANSFER_SELECTOR,
+    ICS20_SEND_TRANSFER_TUPLE_TYPES,
+)
 from pydefi.bridge.base import BaseBridge
 from pydefi.exceptions import BridgeError
 from pydefi.types import Address, BridgeQuote, Token, TokenAmount
-
-ICS20_DEFAULT_PORT = "transfer"
-
-# SendTransferMsg field order matches solidity-ibc-eureka/contracts/msgs/IICS20TransferMsgs.sol.
-_SEND_TRANSFER_SIG = "sendTransfer((address,uint256,string,string,string,uint64,string))"
-_SEND_TRANSFER_SELECTOR = function_signature_to_4byte_selector(_SEND_TRANSFER_SIG)
-_SEND_TRANSFER_TUPLE_TYPES = ("address", "uint256", "string", "string", "string", "uint64", "string")
 
 
 def encode_send_transfer_calldata(
@@ -50,10 +47,10 @@ def encode_send_transfer_calldata(
         raise ValueError(f"timeout_timestamp {timeout_timestamp} out of uint64 range")
 
     encoded_msg = abi_encode(
-        [f"({','.join(_SEND_TRANSFER_TUPLE_TYPES)})"],
+        [f"({','.join(ICS20_SEND_TRANSFER_TUPLE_TYPES)})"],
         [(denom_bytes, amount, receiver, source_client, dest_port, timeout_timestamp, memo)],
     )
-    return _SEND_TRANSFER_SELECTOR + encoded_msg
+    return ICS20_SEND_TRANSFER_SELECTOR + encoded_msg
 
 
 class Eureka(BaseBridge):
