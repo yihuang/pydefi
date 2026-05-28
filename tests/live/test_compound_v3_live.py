@@ -37,7 +37,7 @@ from tests.live.anvil_helpers import (
     wrap_eth,
 )
 
-CUSDC_V3 = Address(get_address("COMPOUND_V3_USDC", ChainId.ETHEREUM))
+CUSDC_V3 = get_address("COMPOUND_V3_USDC", ChainId.ETHEREUM)
 
 WHALE_BALANCE = 100 * 10**18
 WETH_SUPPLY_AMOUNT = 5 * 10**18

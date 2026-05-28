@@ -2,8 +2,7 @@
 
 Parametrized over both supported source chains:
 
-* MANTRA (5888) — Hyperlane adapter, discovered at runtime via
-  :func:`pydefi.bridge.lucid.discover_adapter`.
+* MANTRA (5888) — Hyperlane adapter, pinned in ``deployments.py``.
 * Kite (2366) — LayerZero adapter, pinned in ``deployments.py``.
 
 Run with::
@@ -48,7 +47,7 @@ async def src(request) -> tuple[int, AsyncWeb3]:
 
 
 def _ctrl_addr(name: str, src_chain_id: int) -> Address:
-    return Address(bytes.fromhex(get_address(name, src_chain_id)[2:]))
+    return get_address(name, src_chain_id)
 
 
 _ADAPTER_BY_SRC = {
@@ -58,7 +57,7 @@ _ADAPTER_BY_SRC = {
 
 
 def _adapter_addr(src_chain_id: int) -> Address:
-    return Address(bytes.fromhex(get_address(_ADAPTER_BY_SRC[src_chain_id], src_chain_id)[2:]))
+    return get_address(_ADAPTER_BY_SRC[src_chain_id], src_chain_id)
 
 
 def _all_controllers() -> list[tuple[int, str]]:

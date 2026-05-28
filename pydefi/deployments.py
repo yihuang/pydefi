@@ -42,6 +42,7 @@ _TOKENS: dict[str, dict] = {
             _ETH: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
             _SEP: "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
             ChainId.MANTRA: "0x8f726A72e3a28d21f153F1698e60d6a97eFd1a00",
+            ChainId.BASE: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
         },
     },
     "USDC.e": {
@@ -140,9 +141,9 @@ _CONTRACTS: dict[str, dict[int, str]] = {
 def _merge_generated(contracts: dict[str, dict[int, str]], filename: str) -> None:
     """Merge a generated address file (config/<filename>) into *contracts*.
 
-    aave.json and compound.json are produced from upstream registries by
-    config/update.sh. Regenerate with ``bash config/update.sh`` if a file
-    is missing/empty/corrupt."""
+    aave.json, aave_v4.json, compound.json and morpho.json are produced from
+    upstream registries by config/update.sh. Regenerate with
+    ``bash config/update.sh`` if a file is missing/empty/corrupt."""
     path = Path(__file__).resolve().parent / "config" / filename
     hint = "run config/update.sh to (re)generate it"
     if not path.exists():
@@ -159,11 +160,13 @@ def _merge_generated(contracts: dict[str, dict[int, str]], filename: str) -> Non
 
 
 _merge_generated(_CONTRACTS, "aave.json")
+_merge_generated(_CONTRACTS, "aave_v4.json")
 _merge_generated(_CONTRACTS, "compound.json")
+_merge_generated(_CONTRACTS, "morpho.json")
 
 
-def get_address(name: str, chain_id: int) -> str:
-    """Return the deployed address of *name* on *chain_id*.
+def get_address(name: str, chain_id: int) -> Address:
+    """Return the deployed :class:`~pydefi.types.Address` of *name* on *chain_id*.
 
     Searches contracts first, then token addresses.
 
@@ -174,13 +177,13 @@ def get_address(name: str, chain_id: int) -> str:
         addr = _CONTRACTS[name].get(chain_id)
         if addr is None:
             raise KeyError(f"{name!r} has no deployment on chain {chain_id}")
-        return addr
+        return decode_address(addr, chain_id)
 
     if name in _TOKENS:
         addr = _TOKENS[name]["addresses"].get(chain_id)
         if addr is None:
             raise KeyError(f"Token {name!r} has no deployment on chain {chain_id}")
-        return addr
+        return decode_address(addr, chain_id)
 
     raise KeyError(f"Unknown deployment name {name!r}")
 
@@ -209,13 +212,6 @@ def chains_for(name: str) -> list[int]:
     if name in _TOKENS:
         return list(_TOKENS[name]["addresses"])
     raise KeyError(f"Unknown deployment name {name!r}")
-
-
-def address_for(name: str, chain_id: int) -> Address:
-    """Like :func:`get_address` but returns a chain-aware :class:`Address`
-    instead of a raw string — saves callers from wrapping in
-    ``Address(decode_address(...))`` at every call site."""
-    return Address(decode_address(get_address(name, chain_id), chain_id))
 
 
 def _normalize_symbol(token_symbol: str) -> str:

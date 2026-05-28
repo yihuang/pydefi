@@ -27,8 +27,8 @@ from pydefi.abi.lending import (
     AAVE_V3_DATA_PROVIDER,
     AAVE_V3_ORACLE,
     AAVE_V3_POOL,
-    ReserveDataLegacy,
 )
+from pydefi.deployments import get_address
 from pydefi.exceptions import PydefiError
 from pydefi.lending.utils import SECONDS_PER_YEAR, UINT256_MAX, resolve_amount, to_tx
 from pydefi.types import Address, Token, TokenAmount
@@ -259,10 +259,8 @@ class AaveV3:
 
     @classmethod
     async def from_chain(cls, w3: AsyncWeb3, chain_id: int, protocol_name: str = "AaveV3") -> AaveV3:
-        from pydefi.deployments import address_for
-
         return await cls.from_addresses_provider(
-            w3, chain_id, address_for("AAVE_V3_ADDRESSES_PROVIDER", chain_id), protocol_name
+            w3, chain_id, get_address("AAVE_V3_ADDRESSES_PROVIDER", chain_id), protocol_name
         )
 
     @classmethod
@@ -324,7 +322,6 @@ class AaveV3:
             AAVE_V3_DATA_PROVIDER.fns.getPaused(token.address).call(self.w3, to=self.data_provider_address),
             AAVE_V3_DATA_PROVIDER.fns.getTotalDebt(token.address).call(self.w3, to=self.data_provider_address),
         )
-        reserve = ReserveDataLegacy._make(reserve)
 
         # balanceOf needs the aToken address out of getReserveData, so it runs second.
         a_token_address = Address(reserve.aTokenAddress)
