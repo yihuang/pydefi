@@ -137,6 +137,54 @@ contract MockToken {
 """
 
 # ---------------------------------------------------------------------------
+# Shared MockTarget Solidity source
+# ---------------------------------------------------------------------------
+
+MOCK_TARGET_SOL = """\
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+
+/// @notice Records the most recent call to execute() (and emits Called) so
+/// composer tests can assert the program ran.
+contract MockTarget {
+    event Called(address sender, uint256 value, bytes data);
+
+    uint256 public callCount;
+    bytes public lastData;
+    uint256 public lastValue;
+
+    function execute(bytes calldata data) external payable returns (bool) {
+        callCount++;
+        lastData = data;
+        lastValue = msg.value;
+        emit Called(msg.sender, msg.value, data);
+        return true;
+    }
+
+    receive() external payable {}
+}
+"""
+
+# ---------------------------------------------------------------------------
+# Shared RevertingTarget Solidity source
+# ---------------------------------------------------------------------------
+
+MOCK_REVERTING_TARGET_SOL = """\
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+
+/// @notice Always reverts — used to test sub-call failure handling.
+contract RevertingTarget {
+    error AlwaysReverts();
+
+    fallback() external payable {
+        revert AlwaysReverts();
+    }
+}
+"""
+
+
+# ---------------------------------------------------------------------------
 # Shared mock DEX pools (V3 + V2) — used by both swap-router fork tests and
 # composer/proxy callback regression tests.  The V3 pool's ``swap`` triggers
 # a real ``uniswapV3SwapCallback`` on ``msg.sender`` so each entrypoint
