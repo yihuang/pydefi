@@ -133,9 +133,24 @@ contract EurekaComposer is DEXCallbackRouter, TransientReentrancyGuard, Interpre
     event TimeoutExecuted(string indexed sourceClient, uint64 indexed sequence);
 
     error AlreadyComposed();
+    error EmptyProgram();
     error TransferFromFailed();
     error ApproveFailed();
     error UnauthorizedCallback();
+
+    /// @dev OpenZeppelin SafeERC20-style call: tolerates tokens that return
+    /// nothing (e.g. classic USDT). Reverts on call failure or on explicit
+    /// `false` return. Empty returndata is treated as success only when the
+    /// target actually has code — a bare `call` to an EOA/no-code address
+    /// succeeds with empty returndata, so without this guard a non-token
+    /// `denom` would let transferFrom/approve "succeed" having moved nothing.
+    function _erc20Call(address token, bytes memory data) internal returns (bool) {
+        if (token.code.length == 0) return false;
+        (bool ok, bytes memory ret) = token.call(data);
+        if (!ok) return false;
+        if (ret.length == 0) return true;
+        return abi.decode(ret, (bool));
+    }
 
     /**
      * @param _ics20Transfer  ICS20Transfer proxy on this chain.
@@ -181,14 +196,30 @@ contract EurekaComposer is DEXCallbackRouter, TransientReentrancyGuard, Interpre
         IICS20Transfer_minimal.SendTransferMsg calldata transferMsg,
         bytes calldata program
     ) external nonReentrant returns (uint64 sequence) {
-        // 1) Pull funds from caller into this contract.
-        bool ok = IERC20_minimal(transferMsg.denom).transferFrom(
-            msg.sender, address(this), transferMsg.amount
+        // Reject zero-length programs: registering one would store empty bytes
+        // and _runRegistered would silently no-op on the callback, leaving the
+        // caller no signal that the follow-up never ran.
+        if (program.length == 0) revert EmptyProgram();
+
+        // 1) Pull funds from caller into this contract. Use a SafeERC20-style
+        //    low-level call so non-standard tokens (e.g. classic USDT, which
+        //    doesn't return bool) work alongside spec-compliant ones.
+        bool ok = _erc20Call(
+            transferMsg.denom,
+            abi.encodeWithSelector(
+                IERC20_minimal.transferFrom.selector,
+                msg.sender, address(this), transferMsg.amount
+            )
         );
         if (!ok) revert TransferFromFailed();
 
         // 2) Approve the transfer app to pull from us.
-        ok = IERC20_minimal(transferMsg.denom).approve(ics20Transfer, transferMsg.amount);
+        ok = _erc20Call(
+            transferMsg.denom,
+            abi.encodeWithSelector(
+                IERC20_minimal.approve.selector, ics20Transfer, transferMsg.amount
+            )
+        );
         if (!ok) revert ApproveFailed();
 
         // 3) Submit the packet — we are the packet's sender, so the eventual
@@ -251,6 +282,4 @@ contract EurekaComposer is DEXCallbackRouter, TransientReentrancyGuard, Interpre
         }
     }
 
-    /// @notice Allow the composer to receive ETH (refunds, native gas hops).
-    receive() external payable {}
 }

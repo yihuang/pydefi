@@ -819,3 +819,6 @@ class TestEurekaComposer:
         # premature run or wipe a registered program.
         error_names = {e["name"] for e in out["abi"] if e.get("type") == "error"}
         assert "UnauthorizedCallback" in error_names
+        # Empty-program registrations would silently no-op on callback; the
+        # composer must surface that as a typed revert at send time.
+        assert "EmptyProgram" in error_names
