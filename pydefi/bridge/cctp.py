@@ -123,16 +123,16 @@ _CCTP_DOMAIN: dict[int, int] = {
 # CCTP v2 TokenMessengerV2 addresses.
 # CCTP v2 is deployed at deterministic CREATE2 addresses — the same address
 # on every supported EVM chain.
-# https://developers.circle.com/stablecoins/evm-smart-contracts
+# https://developers.circle.com/cctp/references/contract-addresses
 _TOKEN_MESSENGER_V2: dict[int, str] = {
-    1: "0x28B5a0E9c621a5BAdaa536219b3a228c8168cF00",  # Ethereum
-    43114: "0x28B5a0E9c621a5BAdaa536219b3a228c8168cF00",  # Avalanche
-    10: "0x28B5a0E9c621a5BAdaa536219b3a228c8168cF00",  # OP Mainnet
-    42161: "0x28B5a0E9c621a5BAdaa536219b3a228c8168cF00",  # Arbitrum
-    8453: "0x28B5a0E9c621a5BAdaa536219b3a228c8168cF00",  # Base
-    137: "0x28B5a0E9c621a5BAdaa536219b3a228c8168cF00",  # Polygon PoS
-    130: "0x28B5a0E9c621a5BAdaa536219b3a228c8168cF00",  # Unichain
-    59144: "0x28B5a0E9c621a5BAdaa536219b3a228c8168cF00",  # Linea
+    1: "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d",  # Ethereum
+    43114: "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d",  # Avalanche
+    10: "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d",  # OP Mainnet
+    42161: "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d",  # Arbitrum
+    8453: "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d",  # Base
+    137: "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d",  # Polygon PoS
+    130: "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d",  # Unichain
+    59144: "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d",  # Linea
     999: "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d",  # HyperEVM (Hyperliquid)
     1337: "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d",  # HyperCore (same contract on HyperEVM)
 }
