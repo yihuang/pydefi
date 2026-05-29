@@ -35,12 +35,17 @@ assert len(_DISABLED_HANDLER) == 32
 
 # Forbidden opcodes per issue #138.  TSTORE (0x5d) intentionally NOT here —
 # transient storage is tx-scoped and safe; composers rely on it.
-_OPCODES_TO_DISABLE: dict[int, str] = {
-    0x54: "SLOAD",
-    0x55: "SSTORE",
-    0xF2: "CALLCODE",
-    0xF4: "DELEGATECALL",
-    0xFF: "SELFDESTRUCT",
+#
+# Each entry pins the exact 32-byte handler expected at ``runtime_start + op * 32``.
+# ``patch()`` asserts equality before overwriting, so an upstream dispatch-table
+# shift fails loudly instead of silently disabling the wrong opcode.  Re-extract
+# these if the vendored ``Constants.sol`` pin changes.
+_OPCODES_TO_DISABLE: dict[int, tuple[str, bytes]] = {
+    0x54: ("SLOAD", bytes.fromhex("5b710000000000000000000000000000000000010190549080355f1a60051b56")),
+    0x55: ("SSTORE", bytes.fromhex("5b710000000000000000000000000000000000010191905580355f1a60051b56")),
+    0xF2: ("CALLCODE", bytes.fromhex("5b6b0000000000000000000000010196959493929190f29080355f1a60051b56")),
+    0xF4: ("DELEGATECALL", bytes.fromhex("5b611e88611fec565b64000000000101959493929190f49080355f1a60051b56")),
+    0xFF: ("SELFDESTRUCT", bytes.fromhex("5b611fe8611fec565b50ff005b30730000000000000000000000000000000000")),
 }
 
 # Marker that identifies the start of the runtime body inside the creation code
@@ -77,8 +82,9 @@ def extract_creation_code(constants_sol: str) -> bytes:
 def patch(creation: bytes) -> tuple[bytes, dict[int, bytes]]:
     """Apply the 5-slot patch.  Returns (patched_creation, before_per_op).
 
-    Raises if the runtime body cannot be located or if any target slot fails
-    a sanity check (must begin with 0x5b JUMPDEST).
+    Raises if the runtime body cannot be located or if any target slot does
+    not byte-for-byte match the pinned handler in :data:`_OPCODES_TO_DISABLE`,
+    so an upstream layout shift can't silently patch the wrong opcode.
     """
     runtime_start = creation.find(_RUNTIME_MARKER)
     if runtime_start < 0:
@@ -86,11 +92,17 @@ def patch(creation: bytes) -> tuple[bytes, dict[int, bytes]]:
 
     out = bytearray(creation)
     before: dict[int, bytes] = {}
-    for op in _OPCODES_TO_DISABLE:
+    for op, (name, expected) in _OPCODES_TO_DISABLE.items():
         off = runtime_start + op * 32
         slot = bytes(out[off : off + 32])
-        if not slot.startswith(b"\x5b"):
-            raise ValueError(f"opcode 0x{op:02x} slot at 0x{off:x} doesn't start with 0x5b: {slot.hex()}")
+        if slot != expected:
+            raise ValueError(
+                f"opcode 0x{op:02x} ({name}) slot at 0x{off:x} doesn't match the "
+                f"pinned upstream handler — vendored interpreter may have changed.\n"
+                f"  expected: {expected.hex()}\n"
+                f"  found:    {slot.hex()}\n"
+                f"Re-verify the dispatch-table layout and update _OPCODES_TO_DISABLE."
+            )
         before[op] = slot
         out[off : off + 32] = _DISABLED_HANDLER
     return bytes(out), before
@@ -158,7 +170,7 @@ def render_constants_sol(
     runtime_offset = creation.find(_RUNTIME_MARKER)
     offset_block = "\n".join(
         f" *        offset 0x{runtime_offset + op * 32:04x}  op 0x{op:02x}  {name}"
-        for op, name in _OPCODES_TO_DISABLE.items()
+        for op, (name, _expected) in _OPCODES_TO_DISABLE.items()
     )
     rendered = _replace_once(
         rendered,
@@ -184,7 +196,7 @@ def main() -> None:
     print(f"Creation code length: {len(creation)} bytes (0x{len(creation):x})")
     print()
     print("Slots patched:")
-    for op, name in _OPCODES_TO_DISABLE.items():
+    for op, (name, _expected) in _OPCODES_TO_DISABLE.items():
         runtime_start = creation.find(_RUNTIME_MARKER)
         off = runtime_start + op * 32
         print(f"  op=0x{op:02x} {name:12s}  creation off=0x{off:04x}")

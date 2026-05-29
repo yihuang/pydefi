@@ -48,6 +48,13 @@ address constant PATCHED_INTERPRETER_ADDRESS = 0x64fE558B0F9a5dC18D4A36c85Ba99c3
 /**
  * @dev Runtime codehash (`EXTCODEHASH`) of the deployed patched interpreter.
  *      Identical across chains.
+ *
+ *      Off-chain verification anchor only: the deploy script and fork-test
+ *      fixture compare against it before deploying/reusing.  Not asserted
+ *      on-chain — on the default path the address is CREATE2-bound to
+ *      `PATCHED_INTERPRETER_INITCODE_HASH`, so code-present already implies
+ *      the patched runtime (constructors only guard against *absent* code via
+ *      `InterpreterNotDeployed`).
  */
 bytes32 constant PATCHED_INTERPRETER_CODEHASH =
     0xa02da76871a49f730d82341d2a5abd702d1bd95576d4f932402b50fd3773e860;
