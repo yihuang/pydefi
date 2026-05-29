@@ -9,10 +9,10 @@ from hexbytes import HexBytes
 from pydefi.bridge.across import Across
 from pydefi.bridge.base import BaseBridge
 from pydefi.bridge.ccip import (
-    _CCIP_CHAIN_SELECTOR,
-    _CCIP_ROUTER,
     CCIP,
     EVM_EXTRA_ARGS_V2_TAG,
+    _ccip_chain_selectors,
+    _ccip_routers,
 )
 from pydefi.bridge.cctp import (
     HYPERCORE_DEX_PERP,
@@ -1075,7 +1075,7 @@ class TestCCIP:
         assert ccip.protocol_name == "CCIP"
 
     def test_router_address_defaults_to_registry(self, ccip):
-        assert ccip.router_address == _CCIP_ROUTER[1]
+        assert ccip.router_address == _ccip_routers()[1]
 
     def test_router_address_override(self):
         custom = "0x" + "11" * 20
@@ -1090,7 +1090,7 @@ class TestCCIP:
             CCIP(w3=None, src_chain_id=1, dst_chain_id=999999)
 
     def test_dst_chain_selector_resolved(self, ccip):
-        assert ccip.dst_chain_selector == _CCIP_CHAIN_SELECTOR[42161]
+        assert ccip.dst_chain_selector == _ccip_chain_selectors()[42161]
 
     def test_fee_token_defaults_to_zero(self, ccip):
         """fee_token=None means pay in native gas (zero address)."""
@@ -1162,7 +1162,7 @@ class TestCCIP:
         assert fee == 5 * 10**15
         get_fee_mock.assert_called_once()
         # First positional arg is the destination chain selector.
-        assert get_fee_mock.call_args.args[0] == _CCIP_CHAIN_SELECTOR[42161]
+        assert get_fee_mock.call_args.args[0] == _ccip_chain_selectors()[42161]
 
     @pytest.mark.asyncio
     async def test_quote_fee_wraps_revert(self, ccip, amount_in):
@@ -1190,7 +1190,7 @@ class TestCCIP:
         """Native fee → tx.value carries the fee, tx.to is the Router."""
         with _patched_quote_fee(ccip, 5 * 10**15):
             tx = await ccip.build_bridge_tx(CCIP_USDC_ETH, CCIP_USDC_ARB, amount_in, _CCIP_RECIPIENT)
-        assert tx["to"] == _CCIP_ROUTER[1]
+        assert tx["to"] == _ccip_routers()[1]
         assert tx["data"].startswith("0x" + _CCIP_SEND_SELECTOR)
         assert tx["value"] == str(5 * 10**15)
         assert int(tx["gas"]) > 0
@@ -1217,7 +1217,7 @@ class TestCCIP:
         with _patched_quote_fee(ccip, 10**15):
             tx = await ccip.build_bridge_tx(CCIP_USDC_ETH, CCIP_USDC_ARB, amount_in, _CCIP_RECIPIENT)
         body = tx["data"][2 + 8 :]  # strip 0x + selector
-        assert int(body[:64], 16) == _CCIP_CHAIN_SELECTOR[42161]
+        assert int(body[:64], 16) == _ccip_chain_selectors()[42161]
 
     @pytest.mark.asyncio
     async def test_build_bridge_tx_with_compose_payload(self, ccip, amount_in):
@@ -1284,7 +1284,7 @@ class TestCCIP:
     )
     def test_chain_selector_constants(self, chain_id, expected):
         """Spot-check published CCIP chain-selector values."""
-        assert _CCIP_CHAIN_SELECTOR[chain_id] == expected
+        assert _ccip_chain_selectors()[chain_id] == expected
 
     def test_router_function_selectors(self):
         """Verify the bound Router contract's encoded selectors match the published ones."""
