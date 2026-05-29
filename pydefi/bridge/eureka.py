@@ -96,9 +96,12 @@ class Eureka(BaseBridge):
     ) -> BridgeQuote:
         """Return a quote for an Eureka ICS-20 transfer.
 
-        ICS-20 charges no on-chain fee and preserves amount across decimals
-        (rescales when ``token_in.decimals != token_out.decimals``). Pass
-        ``amount_out_override`` for IFT-style wrapping that changes precision.
+        ICS-20 charges no on-chain fee and preserves the base-unit integer
+        amount across the relay (``build_bridge_tx`` sends ``amount_in.amount``
+        unchanged). Differing ``token_in``/``token_out`` decimals would misreport
+        the human value, so they're rejected here just as ``RouteDAG.bridge``
+        rejects them at build time. Pass ``amount_out_override`` for IFT-style
+        wrapping that genuinely changes precision.
         """
         if amount_in.token.address != token_in.address:
             raise BridgeError(f"amount_in.token ({amount_in.token}) must match token_in ({token_in})")
@@ -108,11 +111,12 @@ class Eureka(BaseBridge):
         elif token_in.decimals == token_out.decimals:
             amount_out_raw = amount_in.amount
         else:
-            scale_up = token_out.decimals - token_in.decimals
-            if scale_up >= 0:
-                amount_out_raw = amount_in.amount * (10**scale_up)
-            else:
-                amount_out_raw = amount_in.amount // (10**-scale_up)
+            raise BridgeError(
+                f"Eureka quote decimals mismatch: {token_in.symbol} ({token_in.decimals} dec) "
+                f"!= {token_out.symbol} ({token_out.decimals} dec). ICS-20 preserves the "
+                f"base-unit amount across the relay, so differing decimals would misreport the "
+                f"quote; pass `amount_out_override` for IFT-style precision changes"
+            )
 
         return BridgeQuote(
             token_in=token_in,

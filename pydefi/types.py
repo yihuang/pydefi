@@ -352,11 +352,21 @@ class RouteDAG:
             raise ValueError("RouteDAG.from_token() must be called before bridge()")
         actions = self._current_actions()
         self._reject_action_after_bridge(actions, "bridge")
+        current_token = self._branch_current_token()
         if denom is None:
-            current_token = self._branch_current_token()
             if current_token is None:
                 raise ValueError("RouteDAG.bridge: cannot infer denom; supply it explicitly")
             denom = current_token.address
+        # ICS-20 preserves base-unit amount across the relay; the DAG's quote
+        # pass threads that amount through unchanged. If the destination token
+        # is denominated in different decimals we'd silently misreport the
+        # quote, so refuse the mismatch at build time.
+        if current_token is not None and current_token.decimals != token_out.decimals:
+            raise ValueError(
+                f"RouteDAG.bridge: decimals mismatch "
+                f"(source {current_token.decimals} != destination {token_out.decimals}); "
+                f"rescale off-chain before bridging"
+            )
         actions.append(
             RouteBridge(
                 denom=denom,
