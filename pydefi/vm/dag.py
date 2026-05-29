@@ -12,8 +12,18 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 
-from pydefi.types import ZERO_ADDRESS, Address, RouteAction, RouteDAG, RouteSplit, RouteSwap, SwapProtocol
+from pydefi.types import (
+    ZERO_ADDRESS,
+    Address,
+    RouteAction,
+    RouteBridge,
+    RouteDAG,
+    RouteSplit,
+    RouteSwap,
+    SwapProtocol,
+)
 from pydefi.vm.context import Operand, Program
+from pydefi.vm.eureka import approve_then_send_transfer
 from pydefi.vm.swap import (
     _build_route_swap,
     _build_v2_quote,
@@ -116,9 +126,39 @@ def _build_dag_actions(
                     p, amt, acts, vm_address=vm_address, terminal_recipient=r
                 ),
             )
+        elif isinstance(action, RouteBridge):
+            current = _build_route_bridge(prog, current, action)
         else:
             raise ValueError(f"build_program_for_dag: unsupported route action {type(action)!r}")
     return current
+
+
+def _build_route_bridge(
+    prog: Program,
+    amount_in: Operand,
+    action: RouteBridge,
+) -> Operand:
+    """Lower ``RouteBridge`` to ``approve`` + ``ICS20Transfer.sendTransfer``.
+
+    ICS-20 preserves amount on the source side (settlement is asynchronous
+    via the relayer), so ``amount_in`` passes through unchanged as the
+    ``"out"`` operand — downstream ``min_final_out`` checks then apply to
+    the bridged amount.
+    """
+    success = approve_then_send_transfer(
+        prog,
+        transfer_addr=action.transfer_addr,
+        denom=action.denom,
+        amount=amount_in,
+        receiver=action.receiver,
+        source_client=action.source_client,
+        dest_port=action.dest_port,
+        memo=action.memo,
+        timeout_seconds=action.timeout_seconds,
+        timeout_timestamp=action.timeout_timestamp,
+    )
+    prog.assert_(success, "bridge failed")
+    return amount_in
 
 
 def _build_dag_quote_actions(
@@ -145,6 +185,10 @@ def _build_dag_quote_actions(
                 action,
                 lambda p, amt, acts: _build_dag_quote_actions(p, amt, acts, quoter_address=quoter_address),
             )
+        elif isinstance(action, RouteBridge):
+            # ICS-20 is amount-preserving on the source side; the quote pass
+            # never touches the chain, so just thread the running amount.
+            pass
         else:
             raise ValueError(f"build_quote_program_for_dag: unsupported route action {type(action)!r}")
     return current
