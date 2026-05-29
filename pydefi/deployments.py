@@ -13,8 +13,7 @@ from __future__ import annotations
 
 import json
 import re
-from functools import lru_cache
-from importlib.resources import files
+from pathlib import Path
 
 from pydefi._utils import decode_address
 from pydefi.types import Address, ChainId, Token
@@ -83,7 +82,7 @@ _TOKENS: dict[str, dict] = {
 #         https://docs.uniswap.org/contracts/v3/reference/deployments/ethereum-deployments
 # { name: { chain_id: address } }
 
-_CONTRACTS_BASE: dict[str, dict[int, str]] = {
+_CONTRACTS: dict[str, dict[int, str]] = {
     # Uniswap V2
     "UNISWAP_V2_ROUTER": {
         _ETH: "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D",
@@ -139,33 +138,31 @@ _CONTRACTS_BASE: dict[str, dict[int, str]] = {
 }
 
 
-def _load_generated(filename: str) -> dict[str, dict[int, str]]:
-    """Parse config/<filename> into ``{name: {chain_id: address}}``. The
-    aave/aave_v4/compound/morpho files come from config/update.sh; rerun it if
-    one is missing/empty/corrupt."""
-    resource = files("pydefi.config").joinpath(filename)
+def _merge_generated(contracts: dict[str, dict[int, str]], filename: str) -> None:
+    """Merge a generated address file (config/<filename>) into *contracts*.
+
+    aave.json, aave_v4.json, compound.json and morpho.json are produced from
+    upstream registries by config/update.sh. Regenerate with
+    ``bash config/update.sh`` if a file is missing/empty/corrupt."""
+    path = Path(__file__).resolve().parent / "config" / filename
     hint = "run config/update.sh to (re)generate it"
-    if not resource.is_file():
-        raise FileNotFoundError(f"{filename} not found: {resource} \u2014 {hint}")
-    text = resource.read_text()
+    if not path.exists():
+        raise FileNotFoundError(f"{filename} not found: {path} \u2014 {hint}")
+    text = path.read_text()
     if not text.strip():
-        raise ValueError(f"{filename} is empty: {resource} \u2014 {hint}")
+        raise ValueError(f"{filename} is empty: {path} \u2014 {hint}")
     try:
         data = json.loads(text)
     except json.JSONDecodeError as exc:
-        raise ValueError(f"{filename} is corrupt: {resource} ({exc}) \u2014 {hint}") from exc
-    return {name: {int(cid): addr for cid, addr in chains.items()} for name, chains in data.items()}
+        raise ValueError(f"{filename} is corrupt: {path} ({exc}) \u2014 {hint}") from exc
+    for name, chains in data.items():
+        contracts[name] = {int(cid): addr for cid, addr in chains.items()}
 
 
-@lru_cache(maxsize=1)
-def _contracts() -> dict[str, dict[int, str]]:
-    """Static :data:`_CONTRACTS_BASE` plus the generated address files, merged
-    and cached on first use. Lazy so a bad config file fails only the caller
-    that needs it, not ``import pydefi``."""
-    contracts = dict(_CONTRACTS_BASE)
-    for filename in ("aave.json", "aave_v4.json", "compound.json", "morpho.json"):
-        contracts.update(_load_generated(filename))
-    return contracts
+_merge_generated(_CONTRACTS, "aave.json")
+_merge_generated(_CONTRACTS, "aave_v4.json")
+_merge_generated(_CONTRACTS, "compound.json")
+_merge_generated(_CONTRACTS, "morpho.json")
 
 
 def get_address(name: str, chain_id: int) -> Address:
@@ -176,19 +173,16 @@ def get_address(name: str, chain_id: int) -> Address:
     Raises :exc:`KeyError` when the name is unknown or has no deployment on
     the requested chain.
     """
-    # Check the static token table first: it needs no I/O, so a token lookup
-    # never depends on (or fails on) a missing/corrupt generated config file.
+    if name in _CONTRACTS:
+        addr = _CONTRACTS[name].get(chain_id)
+        if addr is None:
+            raise KeyError(f"{name!r} has no deployment on chain {chain_id}")
+        return decode_address(addr, chain_id)
+
     if name in _TOKENS:
         addr = _TOKENS[name]["addresses"].get(chain_id)
         if addr is None:
             raise KeyError(f"Token {name!r} has no deployment on chain {chain_id}")
-        return decode_address(addr, chain_id)
-
-    contracts = _contracts()
-    if name in contracts:
-        addr = contracts[name].get(chain_id)
-        if addr is None:
-            raise KeyError(f"{name!r} has no deployment on chain {chain_id}")
         return decode_address(addr, chain_id)
 
     raise KeyError(f"Unknown deployment name {name!r}")
@@ -213,11 +207,10 @@ def get_token(name: str, chain_id: int) -> Token:
 
 def chains_for(name: str) -> list[int]:
     """Return the chain IDs that have a deployment of *name*."""
-    if name in _TOKENS:  # static table first — no I/O, see get_address
+    if name in _CONTRACTS:
+        return list(_CONTRACTS[name])
+    if name in _TOKENS:
         return list(_TOKENS[name]["addresses"])
-    contracts = _contracts()
-    if name in contracts:
-        return list(contracts[name])
     raise KeyError(f"Unknown deployment name {name!r}")
 
 
@@ -227,13 +220,13 @@ def _normalize_symbol(token_symbol: str) -> str:
 
 def comet_contract_names() -> list[str]:
     """All ``COMPOUND_V3_*`` deployment names in the registry, sorted."""
-    return sorted(name for name in _contracts() if name.startswith("COMPOUND_V3_"))
+    return sorted(name for name in _CONTRACTS if name.startswith("COMPOUND_V3_"))
 
 
 def comet_contract_for(token_symbol: str) -> str:
     """Comet deployment name for *token_symbol*, or :class:`ValueError`
     listing supported symbols."""
     name = f"COMPOUND_V3_{_normalize_symbol(token_symbol)}"
-    if name not in _contracts():
+    if name not in _CONTRACTS:
         raise ValueError(f"Compound V3 has no market for token {token_symbol!r}; supported: {comet_contract_names()}")
     return name

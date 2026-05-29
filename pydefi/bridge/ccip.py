@@ -10,8 +10,7 @@ Docs: https://docs.chain.link/ccip
 from __future__ import annotations
 
 import json
-from functools import lru_cache
-from importlib.resources import files
+from pathlib import Path
 from typing import Any
 
 from eth_abi import encode as abi_encode
@@ -26,28 +25,20 @@ from pydefi.types import ZERO_ADDRESS, Address, BridgeQuote, Token, TokenAmount
 # bytes4(keccak256("CCIP EVMExtraArgsV2")).
 EVM_EXTRA_ARGS_V2_TAG: bytes = bytes.fromhex("181dcf10")
 
-
 # CCIP chain data from https://docs.chain.link/api/ccip/v1/chains?environment=mainnet
 # pydefi/config/ccip-chains.json is ``data.evm`` from that API.
-@lru_cache(maxsize=1)
-def _ccip_evm() -> dict[str, Any]:
-    """CCIP per-chain data from config/ccip-chains.json, cached on first use.
-    Lazy so a bad file fails only CCIP, not ``import pydefi.bridge``."""
-    return json.loads(files("pydefi.config").joinpath("ccip-chains.json").read_text())
+_ccip_evm: dict[str, Any] = json.loads(
+    (Path(__file__).resolve().parent.parent / "config" / "ccip-chains.json").read_text()
+)
 
-
-@lru_cache(maxsize=1)
-def _ccip_chain_selectors() -> dict[int, int]:
-    return {int(cid): int(e["selector"]) for cid, e in _ccip_evm().items() if e.get("supported")}
-
-
-@lru_cache(maxsize=1)
-def _ccip_routers() -> dict[int, str]:
-    return {int(cid): e["router"] for cid, e in _ccip_evm().items() if e.get("supported")}
+_CCIP_CHAIN_SELECTOR: dict[int, int] = {
+    int(cid): int(e["selector"]) for cid, e in _ccip_evm.items() if e.get("supported")
+}
+_CCIP_ROUTER: dict[int, str] = {int(cid): e["router"] for cid, e in _ccip_evm.items() if e.get("supported")}
 
 
 def _ccip_chain_selector(evm_chain_id: int) -> int:
-    selector = _ccip_chain_selectors().get(evm_chain_id)
+    selector = _CCIP_CHAIN_SELECTOR.get(evm_chain_id)
     if selector is None:
         raise BridgeError(f"CCIP: unsupported chain {evm_chain_id} (no chain selector known).")
     return selector
@@ -96,7 +87,7 @@ class CCIP(BaseBridge):
         super().__init__(src_chain_id, dst_chain_id)
         self.w3 = w3
 
-        self.router_address = router_address or _ccip_routers().get(src_chain_id, "")
+        self.router_address = router_address or _CCIP_ROUTER.get(src_chain_id, "")
         if not self.router_address:
             raise BridgeError(
                 f"CCIP: no Router address known for chain {src_chain_id}. Pass router_address explicitly."
