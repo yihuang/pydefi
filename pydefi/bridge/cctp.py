@@ -113,27 +113,27 @@ with open(_config_path) as _f:
 # Hardcoded: chain ID → CCTP domain (stable mapping).
 # Source: https://developers.circle.com/cctp/concepts/supported-chains-and-domains
 _CHAINID_TO_DOMAIN: dict[int, int] = {
-    1: 0,          # Ethereum
-    43114: 1,      # Avalanche C-Chain
-    10: 2,         # OP Mainnet
-    42161: 3,      # Arbitrum One
-    8453: 6,       # Base
-    137: 7,        # Polygon PoS
-    1301: 10,      # Unichain
-    59144: 11,     # Linea
-    5115: 12,      # Codex
-    146: 13,       # Sonic
-    480: 14,       # World Chain
-    1329: 16,      # Sei
-    50: 18,        # XDC Network
-    999: 19,       # HyperEVM
-    998: 19,       # HyperEVM (older chain ID; alias)
-    57073: 21,     # Ink
-    98865: 22,     # Plume
-    3343: 28,      # EDGE
-    2525: 29,      # Injective
-    2818: 30,      # Morph
-    10182: 31,     # Pharos
+    1: 0,  # Ethereum
+    43114: 1,  # Avalanche C-Chain
+    10: 2,  # OP Mainnet
+    42161: 3,  # Arbitrum One
+    8453: 6,  # Base
+    137: 7,  # Polygon PoS
+    1301: 10,  # Unichain
+    59144: 11,  # Linea
+    5115: 12,  # Codex
+    146: 13,  # Sonic
+    480: 14,  # World Chain
+    1329: 16,  # Sei
+    50: 18,  # XDC Network
+    999: 19,  # HyperEVM
+    998: 19,  # HyperEVM (older chain ID; alias)
+    57073: 21,  # Ink
+    98865: 22,  # Plume
+    3343: 28,  # EDGE
+    2525: 29,  # Injective
+    2818: 30,  # Morph
+    10182: 31,  # Pharos
     # HyperCore (Hyperliquid L1) routes through HyperEVM
     ChainId.HYPERCORE: 19,
 }

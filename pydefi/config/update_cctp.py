@@ -24,50 +24,50 @@ _USDC_URL = "https://developers.circle.com/stablecoins/usdc-contract-addresses"
 
 # Domain → EVM chain ID (mainnet)
 _MAINNET_DOMAIN: dict[int, int] = {
-    0: 1,        # Ethereum
-    1: 43114,    # Avalanche C-Chain
-    2: 10,       # OP Mainnet
-    3: 42161,    # Arbitrum One
-    6: 8453,     # Base
-    7: 137,      # Polygon PoS
-    10: 1301,    # Unichain
-    11: 59144,   # Linea
-    12: 5115,    # Codex
-    13: 146,     # Sonic
-    14: 480,     # World Chain
-    16: 1329,    # Sei
-    18: 50,      # XDC Network
-    19: 999,     # HyperEVM
-    21: 57073,   # Ink
-    22: 98865,   # Plume
-    28: 3343,    # EDGE
-    29: 2525,    # Injective
-    30: 2818,    # Morph
-    31: 10182,   # Pharos
+    0: 1,  # Ethereum
+    1: 43114,  # Avalanche C-Chain
+    2: 10,  # OP Mainnet
+    3: 42161,  # Arbitrum One
+    6: 8453,  # Base
+    7: 137,  # Polygon PoS
+    10: 1301,  # Unichain
+    11: 59144,  # Linea
+    12: 5115,  # Codex
+    13: 146,  # Sonic
+    14: 480,  # World Chain
+    16: 1329,  # Sei
+    18: 50,  # XDC Network
+    19: 999,  # HyperEVM
+    21: 57073,  # Ink
+    22: 98865,  # Plume
+    28: 3343,  # EDGE
+    29: 2525,  # Injective
+    30: 2818,  # Morph
+    31: 10182,  # Pharos
 }
 
 # Domain → EVM chain ID (testnet)
 _TESTNET_DOMAIN: dict[int, int] = {
-    0: 11155111,   # Ethereum Sepolia
-    1: 43113,      # Avalanche Fuji
-    2: 11155420,   # OP Sepolia
-    3: 421614,     # Arbitrum Sepolia
-    6: 84532,      # Base Sepolia
-    7: 80002,      # Polygon PoS Amoy
-    10: 1301,      # Unichain Sepolia
-    11: 59141,     # Linea Sepolia
-    12: 5115,      # Codex Testnet
-    13: 57054,     # Sonic Testnet
-    14: 4801,      # World Chain Sepolia
-    16: 1328,      # Sei Testnet
-    18: 51,        # XDC Apothem
-    19: 998,       # HyperEVM Testnet
-    21: 763373,    # Ink Testnet
-    22: 161221135, # Plume Testnet
-    26: 5042002,   # Arc Testnet
-    28: 33431,     # EDGE Testnet
-    29: 2526,      # Injective Testnet
-    30: 2810,      # Morph Hoodi Testnet
+    0: 11155111,  # Ethereum Sepolia
+    1: 43113,  # Avalanche Fuji
+    2: 11155420,  # OP Sepolia
+    3: 421614,  # Arbitrum Sepolia
+    6: 84532,  # Base Sepolia
+    7: 80002,  # Polygon PoS Amoy
+    10: 1301,  # Unichain Sepolia
+    11: 59141,  # Linea Sepolia
+    12: 5115,  # Codex Testnet
+    13: 57054,  # Sonic Testnet
+    14: 4801,  # World Chain Sepolia
+    16: 1328,  # Sei Testnet
+    18: 51,  # XDC Apothem
+    19: 998,  # HyperEVM Testnet
+    21: 763373,  # Ink Testnet
+    22: 161221135,  # Plume Testnet
+    26: 5042002,  # Arc Testnet
+    28: 33431,  # EDGE Testnet
+    29: 2526,  # Injective Testnet
+    30: 2810,  # Morph Hoodi Testnet
     31: 10182002,  # Pharos Testnet
 }
 
@@ -80,7 +80,9 @@ _NAME_MAP: dict[str, str] = {
 def _url_to_md(url: str) -> str:
     cp = subprocess.run(
         ["url-to-md", url, "--clean-content"],
-        capture_output=True, text=True, timeout=60,
+        capture_output=True,
+        text=True,
+        timeout=60,
     )
     if cp.returncode != 0:
         raise RuntimeError(f"url-to-md failed: {cp.stderr}")
@@ -111,8 +113,7 @@ def _parse_cctp(md: str) -> tuple[dict[int, dict], dict[int, dict]]:
         # h3 headings: "### [\u200b" / empty / "](" / empty / "HeadingText"
         if line.strip().startswith("### [") and "\u200b" in line and i + 4 < len(lines):
             heading = lines[i + 4].strip()
-            if heading in ("TokenMessengerV2", "MessageTransmitterV2",
-                           "TokenMinterV2", "MessageV2"):
+            if heading in ("TokenMessengerV2", "MessageTransmitterV2", "TokenMinterV2", "MessageV2"):
                 current_heading = heading
 
         # Table data rows: | **Name** | Domain | Address |
