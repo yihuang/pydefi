@@ -254,7 +254,32 @@ class RouteSplit:
     token_out: Token
 
 
-RouteAction: TypeAlias = RouteSwap | RouteSplit
+@dataclass(frozen=True)
+class RouteBridge:
+    """A cross-chain bridge edge in a route DAG (Eureka / ICS-20 today).
+
+    ``denom`` is the source-chain ERC-20 to escrow; ``token_out`` tracks the
+    destination-side type for branch-equality at ``.merge()``. Exactly one
+    of ``timeout_seconds`` (relative, resolved to ``block.timestamp + n``)
+    or ``timeout_timestamp`` (absolute) must be supplied.
+    """
+
+    denom: Address
+    token_out: Token
+    transfer_addr: Address
+    source_client: str
+    receiver: str
+    dest_port: str = "transfer"
+    memo: str = ""
+    timeout_seconds: int | None = None
+    timeout_timestamp: int | None = None
+
+    def __post_init__(self) -> None:
+        if (self.timeout_seconds is None) == (self.timeout_timestamp is None):
+            raise ValueError("RouteBridge: supply exactly one of timeout_seconds / timeout_timestamp")
+
+
+RouteAction: TypeAlias = RouteSwap | RouteSplit | RouteBridge
 
 
 @dataclass
@@ -295,13 +320,82 @@ class RouteDAG:
     def swap(self, token_out: Token, pool: BasePool) -> "RouteDAG":
         if self.token_in is None:
             raise ValueError("RouteDAG.from_token() must be called before swap()")
-        self._current_actions().append(RouteSwap(token_out=token_out, pool=pool))
+        actions = self._current_actions()
+        self._reject_action_after_bridge(actions, "swap")
+        actions.append(RouteSwap(token_out=token_out, pool=pool))
         self._set_current_token(token_out)
         return self
+
+    def bridge(
+        self,
+        token_out: Token,
+        *,
+        denom: Address | None = None,
+        transfer_addr: Address,
+        source_client: str,
+        receiver: str,
+        dest_port: str = "transfer",
+        memo: str = "",
+        timeout_seconds: int | None = None,
+        timeout_timestamp: int | None = None,
+    ) -> "RouteDAG":
+        """Append an Eureka ICS-20 bridge edge to the current branch.
+
+        Must be the last action on its branch — the program can't continue
+        operating on tokens that have been sent to an escrow on another chain.
+        Subsequent ``.swap()`` / ``.bridge()`` calls will raise.
+
+        ``denom`` defaults to the running token's address (the upstream
+        action's output), which is the source-chain ERC-20 to escrow.
+        """
+        if self.token_in is None:
+            raise ValueError("RouteDAG.from_token() must be called before bridge()")
+        actions = self._current_actions()
+        self._reject_action_after_bridge(actions, "bridge")
+        if denom is None:
+            current_token = self._branch_current_token()
+            if current_token is None:
+                raise ValueError("RouteDAG.bridge: cannot infer denom; supply it explicitly")
+            denom = current_token.address
+        actions.append(
+            RouteBridge(
+                denom=denom,
+                token_out=token_out,
+                transfer_addr=transfer_addr,
+                source_client=source_client,
+                receiver=receiver,
+                dest_port=dest_port,
+                memo=memo,
+                timeout_seconds=timeout_seconds,
+                timeout_timestamp=timeout_timestamp,
+            )
+        )
+        self._set_current_token(token_out)
+        return self
+
+    def _branch_current_token(self) -> Token | None:
+        """Return the token currently held on the active branch (top-level or
+        inside a split leg). Defined here so ``.bridge()`` can infer ``denom``
+        without callers having to repeat the upstream-action's token_out."""
+        if self._split_stack:
+            leg = self._split_stack[-1].active_leg
+            return leg.current_token if leg is not None else None
+        return self._current_token
+
+    @staticmethod
+    def _reject_action_after_bridge(actions: list[RouteAction], new_action: str) -> None:
+        if actions and isinstance(actions[-1], RouteBridge):
+            raise ValueError(
+                f"RouteDAG.{new_action}() cannot follow .bridge() — bridge must be the last action on its branch"
+            )
 
     def split(self) -> "RouteDAG":
         if self.token_in is None:
             raise ValueError("RouteDAG.from_token() must be called before split()")
+        # Mirror the swap/bridge guard: split after bridge would extend the
+        # branch past an escrowed-and-gone position, which the DAG semantics
+        # forbid.
+        self._reject_action_after_bridge(self._current_actions(), "split")
         if not self._split_stack:
             origin_token = self._current_token
         else:
@@ -386,7 +480,7 @@ class RouteDAG:
 def _freeze_actions(actions: Sequence[RouteAction]) -> tuple[RouteAction, ...]:
     frozen: list[RouteAction] = []
     for action in actions:
-        if isinstance(action, RouteSwap):
+        if isinstance(action, (RouteSwap, RouteBridge)):
             frozen.append(action)
             continue
         frozen.append(
