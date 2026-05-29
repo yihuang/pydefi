@@ -6,12 +6,17 @@ import pytest
 from eth_contract.contract import ContractFunction
 from hexbytes import HexBytes
 
-from pydefi.types import BasePool, RouteDAG, SwapProtocol, Token
+from pydefi.bridge.eureka import encode_send_transfer_calldata
+from pydefi.types import Address, BasePool, ChainId, RouteBridge, RouteDAG, SwapProtocol, Token
 from pydefi.vm import (
+    IIBC_SENDER_CALLBACKS_INTERFACE_ID,
     Operand,
     Program,
+    approve_then_send_transfer,
     build_execution_program_for_dag,
     build_quote_program_for_dag,
+    encode_send_and_compose_calldata,
+    send_transfer,
 )
 from tests.conftest import mini_evm
 
@@ -392,6 +397,136 @@ class TestSsaDagBuilder:
 
 
 # ---------------------------------------------------------------------------
+# RouteBridge — Eureka edge in a RouteDAG
+# ---------------------------------------------------------------------------
+
+
+_BRIDGE_SRC = Token(chain_id=1, address=HexBytes("0x" + "11" * 20), symbol="USDC", decimals=6)
+_BRIDGE_MID = Token(chain_id=1, address=HexBytes("0x" + "22" * 20), symbol="WETH", decimals=18)
+_BRIDGE_DST = Token(chain_id=ChainId.MANTRA, address=HexBytes("0x" + "33" * 20), symbol="USDC", decimals=6)
+_BRIDGE_ICS20 = Address(HexBytes("0x" + "AA" * 20))
+
+
+class _V2DummyPool(BasePool):
+    """Minimal V2 pool for the swap-then-bridge case (always zero-for-one)."""
+
+    protocol = SwapProtocol.UNISWAP_V2
+    pool_address = HexBytes("0x" + "44" * 20)
+    fee_bps = 30
+
+    def __init__(self, token_in: Token, token_out: Token) -> None:
+        self.token_in = token_in
+        self.token_out = token_out
+
+    def zero_for_one(self, _t: HexBytes) -> bool:
+        return True
+
+
+def _bridge_dag(*, with_upstream_swap: bool = False) -> RouteDAG:
+    dag = RouteDAG().from_token(_BRIDGE_SRC)
+    if with_upstream_swap:
+        dag = dag.swap(_BRIDGE_MID, _V2DummyPool(_BRIDGE_SRC, _BRIDGE_MID))
+    return dag.bridge(
+        _BRIDGE_DST,
+        transfer_addr=_BRIDGE_ICS20,
+        source_client="07-tendermint-0",
+        receiver="mantra1qq",
+        timeout_seconds=600,
+    )
+
+
+_ROUTE_BRIDGE_KWARGS = dict(
+    denom=Address(HexBytes("0x" + "11" * 20)),
+    token_out=_BRIDGE_DST,
+    transfer_addr=_BRIDGE_ICS20,
+    source_client="07-tendermint-0",
+    receiver="mantra1qq",
+)
+
+
+class TestRouteBridge:
+    def test_builder_infers_denom_from_running_token(self):
+        dag = (
+            RouteDAG()
+            .from_token(_BRIDGE_SRC)
+            .bridge(
+                _BRIDGE_DST,
+                transfer_addr=_BRIDGE_ICS20,
+                source_client="07-tendermint-0",
+                receiver="mantra1qq",
+                timeout_seconds=600,
+            )
+        )
+        assert len(dag.actions) == 1
+        action = dag.actions[0]
+        assert isinstance(action, RouteBridge)
+        assert action.denom == _BRIDGE_SRC.address
+        assert action.token_out == _BRIDGE_DST
+
+    @pytest.mark.parametrize(
+        "action",
+        ["swap", "bridge", "split"],
+    )
+    def test_builder_rejects_action_after_bridge(self, action):
+        dag = _bridge_dag()
+        with pytest.raises(ValueError, match="cannot follow .bridge"):
+            if action == "swap":
+                dag.swap(
+                    Token(chain_id=1, address=HexBytes("0x" + "44" * 20), symbol="X", decimals=18),
+                    pool=_V2DummyPool(_BRIDGE_DST, _BRIDGE_DST),
+                )
+            elif action == "bridge":
+                dag.bridge(
+                    _BRIDGE_DST,
+                    transfer_addr=_BRIDGE_ICS20,
+                    source_client="c",
+                    receiver="r",
+                    timeout_seconds=1,
+                )
+            else:
+                dag.split()
+
+    @pytest.mark.parametrize(
+        "extra, ok",
+        [
+            ({}, False),
+            ({"timeout_seconds": 10, "timeout_timestamp": 1}, False),
+            ({"timeout_seconds": 10}, True),
+            ({"timeout_timestamp": 1}, True),
+        ],
+    )
+    def test_route_bridge_requires_exactly_one_timeout(self, extra, ok):
+        if ok:
+            RouteBridge(**_ROUTE_BRIDGE_KWARGS, **extra)
+        else:
+            with pytest.raises(ValueError, match="exactly one of"):
+                RouteBridge(**_ROUTE_BRIDGE_KWARGS, **extra)
+
+    @pytest.mark.parametrize("with_upstream_swap", [False, True])
+    def test_execution_program_builds(self, with_upstream_swap):
+        prog = build_execution_program_for_dag(
+            _bridge_dag(with_upstream_swap=with_upstream_swap),
+            amount_in=10**6,
+            vm_address="0x" + "44" * 20,
+            recipient="0x" + "55" * 20,
+        )
+        assert isinstance(prog, Program)
+        assert len(prog.build()) > 100  # approve + sendTransfer + assert at minimum
+
+    def test_quote_program_passes_amount_through_bridge(self):
+        # ICS-20 is amount-preserving on the source; the quote walker must
+        # thread ``amount_in`` through unchanged. We just verify the program
+        # compiles — quote-time eval of the new action variant doesn't choke.
+        assert len(build_quote_program_for_dag(_bridge_dag(), amount_in=10**6).build()) > 0
+
+    def test_to_dict_preserves_bridge_action(self):
+        dag = _bridge_dag()
+        out = dag.to_dict()
+        assert len(out["actions"]) == 1
+        assert isinstance(out["actions"][0], RouteBridge)
+
+
+# ---------------------------------------------------------------------------
 # Returndata access
 # ---------------------------------------------------------------------------
 
@@ -489,3 +624,198 @@ class TestOptimization:
         for byte in bytecode:
             assert not (0x80 <= byte <= 0x9F), f"unexpected DUP/SWAP byte 0x{byte:02x}"
             assert byte != 0x50, f"unexpected POP byte 0x{byte:02x}"
+
+
+# ---------------------------------------------------------------------------
+# Eureka (IBC v2) helpers — send_transfer / approve_then_send_transfer
+# end-to-end through mini_evm.
+# ---------------------------------------------------------------------------
+
+_EUREKA_TRANSFER = Address(b"\xaa" * 20)  # mini_evm makes any CALL to this succeed
+_EUREKA_DENOM = Address(b"\x22" * 20)
+_SEND_KW = dict(
+    transfer_addr=_EUREKA_TRANSFER,
+    denom=_EUREKA_DENOM,
+    receiver="mantra1qq...",
+    source_client="07-tendermint-0",
+)
+
+
+class TestSendTransfer:
+    @pytest.mark.parametrize(
+        "timeout_kw",
+        [{"timeout_timestamp": 1_700_000_000}, {"timeout_seconds": 600}],
+        ids=["absolute", "relative"],
+    )
+    def test_send_transfer_runs(self, timeout_kw):
+        # mini_evm makes any CALL succeed; we just verify the program builds
+        # and returns success regardless of which timeout flavour was used.
+        p = Program()
+        ok = send_transfer(p, amount=10**6, **_SEND_KW, **timeout_kw)
+        p.return_word(ok)
+        assert _run_int(p) == 1
+
+    def test_runtime_amount_runs_through_call_raw_patches(self):
+        # Runtime amount goes through ``call_raw`` patches; the canary must
+        # land in the bytecode (Venom may pick a narrower PUSHn so we look
+        # for its minimum byte representation, not a fixed 32-byte form).
+        canary = 0xDEADBEEF_CAFEBABE_FEEDFACE_BADC0DEE
+        p = Program()
+        ok = send_transfer(p, amount=p.const(canary), timeout_timestamp=1, **_SEND_KW)
+        p.return_word(ok)
+        bytecode = p.build()
+        assert _run_int(p) == 1
+        min_width = (canary.bit_length() + 7) // 8
+        assert canary.to_bytes(min_width, "big") in bytecode
+
+    def test_approve_then_send_transfer_compiles_and_runs(self):
+        p = Program()
+        ok = approve_then_send_transfer(p, amount=p.const(10**6), timeout_seconds=600, **_SEND_KW)
+        p.return_word(ok)
+        assert _run_int(p) == 1
+
+    @pytest.mark.parametrize(
+        "extra",
+        [{}, {"timeout_seconds": 10, "timeout_timestamp": 1}],
+        ids=["neither", "both"],
+    )
+    def test_timeout_arg_validation(self, extra):
+        with pytest.raises(ValueError, match="exactly one of"):
+            send_transfer(Program(), amount=1, **_SEND_KW, **extra)
+
+    def test_static_calldata_matches_off_chain_encoder(self):
+        # The bytes embedded in the program's data section must match what
+        # :class:`pydefi.bridge.Eureka` produces off-chain — locks the two
+        # encoders in step.
+        kwargs = dict(
+            denom=_EUREKA_DENOM,
+            amount=10**6,
+            receiver="mantra1qq...",
+            source_client="07-tendermint-0",
+            timeout_timestamp=1_700_000_000,
+            memo="hi",
+        )
+        expected = encode_send_transfer_calldata(**kwargs)
+        p = Program()
+        send_transfer(p, transfer_addr=_EUREKA_TRANSFER, **kwargs)
+        p.builder.stop()
+        assert expected in p.build()
+
+    def test_patch_offsets_match_abi_layout(self):
+        """``_AMOUNT_OFFSET`` and ``_TIMEOUT_OFFSET`` must point at the actual
+        ``amount`` / ``timeoutTimestamp`` slots in the encoded calldata.
+        Without this, a runtime amount or timeout could land at the wrong
+        offset and the test that just looks for canary bytes in the bytecode
+        would still pass.
+        """
+        from pydefi.vm.eureka import _AMOUNT_OFFSET, _TIMEOUT_OFFSET
+
+        # Encode with sentinel values and check they land at the documented offsets.
+        amount_sentinel = 0xAABBCCDDEEFF
+        timeout_sentinel = 0x1122334455667788
+        calldata = encode_send_transfer_calldata(
+            denom=_EUREKA_DENOM,
+            amount=amount_sentinel,
+            receiver="r",
+            source_client="c",
+            timeout_timestamp=timeout_sentinel,
+        )
+        # uint256 slots are right-aligned in 32 bytes.
+        assert int.from_bytes(calldata[_AMOUNT_OFFSET : _AMOUNT_OFFSET + 32], "big") == amount_sentinel
+        assert int.from_bytes(calldata[_TIMEOUT_OFFSET : _TIMEOUT_OFFSET + 32], "big") == timeout_sentinel
+
+
+# ---------------------------------------------------------------------------
+# EurekaComposer — interface id + sendTransferAndCompose calldata encoder
+# ---------------------------------------------------------------------------
+
+
+_COMPOSE_TYPES = ["(address,uint256,string,string,string,uint64,string)", "bytes"]
+
+
+class TestEurekaComposer:
+    def test_interface_id_matches_spec(self):
+        # The Python and Solidity constants must agree — IBCCallbackReceiver
+        # ERC-165-probes this exact id; if they drift the composer is silently
+        # skipped and the follow-up program never runs.
+        assert IIBC_SENDER_CALLBACKS_INTERFACE_ID == bytes.fromhex("d3ce6f1b")
+
+    def test_send_and_compose_calldata_round_trips(self):
+        from eth_abi import decode as abi_decode
+
+        denom = Address(b"\x22" * 20)
+        program = b"\x60\x00\x60\x00\xf3"  # PUSH1 0 PUSH1 0 RETURN
+        data = encode_send_and_compose_calldata(
+            denom=denom,
+            amount=42,
+            receiver="mantra1qq",
+            source_client="07-tendermint-0",
+            timeout_timestamp=1_700_000_000,
+            program=program,
+            memo="hi",
+        )
+        msg_tuple, decoded_program = abi_decode(_COMPOSE_TYPES, data[4:])
+        d_denom, d_amount, d_receiver, d_src, d_dest, d_ts, d_memo = msg_tuple
+        assert decoded_program == program
+        assert d_denom.lower() == "0x" + bytes(denom).hex().lower()
+        assert (d_amount, d_receiver, d_src, d_dest, d_ts, d_memo) == (
+            42,
+            "mantra1qq",
+            "07-tendermint-0",
+            "transfer",
+            1_700_000_000,
+            "hi",
+        )
+
+    @pytest.mark.parametrize(
+        "field, value, match",
+        [
+            ("amount", 1 << 256, "uint256"),
+            ("timeout_timestamp", 1 << 64, "uint64"),
+        ],
+    )
+    def test_send_and_compose_validates_range(self, field, value, match):
+        kwargs = dict(
+            denom=Address(b"\x22" * 20),
+            amount=1,
+            receiver="r",
+            source_client="c",
+            timeout_timestamp=1,
+            program=b"",
+        )
+        kwargs[field] = value
+        with pytest.raises(ValueError, match=match):
+            encode_send_and_compose_calldata(**kwargs)
+
+    def test_composer_solidity_compiles(self):
+        # Skipped when the solidity toolchain isn't available in this env.
+        try:
+            from pathlib import Path
+
+            from tests.live.sol_utils import compile_sol_file, ensure_solc
+        except ImportError:
+            pytest.skip("solcx / sol_utils not available in this env")
+
+        ensure_solc("0.8.24")
+        out = compile_sol_file(
+            Path(__file__).parent.parent / "pydefi" / "bridge" / "EurekaComposer.sol",
+            "EurekaComposer",
+        )
+        assert out["abi"] and out["bin"]
+        # The externally-callable surface is what callers expect.
+        fn_names = {e["name"] for e in out["abi"] if e.get("type") == "function"}
+        assert {
+            "sendTransferAndCompose",
+            "onAckPacket",
+            "onTimeoutPacket",
+            "supportsInterface",
+            "programs",
+            "ics20Transfer",
+            "interpreter",
+        } <= fn_names
+        # The composer must expose UnauthorizedCallback so the auth gate on
+        # onAckPacket / onTimeoutPacket can surface a typed revert. Without
+        # this check, anyone could call the callbacks and either trigger a
+        # premature run or wipe a registered program.
+        error_names = {e["name"] for e in out["abi"] if e.get("type") == "error"}
+        assert "UnauthorizedCallback" in error_names
