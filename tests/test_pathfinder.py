@@ -6,7 +6,7 @@ import pytest
 
 from pydefi.exceptions import NoRouteFoundError
 from pydefi.pathfinder.asgm import _MARGINAL_EPS, _bundle_marginal, asgm_optimize
-from pydefi.pathfinder.graph import PoolEdge, PoolGraph, ReserveOverlay, V3PoolEdge, merge_pool_graphs
+from pydefi.pathfinder.graph import PoolEdge, PoolGraph, ReserveOverlay, V3PoolEdge
 from pydefi.pathfinder.multipath import MultiEdgePath, PathWeights, _distribute_int, merge_and_expand
 from pydefi.pathfinder.router import Router
 from pydefi.types import Address, ChainId, RouteDAG, RouteSplit, RouteSwap, Token, TokenAmount
@@ -365,44 +365,6 @@ class TestPoolGraph:
         g = self._make_graph()
         edges = list(g)
         assert len(edges) == 6
-
-
-# ---------------------------------------------------------------------------
-# merge_pool_graphs (aggregator-scope union)
-# ---------------------------------------------------------------------------
-
-
-class TestMergePoolGraphs:
-    def test_union_of_disjoint_graphs(self):
-        g1 = PoolGraph()
-        g1.add_bidirectional_pool(WETH, USDC, POOL_A, "UniswapV2", reserve_a=10**21, reserve_b=2 * 10**9, fee_bps=30)
-        g2 = PoolGraph()
-        g2.add_bidirectional_pool(WETH, DAI, POOL_B, "Sushiswap", reserve_a=10**21, reserve_b=10**21, fee_bps=30)
-
-        merged = merge_pool_graphs(g1, g2)
-        # Both pools' both directions present.
-        assert sum(1 for _ in merged) == 4
-        weth_neighbors = {e.token_out.address for e in merged.edges_from(WETH)}
-        assert weth_neighbors == {USDC.address, DAI.address}
-
-    def test_dedup_by_pool_address(self):
-        """Same pool registered in two DEX graphs collapses to one edge."""
-
-        g1 = PoolGraph()
-        g1.add_bidirectional_pool(WETH, USDC, POOL_A, "UniswapV2", reserve_a=10**21, reserve_b=2 * 10**9, fee_bps=30)
-        g2 = PoolGraph()
-        g2.add_bidirectional_pool(WETH, USDC, POOL_A, "Sushiswap", reserve_a=5 * 10**20, reserve_b=10**9, fee_bps=30)
-
-        merged = merge_pool_graphs(g1, g2)
-        # Only g1's edges survive (same (pool_address, token_in)).
-        edges = list(merged)
-        assert len(edges) == 2
-        # The surviving edge is from g1 (UniswapV2, deeper reserves).
-        assert all(e.protocol == "UniswapV2" for e in edges)
-
-    def test_empty_args(self):
-        merged = merge_pool_graphs()
-        assert sum(1 for _ in merged) == 0
 
 
 # ---------------------------------------------------------------------------
