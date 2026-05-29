@@ -17,8 +17,6 @@ from eth_contract import ABIStruct, Contract
 ADDRESS_MASK: int = (1 << 160) - 1
 ONE_FOR_ZERO_MASK: int = 1 << 255
 REVERSE_MASK: int = 1 << 255
-WETH_MASK: int = 1 << 254
-WETH_UNWRAP_MASK: int = 1 << 253
 
 # RouterPath.rawData: bits 0..159 pool | 160..175 weight (bps) | bit 255 reverse.
 WEIGHT_SHIFT: int = 160

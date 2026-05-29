@@ -633,12 +633,29 @@ class TestAggregationGas:
         vm_address = bench_ctx["vm_address"]
         dag = await _build_split_v3_two_pools_dag(w3)
 
-        # 99.9% of split_v3_two_pools' known snapshot-fair amount_out at this block.
-        expected_total = 22_816_874
-        min_total = expected_total * 999 // 1000
+        def ssa_encode(min_out: int) -> Callable[[], EncodedTx]:
+            return lambda: encode_ssa(
+                dag,
+                amount_in=_AMOUNT_IN,
+                min_amount_out=min_out,
+                recipient=user,
+                vm_address=vm_address,
+            )
 
-        async def run(encoder_name: str, encode_fn) -> BenchRow:
+        def okx_encode(min_out: int) -> Callable[[], EncodedTx]:
+            return lambda: encode_okx(
+                dag,
+                amount_in=_AMOUNT_IN,
+                min_amount_out=min_out,
+                recipient=user,
+                router_address=OKX_DEX_ROUTER_ETHEREUM,
+                v3_adapter_address=bench_ctx["uni_v3_adapter"],
+                deadline=_DEADLINE,
+            )
+
+        async def run(encoder_name: str, encode_fn: Callable[[], EncodedTx]) -> BenchRow:
             async with _snapshot_revert(w3):
+                bal_before = await _balance(w3, USDC.address, user)
                 tx = encode_fn()
                 receipt = await send_ok(
                     w3,
@@ -646,37 +663,27 @@ class TestAggregationGas:
                     {"to": tx.to, "data": "0x" + tx.data.hex(), "value": tx.value},
                     f"{encoder_name} with min_out",
                 )
+                bal_after = await _balance(w3, USDC.address, user)
                 return BenchRow(
                     path="min_out_overhead",
                     encoder=encoder_name,
                     gas_used=int(receipt["gasUsed"]),
                     calldata_bytes=len(tx.data),
-                    amount_out=0,
+                    amount_out=int(bal_after - bal_before),
                 )
 
+        # Live zero-min-out baselines (gas + amount_out) from the same
+        # snapshot-fair state — replaces hardcoded per-block constants.
+        zero_ssa = await run("ssa", ssa_encode(0))
+        zero_okx = await run("okx", okx_encode(0))
+
+        # Whole-route min-out at 99.9% of the measured (snapshot-fair) output,
+        # not a constant hand-copied from a prior run at this pinned block.
+        min_total = min(zero_ssa.amount_out, zero_okx.amount_out) * 999 // 1000
+
         rows: list[BenchRow] = [
-            await run(
-                "ssa(whole)",
-                lambda: encode_ssa(
-                    dag,
-                    amount_in=_AMOUNT_IN,
-                    min_amount_out=min_total,
-                    recipient=user,
-                    vm_address=vm_address,
-                ),
-            ),
-            await run(
-                "okx(whole)",
-                lambda: encode_okx(
-                    dag,
-                    amount_in=_AMOUNT_IN,
-                    min_amount_out=min_total,
-                    recipient=user,
-                    router_address=OKX_DEX_ROUTER_ETHEREUM,
-                    v3_adapter_address=bench_ctx["uni_v3_adapter"],
-                    deadline=_DEADLINE,
-                ),
-            ),
+            await run("ssa(whole)", ssa_encode(min_total)),
+            await run("okx(whole)", okx_encode(min_total)),
         ]
         # Encoder must refuse: silently weakening to per-leg 0 would mislead callers.
         uni_refused: str | None = None
@@ -694,8 +701,8 @@ class TestAggregationGas:
         assert uni_refused is not None, "encode_uniswap should raise on split + min_out>0"
 
         _print_table(rows)
-        # Baselines from test_split_v3_two_pools at this pinned block.
-        baselines = {"ssa(whole)": 196_837, "okx(whole)": 254_455}
+        # Baselines measured live above (zero-min-out), not pinned to a block.
+        baselines = {"ssa(whole)": zero_ssa.gas_used, "okx(whole)": zero_okx.gas_used}
         for r in rows:
             delta = r.gas_used - baselines[r.encoder]
             print(f"  {r.encoder:<14}  Δgas vs zero-min-out = {delta:+d}")

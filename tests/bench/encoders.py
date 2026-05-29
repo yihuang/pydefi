@@ -46,6 +46,18 @@ _UNISWAP_V3_MULTICALL = Contract.from_abi(
 )
 
 
+# ---------------------------------------------------------------------------
+# EncodedTx — uniform return type
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class EncodedTx:
+    to: Address
+    data: bytes
+    value: int
+
+
 def encode_universal_router(
     dag: RouteDAG,
     *,
@@ -94,18 +106,6 @@ def encode_universal_router(
             payer_is_user=True,
         )
     return EncodedTx(to=tx.to, data=bytes(tx.data), value=0)
-
-
-# ---------------------------------------------------------------------------
-# EncodedTx — uniform return type
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class EncodedTx:
-    to: Address
-    data: bytes
-    value: int
 
 
 # ---------------------------------------------------------------------------
@@ -178,11 +178,8 @@ def encode_ssa_swap_then_aave_supply(
         raise ValueError("encode_ssa_swap_then_aave_supply: DAG must contain at least one action")
 
     last = dag.actions[-1]
-    if isinstance(last, RouteSplit):
-        out_token_addr = bytes(last.token_out.address)
-    else:
-        assert isinstance(last, RouteSwap)
-        out_token_addr = bytes(last.token_out.address)
+    assert isinstance(last, (RouteSplit, RouteSwap))
+    out_token_addr = bytes(last.token_out.address)
 
     prog = Program()
     success = prog.call_contract(
