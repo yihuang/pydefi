@@ -30,7 +30,7 @@ _MAINNET_DOMAIN: dict[int, int] = {
     3: 42161,  # Arbitrum One
     6: 8453,  # Base
     7: 137,  # Polygon PoS
-    10: 1301,  # Unichain
+    10: 130,  # Unichain
     11: 59144,  # Linea
     12: 5115,  # Codex
     13: 146,  # Sonic

@@ -119,7 +119,7 @@ _CHAINID_TO_DOMAIN: dict[int, int] = {
     42161: 3,  # Arbitrum One
     8453: 6,  # Base
     137: 7,  # Polygon PoS
-    1301: 10,  # Unichain
+    130: 10,  # Unichain
     59144: 11,  # Linea
     5115: 12,  # Codex
     146: 13,  # Sonic
