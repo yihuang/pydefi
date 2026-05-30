@@ -6,12 +6,14 @@ cd "$(dirname "$0")"
 
 # CCIP chain directory (ccip-chains.json).
 # Source: https://docs.chain.link/ccip/directory
+echo "Fetching CCIP chain directory"
 curl -s 'https://docs.chain.link/api/ccip/v1/chains?environment=mainnet' \
   | jq -S '.data.evm' > ccip-chains.json
 
 # Aave V3 PoolAddressesProvider per chain (aave.json).
 # Source: the @aave-dao/aave-address-book npm package — it ships several
 # markets per chain id, so jq keeps the canonical one (shortest export name).
+echo "Fetching Aave V3 addresses"
 deno eval 'import * as book from "npm:@aave-dao/aave-address-book"; console.log(JSON.stringify(book, null, " "))' \
   | jq -S '{AAVE_V3_ADDRESSES_PROVIDER: (
       to_entries
@@ -30,6 +32,7 @@ deno eval 'import * as book from "npm:@aave-dao/aave-address-book"; console.log(
 # TOKENIZATION_SPOKES dicts. jq flattens those into AAVE_V4_<NAME>; the
 # `_ORACLE` keys mixed into SPOKES are dropped (only `_HUB` / `_SPOKE` /
 # `_ESPOKE` are kept — `_TOKENIZATION_SPOKE` ends with `_SPOKE`).
+echo "Fetching Aave V4 addresses"
 deno eval 'import * as book from "npm:@aave-dao/aave-address-book"; console.log(JSON.stringify(book))' \
   | jq -S '
       [ to_entries[]
@@ -45,6 +48,7 @@ deno eval 'import * as book from "npm:@aave-dao/aave-address-book"; console.log(
 
 # Compound III (Comet) market addresses (compound.json).
 # Source: https://github.com/compound-finance/comet
+echo "Fetching Compound III addresses"
 python3 update_compound.py
 
 # Morpho Blue core + AdaptiveCurveIRM per chain (morpho.json).
@@ -53,6 +57,7 @@ python3 update_compound.py
 # 0xBBBB… address — later chains were deployed at distinct addresses — so the
 # registry is the canonical per-chain source. blue-sdk needs viem as a peer
 # dependency, hence the extra import.
+echo "Fetching Morpho Blue addresses"
 deno eval 'import { addressesRegistry } from "npm:@morpho-org/blue-sdk"; import "npm:viem@2"; console.log(JSON.stringify(addressesRegistry))' \
   | jq -S '{
       MORPHO_BLUE: (to_entries | map(select(.value.morpho != null))

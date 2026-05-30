@@ -60,6 +60,8 @@ Docs: https://developers.circle.com/cctp/concepts/cctp-on-hypercore
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any
 
 import aiohttp
@@ -102,68 +104,58 @@ _IRIS_API_BASE = "https://iris-api.circle.com"
 # ---------------------------------------------------------------------------
 # Well-known CCTP v2 contract addresses
 # ---------------------------------------------------------------------------
+# Loaded from cctp.json.
 
-# Circle CCTP domain IDs (shared between v1 and v2, unchanged).
-# https://developers.circle.com/stablecoins/supported-domains
-_CCTP_DOMAIN: dict[int, int] = {
+_config_path = Path(__file__).resolve().parent.parent / "config" / "cctp.json"
+with open(_config_path) as _f:
+    _CCTP_CONFIG: dict[int, dict] = {int(k): v for k, v in json.load(_f).items()}
+
+# Hardcoded: chain ID → CCTP domain (stable mapping).
+# Source: https://developers.circle.com/cctp/concepts/supported-chains-and-domains
+_CHAINID_TO_DOMAIN: dict[int, int] = {
     1: 0,  # Ethereum
-    43114: 1,  # Avalanche
+    43114: 1,  # Avalanche C-Chain
     10: 2,  # OP Mainnet
-    42161: 3,  # Arbitrum
+    42161: 3,  # Arbitrum One
     8453: 6,  # Base
     137: 7,  # Polygon PoS
     130: 10,  # Unichain
     59144: 11,  # Linea
-    999: 19,  # HyperEVM (Hyperliquid)
-    # HyperCore is Hyperliquid's L1; CCTP physically mints on HyperEVM (domain 19)
-    # and Hyperliquid routes funds to HyperCore automatically.
-    1337: 19,  # HyperCore (Hyperliquid L1) — routes via HyperEVM
+    5115: 12,  # Codex
+    146: 13,  # Sonic
+    480: 14,  # World Chain
+    1329: 16,  # Sei
+    50: 18,  # XDC Network
+    999: 19,  # HyperEVM
+    998: 19,  # HyperEVM (older chain ID; alias)
+    57073: 21,  # Ink
+    98865: 22,  # Plume
+    3343: 28,  # EDGE
+    2525: 29,  # Injective
+    2818: 30,  # Morph
+    10182: 31,  # Pharos
+    # HyperCore (Hyperliquid L1) routes through HyperEVM
+    ChainId.HYPERCORE: 19,
 }
+_CCTP_DOMAIN: dict[int, int] = _CHAINID_TO_DOMAIN
 
-# CCTP v2 TokenMessengerV2 addresses.
-# CCTP v2 is deployed at deterministic CREATE2 addresses — the same address
-# on every supported EVM chain.
-# https://developers.circle.com/stablecoins/evm-smart-contracts
-_TOKEN_MESSENGER_V2: dict[int, str] = {
-    1: "0x28B5a0E9c621a5BAdaa536219b3a228c8168cF00",  # Ethereum
-    43114: "0x28B5a0E9c621a5BAdaa536219b3a228c8168cF00",  # Avalanche
-    10: "0x28B5a0E9c621a5BAdaa536219b3a228c8168cF00",  # OP Mainnet
-    42161: "0x28B5a0E9c621a5BAdaa536219b3a228c8168cF00",  # Arbitrum
-    8453: "0x28B5a0E9c621a5BAdaa536219b3a228c8168cF00",  # Base
-    137: "0x28B5a0E9c621a5BAdaa536219b3a228c8168cF00",  # Polygon PoS
-    130: "0x28B5a0E9c621a5BAdaa536219b3a228c8168cF00",  # Unichain
-    59144: "0x28B5a0E9c621a5BAdaa536219b3a228c8168cF00",  # Linea
-    999: "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d",  # HyperEVM (Hyperliquid)
-    1337: "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d",  # HyperCore (same contract on HyperEVM)
+# TokenMessengerV2, MessageTransmitterV2, and native USDC per chain
+_TOKEN_MESSENGER_V2: dict[int, Address] = {
+    cid: Address(HexBytes(c["TokenMessengerV2"])) for cid, c in _CCTP_CONFIG.items()
 }
+_MESSAGE_TRANSMITTER_V2: dict[int, Address] = {
+    cid: Address(HexBytes(c["MessageTransmitterV2"])) for cid, c in _CCTP_CONFIG.items()
+}
+_USDC: dict[int, Address] = {}
+for cid, c in _CCTP_CONFIG.items():
+    if "USDC" in c:
+        _USDC[cid] = Address(HexBytes(c["USDC"]))
 
-# CCTP v2 MessageTransmitterV2 addresses (same address on all supported chains).
-_MESSAGE_TRANSMITTER_V2: dict[int, str] = {
-    1: "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",  # Ethereum
-    43114: "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",  # Avalanche
-    10: "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",  # OP Mainnet
-    42161: "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",  # Arbitrum
-    8453: "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",  # Base
-    137: "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",  # Polygon PoS
-    130: "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",  # Unichain
-    59144: "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",  # Linea
-    999: "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",  # HyperEVM (Hyperliquid)
-    1337: "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",  # HyperCore (same contract on HyperEVM)
-}
-
-# Native USDC addresses per chain (Circle-issued, unchanged from v1).
-_USDC: dict[int, str] = {
-    1: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",  # Ethereum
-    43114: "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E",  # Avalanche
-    10: "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85",  # OP Mainnet
-    42161: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",  # Arbitrum
-    8453: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",  # Base
-    137: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",  # Polygon PoS
-    130: "0x078D888E40faAe0f32594342c85940AF3949E666",  # Unichain
-    59144: "0x176211869cA2b568f2A7D4EE941E073a821EE1ff",  # Linea
-    999: "0xb88339CB7199b77E23DB6E890353E22632Ba630f",  # HyperEVM (Hyperliquid)
-    1337: "0xb88339CB7199b77E23DB6E890353E22632Ba630f",  # HyperCore (minted on HyperEVM)
-}
+# HyperCore mirrors HyperEVM
+_TOKEN_MESSENGER_V2[ChainId.HYPERCORE] = _TOKEN_MESSENGER_V2[ChainId.HYPEREVM]
+_MESSAGE_TRANSMITTER_V2[ChainId.HYPERCORE] = _MESSAGE_TRANSMITTER_V2[ChainId.HYPEREVM]
+if ChainId.HYPEREVM in _USDC:
+    _USDC[ChainId.HYPERCORE] = _USDC[ChainId.HYPEREVM]
 
 # CctpForwarder contract addresses on HyperEVM (keyed by is_mainnet: bool).
 # The CctpForwarder receives USDC minted by CCTP on HyperEVM and forwards it
@@ -267,8 +259,8 @@ class CCTP(BaseBridge):
         w3: AsyncWeb3,
         src_chain_id: int,
         dst_chain_id: int,
-        token_messenger_address: str | None = None,
-        src_usdc_address: str | None = None,
+        token_messenger_address: Address | None = None,
+        src_usdc_address: Address | None = None,
         api_base_url: str = _IRIS_API_BASE,
         cctp_forwarder_address: Address | None = None,
         is_mainnet: bool = True,
@@ -278,14 +270,14 @@ class CCTP(BaseBridge):
         self._api_base = api_base_url.rstrip("/")
         self.is_mainnet = is_mainnet
 
-        self.token_messenger_address = token_messenger_address or _TOKEN_MESSENGER_V2.get(src_chain_id, "")
+        self.token_messenger_address = token_messenger_address or _TOKEN_MESSENGER_V2.get(src_chain_id)
         if not self.token_messenger_address:
             raise BridgeError(
                 f"CCTP: no TokenMessengerV2 address known for chain {src_chain_id}. "
                 "Pass token_messenger_address explicitly."
             )
 
-        self.src_usdc_address = src_usdc_address or _USDC.get(src_chain_id, "")
+        self.src_usdc_address = src_usdc_address or _USDC.get(src_chain_id)
         if not self.src_usdc_address:
             raise BridgeError(
                 f"CCTP: no USDC address known for chain {src_chain_id}. Pass src_usdc_address explicitly."
@@ -518,7 +510,7 @@ class CCTP(BaseBridge):
             ).data
 
         return {
-            "to": self.token_messenger_address,
+            "to": Web3.to_checksum_address(self.token_messenger_address),
             "data": "0x" + call_data.hex(),
             "value": "0",
             "gas": str(200_000),
@@ -587,7 +579,7 @@ class CCTP(BaseBridge):
         ).data
 
         return {
-            "to": self.token_messenger_address,
+            "to": Web3.to_checksum_address(self.token_messenger_address),
             "data": "0x" + call_data.hex(),
             "value": "0",
             "gas": str(220_000),
@@ -598,7 +590,7 @@ class CCTP(BaseBridge):
     # -----------------------------------------------------------------------
 
     @classmethod
-    def message_transmitter_address(cls, chain_id: int) -> str:
+    def message_transmitter_address(cls, chain_id: int) -> Address:
         """Return the well-known CCTP v2 ``MessageTransmitterV2`` address for *chain_id*.
 
         Raises:
@@ -610,7 +602,7 @@ class CCTP(BaseBridge):
         return addr
 
     @classmethod
-    def usdc_address(cls, chain_id: int) -> str:
+    def usdc_address(cls, chain_id: int) -> Address:
         """Return the well-known native USDC address for *chain_id*.
 
         Raises:
