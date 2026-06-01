@@ -311,4 +311,6 @@ contract EurekaComposer is DEXCallbackRouter, TransientReentrancyGuard, Interpre
         }
     }
 
+    /// @notice Allow the composer to receive ETH (refunds, native gas hops).
+    receive() external payable {}
 }
