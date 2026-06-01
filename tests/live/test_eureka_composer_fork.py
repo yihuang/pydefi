@@ -50,26 +50,52 @@ _MOCK_CONTRACTS_SOL = """
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-/// @notice Non-standard ERC-20 (classic USDT): approve / transferFrom return
-/// nothing. Forces the SafeERC20-style empty-returndata path in _erc20Call.
-contract MockUSDT {
+/// @dev Shared ERC-20 bookkeeping for the quirky test tokens below.
+abstract contract MockERC20Base {
     mapping(address => uint256) public balanceOf;
     mapping(address => mapping(address => uint256)) public allowance;
 
     function mint(address to, uint256 amount) external { balanceOf[to] += amount; }
 
-    function approve(address spender, uint256 amount) external {
-        allowance[msg.sender][spender] = amount;
-    }
-
-    function transferFrom(address from, address to, uint256 amount) external {
+    /// Debit `amount` from `from`, spending caller allowance when from != caller.
+    function _spend(address from, uint256 amount) internal {
         require(balanceOf[from] >= amount, "balance");
         if (from != msg.sender) {
             require(allowance[from][msg.sender] >= amount, "allowance");
             allowance[from][msg.sender] -= amount;
         }
         balanceOf[from] -= amount;
+    }
+}
+
+/// @notice Classic USDT: approve / transferFrom return no bool, and approve
+/// reverts when overwriting a non-zero allowance. Exercises both the
+/// SafeERC20-style empty-returndata path and _forceApprove's zero-then-set.
+contract MockUSDT is MockERC20Base {
+    function approve(address spender, uint256 amount) external {
+        require(!(amount != 0 && allowance[msg.sender][spender] != 0), "unsafe approve");
+        allowance[msg.sender][spender] = amount;
+    }
+
+    function transferFrom(address from, address to, uint256 amount) external {
+        _spend(from, amount);
         balanceOf[to] += amount;
+    }
+}
+
+/// @notice Fee-on-transfer token: credits the recipient `amount - 1%`, so the
+/// composer receives less than requested. Exercises the balance-delta guard
+/// (TransferAmountMismatch).
+contract MockFeeToken is MockERC20Base {
+    function approve(address spender, uint256 amount) external returns (bool) {
+        allowance[msg.sender][spender] = amount;
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint256 amount) external returns (bool) {
+        _spend(from, amount);
+        balanceOf[to] += amount - amount / 100;  // 1% fee burned
+        return true;
     }
 }
 
@@ -120,6 +146,7 @@ def compiled_mocks():
         # Reuse the shared generic bool-ERC-20 rather than redefining one.
         "MockToken": compile_sol_source(MOCK_TOKEN_SOL, "MockToken"),
         "MockUSDT": result["<stdin>:MockUSDT"],
+        "MockFeeToken": result["<stdin>:MockFeeToken"],
         "MockICS20Transfer": result["<stdin>:MockICS20Transfer"],
         "MockTarget": compile_sol_source(MOCK_TARGET_SOL, "MockTarget"),
     }
@@ -142,13 +169,13 @@ async def ctx(eureka_fork_w3, compiled_eureka_composer, compiled_mocks, interpre
     )
     token_address = await deploy(w3, compiled_mocks["MockToken"], deployer)
     usdt_address = await deploy(w3, compiled_mocks["MockUSDT"], deployer)
+    fee_address = await deploy(w3, compiled_mocks["MockFeeToken"], deployer)
     target_address = await deploy(w3, compiled_mocks["MockTarget"], deployer)
 
-    composer = Contract(abi=compiled_eureka_composer["abi"], tx={"to": Web3.to_checksum_address(composer_address)})
-    ics20 = Contract(abi=compiled_mocks["MockICS20Transfer"]["abi"], tx={"to": Web3.to_checksum_address(ics20_address)})
-    token = Contract(abi=compiled_mocks["MockToken"]["abi"], tx={"to": Web3.to_checksum_address(token_address)})
-    usdt = Contract(abi=compiled_mocks["MockUSDT"]["abi"], tx={"to": Web3.to_checksum_address(usdt_address)})
-    target = Contract(abi=compiled_mocks["MockTarget"]["abi"], tx={"to": Web3.to_checksum_address(target_address)})
+    def _c(name: str, addr: Address) -> Contract:
+        return Contract(abi=compiled_mocks[name]["abi"], tx={"to": addr})
+
+    composer = Contract(abi=compiled_eureka_composer["abi"], tx={"to": composer_address})
 
     return {
         "w3": w3,
@@ -156,13 +183,15 @@ async def ctx(eureka_fork_w3, compiled_eureka_composer, compiled_mocks, interpre
         "deployer": deployer,
         "composer": composer,
         "composer_address": composer_address,
-        "ics20": ics20,
+        "ics20": _c("MockICS20Transfer", ics20_address),
         "ics20_address": ics20_address,
-        "token": token,
+        "token": _c("MockToken", token_address),
         "token_address": token_address,
-        "usdt": usdt,
+        "usdt": _c("MockUSDT", usdt_address),
         "usdt_address": usdt_address,
-        "target": target,
+        "fee": _c("MockFeeToken", fee_address),
+        "fee_address": fee_address,
+        "target": _c("MockTarget", target_address),
         "target_address": target_address,
     }
 
@@ -181,8 +210,9 @@ def _registered_program() -> bytes:
 
 
 def _send_msg(denom, amount: int, *, receiver: str = "mantra1qq", timeout: int = 1, memo: str = "") -> tuple:
-    """SendTransferMsg struct tuple in ABI field order."""
-    return (Web3.to_checksum_address(denom), amount, receiver, _SOURCE_CLIENT, _DEST_PORT, timeout, memo)
+    """SendTransferMsg struct tuple in ABI field order. ``denom`` is encoded as
+    an address — accepts a 20-byte Address (deploy()'s return) or a hex string."""
+    return (denom, amount, receiver, _SOURCE_CLIENT, _DEST_PORT, timeout, memo)
 
 
 def _ack_msg(sequence: int) -> tuple:
@@ -253,11 +283,12 @@ class TestSendTransferAndCompose:
         ics20_address = ctx["ics20_address"]
 
         amount = 500 * 10**6
+        before = await usdt.fns.balanceOf(composer_address).call(w3)
         receipt = await _send_and_compose(
             ctx, _registered_program(), token=usdt, token_address=usdt_address, amount=amount
         )
         assert receipt["status"] == 1
-        assert await usdt.fns.balanceOf(composer_address).call(w3) == amount
+        assert await usdt.fns.balanceOf(composer_address).call(w3) - before == amount
         assert await usdt.fns.allowance(composer_address, ics20_address).call(w3) == amount
 
     async def test_rejects_empty_program(self, ctx):
@@ -279,6 +310,34 @@ class TestSendTransferAndCompose:
             await composer.fns.sendTransferAndCompose(
                 _send_msg(eoa_denom, 1), HexBytes(_registered_program())
             ).transact(w3, deployer)
+
+    async def test_rejects_fee_on_transfer(self, ctx):
+        """A fee-on-transfer token credits less than requested; the balance-delta
+        guard must reject it (TransferAmountMismatch) rather than escrow a short
+        balance."""
+        with pytest.raises(_REVERT):
+            await _send_and_compose(
+                ctx, _registered_program(), token=ctx["fee"], token_address=ctx["fee_address"], amount=1000 * 10**6
+            )
+
+    async def test_force_approve_reset_fallback(self, ctx):
+        """Classic USDT reverts when overwriting a non-zero allowance. The mock
+        ICS20Transfer never pulls, so the composer's allowance stays non-zero
+        after the first send; the second send's approve must therefore go
+        through _forceApprove's zero-then-set fallback to succeed."""
+        w3 = ctx["w3"]
+        composer_address = ctx["composer_address"]
+        usdt = ctx["usdt"]
+        usdt_address = ctx["usdt_address"]
+        ics20_address = ctx["ics20_address"]
+
+        amount = 100 * 10**6
+        for _ in range(2):
+            receipt = await _send_and_compose(
+                ctx, _registered_program(), token=usdt, token_address=usdt_address, amount=amount
+            )
+            assert receipt["status"] == 1
+            assert await usdt.fns.allowance(composer_address, ics20_address).call(w3) == amount
 
 
 @pytest.mark.fork

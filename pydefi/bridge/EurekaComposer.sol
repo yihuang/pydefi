@@ -65,6 +65,7 @@ interface IIBCAppCallbacks_minimal {
 interface IERC20_minimal {
     function transferFrom(address from, address to, uint256 amount) external returns (bool);
     function approve(address spender, uint256 amount) external returns (bool);
+    function balanceOf(address account) external view returns (uint256);
 }
 
 /**
@@ -134,6 +135,7 @@ contract EurekaComposer is DEXCallbackRouter, TransientReentrancyGuard, Interpre
 
     error AlreadyComposed();
     error EmptyProgram();
+    error TransferAmountMismatch(uint256 expected, uint256 actual);
     error TransferFromFailed();
     error ApproveFailed();
     error UnauthorizedCallback();
@@ -150,6 +152,18 @@ contract EurekaComposer is DEXCallbackRouter, TransientReentrancyGuard, Interpre
         if (!ok) return false;
         if (ret.length == 0) return true;
         return abi.decode(ret, (bool));
+    }
+
+    /// @dev Some tokens require allowance to be set to zero before setting a
+    /// new non-zero value. Try direct approve first, then zero+set fallback.
+    function _forceApprove(address token, address spender, uint256 amount) internal returns (bool) {
+        if (_erc20Call(token, abi.encodeWithSelector(IERC20_minimal.approve.selector, spender, amount))) {
+            return true;
+        }
+        if (!_erc20Call(token, abi.encodeWithSelector(IERC20_minimal.approve.selector, spender, 0))) {
+            return false;
+        }
+        return _erc20Call(token, abi.encodeWithSelector(IERC20_minimal.approve.selector, spender, amount));
     }
 
     /**
@@ -204,6 +218,7 @@ contract EurekaComposer is DEXCallbackRouter, TransientReentrancyGuard, Interpre
         // 1) Pull funds from caller into this contract. Use a SafeERC20-style
         //    low-level call so non-standard tokens (e.g. classic USDT, which
         //    doesn't return bool) work alongside spec-compliant ones.
+        uint256 balanceBefore = IERC20_minimal(transferMsg.denom).balanceOf(address(this));
         bool ok = _erc20Call(
             transferMsg.denom,
             abi.encodeWithSelector(
@@ -212,14 +227,13 @@ contract EurekaComposer is DEXCallbackRouter, TransientReentrancyGuard, Interpre
             )
         );
         if (!ok) revert TransferFromFailed();
+        uint256 received = IERC20_minimal(transferMsg.denom).balanceOf(address(this)) - balanceBefore;
+        if (received != transferMsg.amount) {
+            revert TransferAmountMismatch(transferMsg.amount, received);
+        }
 
         // 2) Approve the transfer app to pull from us.
-        ok = _erc20Call(
-            transferMsg.denom,
-            abi.encodeWithSelector(
-                IERC20_minimal.approve.selector, ics20Transfer, transferMsg.amount
-            )
-        );
+        ok = _forceApprove(transferMsg.denom, ics20Transfer, transferMsg.amount);
         if (!ok) revert ApproveFailed();
 
         // 3) Submit the packet — we are the packet's sender, so the eventual

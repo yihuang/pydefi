@@ -844,3 +844,6 @@ class TestEurekaComposer:
         # Empty-program registrations would silently no-op on callback; the
         # composer must surface that as a typed revert at send time.
         assert "EmptyProgram" in error_names
+        # The composer requires exact token-in amount to avoid fee-on-transfer
+        # or rebasing drift across the ICS-20 send amount.
+        assert "TransferAmountMismatch" in error_names
