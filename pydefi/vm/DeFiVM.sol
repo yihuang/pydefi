@@ -2,6 +2,7 @@
 pragma solidity ^0.8.24;
 
 import "./DEXCallbackRouter.sol";
+import "./InterpreterRunner.sol";
 
 /**
  * @title DeFiVM
@@ -15,9 +16,11 @@ import "./DEXCallbackRouter.sol";
  *
  * How it works
  * ------------
- *  ``execute()`` delegates execution to the pre-deployed Analog-Labs EVM interpreter
- *  (https://github.com/Analog-Labs/evm-interpreter) via ``DELEGATECALL``.  The interpreter
- *  accepts the program bytecode as calldata and executes it in DeFiVM's context:
+ *  ``execute()`` runs the program through its :class:`ProgramExecutor` backend
+ *  (``InterpreterRunner`` by default — DELEGATECALL to the pre-deployed
+ *  Analog-Labs EVM interpreter, https://github.com/Analog-Labs/evm-interpreter;
+ *  swap in ``RuncodeRunner`` for native EIP-7990 execution).  The program runs
+ *  in DeFiVM's context:
  *  - ``address(this)`` inside the program is DeFiVM's address.
  *  - External ``CALL``s originate from DeFiVM (msg.sender to sub-calls is DeFiVM).
  *  - ETH held by DeFiVM is forwarded via ``callvalue()`` and available to ``CALL``.
@@ -47,21 +50,14 @@ import "./DEXCallbackRouter.sol";
  *  ``DEXCallbackRouter.sol`` for the encoding conventions of the ``data``
  *  parameter and the supported selectors.
  */
-contract DeFiVM is DEXCallbackRouter {
-    /// @dev Well-known Analog-Labs EVM interpreter.
-    address private constant DEFAULT_INTERPRETER = 0x0000000000001e3F4F615cd5e20c681Cf7d85e8D;
-
-    /// @dev Address of the EVM interpreter used for DELEGATECALL execution.
-    address private immutable INTERPRETER;
-
+contract DeFiVM is DEXCallbackRouter, InterpreterRunner {
     /// @param interpreter Address of the EVM interpreter to use.  Pass
     ///   ``address(0)`` to use the pre-deployed Analog-Labs interpreter at
     ///   ``0x0000000000001e3F4F615cd5e20c681Cf7d85e8D``.  Supply a custom
     ///   address for alternative chains or local test environments where the
-    ///   interpreter may not be pre-deployed.
-    constructor(address interpreter) {
-        INTERPRETER = interpreter == address(0) ? DEFAULT_INTERPRETER : interpreter;
-    }
+    ///   interpreter may not be pre-deployed.  To run programs natively via
+    ///   EIP-7990 instead, inherit ``RuncodeRunner`` and drop this argument.
+    constructor(address interpreter) InterpreterRunner(interpreter) {}
 
     /// @notice Allow the VM to receive ETH (needed for value-bearing calls).
     receive() external payable {}
@@ -71,26 +67,23 @@ contract DeFiVM is DEXCallbackRouter {
     // -------------------------------------------------------------------------
 
     /**
-     * @notice Execute a DeFiVM program atomically via DELEGATECALL to a
-     *         pre-deployed EVM interpreter.  Any revert undoes all side-effects.
+     * @notice Execute a DeFiVM program atomically through the configured
+     *         :class:`ProgramExecutor` backend.  Any revert undoes all
+     *         side-effects; the program's RETURN data is bubbled to the caller.
      * @param program  Raw EVM bytecode to execute.
      *
      * Programs that need runtime parameters read them via ``TLOAD(i)`` from
      * the caller's transient slots.  Composers (CCTP/OFT/ApproveProxy) avoid
-     * this entry point and DELEGATECALL the interpreter directly so the
-     * program runs in the composer's own context — that way the composer
-     * can write its bridged params via ``TSTORE`` and the program reads
-     * them via ``TLOAD`` from the same transient namespace.
+     * this entry point and run the program in their own context directly — so
+     * the composer can write its bridged params via ``TSTORE`` and the program
+     * reads them via ``TLOAD`` from the same transient namespace.
      */
     function execute(bytes calldata program) external payable {
-        address interpreter = INTERPRETER;
+        _runProgram(program);
+        // _runProgram bubbles revert data on failure; on success the program's
+        // RETURN data is still in the EVM return buffer — surface it to the caller.
         assembly {
-            calldatacopy(0, program.offset, program.length)
-            let ok := delegatecall(gas(), interpreter, 0, program.length, 0, 0)
             returndatacopy(0, 0, returndatasize())
-            if iszero(ok) {
-                revert(0, returndatasize())
-            }
             return(0, returndatasize())
         }
     }

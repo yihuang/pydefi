@@ -222,8 +222,8 @@ contract EurekaComposer is DEXCallbackRouter, TransientReentrancyGuard, Interpre
     }
 
     /// @dev Look up the registered program, stage params in transient
-    ///      storage, DELEGATECALL the interpreter, then clear both storage
-    ///      and transient slots.
+    ///      storage, run it through the :class:`ProgramExecutor` backend, then
+    ///      clear both storage and transient slots.
     function _runRegistered(string calldata sourceClient, uint64 sequence, bool success) internal {
         bytes memory program = programs[sourceClient][sequence];
         if (program.length == 0) return;
@@ -235,17 +235,15 @@ contract EurekaComposer is DEXCallbackRouter, TransientReentrancyGuard, Interpre
             tstore(1, sequence)
         }
 
-        // Inline the InterpreterRunner._runProgram body so we can pass memory
-        // bytes (we already loaded it from storage).
-        address _interpreter = interpreter;
+        // The program was loaded from storage into memory, so use the memory
+        // variant of the seam. Going through ProgramExecutor (rather than an
+        // inlined delegatecall) keeps this contract swappable to RuncodeRunner
+        // with a one-line mixin change, like the other composers.
+        _runProgramMemory(program);
+
+        // Clear the staged transient slots on success (a revert in the program
+        // bubbles up and discards transient state with the tx).
         assembly {
-            let ptr := add(program, 32)
-            let len := mload(program)
-            let ok := delegatecall(gas(), _interpreter, ptr, len, 0, 0)
-            if iszero(ok) {
-                returndatacopy(0, 0, returndatasize())
-                revert(0, returndatasize())
-            }
             tstore(0, 0)
             tstore(1, 0)
         }
