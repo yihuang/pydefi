@@ -33,7 +33,15 @@ from web3.exceptions import ContractLogicError, Web3RPCError
 
 from pydefi.types import ZERO_ADDRESS, Address, Hash
 from pydefi.vm import Program
-from tests.live.sol_utils import compile_sol_file, deploy, deploy_mock_v3_pool, ensure_solc
+from tests.live.sol_utils import (
+    MOCK_REVERTING_TARGET_SOL,
+    MOCK_TARGET_SOL,
+    compile_sol_file,
+    compile_sol_source,
+    deploy,
+    deploy_mock_v3_pool,
+    ensure_solc,
+)
 
 
 def _compose_program(target_address: Address, target_calldata: bytes, *, value: int = 0) -> bytes:
@@ -145,34 +153,6 @@ contract MockMessageTransmitterV2 {
             require(ok, "MockMessageTransmitterV2: mint failed");
         }
         return true;
-    }
-}
-
-/// @notice Mock target contract — records the most recent call.
-contract MockTarget {
-    event Called(address sender, uint256 value, bytes data);
-
-    uint256 public callCount;
-    bytes public lastData;
-    uint256 public lastValue;
-
-    function execute(bytes calldata data) external payable returns (bool) {
-        callCount++;
-        lastData = data;
-        lastValue = msg.value;
-        emit Called(msg.sender, msg.value, data);
-        return true;
-    }
-
-    receive() external payable {}
-}
-
-/// @notice Mock target that always reverts.
-contract RevertingTarget {
-    error AlwaysReverts();
-
-    fallback() external payable {
-        revert AlwaysReverts();
     }
 }
 """
@@ -295,8 +275,8 @@ def _compile_mock_contracts() -> dict[str, dict]:
     return {
         "MockUSDC": result["<stdin>:MockUSDC"],
         "MockMessageTransmitterV2": result["<stdin>:MockMessageTransmitterV2"],
-        "MockTarget": result["<stdin>:MockTarget"],
-        "RevertingTarget": result["<stdin>:RevertingTarget"],
+        "MockTarget": compile_sol_source(MOCK_TARGET_SOL, "MockTarget"),
+        "RevertingTarget": compile_sol_source(MOCK_REVERTING_TARGET_SOL, "RevertingTarget"),
     }
 
 
