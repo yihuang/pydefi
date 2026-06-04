@@ -23,7 +23,6 @@ from .amm import (
     QuoteExactInputSingleParams,
     QuoteExactOutputSingleParams,
 )
-from .dex_aggregator import OKX_DEX_ROUTER, BaseRequest, RouterPath
 from .bridge import (
     ACROSS_SPOKE_POOL,
     CCTP_TOKEN_MESSENGER_V2,
@@ -38,6 +37,7 @@ from .bridge import (
     MessagingFee,
     OFTSendParam,
 )
+from .dex_aggregator import OKX_DEX_ROUTER, BaseRequest, RouterPath
 from .lending import (
     AAVE_V3_ADDRESSES_PROVIDER,
     AAVE_V3_DATA_PROVIDER,

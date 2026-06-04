@@ -125,6 +125,7 @@ class RouterPathDescriptor:
         self.from_token = from_token
         self.mode = mode
 
+
 # ---------------------------------------------------------------------------
 # RawData encoder
 # ---------------------------------------------------------------------------
@@ -229,7 +230,6 @@ def build_dag_swap_calldata(
     if not paths:
         raise ValueError("build_dag_swap_calldata: at least one RouterPath is required")
 
-
     base_req = BaseRequest(
         fromToken=_pack_from_token(from_token),
         toToken=to_token,
@@ -297,10 +297,7 @@ def _protocol_to_adapter(
     else:
         addr = _PROTOCOL_ADAPTER.get(key)
         if addr is None:
-            raise ValueError(
-                f"protocol {raw!r}: no OKX adapter address known; "
-                f"pass it via adapter_overrides"
-            )
+            raise ValueError(f"protocol {raw!r}: no OKX adapter address known; pass it via adapter_overrides")
 
     if isinstance(addr, str):
         return Address.fromhex(addr[2:] if addr.startswith("0x") else addr)
@@ -388,9 +385,7 @@ def _walk_actions(
                         "route_dag_to_router_paths: split legs must contain exactly one RouteSwap. "
                         "Multi-hop legs are not supported by the OKX RouterPath format."
                     )
-            result.append(
-                _split_to_node(action, current_token, idx, current_mode, adapter_overrides)
-            )
+            result.append(_split_to_node(action, current_token, idx, current_mode, adapter_overrides))
             current_token = action.token_out
             idx += 1
             current_mode = _MODE_LEGACY

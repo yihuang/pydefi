@@ -857,7 +857,6 @@ class TestOKXRouterEncoder:
 
         t0 = Token(chain_id=ChainId.ETHEREUM, address=HexBytes("0x" + "01" * 20), symbol="T0")
         t1 = Token(chain_id=ChainId.ETHEREUM, address=HexBytes("0x" + "02" * 20), symbol="T1")
-        t2 = Token(chain_id=ChainId.ETHEREUM, address=HexBytes("0x" + "03" * 20), symbol="T2")
 
         pool_a = HexBytes("0x" + "0A" * 20)
         pool_b = HexBytes("0x" + "0B" * 20)
@@ -877,16 +876,7 @@ class TestOKXRouterEncoder:
             extra={"is_token0_in": True},
         )
 
-        dag = (
-            RouteDAG()
-            .from_token(t0)
-            .split()
-            .leg(5000)
-            .swap(t1, edge_a)
-            .leg(5000)
-            .swap(t1, edge_b)
-            .merge()
-        )
+        dag = RouteDAG().from_token(t0).split().leg(5000).swap(t1, edge_a).leg(5000).swap(t1, edge_b).merge()
         paths = route_dag_to_router_paths(dag)
 
         assert len(paths) == 1

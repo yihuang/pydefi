@@ -144,8 +144,7 @@ class TestOKXDagSwapEncoderFork:
             msg = str(exc)
             # A bare "0x" revert means the ABI decode itself failed:
             assert "'0x'" not in msg, (
-                f"eth_call reverted with bare 0x — calldata is NOT being decoded "
-                f"by the real DexRouter.  Error: {exc}"
+                f"eth_call reverted with bare 0x — calldata is NOT being decoded by the real DexRouter.  Error: {exc}"
             )
 
     # -- selector verification ----------------------------------------------
@@ -178,10 +177,7 @@ class TestOKXDagSwapEncoderFork:
         )
 
         expected = OKX_DEX_ROUTER.fns.dagSwapTo.selector
-        assert calldata[:4] == expected, (
-            f"Selector mismatch: got 0x{calldata[:4].hex()}, "
-            f"expected 0x{expected.hex()}"
-        )
+        assert calldata[:4] == expected, f"Selector mismatch: got 0x{calldata[:4].hex()}, expected 0x{expected.hex()}"
 
     # -- RouteDAG → RouterPath conversion -----------------------------------
 
@@ -195,16 +191,21 @@ class TestOKXDagSwapEncoderFork:
             .swap(
                 DAI,
                 PoolEdge(
-                    token_in=WETH, token_out=DAI,
-                    pool_address=PAIR_WETH_DAI, protocol="UniswapV2",
-                    fee_bps=30, extra={"is_token0_in": not weth_dai_t0},
+                    token_in=WETH,
+                    token_out=DAI,
+                    pool_address=PAIR_WETH_DAI,
+                    protocol="UniswapV2",
+                    fee_bps=30,
+                    extra={"is_token0_in": not weth_dai_t0},
                 ),
             )
             .swap(
                 USDC,
                 PoolEdge(
-                    token_in=DAI, token_out=USDC,
-                    pool_address=PAIR_USDC_DAI, protocol="UniswapV2",
+                    token_in=DAI,
+                    token_out=USDC,
+                    pool_address=PAIR_USDC_DAI,
+                    protocol="UniswapV2",
                     fee_bps=30,
                     extra={
                         "is_token0_in": HexBytes(DAI.address)
@@ -219,9 +220,7 @@ class TestOKXDagSwapEncoderFork:
         )
 
         adapter = dag_ctx["v2_adapter"]
-        paths = route_dag_to_router_paths(
-            dag, adapter_overrides={"uniswap_v2": adapter}
-        )
+        paths = route_dag_to_router_paths(dag, adapter_overrides={"uniswap_v2": adapter})
 
         assert len(paths) == 2
         assert paths[0].from_token == WETH.address
@@ -240,27 +239,31 @@ class TestOKXDagSwapEncoderFork:
             .swap(
                 DAI,
                 PoolEdge(
-                    token_in=WETH, token_out=DAI,
-                    pool_address=PAIR_WETH_DAI, protocol="UniswapV2",
-                    fee_bps=30, extra={"is_token0_in": not is_weth_token0},
+                    token_in=WETH,
+                    token_out=DAI,
+                    pool_address=PAIR_WETH_DAI,
+                    protocol="UniswapV2",
+                    fee_bps=30,
+                    extra={"is_token0_in": not is_weth_token0},
                 ),
             )
             .leg(5000)
             .swap(
                 DAI,
                 PoolEdge(
-                    token_in=WETH, token_out=DAI,
-                    pool_address=PAIR_WETH_DAI, protocol="UniswapV2",
-                    fee_bps=30, extra={"is_token0_in": not is_weth_token0},
+                    token_in=WETH,
+                    token_out=DAI,
+                    pool_address=PAIR_WETH_DAI,
+                    protocol="UniswapV2",
+                    fee_bps=30,
+                    extra={"is_token0_in": not is_weth_token0},
                 ),
             )
             .merge()
         )
 
         adapter = dag_ctx["v2_adapter"]
-        paths = route_dag_to_router_paths(
-            dag, adapter_overrides={"uniswap_v2": adapter}
-        )
+        paths = route_dag_to_router_paths(dag, adapter_overrides={"uniswap_v2": adapter})
 
         assert len(paths) == 1
         assert len(paths[0].mix_adapters) == 2
@@ -285,12 +288,8 @@ class TestOKXDagSwapEncoderFork:
         amount_in = 10**16
         deadline = 2_000_000_000
 
-        await _WETH_DEPOSIT.fns.deposit().transact(
-            w3, deployer, to=WETH.address, value=Wei(amount_in)
-        )
-        await ERC20.fns.approve(proxy, amount_in).transact(
-            w3, deployer, to=WETH.address
-        )
+        await _WETH_DEPOSIT.fns.deposit().transact(w3, deployer, to=WETH.address, value=Wei(amount_in))
+        await ERC20.fns.approve(proxy, amount_in).transact(w3, deployer, to=WETH.address)
 
         pool = PAIR_WETH_DAI
         raw = encode_edge_raw_data(pool, weight_bps=10000, input_index=0, output_index=1)
@@ -322,13 +321,9 @@ class TestOKXDagSwapEncoderFork:
                 "gas": 2_000_000,
             }
         )
-        receipt = await w3.eth.wait_for_transaction_receipt(
-            tx_hash, timeout=60, poll_latency=0.1
-        )
+        receipt = await w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60, poll_latency=0.1)
 
-        dai_out = (
-            await ERC20.fns.balanceOf(deployer).call(w3, to=DAI.address)
-        ) - dai_before
+        dai_out = (await ERC20.fns.balanceOf(deployer).call(w3, to=DAI.address)) - dai_before
 
         if receipt["status"] == 1:
             assert dai_out > 0
@@ -338,6 +333,5 @@ class TestOKXDagSwapEncoderFork:
             # This is acceptable; the eth_call test above already proved
             # the calldata decodes correctly.
             print(
-                f"  (tx reverted, gas={receipt.get('gasUsed')} — "
-                f"expected if commission/approve-proxy config differs)"
+                f"  (tx reverted, gas={receipt.get('gasUsed')} — expected if commission/approve-proxy config differs)"
             )
