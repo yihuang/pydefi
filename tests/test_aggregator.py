@@ -6,7 +6,14 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from hexbytes import HexBytes
 
-from pydefi.abi.dex_aggregator import OKX_DEX_ROUTER
+from pydefi.abi.dex_aggregator import (
+    ADDRESS_MASK,
+    INPUT_INDEX_MASK,
+    OKX_DEX_ROUTER,
+    OUTPUT_INDEX_MASK,
+    REVERSE_MASK,
+    WEIGHT_MASK,
+)
 from pydefi.aggregator.base import AggregatorQuote
 from pydefi.aggregator.okx import OKX
 from pydefi.aggregator.okx_router_encoder import (
@@ -725,32 +732,21 @@ class TestOKXRouterEncoder:
 
         # Defaults: weight=10000, input_index=0, output_index=1, reverse=False
 
-        # Verify extraction with contract masks
-        _ADDRESS_MASK = 0x000000000000000000000000FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
-        _WEIGHT_MASK = 0x00000000000000000000FFFF0000000000000000000000000000000000000000
-        _OUTPUT_INDEX_MASK = 0x000000000000000000FF00000000000000000000000000000000000000000000
-        _INPUT_INDEX_MASK = 0x0000000000000000FF0000000000000000000000000000000000000000000000
-        _REVERSE_MASK = 0x8000000000000000000000000000000000000000000000000000000000000000
-
-        assert (raw & _ADDRESS_MASK) == int.from_bytes(pool, "big")
-        assert (raw & _WEIGHT_MASK) >> 160 == 10000
-        assert (raw & _INPUT_INDEX_MASK) >> 184 == 0
-        assert (raw & _OUTPUT_INDEX_MASK) >> 176 == 1
-        assert not bool(raw & _REVERSE_MASK)
+        assert (raw & ADDRESS_MASK) == int.from_bytes(pool, "big")
+        assert (raw & WEIGHT_MASK) >> 160 == 10000
+        assert (raw & INPUT_INDEX_MASK) >> 184 == 0
+        assert (raw & OUTPUT_INDEX_MASK) >> 176 == 1
+        assert not bool(raw & REVERSE_MASK)
 
     def test_encode_edge_raw_data_reverse(self):
 
-        _REVERSE_MASK = 0x8000000000000000000000000000000000000000000000000000000000000000
         pool = HexBytes("0x" + "FF" * 20)
         raw = encode_edge_raw_data(pool, reverse=True, weight_bps=5000, input_index=2, output_index=3)
 
-        assert bool(raw & _REVERSE_MASK)
-        _WEIGHT_MASK = 0x00000000000000000000FFFF0000000000000000000000000000000000000000
-        assert (raw & _WEIGHT_MASK) >> 160 == 5000
-        _INPUT_INDEX_MASK = 0x0000000000000000FF0000000000000000000000000000000000000000000000
-        _OUTPUT_INDEX_MASK = 0x000000000000000000FF00000000000000000000000000000000000000000000
-        assert (raw & _INPUT_INDEX_MASK) >> 184 == 2
-        assert (raw & _OUTPUT_INDEX_MASK) >> 176 == 3
+        assert bool(raw & REVERSE_MASK)
+        assert (raw & WEIGHT_MASK) >> 160 == 5000
+        assert (raw & INPUT_INDEX_MASK) >> 184 == 2
+        assert (raw & OUTPUT_INDEX_MASK) >> 176 == 3
 
     def test_encode_edge_raw_data_validation(self):
 

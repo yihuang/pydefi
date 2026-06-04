@@ -52,10 +52,6 @@ from tests.bench.encoders import (
     encode_uniswap,
     encode_universal_router,
 )
-from tests.bench.okx_router_abi import (
-    OKX_DEX_ROUTER_ETHEREUM,
-    OKX_TOKEN_APPROVE_ETHEREUM,
-)
 from tests.bench.sol_sources import AAVE_V3_ADAPTER_SOL, UNI_V2_ADAPTER_SOL, UNI_V3_ADAPTER_SOL
 from tests.live.anvil_helpers import (
     erc20_approve,
@@ -82,6 +78,8 @@ POOL_WETH_DAI_3000: Address = Address("0xC2e9F25Be6257c210d7Adf0D4Cd6E3E881ba25f
 POOL_WETH_USDT_500: Address = Address("0x11b815efB8f581194ae79006d24E0d814B7697F6")
 POOL_USDC_USDT_100: Address = Address("0x3416cF6C708Da44DB2624D63ea0AAef7113527C6")
 AAVE_V3_POOL_ETHEREUM: Address = Address("0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2")
+OKX_ROUTER: Address = Address("0x5E1f62Dac767b0491e3CE72469C217365D5B48cC")
+OKX_TOKEN_APPROVE: Address = Address("0x40aA958dd87FC8305b97f2BA922CDdCa374bcD7f")
 # Permit2 — same address on every chain.
 PERMIT2_ETHEREUM: str = "0x000000000022D473030F116dDEE9F6B43aC78BA3"
 
@@ -195,7 +193,7 @@ async def bench_ctx(bench_fork_w3: AsyncWeb3) -> dict:
 
     # Pre-approve everything so approval gas isn't counted in swap rows.
     await erc20_approve(w3, WETH.address, _TEST_USER, vm_address, _MAX_UINT)
-    await erc20_approve(w3, WETH.address, _TEST_USER, OKX_TOKEN_APPROVE_ETHEREUM, _MAX_UINT)
+    await erc20_approve(w3, WETH.address, _TEST_USER, OKX_TOKEN_APPROVE, _MAX_UINT)
     await erc20_approve(w3, WETH.address, _TEST_USER, UNISWAP_V3_ROUTER, _MAX_UINT)
     # UR pulls via Permit2: ERC20.approve(Permit2), then Permit2.approve(token, UR).
     permit2_addr = Address(PERMIT2_ETHEREUM)
@@ -215,7 +213,7 @@ async def bench_ctx(bench_fork_w3: AsyncWeb3) -> dict:
     # USDC for cross-protocol V3+V2 split (USDC→DAI). 6 decimals.
     await fund_usdc(w3, USDC.address, _TEST_USER, 10_000 * 10**6)
     await erc20_approve(w3, USDC.address, _TEST_USER, vm_address, _MAX_UINT)
-    await erc20_approve(w3, USDC.address, _TEST_USER, OKX_TOKEN_APPROVE_ETHEREUM, _MAX_UINT)
+    await erc20_approve(w3, USDC.address, _TEST_USER, OKX_TOKEN_APPROVE, _MAX_UINT)
 
     return {
         "w3": w3,
@@ -486,7 +484,7 @@ async def _run_v3_matrix(
                 amount_in=amount_in,
                 min_amount_out=0,
                 recipient=user,
-                router_address=OKX_DEX_ROUTER_ETHEREUM,
+                router_address=OKX_ROUTER,
                 v3_adapter_address=bench_ctx["uni_v3_adapter"],
                 deadline=_DEADLINE,
             ),
@@ -611,7 +609,7 @@ class TestAggregationGas:
                     amount_in=_AMOUNT_IN,
                     min_amount_out=0,
                     recipient=user,
-                    router_address=OKX_DEX_ROUTER_ETHEREUM,
+                    router_address=OKX_ROUTER,
                     v3_adapter_address=bench_ctx["uni_v3_adapter"],
                     aave_adapter_address=bench_ctx["aave_v3_adapter"],
                     aave_pool=AAVE_V3_POOL_ETHEREUM,
@@ -648,7 +646,7 @@ class TestAggregationGas:
                 amount_in=_AMOUNT_IN,
                 min_amount_out=min_out,
                 recipient=user,
-                router_address=OKX_DEX_ROUTER_ETHEREUM,
+                router_address=OKX_ROUTER,
                 v3_adapter_address=bench_ctx["uni_v3_adapter"],
                 deadline=_DEADLINE,
             )
@@ -749,7 +747,7 @@ class TestAggregationGas:
                     amount_in=usdc_in,
                     min_amount_out=0,
                     recipient=user,
-                    router_address=OKX_DEX_ROUTER_ETHEREUM,
+                    router_address=OKX_ROUTER,
                     v3_adapter_address=bench_ctx["uni_v3_adapter"],
                     v2_adapter_address=bench_ctx["uni_v2_adapter"],
                     deadline=_DEADLINE,
@@ -840,7 +838,7 @@ class TestAggregationGas:
                     amount_in=_AMOUNT_IN,
                     min_amount_out=0,
                     recipient=user,
-                    router_address=OKX_DEX_ROUTER_ETHEREUM,
+                    router_address=OKX_ROUTER,
                     v3_adapter_address=bench_ctx["uni_v3_adapter"],
                     deadline=_DEADLINE,
                 ),

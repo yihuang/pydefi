@@ -14,6 +14,17 @@ from eth_abi import encode as abi_encode
 from eth_contract import Contract
 
 from pydefi.abi.amm import UNISWAP_V3_ROUTER, ExactInputParams, ExactInputSingleParams
+from pydefi.abi.dex_aggregator import (
+    ADDRESS_MASK,
+    INPUT_INDEX_SHIFT,
+    OKX_DEX_ROUTER,
+    ONE_FOR_ZERO_MASK,
+    OUTPUT_INDEX_SHIFT,
+    REVERSE_MASK,
+    WEIGHT_SHIFT,
+    BaseRequest,
+    RouterPath,
+)
 from pydefi.abi.vm import DeFiVM
 from pydefi.amm.universal_router import UniversalRouter
 from pydefi.pathfinder.graph import PoolEdge, V3PoolEdge
@@ -28,17 +39,6 @@ from pydefi.types import (
 from pydefi.vm import Program
 from pydefi.vm.dag import _build_dag_actions
 from pydefi.vm.swap import _pool_to_swap_protocol
-from tests.bench.okx_router_abi import (
-    ADDRESS_MASK,
-    INPUT_INDEX_SHIFT,
-    OKX_DEX_ROUTER,
-    ONE_FOR_ZERO_MASK,
-    OUTPUT_INDEX_SHIFT,
-    REVERSE_MASK,
-    WEIGHT_SHIFT,
-    BaseRequest,
-    RouterPath,
-)
 
 # SwapRouter02.multicall — not in pydefi.abi.amm.UNISWAP_V3_ROUTER.
 _UNISWAP_V3_MULTICALL = Contract.from_abi(
