@@ -29,10 +29,13 @@ from pydefi.yields import (
 from pydefi.yields.router import (
     Protocol,
     Strategy,
+    YieldRoute,
     YieldStep,
     _morpho_markets,
+    _supply_steps,
     aave_v4_ref,
     morpho_id,
+    sign_route,
 )
 
 # ---------------------------------------------------------------------------
@@ -777,3 +780,114 @@ async def test_rebalance_tick_forwards_thresholds():
     assert kwargs["min_apy_gain_bps"] == 10
     assert kwargs["positions"] == positions
     assert kwargs["markets"] == [candidate]
+
+
+# ---------------------------------------------------------------------------
+# Gasless deposits via Permit2SupplyRouter (supply_with_permit2)
+# ---------------------------------------------------------------------------
+
+_GASLESS_ROUTER = Address("0x" + "DD" * 20)
+_COMET = Address("0x" + "CE" * 20)
+_USDC_ETH = Token(chain_id=ChainId.ETHEREUM, address=Address("0x" + "a0" * 20), symbol="USDC", decimals=6)
+_MOCK_W3 = cast(AsyncWeb3, object())  # never called; protocol client is mocked
+ANVIL_PK = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"  # Anvil account[0]
+
+
+def _mock_comet(comet_addr: Address):
+    """CompoundV3.from_chain → client with comet_address + build_supply_tx(amount, dst)."""
+    client = AsyncMock()
+    client.comet_address = comet_addr
+    client.build_supply_tx = lambda amount, dst=None: {
+        "to": "0x" + bytes(comet_addr).hex(),
+        "data": "0xdeadbeef",  # stand-in supply / supplyTo calldata
+        "value": "0",
+        "gas": "100000",
+    }
+    return patch("pydefi.yields.router.CompoundV3"), client
+
+
+@pytest.mark.asyncio
+async def test_supply_steps_gasless_emits_permit2_step():
+    """With a gasless_router, the supply leg is a single supply_with_permit2 step
+    binding the witness to (protocol, keccak(supply_data))."""
+    from eth_utils import keccak
+
+    market = _market("compound_v3", ChainId.ETHEREUM, _USDC_ETH)
+    comet_patch, client = _mock_comet(_COMET)
+    with comet_patch as Comet, patch("pydefi.yields.router.pick_nonce", AsyncMock(return_value=42)):
+        Comet.from_chain = lambda *a, **k: client  # from_chain is sync
+        steps = await _supply_steps(
+            market, _USER, _MOCK_W3, TokenAmount(_USDC_ETH, 1_000_000), gasless_router=_GASLESS_ROUTER
+        )
+
+    assert [s.kind for s in steps] == ["supply_with_permit2"]
+    req = steps[0].sign_request
+    assert req["protocol"] == _COMET
+    assert req["supply_data"] == bytes.fromhex("deadbeef")
+    td = req["typed_data"]
+    assert td["primaryType"] == "PermitWitnessTransferFrom"
+    assert td["domain"]["name"] == "Permit2"
+    assert td["message"]["witness"]["supplyDataHash"] == "0x" + keccak(bytes.fromhex("deadbeef")).hex()
+    assert steps[0].tx["to"].lower() == "0x" + "dd" * 20
+
+
+@pytest.mark.asyncio
+async def test_supply_steps_without_router_keeps_approve_supply():
+    """No gasless_router → the classic [approve, supply] pair."""
+    market = _market("compound_v3", ChainId.ETHEREUM, _USDC_ETH)
+    comet_patch, client = _mock_comet(_COMET)
+    with comet_patch as Comet:
+        Comet.from_chain = lambda *a, **k: client
+        steps = await _supply_steps(market, _USER, _MOCK_W3, TokenAmount(_USDC_ETH, 1_000_000))
+    assert [s.kind for s in steps] == ["approve", "supply"]
+
+
+def test_sign_route_builds_permit2_supply_tx():
+    """sign_route signs the witness and fills in the Permit2SupplyRouter.supply calldata."""
+    from pydefi.abi.vm import PERMIT2_SUPPLY_ROUTER
+
+    step = YieldStep(
+        "supply_with_permit2",
+        ChainId.ETHEREUM,
+        {"to": "0x" + "dd" * 20, "data": "0x", "value": "0", "gas": "350000"},
+        sign_request={
+            "router": _GASLESS_ROUTER,
+            "token": _USDC_ETH.address,
+            "amount": 1_000_000,
+            "nonce": 42,
+            "deadline": 9_999_999_999,
+            "owner": _USER,
+            "protocol": _COMET,
+            "supply_data": bytes.fromhex("deadbeef"),
+            "typed_data": __import__(
+                "pydefi.vm.permit2_supply", fromlist=["build_witness_typed_data"]
+            ).build_witness_typed_data(
+                _USDC_ETH.address,
+                1_000_000,
+                _GASLESS_ROUTER,
+                42,
+                9_999_999_999,
+                _COMET,
+                bytes.fromhex("deadbeef"),
+                ChainId.ETHEREUM,
+            ),
+        },
+    )
+    route = YieldRoute("supply_then_bridge", ChainId.ETHEREUM, (step,), "test")
+    signed = sign_route(route, ANVIL_PK)
+    tx = signed.steps[0].tx
+    assert signed.steps[0].sign_request is None
+    assert tx["to"].lower() == "0x" + "dd" * 20
+    assert tx["data"][2:10] == PERMIT2_SUPPLY_ROUTER.fns.supply.selector.hex()
+
+
+def test_build_transactions_raises_on_unsigned_permit2_step():
+    step = YieldStep(
+        "supply_with_permit2",
+        ChainId.ETHEREUM,
+        {"to": "0x", "data": "0x", "value": "0", "gas": "1"},
+        sign_request={"x": 1},
+    )
+    route = YieldRoute("supply_then_bridge", ChainId.ETHEREUM, (step,), "test")
+    with pytest.raises(RuntimeError, match="unsigned steps"):
+        route.build_transactions()
