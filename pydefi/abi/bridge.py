@@ -255,3 +255,41 @@ LUCID_LAYERZERO_ADAPTER = Contract.from_abi(
         "function paused() external view returns (bool)",
     ]
 )
+
+# ---------------------------------------------------------------------------
+# IBC v2 (Eureka) — ICS20Transfer + EurekaComposer
+# ---------------------------------------------------------------------------
+# Field order matches solidity-ibc-eureka/contracts/msgs/IICS20TransferMsgs.sol.
+
+ICS20_DEFAULT_PORT = "transfer"
+
+
+class ICS20SendTransferMsg(ABIStruct):
+    """``IICS20TransferMsgs.SendTransferMsg`` — input to ``sendTransfer`` /
+    ``sendTransferAndCompose``."""
+
+    denom: Annotated[str, "address"]
+    amount: Annotated[int, "uint256"]
+    receiver: Annotated[str, "string"]
+    sourceClient: Annotated[str, "string"]
+    destPort: Annotated[str, "string"]
+    timeoutTimestamp: Annotated[int, "uint64"]
+    memo: Annotated[str, "string"]
+
+
+ICS20_TRANSFER = Contract.from_abi(
+    ICS20SendTransferMsg.human_readable_abi()
+    + [
+        "function sendTransfer(ICS20SendTransferMsg msg_) external returns (uint64)",
+    ]
+)
+
+EUREKA_COMPOSER = Contract.from_abi(
+    ICS20SendTransferMsg.human_readable_abi()
+    + [
+        "function sendTransferAndCompose(ICS20SendTransferMsg msg_, bytes program) external returns (uint64)",
+    ]
+)
+
+# ERC-165 ``IIBCSenderCallbacks`` id (onAckPacket ^ onTimeoutPacket selectors).
+IIBC_SENDER_CALLBACKS_INTERFACE_ID: bytes = bytes.fromhex("d3ce6f1b")

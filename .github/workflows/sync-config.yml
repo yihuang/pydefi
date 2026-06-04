@@ -29,6 +29,7 @@ jobs:
       - name: Open PR on drift
         uses: peter-evans/create-pull-request@v7
         with:
+          token: ${{ secrets.PAT }}
           commit-message: "Problem: bundled config snapshots out of sync with upstream"
           title: "Problem: bundled config snapshots out of sync with upstream"
           body: |
