@@ -85,7 +85,7 @@ class YieldMarket:
 
 @dataclass(frozen=True)
 class YieldStep:
-    """``tx`` is the standard pydefi tx-dict ``{to, data, value, gas}``.
+    """``tx`` is the standard pydefi tx-dict ``{to, data, value}`` (some builders also include ``gas``).
 
     For ``kind == "supply_with_permit2"`` the tx is a placeholder until
     :func:`sign_route` signs the Permit2 witness (``sign_request`` holds the

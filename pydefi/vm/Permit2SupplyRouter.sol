@@ -62,8 +62,11 @@ contract Permit2SupplyRouter {
     error ApproveFailed();
     error TransferFailed();
 
-    /// @notice One-time max allowance for ``protocol`` to pull ``token`` (router holds no idle balance).
+    /// @notice Max-approve ``protocol`` to pull ``token`` (router holds no idle balance).
+    ///         Idempotent: resets to 0 first so re-priming works for USDT-style tokens
+    ///         that forbid a non-zero→non-zero allowance change.
     function prime(address token, address protocol) external {
+        _safeApprove(token, protocol, 0);
         _safeApprove(token, protocol, type(uint256).max);
     }
 
