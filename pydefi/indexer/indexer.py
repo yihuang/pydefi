@@ -831,8 +831,9 @@ class PoolIndexer:
         """
         from eth_contract.erc20 import ERC20
 
+        to = Web3.to_checksum_address(token_address)
         try:
-            symbol: str = await ERC20.fns.symbol().call(self.w3, to=token_address)
+            symbol: str = await ERC20.fns.symbol().call(self.w3, to=to)
         except (ValueError, TypeError, OverflowError):
             # Non-standard token: missing or malformed symbol() response.
             symbol = ""
@@ -840,7 +841,7 @@ class PoolIndexer:
             logger.warning("Unexpected error fetching symbol for %s: %s", token_address, exc)
             symbol = ""
         try:
-            decimals: int = await ERC20.fns.decimals().call(self.w3, to=token_address)
+            decimals: int = await ERC20.fns.decimals().call(self.w3, to=to)
         except (ValueError, TypeError, OverflowError):
             # Non-standard token: missing or malformed decimals() response.
             decimals = 18
