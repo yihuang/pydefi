@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Callable, ClassVar, Iterator
 
-from pydefi.types import Address, BasePool, Token
+from pydefi.types import ZERO_ADDRESS, Address, BasePool, Token
 
 
 @dataclass
@@ -341,6 +341,27 @@ class V3PoolEdge(PoolEdge):
         if depth <= 0:
             return Decimal("NaN")
         return Decimal(amount_in) / Decimal(depth + amount_in)
+
+
+@dataclass
+class V4PoolEdge(V3PoolEdge):
+    """A directed edge for a Uniswap V4 pool.
+
+    V4 math is identical to V3 concentrated liquidity, so this subclass
+    inherits :meth:`~V3PoolEdge.amount_out` and
+    :meth:`~V3PoolEdge.estimate_price_impact` unchanged. ``pool_address`` is
+    the singleton ``PoolManager`` (shared by every V4 pool on a chain); pools
+    are distinguished by the ``PoolKey`` fields below.
+
+    Attributes:
+        tick_spacing: Pool tick spacing (e.g. 10 / 60 / 200).
+        hooks: Hooks contract address, or the zero address for no hooks.
+        pool_id: keccak256 of the PoolKey, hex. Optional (display/indexing).
+    """
+
+    tick_spacing: int = 0
+    hooks: Address = ZERO_ADDRESS
+    pool_id: str = ""
 
 
 class PoolGraph:

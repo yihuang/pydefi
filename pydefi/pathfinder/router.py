@@ -18,7 +18,18 @@ from decimal import Decimal
 
 from pydefi.exceptions import NoRouteFoundError
 from pydefi.pathfinder.graph import PoolEdge, PoolGraph
-from pydefi.types import MAX_BPS, Address, RouteDAG, RouteSplit, RouteSwap, SwapRoute, SwapStep, Token, TokenAmount
+from pydefi.types import (
+    MAX_BPS,
+    ZERO_ADDRESS,
+    Address,
+    RouteDAG,
+    RouteSplit,
+    RouteSwap,
+    SwapRoute,
+    SwapStep,
+    Token,
+    TokenAmount,
+)
 
 
 class Router:
@@ -169,6 +180,8 @@ class Router:
                 pool_address=edge.pool_address,
                 protocol=edge.protocol,
                 fee=edge.fee_bps,
+                tick_spacing=getattr(edge, "tick_spacing", 0),
+                hooks=getattr(edge, "hooks", ZERO_ADDRESS),
             )
             for edge in final_path
         ]
@@ -221,6 +234,8 @@ class Router:
                     pool_address=edge.pool_address,
                     protocol=edge.protocol,
                     fee=edge.fee_bps,
+                    tick_spacing=getattr(edge, "tick_spacing", 0),
+                    hooks=getattr(edge, "hooks", ZERO_ADDRESS),
                 )
                 for edge in path
             ],
@@ -300,6 +315,8 @@ class Router:
                         pool_address=e.pool_address,
                         protocol=e.protocol,
                         fee=e.fee_bps,
+                        tick_spacing=getattr(e, "tick_spacing", 0),
+                        hooks=getattr(e, "hooks", ZERO_ADDRESS),
                     )
                     for e in path
                 ]
@@ -426,8 +443,15 @@ class Router:
         if max_splits < 1:
             raise ValueError("max_splits must be >= 1")
         routes = self._find_top_routes(amount_in, token_out, top_n=max_splits, max_hops=max_hops)
-        edge_index: dict[tuple[Address, Address], PoolEdge] = {
-            (edge.pool_address, edge.token_in.address): edge for edge in self.graph
+        edge_index: dict[tuple[Address, Address, int, int, Address], PoolEdge] = {
+            (
+                edge.pool_address,
+                edge.token_in.address,
+                edge.fee_bps,
+                getattr(edge, "tick_spacing", 0),
+                getattr(edge, "hooks", ZERO_ADDRESS),
+            ): edge
+            for edge in self.graph
         }
         legs = self._best_n_way_split(routes, amount_in, edge_index, step_bps)
 
@@ -538,6 +562,8 @@ class Router:
                     pool_address=edge.pool_address,
                     protocol=edge.protocol,
                     fee=edge.fee_bps,
+                    tick_spacing=getattr(edge, "tick_spacing", 0),
+                    hooks=getattr(edge, "hooks", ZERO_ADDRESS),
                 )
                 for edge in final_path
             ]
@@ -555,12 +581,12 @@ class Router:
         self,
         route: SwapRoute,
         raw_amount: int,
-        edge_index: dict[tuple[Address, Address], PoolEdge],
+        edge_index: dict[tuple[Address, Address, int, int, Address], PoolEdge],
     ) -> int:
         """Walk each step of *route* at *raw_amount* and return the output amount."""
         current = raw_amount
         for step in route.steps:
-            key = (step.pool_address, step.token_in.address)
+            key = (step.pool_address, step.token_in.address, step.fee, step.tick_spacing, step.hooks)
             edge = edge_index.get(key)
             if edge is None:
                 return 0
@@ -573,7 +599,7 @@ class Router:
         self,
         routes: list[SwapRoute],
         amount_in: TokenAmount,
-        edge_index: dict[tuple[Address, Address], PoolEdge],
+        edge_index: dict[tuple[Address, Address, int, int, Address], PoolEdge],
         step_bps: int,
     ) -> list[tuple[int, list[PoolEdge]]]:
         """Return the best N-way weight allocation across *routes* at *step_bps* granularity.
@@ -600,7 +626,7 @@ class Router:
         route_edges: list[list[PoolEdge]] = []
         for route in routes:
             edges = [
-                edge_index[(step.pool_address, step.token_in.address)]
+                edge_index[(step.pool_address, step.token_in.address, step.fee, step.tick_spacing, step.hooks)]
                 for step in route.steps
                 if step.pool_address is not None
             ]
