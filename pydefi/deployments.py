@@ -103,7 +103,10 @@ _CONTRACTS: dict[str, dict[int, str]] = {
         _SEP: "0x0227628f3F023bb0B980b67D528571c95c6DaC1c",
     },
     # Uniswap V4 / Universal Router
+    # https://docs.uniswap.org/contracts/v4/deployments
     "UNISWAP_V4_POOL_MANAGER": {_ETH: "0x000000000004444c5dc75cB358380D2e3dE08A90"},
+    "UNISWAP_V4_STATE_VIEW": {_ETH: "0x7fFE42C4a5DEeA5b0feC41C94C136Cf115597227"},
+    "UNISWAP_V4_QUOTER": {_ETH: "0x52F0E24D1c21C8A0cB1e5a5dD6198556BD9E1203"},
     "UNIVERSAL_ROUTER": {_ETH: "0x66a9893cC07D91D95644AEDD05D03f95e1dBA8Af"},
     # Well-known Uniswap V3 pools
     "POOL_WETH_USDC_500": {_ETH: "0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640"},  # 0.05%

@@ -5,6 +5,7 @@ from pydefi.amm.curve import CurvePool
 from pydefi.amm.raydium import Raydium
 from pydefi.amm.uniswap_v2 import UniswapV2
 from pydefi.amm.uniswap_v3 import UniswapV3
+from pydefi.amm.uniswap_v4 import UniswapV4
 from pydefi.amm.universal_router import (
     RouterCommand,
     UniversalRouter,
@@ -19,6 +20,7 @@ __all__ = [
     "BaseSolanaAMM",
     "UniswapV2",
     "UniswapV3",
+    "UniswapV4",
     "CurvePool",
     "Raydium",
     "RouterCommand",

@@ -39,6 +39,8 @@ UNISWAP_V3_ROUTER: Address = get_address("UNISWAP_V3_ROUTER", ChainId.ETHEREUM)
 UNISWAP_V3_QUOTER: Address = get_address("UNISWAP_V3_QUOTER", ChainId.ETHEREUM)
 UNISWAP_V3_FACTORY: Address = get_address("UNISWAP_V3_FACTORY", ChainId.ETHEREUM)
 UNISWAP_V4_POOL_MANAGER: Address = get_address("UNISWAP_V4_POOL_MANAGER", ChainId.ETHEREUM)
+UNISWAP_V4_STATE_VIEW: Address = get_address("UNISWAP_V4_STATE_VIEW", ChainId.ETHEREUM)
+UNISWAP_V4_QUOTER: Address = get_address("UNISWAP_V4_QUOTER", ChainId.ETHEREUM)
 UNIVERSAL_ROUTER: Address = get_address("UNIVERSAL_ROUTER", ChainId.ETHEREUM)
 
 # ── Well-known Uniswap V3 pools ───────────────────────────────────────────────
