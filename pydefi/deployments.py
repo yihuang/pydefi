@@ -98,15 +98,10 @@ _CONTRACTS: dict[str, dict[int, str]] = {
         _ETH: "0x61fFE014bA17989E743c5F6cB21bF9697530B21e",
         _SEP: "0xEd1f6473345F45b75F8179591dd5bA1888cf2FB3",
     },  # QuoterV2
-    "UNISWAP_V3_FACTORY": {
-        _ETH: "0x1F98431c8aD98523631AE4a59f267346ea31F984",
-        _SEP: "0x0227628f3F023bb0B980b67D528571c95c6DaC1c",
-    },
-    # Uniswap V4 / Universal Router
-    # https://docs.uniswap.org/contracts/v4/deployments
-    "UNISWAP_V4_POOL_MANAGER": {_ETH: "0x000000000004444c5dc75cB358380D2e3dE08A90"},
-    "UNISWAP_V4_STATE_VIEW": {_ETH: "0x7fFE42C4a5DEeA5b0feC41C94C136Cf115597227"},
-    "UNISWAP_V4_QUOTER": {_ETH: "0x52F0E24D1c21C8A0cB1e5a5dD6198556BD9E1203"},
+    # UNISWAP_V3_FACTORY and UNISWAP_V4_POOL_MANAGER / _STATE_VIEW / _QUOTER are
+    # generated per-chain from @uniswap/sdk-core into uniswap.json (see
+    # update.sh) and merged below.
+    # Universal Router is not in sdk-core, so it stays pinned here.
     "UNIVERSAL_ROUTER": {_ETH: "0x66a9893cC07D91D95644AEDD05D03f95e1dBA8Af"},
     # Well-known Uniswap V3 pools
     "POOL_WETH_USDC_500": {_ETH: "0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640"},  # 0.05%
@@ -144,8 +139,8 @@ _CONTRACTS: dict[str, dict[int, str]] = {
 def _merge_generated(contracts: dict[str, dict[int, str]], filename: str) -> None:
     """Merge a generated address file (config/<filename>) into *contracts*.
 
-    aave.json, aave_v4.json, compound.json and morpho.json are produced from
-    upstream registries by config/update.sh. Regenerate with
+    aave.json, aave_v4.json, compound.json, morpho.json and uniswap.json are
+    produced from upstream registries by config/update.sh. Regenerate with
     ``bash config/update.sh`` if a file is missing/empty/corrupt."""
     path = Path(__file__).resolve().parent / "config" / filename
     hint = "run config/update.sh to (re)generate it"
@@ -166,6 +161,7 @@ _merge_generated(_CONTRACTS, "aave.json")
 _merge_generated(_CONTRACTS, "aave_v4.json")
 _merge_generated(_CONTRACTS, "compound.json")
 _merge_generated(_CONTRACTS, "morpho.json")
+_merge_generated(_CONTRACTS, "uniswap.json")
 
 
 def get_address(name: str, chain_id: int) -> Address:

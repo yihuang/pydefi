@@ -66,3 +66,26 @@ deno eval 'import { addressesRegistry } from "npm:@morpho-org/blue-sdk"; import 
                                   | map({(.key): .value.adaptiveCurveIrm}) | add)
     }' \
   > morpho.json
+
+# Uniswap V3 factory + V4 PoolManager / StateView / Quoter, per chain (uniswap.json).
+# Source: @uniswap/sdk-core's CHAIN_TO_ADDRESSES_MAP. Only ABI-compatible fields are emitted;
+# the V3 router/quoter and UniversalRouter stay pinned in deployments.py.
+echo "Fetching Uniswap V3/V4 addresses"
+deno eval '
+import { CHAIN_TO_ADDRESSES_MAP as M } from "https://esm.sh/@uniswap/sdk-core@7";
+const FIELDS = {
+  UNISWAP_V3_FACTORY: "v3CoreFactoryAddress",
+  UNISWAP_V4_POOL_MANAGER: "v4PoolManagerAddress",
+  UNISWAP_V4_STATE_VIEW: "v4StateView",
+  UNISWAP_V4_QUOTER: "v4QuoterAddress",
+};
+const out = {};
+for (const [name, field] of Object.entries(FIELDS)) {
+  const m = {};
+  for (const [cid, a] of Object.entries(M)) if (a[field]) m[cid] = a[field];
+  out[name] = m;
+}
+console.log(JSON.stringify(out));
+' \
+  | jq -S '.' \
+  > uniswap.json
