@@ -16,7 +16,6 @@ from __future__ import annotations
 import secrets
 from typing import Any
 
-from eth_account.messages import encode_typed_data
 from eth_contract import Contract
 from eth_utils import keccak
 
@@ -87,14 +86,6 @@ def build_witness_typed_data(
             "witness": {"protocol": "0x" + bytes(protocol).hex(), "supplyDataHash": "0x" + keccak(supply_data).hex()},
         },
     }
-
-
-def sign_witness(typed_data: dict[str, Any], private_key: str) -> bytes:
-    """Sign the Permit2 witness typed-data; returns the 65-byte signature."""
-    from eth_account import Account
-
-    signed = Account.from_key(private_key).sign_message(encode_typed_data(full_message=typed_data))
-    return bytes(signed.signature)
 
 
 def build_supply_tx(

@@ -24,13 +24,21 @@ from pydefi.lending.aave_v4 import AaveV4
 from pydefi.lending.compound_v3 import CompoundV3
 from pydefi.lending.morpho import MarketParams, MorphoBlue
 from pydefi.types import Address, ChainId, Token, TokenAmount
-from pydefi.vm.permit2_supply import build_supply_tx, build_witness_typed_data, pick_nonce, sign_witness
+from pydefi.vm.eip712 import sign_typed_data
+from pydefi.vm.eip7702_supply import (
+    batch_nonce,
+    build_batch_typed_data,
+    build_execute_tx,
+    is_delegated_to,
+    sign_authorization,
+)
+from pydefi.vm.permit2_supply import build_supply_tx, build_witness_typed_data, pick_nonce
 
 logger = logging.getLogger(__name__)
 
 Protocol = Literal["aave_v3", "compound_v3", "morpho", "aave_v4"]
 Strategy = Literal["withdraw_then_supply", "supply_then_bridge", "bridge_then_supply"]
-StepKind = Literal["approve", "supply", "supply_with_permit2", "withdraw", "bridge"]
+StepKind = Literal["approve", "supply", "supply_with_permit2", "supply_with_7702", "withdraw", "bridge"]
 
 # Generous; fits quirky tokens whose approve consumes more than the EIP-20 minimum.
 _APPROVE_GAS = 100_000
@@ -194,7 +202,12 @@ async def _withdraw_tx(market: YieldMarket, user: Address, w3: AsyncWeb3, amount
 
 
 async def _supply_steps(
-    market: YieldMarket, user: Address, w3: AsyncWeb3, amount: TokenAmount, gasless_router: Address | None = None
+    market: YieldMarket,
+    user: Address,
+    w3: AsyncWeb3,
+    amount: TokenAmount,
+    gasless_router: Address | None = None,
+    delegate: Address | None = None,
 ) -> list[YieldStep]:
     """``[approve, supply]`` — approve the market's spender, then supply.
 
@@ -203,6 +216,13 @@ async def _supply_steps(
     singleton, or the Aave V4 ``Spoke``. Each comes off the constructed
     client, so the approval always targets the exact contract the supply
     call hits.
+
+    When *delegate* (a deployed :sol:`EIP7702BatchExecutor`) is given, this
+    collapses to one ``supply_with_7702`` step: *user* delegates its EOA to the
+    executor and signs an EIP-712 batch ``[approve, supply]`` that a sponsor runs in
+    the EOA's own context, so the plain ``supply_tx`` (crediting ``msg.sender``)
+    works for every protocol. Finalize with :func:`sign_route`. Takes precedence over
+    *gasless_router*.
 
     When *gasless_router* (a deployed :sol:`Permit2SupplyRouter`) is given, this
     collapses to one ``supply_with_permit2`` step: the router pulls the token via a
@@ -232,6 +252,24 @@ async def _supply_steps(
     else:
         raise ValueError(f"unknown protocol: {market.protocol!r}")
 
+    if delegate is not None:
+        # 7702: the EOA is msg.sender, so the plain supply_tx credits the user —
+        # no supplyTo / onBehalfOf indirection. Batch a fresh approve before it.
+        approve_tx = build_approve_tx(amount.token, spender, amount.amount)
+        deadline = int(time.time()) + 3600
+        sign_req = {
+            "delegate": delegate,
+            "owner": user,
+            "chain_id": market.chain_id,
+            "calls": [approve_tx, supply_tx],
+            "nonce": await batch_nonce(w3, user),
+            "deadline": deadline,
+            "auth_nonce": await w3.eth.get_transaction_count(bytes(user)),
+            "needs_auth": not await is_delegated_to(w3, user, delegate),
+        }
+        placeholder = {"to": "0x" + bytes(user).hex(), "data": "0x", "value": "0", "gas": "400000"}
+        return [YieldStep("supply_with_7702", market.chain_id, placeholder, sign_request=sign_req)]
+
     if gasless_router is not None:
         supply_data = bytes.fromhex(gasless_supply_tx["data"][2:])
         nonce, deadline = await pick_nonce(w3, user), int(time.time()) + 3600
@@ -258,9 +296,22 @@ async def _supply_steps(
     ]
 
 
+def _sign_7702_step(req: dict[str, Any], private_key: str) -> dict[str, Any]:
+    """Sign the EIP-712 batch and (on the first deposit) the 7702 authorization,
+    then encode the ``execute`` tx targeting the owner's delegated EOA."""
+    typed_data = build_batch_typed_data(req["calls"], req["nonce"], req["deadline"], req["owner"], req["chain_id"])
+    sig = sign_typed_data(typed_data, private_key)
+    auth = (
+        sign_authorization(private_key, req["delegate"], req["chain_id"], req["auth_nonce"])
+        if req["needs_auth"]
+        else None
+    )
+    return build_execute_tx(req["owner"], req["calls"], req["nonce"], req["deadline"], sig, authorization=auth)
+
+
 def sign_route(route: YieldRoute, private_key: str) -> YieldRoute:
-    """Sign pending ``supply_with_permit2`` steps and return a route with
-    broadcast-ready txs. Steps without ``sign_request`` pass through."""
+    """Sign pending ``supply_with_permit2`` / ``supply_with_7702`` steps and return
+    a route with broadcast-ready txs. Steps without ``sign_request`` pass through."""
 
     signed: list[YieldStep] = []
     for step in route.steps:
@@ -268,18 +319,21 @@ def sign_route(route: YieldRoute, private_key: str) -> YieldRoute:
             signed.append(step)
             continue
         req = step.sign_request
-        sig = sign_witness(req["typed_data"], private_key)
-        tx = build_supply_tx(
-            req["router"],
-            req["token"],
-            req["amount"],
-            req["nonce"],
-            req["deadline"],
-            req["owner"],
-            sig,
-            req["protocol"],
-            req["supply_data"],
-        )
+        if step.kind == "supply_with_7702":
+            tx = _sign_7702_step(req, private_key)
+        else:
+            sig = sign_typed_data(req["typed_data"], private_key)
+            tx = build_supply_tx(
+                req["router"],
+                req["token"],
+                req["amount"],
+                req["nonce"],
+                req["deadline"],
+                req["owner"],
+                sig,
+                req["protocol"],
+                req["supply_data"],
+            )
         signed.append(dataclasses.replace(step, tx=tx, sign_request=None))
     return dataclasses.replace(route, steps=tuple(signed))
 
@@ -525,6 +579,7 @@ async def _withdraw_then_supply(
     source_market: YieldMarket | None,
     bridge: LucidBridge | None,
     gasless_router: Address | None = None,
+    delegate: Address | None = None,
 ) -> YieldRoute:
     if source_market is None:
         raise ValueError("withdraw_then_supply requires source_market")
@@ -561,7 +616,9 @@ async def _withdraw_then_supply(
         YieldStep("withdraw", chain_id, await _withdraw_tx(source_market, user, w3, amount_in)),
     ]
     if same_chain:
-        steps += await _supply_steps(target_market, user, w3, amount_in, gasless_router=gasless_router)
+        steps += await _supply_steps(
+            target_market, user, w3, amount_in, gasless_router=gasless_router, delegate=delegate
+        )
     else:
         assert bridge is not None  # narrowed above
         steps += await _bridge_steps(bridge, user, amount_in, target_market.token)
@@ -583,6 +640,7 @@ async def _supply_then_bridge(
     target_market: YieldMarket,
     target_chain: int | None,
     gasless_router: Address | None = None,
+    delegate: Address | None = None,
 ) -> YieldRoute:
     if target_chain is None:
         raise ValueError(
@@ -599,7 +657,9 @@ async def _supply_then_bridge(
         amount_in.token, target_market.token, "supply_then_bridge: amount_in.token must match target_market.token"
     )
 
-    steps = await _supply_steps(target_market, user, w3s[chain_id], amount_in, gasless_router=gasless_router)
+    steps = await _supply_steps(
+        target_market, user, w3s[chain_id], amount_in, gasless_router=gasless_router, delegate=delegate
+    )
     return YieldRoute(
         strategy="supply_then_bridge",
         source_chain=chain_id,
@@ -651,13 +711,16 @@ async def build_yield_route(
     bridge: LucidBridge | None = None,
     target_chain: int | None = None,
     gasless_router: Address | None = None,
+    delegate: Address | None = None,
 ) -> YieldRoute:
     """Source-chain steps only; cross-chain follow-ups are deferred to a
     second invocation after the bridge settles.
 
-    Pass *gasless_router* (a deployed :sol:`Permit2SupplyRouter`) to make the
-    supply leg a single gasless ``supply_with_permit2`` step; finalize the route
-    with :func:`sign_route` before broadcast.
+    Pass *delegate* (a deployed :sol:`EIP7702BatchExecutor`) to make the supply leg
+    a single gasless ``supply_with_7702`` step, or *gasless_router* (a deployed
+    :sol:`Permit2SupplyRouter`) for a ``supply_with_permit2`` step; either way,
+    finalize the route with :func:`sign_route` before broadcast. *delegate* takes
+    precedence if both are given.
 
     * ``withdraw_then_supply`` — rebalance; needs ``source_market``.
       Same-chain produces ``[withdraw, approve, supply]``. Cross-chain
@@ -671,11 +734,11 @@ async def build_yield_route(
     """
     if strategy == "withdraw_then_supply":
         return await _withdraw_then_supply(
-            user, amount_in, w3s, target_market, source_market, bridge, gasless_router=gasless_router
+            user, amount_in, w3s, target_market, source_market, bridge, gasless_router=gasless_router, delegate=delegate
         )
     if strategy == "supply_then_bridge":
         return await _supply_then_bridge(
-            user, amount_in, w3s, target_market, target_chain, gasless_router=gasless_router
+            user, amount_in, w3s, target_market, target_chain, gasless_router=gasless_router, delegate=delegate
         )
     if strategy == "bridge_then_supply":
         return await _bridge_then_supply(user, amount_in, target_market, bridge)

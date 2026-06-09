@@ -12,7 +12,6 @@ break Permit2's ECDSA path. Run with::
 
 from __future__ import annotations
 
-from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -20,39 +19,31 @@ from eth_account import Account
 from web3 import Web3
 from web3.exceptions import ContractLogicError
 
-from pydefi.deployments import get_address
 from pydefi.lending import CompoundV3, MorphoBlue
 from pydefi.types import Address, ChainId, TokenAmount
+from pydefi.vm.eip712 import sign_typed_data
 from pydefi.vm.permit2_supply import (
     PERMIT2,
     build_prime_tx,
     build_supply_tx,
     build_witness_typed_data,
     random_nonce,
-    sign_witness,
 )
 from pydefi.yields import YieldMarket, build_yield_route, sign_route
 from tests.addrs import USDC
 from tests.live.anvil_helpers import erc20_approve, fund_usdc, impersonate, send_tx, set_balance
+from tests.live.gasless_common import (
+    AMT,
+    COMET_USDC,
+    FUT,
+    MORPHO_CBBTC_USDC,
+    assert_compound_credited,
+    assert_morpho_credited,
+    market,
+)
 from tests.live.sol_utils import compile_sol_file, deploy
 
 ROUTER_SOL = Path(__file__).resolve().parents[2] / "pydefi" / "vm" / "Permit2SupplyRouter.sol"
-COMET_USDC = get_address("COMPOUND_V3_USDC", ChainId.ETHEREUM)
-MORPHO_CBBTC_USDC = bytes.fromhex("64d65c9a2d91c36d56fbc42d69e979335320169b3df63bf92789e2c8883fcc64")
-AMT = 1_000 * 10**6
-FUT = 9_999_999_999
-
-
-def _market(protocol: str, market_id: str) -> YieldMarket:
-    return YieldMarket(
-        protocol=protocol,
-        chain_id=ChainId.ETHEREUM,
-        token=USDC,
-        supply_apy=Decimal("0.05"),
-        utilization=Decimal("0.7"),
-        available_liquidity=TokenAmount(USDC, 10**18),
-        market_id=market_id,
-    )
 
 
 async def _setup(fork_w3, protocol_addr: Address):
@@ -72,14 +63,14 @@ async def _setup(fork_w3, protocol_addr: Address):
     return deployer, router, owner_acct, owner
 
 
-async def _gasless_deposit(fork_w3, deployer, router, owner_acct, owner, market: YieldMarket):
+async def _gasless_deposit(fork_w3, deployer, router, owner_acct, owner, target: YieldMarket):
     """build_yield_route → sign_route → broadcast (relayer submits; owner pays no gas)."""
     route = await build_yield_route(
         "supply_then_bridge",
         user=owner,
         amount_in=TokenAmount(USDC, AMT),
         w3s={ChainId.ETHEREUM: fork_w3},
-        target_market=market,
+        target_market=target,
         target_chain=ChainId.KITE,
         gasless_router=router,
     )
@@ -93,22 +84,18 @@ async def _gasless_deposit(fork_w3, deployer, router, owner_acct, owner, market:
 class TestPermit2SupplyRouterFork:
     async def test_compound_via_build_yield_route(self, fork_w3):
         ctx = await _setup(fork_w3, COMET_USDC)
-        owner = ctx[3]
-        comet = CompoundV3(w3=fork_w3, chain_id=ChainId.ETHEREUM, comet_address=COMET_USDC)
-        before = (await comet.get_user_position(owner)).base_supply.amount
-        await _gasless_deposit(fork_w3, *ctx, _market("compound_v3", "compound_v3:1:USDC"))
-        after = (await comet.get_user_position(owner)).base_supply.amount
-        assert after - before >= AMT - 100
+        await assert_compound_credited(
+            fork_w3, ctx[3], lambda: _gasless_deposit(fork_w3, *ctx, market("compound_v3", "compound_v3:1:USDC"))
+        )
 
     async def test_morpho_blue_via_build_yield_route(self, fork_w3):
         morpho = MorphoBlue.from_chain(fork_w3, ChainId.ETHEREUM)
         ctx = await _setup(fork_w3, morpho.morpho_address)
-        owner = ctx[3]
-        params = await morpho.get_market_params(MORPHO_CBBTC_USDC)
-        before = (await morpho.get_position(owner, params)).supply_assets.amount
-        await _gasless_deposit(fork_w3, *ctx, _market("morpho", "morpho:1:0x" + MORPHO_CBBTC_USDC.hex()))
-        after = (await morpho.get_position(owner, params)).supply_assets.amount
-        assert after - before >= AMT - 100
+        await assert_morpho_credited(
+            fork_w3,
+            ctx[3],
+            lambda: _gasless_deposit(fork_w3, *ctx, market("morpho", "morpho:1:0x" + MORPHO_CBBTC_USDC.hex())),
+        )
 
     async def test_tampered_supply_data_reverts(self, fork_w3):
         """Signing for one supplyData but submitting another → witness mismatch →
@@ -120,7 +107,7 @@ class TestPermit2SupplyRouterFork:
 
         nonce = random_nonce()
         td = build_witness_typed_data(USDC.address, AMT, router, nonce, FUT, COMET_USDC, good, ChainId.ETHEREUM)
-        sig = sign_witness(td, owner_acct.key.hex())
+        sig = sign_typed_data(td, owner_acct.key.hex())
         tx = build_supply_tx(router, USDC.address, AMT, nonce, FUT, owner, sig, COMET_USDC, evil)
         with pytest.raises(ContractLogicError):
             await fork_w3.eth.call(
