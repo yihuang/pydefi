@@ -80,6 +80,9 @@ contract Permit2SupplyRouter {
         bytes calldata supplyData
     ) external {
         bytes32 witness = keccak256(abi.encode(WITNESS_TYPEHASH, protocol, keccak256(supplyData)));
+        // Snapshot before the pull so the refund covers only THIS operation's
+        // unspent input — never tokens another caller stranded on the router.
+        uint256 pre = IERC20(permit.permitted.token).balanceOf(address(this));
         PERMIT2.permitWitnessTransferFrom(
             permit,
             ISignatureTransfer.SignatureTransferDetails({to: address(this), requestedAmount: permit.permitted.amount}),
@@ -90,9 +93,9 @@ contract Permit2SupplyRouter {
         );
         (bool ok,) = protocol.call(supplyData);
         if (!ok) revert SupplyFailed();
-        uint256 leftover = IERC20(permit.permitted.token).balanceOf(address(this));
-        if (leftover > 0) {
-            _safeTransfer(permit.permitted.token, owner, leftover);
+        uint256 post = IERC20(permit.permitted.token).balanceOf(address(this));
+        if (post > pre) {
+            _safeTransfer(permit.permitted.token, owner, post - pre);
         }
     }
 
