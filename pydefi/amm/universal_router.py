@@ -32,6 +32,7 @@ from enum import IntEnum
 from eth_abi import encode as abi_encode
 
 from pydefi.amm.uniswap_v3 import UniswapV3
+from pydefi.amm.v4_pool_key import sort_currencies
 from pydefi.types import Address, SwapTransaction, Token, TokenAmount
 
 # ---------------------------------------------------------------------------
@@ -715,21 +716,14 @@ class UniversalRouter:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _sort_v4_currencies(addr_a: str, addr_b: str) -> tuple[str, str]:
+    def _sort_v4_currencies(addr_a: Address, addr_b: Address) -> tuple[Address, Address]:
         """Return *(currency0, currency1)* with the lower address first.
 
         Uniswap V4 ``PoolKey`` requires ``currency0 < currency1`` by address
-        value.  The native currency (ETH) is represented as ``address(0)``
-        and is always ``currency0``.
-
-        Args:
-            addr_a: First token address (checksummed or lowercase hex).
-            addr_b: Second token address.
-
-        Returns:
-            A ``(currency0, currency1)`` tuple sorted in ascending address order.
+        value; native ETH (``address(0)``) is always ``currency0``. Delegates
+        to :func:`pydefi.amm.v4_pool_key.sort_currencies`.
         """
-        return (addr_a, addr_b) if addr_a.lower() < addr_b.lower() else (addr_b, addr_a)
+        return sort_currencies(addr_a, addr_b)
 
     @staticmethod
     def encode_v4_swap_actions(
@@ -762,8 +756,8 @@ class UniversalRouter:
 
     @staticmethod
     def encode_v4_exact_in_single_params(
-        currency0: str,
-        currency1: str,
+        currency0: Address,
+        currency1: Address,
         fee: int,
         tick_spacing: int,
         hooks: str,

@@ -13,12 +13,11 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from eth_abi import encode as abi_encode
-from eth_utils import keccak
 from web3 import AsyncWeb3
 
 from pydefi.abi.amm import UNISWAP_V4_QUOTER, UNISWAP_V4_STATE_VIEW
 from pydefi.amm.base import BaseAMM
+from pydefi.amm.v4_pool_key import pool_id, sort_currencies
 from pydefi.deployments import get_address
 from pydefi.exceptions import InsufficientLiquidityError
 from pydefi.pathfinder.graph import V4PoolEdge
@@ -69,31 +68,17 @@ class UniswapV4(BaseAMM):
         return self._protocol_name
 
     # ------------------------------------------------------------------
-    # PoolKey helpers
+    # PoolKey helpers (shared with the Universal Router encoder)
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def sort_currencies(a: Address, b: Address) -> tuple[Address, Address]:
-        """Return ``(currency0, currency1)`` ordered by address, as V4 requires."""
-        return (a, b) if int.from_bytes(bytes(a), "big") < int.from_bytes(bytes(b), "big") else (b, a)
-
-    @classmethod
-    def pool_id(cls, token_a: Address, token_b: Address, fee: int, tick_spacing: int, hooks: Address) -> bytes:
-        """Return the 32-byte ``poolId`` (keccak256 of the ABI-encoded PoolKey).
-
-        Currencies are sorted internally, so argument order does not matter.
-        """
-        c0, c1 = cls.sort_currencies(token_a, token_b)
-        return keccak(
-            abi_encode(
-                ["address", "address", "uint24", "int24", "address"],
-                [c0.to_0x_hex(), c1.to_0x_hex(), fee, tick_spacing, hooks.to_0x_hex()],
-            )
-        )
+    #: ``(currency0, currency1)`` sorted by address — see :mod:`pydefi.amm.v4_pool_key`.
+    sort_currencies = staticmethod(sort_currencies)
+    #: 32-byte poolId from a PoolKey — see :mod:`pydefi.amm.v4_pool_key`.
+    pool_id = staticmethod(pool_id)
 
     def _pool_key_tuple(self, token_in: Token, token_out: Token, fee: int, tick_spacing: int, hooks: Address) -> tuple:
         """Build the ``(c0, c1, fee, tickSpacing, hooks)`` tuple plus ``zeroForOne``."""
-        c0, c1 = self.sort_currencies(token_in.address, token_out.address)
+        c0, c1 = sort_currencies(token_in.address, token_out.address)
         zero_for_one = c0 == token_in.address  # selling currency0?
         return (c0.to_0x_hex(), c1.to_0x_hex(), fee, tick_spacing, hooks.to_0x_hex()), zero_for_one, c0
 
