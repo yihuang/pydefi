@@ -1,11 +1,11 @@
 from eth_contract import Contract
 
-# executeWithPermit2: a Permit2 witness signature bound to keccak256(program)
-# pulls the tokens, then the program runs.
+# executeWithPermit2: a Permit2 batch witness signature bound to
+# keccak256(program) pulls the permitted tokens, then the program runs.
 DeFiVM = Contract.from_abi(
     [
         "function execute(bytes program)",
-        "function executeWithPermit2(((address token, uint256 amount) permitted, uint256 nonce, uint256 deadline) permit, address owner, bytes signature, bytes program) payable",
+        "function executeWithPermit2(((address token, uint256 amount)[] permitted, uint256 nonce, uint256 deadline) permit, address owner, bytes signature, bytes program) payable",
     ]
 )
 

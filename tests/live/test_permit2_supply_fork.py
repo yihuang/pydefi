@@ -113,9 +113,9 @@ class TestPermit2SupplyFork:
         evil = build_supply_program(USDC.address, Address(COMET_USDC), evil_data)
 
         nonce = random_nonce()
-        td = build_witness_typed_data(USDC.address, AMT, defivm, nonce, FUT, good, ChainId.ETHEREUM)
+        td = build_witness_typed_data([(USDC.address, AMT)], defivm, nonce, FUT, good, ChainId.ETHEREUM)
         sig = sign_typed_data(td, owner_acct.key.hex())
-        tx = build_supply_tx(defivm, USDC.address, AMT, nonce, FUT, owner, sig, evil)
+        tx = build_supply_tx(defivm, [(USDC.address, AMT)], nonce, FUT, owner, sig, evil)
         with pytest.raises(ContractLogicError):
             await fork_w3.eth.call(
                 {
@@ -124,3 +124,23 @@ class TestPermit2SupplyFork:
                     "data": tx["data"],
                 }
             )
+
+    async def test_multi_token_batch(self, fork_w3):
+        """One signature pulls several TokenPermissions entries (here the deposit
+        split in two) and funds a single program run."""
+        deployer, defivm, owner_acct, owner = await _setup(fork_w3)
+        comet = CompoundV3(w3=fork_w3, chain_id=ChainId.ETHEREUM, comet_address=COMET_USDC)
+        supply_data = bytes.fromhex(comet.build_supply_tx(TokenAmount(USDC, AMT), dst=owner)["data"][2:])
+        program = build_supply_program(USDC.address, Address(COMET_USDC), supply_data)
+
+        permitted = [(USDC.address, AMT // 2), (USDC.address, AMT - AMT // 2)]
+        nonce = random_nonce()
+        td = build_witness_typed_data(permitted, defivm, nonce, FUT, program, ChainId.ETHEREUM)
+        sig = sign_typed_data(td, owner_acct.key.hex())
+        tx = build_supply_tx(defivm, permitted, nonce, FUT, owner, sig, program)
+
+        async def deposit():
+            rc = await send_tx(fork_w3, deployer, tx)
+            assert rc["status"] == 1, "batch executeWithPermit2 reverted"
+
+        await assert_compound_credited(fork_w3, owner, deposit)

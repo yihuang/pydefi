@@ -911,9 +911,10 @@ def test_sign_route_builds_permit2_supply_tx():
     assert signed.steps[0].sign_request is None
     assert tx["to"].lower() == "0x" + "dd" * 20
     assert tx["data"][2:10] == DeFiVM.fns.executeWithPermit2.selector.hex()
-    # The permit deadline (4th word: token, amount, nonce, deadline) starts at
-    # sign time — roughly now + 1h, never a stale build-time stamp.
-    deadline = int.from_bytes(bytes.fromhex(tx["data"][2:])[4 + 32 * 3 : 4 + 32 * 4], "big")
+    # The permit deadline (3rd word of the permit tail, after the 4-word head:
+    # permit offset, owner, signature offset, program offset) starts at sign
+    # time — roughly now + 1h, never a stale build-time stamp.
+    deadline = int.from_bytes(bytes.fromhex(tx["data"][2:])[4 + 32 * 6 : 4 + 32 * 7], "big")
     assert abs(deadline - (int(time.time()) + 3600)) < 60
 
 

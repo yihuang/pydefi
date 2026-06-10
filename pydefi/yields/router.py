@@ -326,13 +326,10 @@ def _sign_7702_step(req: dict[str, Any], private_key: str, deadline: int) -> dic
 def _sign_permit2_step(req: dict[str, Any], private_key: str, deadline: int, chain_id: int) -> dict[str, Any]:
     """Sign the program-bound Permit2 witness and encode the
     ``DeFiVM.executeWithPermit2`` tx."""
-    typed_data = build_witness_typed_data(
-        req["token"], req["amount"], req["defivm"], req["nonce"], deadline, req["program"], chain_id
-    )
+    permitted = [(req["token"], req["amount"])]
+    typed_data = build_witness_typed_data(permitted, req["defivm"], req["nonce"], deadline, req["program"], chain_id)
     sig = sign_typed_data(typed_data, private_key)
-    return build_supply_tx(
-        req["defivm"], req["token"], req["amount"], req["nonce"], deadline, req["owner"], sig, req["program"]
-    )
+    return build_supply_tx(req["defivm"], permitted, req["nonce"], deadline, req["owner"], sig, req["program"])
 
 
 def sign_route(route: YieldRoute, private_key: str) -> YieldRoute:

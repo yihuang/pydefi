@@ -1,9 +1,9 @@
 """Gasless deposits via :sol:`DeFiVM.executeWithPermit2`.
 
-The owner signs one Permit2 witness transfer bound to ``keccak(program)``;
-``executeWithPermit2`` pulls the token and runs exactly that program, so a
-relayer can submit but cannot redirect. One-time setup per token: owner
-``approve(PERMIT2)``.
+The owner signs one Permit2 batch witness transfer bound to ``keccak(program)``;
+``executeWithPermit2`` pulls the permitted tokens (one or many) and runs exactly
+that program, so a relayer can submit but cannot redirect. One-time setup per
+token: owner ``approve(PERMIT2)``.
 """
 
 from __future__ import annotations
@@ -73,16 +73,16 @@ def build_supply_program(
 
 
 def build_witness_typed_data(
-    token: Address,
-    amount: int,
+    permitted: list[tuple[Address, int]],
     defivm: Address,
     nonce: int,
     deadline: int,
     program: bytes,
     chain_id: int,
 ) -> dict[str, Any]:
-    """EIP-712 ``PermitWitnessTransferFrom`` for Permit2, witness =
-    ``Witness(keccak(program))``. ``spender`` is the DeFiVM."""
+    """EIP-712 ``PermitBatchWitnessTransferFrom`` for Permit2 over the
+    ``(token, amount)`` *permitted* list, witness = ``Witness(keccak(program))``.
+    ``spender`` is the DeFiVM."""
     return {
         "types": {
             "EIP712Domain": [
@@ -90,8 +90,8 @@ def build_witness_typed_data(
                 {"name": "chainId", "type": "uint256"},
                 {"name": "verifyingContract", "type": "address"},
             ],
-            "PermitWitnessTransferFrom": [
-                {"name": "permitted", "type": "TokenPermissions"},
+            "PermitBatchWitnessTransferFrom": [
+                {"name": "permitted", "type": "TokenPermissions[]"},
                 {"name": "spender", "type": "address"},
                 {"name": "nonce", "type": "uint256"},
                 {"name": "deadline", "type": "uint256"},
@@ -101,9 +101,9 @@ def build_witness_typed_data(
             "Witness": [{"name": "programHash", "type": "bytes32"}],
         },
         "domain": {"name": "Permit2", "chainId": chain_id, "verifyingContract": PERMIT2},
-        "primaryType": "PermitWitnessTransferFrom",
+        "primaryType": "PermitBatchWitnessTransferFrom",
         "message": {
-            "permitted": {"token": token.to_0x_hex(), "amount": amount},
+            "permitted": [{"token": token.to_0x_hex(), "amount": amount} for token, amount in permitted],
             "spender": defivm.to_0x_hex(),
             "nonce": nonce,
             "deadline": deadline,
@@ -114,8 +114,7 @@ def build_witness_typed_data(
 
 def build_supply_tx(
     defivm: Address,
-    token: Address,
-    amount: int,
+    permitted: list[tuple[Address, int]],
     nonce: int,
     deadline: int,
     owner: Address,
@@ -124,6 +123,6 @@ def build_supply_tx(
     gas: int = _SUPPLY_GAS,
 ) -> dict[str, Any]:
     """Encode ``DeFiVM.executeWithPermit2(...)`` into a broadcast-ready tx dict."""
-    permit = ((token.to_0x_hex(), amount), nonce, deadline)
+    permit = ([(token.to_0x_hex(), amount) for token, amount in permitted], nonce, deadline)
     data = DeFiVM.fns.executeWithPermit2(permit, owner.to_0x_hex(), signature, program).data
     return {**to_tx(defivm, data), "gas": str(gas)}

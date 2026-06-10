@@ -10,8 +10,8 @@ interface ISignatureTransfer {
         uint256 amount;
     }
 
-    struct PermitTransferFrom {
-        TokenPermissions permitted;
+    struct PermitBatchTransferFrom {
+        TokenPermissions[] permitted;
         uint256 nonce;
         uint256 deadline;
     }
@@ -22,8 +22,8 @@ interface ISignatureTransfer {
     }
 
     function permitWitnessTransferFrom(
-        PermitTransferFrom memory permit,
-        SignatureTransferDetails calldata transferDetails,
+        PermitBatchTransferFrom memory permit,
+        SignatureTransferDetails[] calldata transferDetails,
         address owner,
         bytes32 witness,
         string calldata witnessTypeString,
@@ -124,23 +124,28 @@ contract DeFiVM is DEXCallbackRouter {
         _run(program);
     }
 
-    /// @notice Pull tokens from ``owner`` via a Permit2 witness signature bound
-    ///         to ``keccak256(program)``, then execute ``program`` atomically —
-    ///         a relayer submits and pays gas but cannot alter what runs.
-    ///         Permit2's unordered nonce gives replay protection.
+    /// @notice Pull the permitted tokens from ``owner`` via one Permit2 batch
+    ///         witness signature bound to ``keccak256(program)``, then execute
+    ///         ``program`` atomically — a relayer submits and pays gas but
+    ///         cannot alter what runs. Permit2's unordered nonce gives replay
+    ///         protection; a single token is a batch of one.
     function executeWithPermit2(
-        ISignatureTransfer.PermitTransferFrom calldata permit,
+        ISignatureTransfer.PermitBatchTransferFrom calldata permit,
         address owner,
         bytes calldata signature,
         bytes calldata program
     ) external payable {
+        uint256 n = permit.permitted.length;
+        ISignatureTransfer.SignatureTransferDetails[] memory details =
+            new ISignatureTransfer.SignatureTransferDetails[](n);
+        for (uint256 i; i < n; ++i) {
+            details[i] = ISignatureTransfer.SignatureTransferDetails({
+                to: address(this),
+                requestedAmount: permit.permitted[i].amount
+            });
+        }
         PERMIT2.permitWitnessTransferFrom(
-            permit,
-            ISignatureTransfer.SignatureTransferDetails({to: address(this), requestedAmount: permit.permitted.amount}),
-            owner,
-            keccak256(abi.encode(WITNESS_TYPEHASH, keccak256(program))),
-            WITNESS_TYPE_STRING,
-            signature
+            permit, details, owner, keccak256(abi.encode(WITNESS_TYPEHASH, keccak256(program))), WITNESS_TYPE_STRING, signature
         );
         _run(program);
     }
