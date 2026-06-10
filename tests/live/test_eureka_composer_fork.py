@@ -117,6 +117,24 @@ contract MockFeeToken is MockERC20Base {
     }
 }
 
+/// @notice Negative-rebase token: transferFrom debits the sender normally but
+/// then wipes the recipient's *entire* balance, so the recipient ends up with
+/// less than it had before the transfer. Exercises the saturating branch of
+/// the composer's balance-delta guard (balanceAfter < balanceBefore must
+/// surface TransferAmountMismatch, not an underflow panic).
+contract MockRebaseDownToken is MockERC20Base {
+    function approve(address spender, uint256 amount) external returns (bool) {
+        allowance[msg.sender][spender] = amount;
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint256 amount) external returns (bool) {
+        _spend(from, amount);
+        balanceOf[to] = 0;  // negative rebase wipes the recipient
+        return true;
+    }
+}
+
 /// @notice Minimal ICS20Transfer stand-in. sendTransfer just hands back an
 /// incrementing sequence (it does not escrow — the composer's job ends at
 /// approve + submit). ``forward`` lets a test invoke the composer's
@@ -165,6 +183,7 @@ def compiled_mocks():
         "MockToken": compile_sol_source(MOCK_TOKEN_SOL, "MockToken"),
         "MockUSDT": result["<stdin>:MockUSDT"],
         "MockFeeToken": result["<stdin>:MockFeeToken"],
+        "MockRebaseDownToken": result["<stdin>:MockRebaseDownToken"],
         "MockICS20Transfer": result["<stdin>:MockICS20Transfer"],
         "MockTarget": compile_sol_source(MOCK_TARGET_SOL, "MockTarget"),
     }
@@ -188,6 +207,7 @@ async def ctx(eureka_fork_w3, compiled_eureka_composer, compiled_mocks, interpre
     token_address = await deploy(w3, compiled_mocks["MockToken"], deployer)
     usdt_address = await deploy(w3, compiled_mocks["MockUSDT"], deployer)
     fee_address = await deploy(w3, compiled_mocks["MockFeeToken"], deployer)
+    rebase_address = await deploy(w3, compiled_mocks["MockRebaseDownToken"], deployer)
     target_address = await deploy(w3, compiled_mocks["MockTarget"], deployer)
 
     def _c(name: str, addr: Address) -> Contract:
@@ -209,6 +229,8 @@ async def ctx(eureka_fork_w3, compiled_eureka_composer, compiled_mocks, interpre
         "usdt_address": usdt_address,
         "fee": _c("MockFeeToken", fee_address),
         "fee_address": fee_address,
+        "rebase": _c("MockRebaseDownToken", rebase_address),
+        "rebase_address": rebase_address,
         "target": _c("MockTarget", target_address),
         "target_address": target_address,
     }
@@ -237,6 +259,24 @@ def _ack_msg(sequence: int) -> tuple:
     """OnAcknowledgementPacketCallback struct tuple."""
     payload = (_DEST_PORT, _DEST_PORT, "ics20-2", "abi", b"")  # sourcePort, destPort, version, encoding, value
     return (_SOURCE_CLIENT, "07-tendermint-1", sequence, payload, b"\x01", Web3.to_checksum_address(_RELAYER))
+
+
+def _timeout_msg(sequence: int) -> tuple:
+    """OnTimeoutPacketCallback struct tuple (no acknowledgement field)."""
+    payload = (_DEST_PORT, _DEST_PORT, "ics20-2", "abi", b"")
+    return (_SOURCE_CLIENT, "07-tendermint-1", sequence, payload, Web3.to_checksum_address(_RELAYER))
+
+
+def _target_call_program(ctx: dict) -> bytes:
+    """Program that reads the staged success/sequence transient slots, then
+    CALLs MockTarget.execute — lets callback tests assert the program ran."""
+    target = ctx["target"]
+    prog = Program()
+    _success = prog.builder.tload(IRLiteral(0))
+    _sequence = prog.builder.tload(IRLiteral(1))
+    prog.assert_(prog.call_raw(ctx["target_address"], target.fns.execute(b"\xde\xad\xbe\xef").data))
+    prog.builder.stop()
+    return prog.build()
 
 
 async def _send_and_compose(ctx: dict, program: bytes, *, token, token_address: Address, amount: int):
@@ -339,6 +379,22 @@ class TestSendTransferAndCompose:
                 ctx, _registered_program(), token=ctx["fee"], token_address=ctx["fee_address"], amount=1000 * 10**6
             )
 
+    async def test_rejects_rebase_down(self, ctx):
+        """A token that rebases the recipient's balance *down* during
+        transferFrom leaves balanceAfter < balanceBefore; the saturating
+        branch must clamp received to 0 and revert TransferAmountMismatch
+        rather than panic on underflow. The composer is seeded with a prior
+        balance so the delta is genuinely negative."""
+        w3 = ctx["w3"]
+        deployer = ctx["deployer"]
+        rebase = ctx["rebase"]
+
+        await rebase.fns.mint(ctx["composer_address"], 1000 * 10**6).transact(w3, deployer)
+        with _expect_revert("TransferAmountMismatch(uint256,uint256)"):
+            await _send_and_compose(
+                ctx, _registered_program(), token=rebase, token_address=ctx["rebase_address"], amount=10 * 10**6
+            )
+
     async def test_force_approve_reset_fallback(self, ctx):
         """Classic USDT reverts when overwriting a non-zero allowance. The mock
         ICS20Transfer never pulls, so the composer's allowance stays non-zero
@@ -382,16 +438,10 @@ class TestCallbacks:
         deployer = ctx["deployer"]
         ics20 = ctx["ics20"]
         target = ctx["target"]
-        target_address = ctx["target_address"]
 
         # Ack program (run in the composer's context): read the staged
         # success/sequence from transient slots 0/1, then CALL the target.
-        prog = Program()
-        _success = prog.builder.tload(IRLiteral(0))
-        _sequence = prog.builder.tload(IRLiteral(1))
-        prog.assert_(prog.call_raw(target_address, target.fns.execute(b"\xde\xad\xbe\xef").data))
-        prog.builder.stop()
-        seq = await _register(ctx, prog.build())
+        seq = await _register(ctx, _target_call_program(ctx))
 
         pre_count = await target.fns.callCount().call(w3)
         # Invoke onAckPacket *as* the ICS20Transfer proxy via its forwarder.
@@ -402,3 +452,58 @@ class TestCallbacks:
         assert await target.fns.callCount().call(w3) == pre_count + 1
         # Program cleared after execution.
         assert bytes(await composer.fns.programs(_SOURCE_CLIENT, seq).call(w3)) == b""
+
+    async def test_onack_failure_still_runs_program(self, ctx):
+        """An ack with success=false (destination rejected the packet) must
+        still run the registered program — that's the recovery hook — with
+        transient slot 0 staged to 0, and clear it afterwards."""
+        w3 = ctx["w3"]
+        composer = ctx["composer"]
+        composer_address = ctx["composer_address"]
+        deployer = ctx["deployer"]
+        ics20 = ctx["ics20"]
+        target = ctx["target"]
+
+        seq = await _register(ctx, _target_call_program(ctx))
+
+        pre_count = await target.fns.callCount().call(w3)
+        ack_calldata = composer.fns.onAckPacket(False, _ack_msg(seq)).data
+        receipt = await ics20.fns.forward(composer_address, HexBytes(ack_calldata)).transact(w3, deployer)
+        assert receipt["status"] == 1
+
+        assert await target.fns.callCount().call(w3) == pre_count + 1
+        (evt,) = composer.events.AckExecuted.parse_logs(receipt["logs"])
+        assert evt["args"]["success"] is False
+        assert bytes(await composer.fns.programs(_SOURCE_CLIENT, seq).call(w3)) == b""
+
+    async def test_ontimeout_runs_and_clears_registered_program(self, ctx):
+        """A timeout from the transfer app runs the registered program (with
+        success staged to 0), emits TimeoutExecuted, and clears the slot."""
+        w3 = ctx["w3"]
+        composer = ctx["composer"]
+        composer_address = ctx["composer_address"]
+        deployer = ctx["deployer"]
+        ics20 = ctx["ics20"]
+        target = ctx["target"]
+
+        seq = await _register(ctx, _target_call_program(ctx))
+
+        pre_count = await target.fns.callCount().call(w3)
+        timeout_calldata = composer.fns.onTimeoutPacket(_timeout_msg(seq)).data
+        receipt = await ics20.fns.forward(composer_address, HexBytes(timeout_calldata)).transact(w3, deployer)
+        assert receipt["status"] == 1
+
+        assert await target.fns.callCount().call(w3) == pre_count + 1
+        (evt,) = composer.events.TimeoutExecuted.parse_logs(receipt["logs"])
+        assert evt["args"]["sequence"] == seq
+        assert bytes(await composer.fns.programs(_SOURCE_CLIENT, seq).call(w3)) == b""
+
+    async def test_ontimeout_rejects_unauthorized_caller(self, ctx):
+        """onTimeoutPacket has the same onlyTransfer gate as onAckPacket."""
+        w3 = ctx["w3"]
+        composer = ctx["composer"]
+        deployer = ctx["deployer"]
+
+        seq = await _register(ctx, _registered_program())
+        with _expect_revert("UnauthorizedCallback()"):
+            await composer.fns.onTimeoutPacket(_timeout_msg(seq)).transact(w3, deployer)
