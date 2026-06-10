@@ -138,6 +138,7 @@ contract EurekaComposer is DEXCallbackRouter, TransientReentrancyGuard, Interpre
     error TransferAmountMismatch(uint256 expected, uint256 actual);
     error TransferFromFailed();
     error ApproveFailed();
+    error NotAToken(address token);
     error UnauthorizedCallback();
 
     /// @dev OpenZeppelin SafeERC20-style call: tolerates tokens that return
@@ -146,23 +147,27 @@ contract EurekaComposer is DEXCallbackRouter, TransientReentrancyGuard, Interpre
     /// target actually has code — a bare `call` to an EOA/no-code address
     /// succeeds with empty returndata, so without this guard a non-token
     /// `denom` would let transferFrom/approve "succeed" having moved nothing.
+    /// Malformed returndata (shorter than a word) is treated as failure
+    /// rather than fed to `abi.decode`, which would revert opaquely and mask
+    /// the typed TransferFromFailed/ApproveFailed errors.
     function _erc20Call(address token, bytes memory data) internal returns (bool) {
         if (token.code.length == 0) return false;
         (bool ok, bytes memory ret) = token.call(data);
         if (!ok) return false;
         if (ret.length == 0) return true;
+        if (ret.length < 32) return false;
         return abi.decode(ret, (bool));
     }
 
-    /// @dev SafeERC20-style balanceOf: a non-token `denom` (EOA or missing
-    /// selector) reverts with the typed `TransferFromFailed` instead of an
-    /// opaque ABI-decode error.
+    /// @dev SafeERC20-style balanceOf: a non-token `denom` (EOA, missing
+    /// selector, or malformed returndata) reverts with the typed
+    /// `NotAToken` instead of an opaque ABI-decode error.
     function _balanceOf(address token) internal view returns (uint256) {
-        if (token.code.length == 0) revert TransferFromFailed();
+        if (token.code.length == 0) revert NotAToken(token);
         (bool ok, bytes memory ret) = token.staticcall(
             abi.encodeWithSelector(IERC20_minimal.balanceOf.selector, address(this))
         );
-        if (!ok || ret.length < 32) revert TransferFromFailed();
+        if (!ok || ret.length < 32) revert NotAToken(token);
         return abi.decode(ret, (uint256));
     }
 

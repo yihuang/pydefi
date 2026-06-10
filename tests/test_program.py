@@ -847,3 +847,6 @@ class TestEurekaComposer:
         # The composer requires exact token-in amount to avoid fee-on-transfer
         # or rebasing drift across the ICS-20 send amount.
         assert "TransferAmountMismatch" in error_names
+        # A denom without token semantics (EOA, missing balanceOf, malformed
+        # returndata) must surface a typed revert, not an ABI-decode panic.
+        assert "NotAToken" in error_names
