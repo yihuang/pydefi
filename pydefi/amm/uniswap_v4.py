@@ -29,6 +29,10 @@ MAINNET_POOL_MANAGER: Address = get_address("UNISWAP_V4_POOL_MANAGER", ChainId.E
 MAINNET_STATE_VIEW: Address = get_address("UNISWAP_V4_STATE_VIEW", ChainId.ETHEREUM)
 MAINNET_QUOTER: Address = get_address("UNISWAP_V4_QUOTER", ChainId.ETHEREUM)
 
+#: PoolKey ``fee`` value marking a dynamic-fee pool; the actual fee charged is
+#: the hook-controlled ``lpFee`` returned by ``getSlot0``.
+DYNAMIC_FEE_FLAG = 0x800000
+
 
 class UniswapV4(BaseAMM):
     """Uniswap V4 AMM integration (singleton PoolManager).
@@ -98,7 +102,10 @@ class UniswapV4(BaseAMM):
         """Read live pool state from ``StateView`` and return a ``V4PoolEdge``.
 
         The returned edge prices ``token_in → token_out`` locally with the
-        inherited V3 concentrated-liquidity math.
+        inherited V3 concentrated-liquidity math. The fee used for pricing is
+        the live ``lpFee`` from ``slot0`` (in pips), so dynamic-fee pools are
+        priced at their *current* fee. The protocol fee (``slot0.protocolFee``,
+        zero on mainnet today) is not modelled.
 
         Raises:
             :class:`~pydefi.exceptions.InsufficientLiquidityError`: If the pool
@@ -113,7 +120,13 @@ class UniswapV4(BaseAMM):
 
         slot0 = await UNISWAP_V4_STATE_VIEW.fns.getSlot0(pool_id).call(self.w3, to=self.state_view_address)
         liquidity = await UNISWAP_V4_STATE_VIEW.fns.getLiquidity(pool_id).call(self.w3, to=self.state_view_address)
-        sqrt_price_x96 = slot0[0] if isinstance(slot0, (list, tuple)) else slot0
+        if isinstance(slot0, (list, tuple)):
+            sqrt_price_x96, lp_fee = slot0[0], slot0[3]
+        else:  # defensive: provider flattened the return to a single value
+            sqrt_price_x96 = slot0
+            if fee & DYNAMIC_FEE_FLAG:
+                raise ValueError(f"cannot price dynamic-fee V4 pool {pool_id.hex()} without lpFee from slot0")
+            lp_fee = fee
 
         if not liquidity or not sqrt_price_x96:
             raise InsufficientLiquidityError(
@@ -125,13 +138,14 @@ class UniswapV4(BaseAMM):
             token_out=token_out,
             pool_address=self.router_address,  # singleton PoolManager
             protocol=self.protocol_name,
-            fee_bps=fee // 100,  # pips → basis points (500 pips = 5 bps)
+            fee_bps=lp_fee // 100,  # bps, display/identity only — pricing uses lp_fee_pips
             sqrt_price_x96=sqrt_price_x96,
             liquidity=liquidity,
             is_token0_in=(c0 == token_in.address),
             tick_spacing=tick_spacing,
             hooks=hooks,
             pool_id=pool_id.hex(),
+            lp_fee_pips=lp_fee,
         )
 
     # ------------------------------------------------------------------

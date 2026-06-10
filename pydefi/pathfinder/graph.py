@@ -221,6 +221,10 @@ class V3PoolEdge(PoolEdge):
         """
         return self.is_token0_in
 
+    def _net_amount_in(self, amount_in: int) -> int:
+        """Return *amount_in* after deducting the swap fee (``fee_bps``, base 10 000)."""
+        return amount_in * (10_000 - self.fee_bps) // 10_000
+
     @property
     def spot_price(self) -> Decimal:
         """Spot price of ``token_out`` denominated in ``token_in``, adjusted
@@ -274,8 +278,8 @@ class V3PoolEdge(PoolEdge):
         sqrtP = self.sqrt_price_x96
         L = self.liquidity
 
-        # Deduct fee from input (fee_bps is in basis points, e.g. 30 = 0.3%)
-        amount_in_net = amount_in * (10_000 - self.fee_bps) // 10_000
+        # Deduct the swap fee from the input
+        amount_in_net = self._net_amount_in(amount_in)
         if amount_in_net <= 0:
             return 0
 
@@ -357,11 +361,25 @@ class V4PoolEdge(V3PoolEdge):
         tick_spacing: Pool tick spacing (e.g. 10 / 60 / 200).
         hooks: Hooks contract address, or the zero address for no hooks.
         pool_id: keccak256 of the PoolKey, hex. Optional (display/indexing).
+        lp_fee_pips: Current LP fee in pips (1e-6, from ``slot0.lpFee``), used
+            for pricing. V4 fees need not be a multiple of 100, so the
+            basis-point ``fee_bps`` field alone would truncate (e.g. a 10-pip
+            fee would price as free).
     """
 
     tick_spacing: int = 0
     hooks: Address = ZERO_ADDRESS
     pool_id: str = ""
+    lp_fee_pips: int = 0
+
+    def _net_amount_in(self, amount_in: int) -> int:
+        """Return *amount_in* after deducting the LP fee (``lp_fee_pips``, base 1 000 000).
+
+        Falls back to ``fee_bps`` when ``lp_fee_pips`` is unset (e.g. edges
+        constructed without slot0 data).
+        """
+        fee_pips = self.lp_fee_pips if self.lp_fee_pips else self.fee_bps * 100
+        return amount_in * (1_000_000 - fee_pips) // 1_000_000
 
 
 class PoolGraph:
