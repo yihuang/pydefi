@@ -11,11 +11,13 @@ Run with::
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 import solcx
 from eth_contract import Contract
+from eth_utils import keccak
 from hexbytes import HexBytes
 from vyper.venom.basicblock import IRLiteral
 from web3 import Web3
@@ -34,6 +36,22 @@ from tests.live.sol_utils import (
 
 # Reusable "this should revert" matcher for both anvil-direct and forked reverts.
 _REVERT = (ContractLogicError, Web3RPCError)
+
+
+@contextmanager
+def _expect_revert(error_sig: str):
+    """Assert the block reverts *with the given custom error*: the 4-byte
+    selector of ``error_sig`` (e.g. ``"EmptyProgram()"``) must appear in the
+    revert payload. A broad ``pytest.raises(_REVERT)`` would also pass when
+    the call reverts for the wrong reason."""
+    selector = keccak(text=error_sig).hex()[:8]
+    with pytest.raises(_REVERT) as excinfo:
+        yield
+    exc = excinfo.value
+    blob = " ".join(
+        str(part) for part in (exc, getattr(exc, "data", ""), getattr(exc, "message", ""), exc.args)
+    ).lower()
+    assert selector in blob, f"expected revert {error_sig} (selector {selector}); got: {blob!r}"
 _SOURCE_CLIENT = "07-tendermint-0"
 _DEST_PORT = "transfer"
 _RELAYER = "0x" + "11" * 20
@@ -293,12 +311,13 @@ class TestSendTransferAndCompose:
 
     async def test_rejects_empty_program(self, ctx):
         """Zero-length program is rejected at send time (EmptyProgram)."""
-        with pytest.raises(_REVERT):
+        with _expect_revert("EmptyProgram()"):
             await _send_and_compose(ctx, b"", token=ctx["token"], token_address=ctx["token_address"], amount=10 * 10**6)
 
     async def test_rejects_no_code_denom(self, ctx):
-        """A denom at an EOA (no code) must revert (TransferFromFailed) rather
-        than 'succeed' with no funds moved — _erc20Call's code-length guard. A
+        """A denom at an EOA (no code) must revert (NotAToken) rather than
+        'succeed' with no funds moved. The pre-transfer _balanceOf probe trips
+        first — before _erc20Call's code-length guard is even reached. A
         fresh key is used since default Anvil accounts may carry an EIP-7702
         delegation on a live fork."""
         w3 = ctx["w3"]
@@ -306,7 +325,7 @@ class TestSendTransferAndCompose:
         deployer = ctx["deployer"]
 
         eoa_denom = w3.eth.account.create().address
-        with pytest.raises(_REVERT):
+        with _expect_revert("NotAToken(address)"):
             await composer.fns.sendTransferAndCompose(
                 _send_msg(eoa_denom, 1), HexBytes(_registered_program())
             ).transact(w3, deployer)
@@ -315,7 +334,7 @@ class TestSendTransferAndCompose:
         """A fee-on-transfer token credits less than requested; the balance-delta
         guard must reject it (TransferAmountMismatch) rather than escrow a short
         balance."""
-        with pytest.raises(_REVERT):
+        with _expect_revert("TransferAmountMismatch(uint256,uint256)"):
             await _send_and_compose(
                 ctx, _registered_program(), token=ctx["fee"], token_address=ctx["fee_address"], amount=1000 * 10**6
             )
@@ -350,7 +369,7 @@ class TestCallbacks:
         deployer = ctx["deployer"]
 
         seq = await _register(ctx, _registered_program())
-        with pytest.raises(_REVERT):
+        with _expect_revert("UnauthorizedCallback()"):
             # deployer != ics20Transfer → onlyTransfer gate trips.
             await composer.fns.onAckPacket(True, _ack_msg(seq)).transact(w3, deployer)
 
