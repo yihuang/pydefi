@@ -1,14 +1,9 @@
-"""Toolkit for :sol:`Permit2SupplyRouter` — single-signature gasless deposits.
+"""Gasless deposits via :sol:`DeFiVM.executeWithPermit2`.
 
-The owner signs one Permit2 witness transfer binding the action (``protocol`` +
-``keccak(supply_data)``); the router pulls the token and calls ``protocol`` with
-that exact calldata. ``supply_data`` is the protocol's supply call crediting the
-owner (the ``data`` the ``pydefi.lending`` builders already produce).
-
-One-time setup per token: owner ``approve(PERMIT2)``; the router is ``prime``d
-once per (token, protocol). Works for any token Permit2 supports, including USDT.
-
-UNAUDITED — audit before mainnet.
+The owner signs one Permit2 witness transfer bound to ``keccak(program)``;
+``executeWithPermit2`` pulls the token and runs exactly that program, so a
+relayer can submit but cannot redirect. One-time setup per token: owner
+``approve(PERMIT2)``.
 """
 
 from __future__ import annotations
@@ -17,15 +12,20 @@ import secrets
 from typing import Any
 
 from eth_contract import Contract
+from eth_contract.erc20 import ERC20
 from eth_utils import keccak
 
-from pydefi.abi.vm import PERMIT2_SUPPLY_ROUTER
+from pydefi.abi.vm import DeFiVM
+from pydefi.lending.utils import UINT256_MAX, to_tx
 from pydefi.types import Address
+from pydefi.vm.context import Program
 
 PERMIT2 = "0x000000000022D473030F116dDEE9F6B43aC78BA3"
 _PERMIT2 = Contract.from_abi(["function nonceBitmap(address owner, uint256 wordPos) view returns (uint256)"])
 _FULL_WORD = 2**256 - 1
-_SUPPLY_GAS = 350_000
+# Covers the worst path: Permit2 pull + in-program approve + a first-time
+# Aave v3 supply (~280k) + interpreter overhead.
+_SUPPLY_GAS = 550_000
 
 
 def random_nonce() -> int:
@@ -47,18 +47,42 @@ async def pick_nonce(w3, owner: Address, scan_words: int = 8) -> int:
     return random_nonce()
 
 
+def build_supply_program(
+    token: Address, protocol: Address, supply_data: bytes, *, approve: bool = True, reset: bool = False
+) -> bytes:
+    """Compile the program a gasless deposit runs after the Permit2 pull:
+    optionally max-approve ``protocol``, then ``protocol.call(supply_data)``.
+    ``supply_data`` must credit the owner (the VM is ``msg.sender``).
+
+    Pass ``approve=False`` when the VM already carries a sufficient allowance
+    (the common repeat case) — skipping the ~25k approve leg. The max approval
+    is set once; a standing VM→protocol allowance is harmless because the VM
+    never holds a balance between transactions. ``reset`` prepends ``approve(0)``
+    for USDT-style tokens that forbid a nonzero→nonzero change — only needed
+    when a nonzero-but-insufficient allowance is standing."""
+    prog = Program()
+    if reset:
+        prog.assert_(prog.call_contract(bytes(token), ERC20.fns.approve, bytes(protocol), 0), "approve reset failed")
+    if approve:
+        prog.assert_(
+            prog.call_contract(bytes(token), ERC20.fns.approve, bytes(protocol), UINT256_MAX), "approve failed"
+        )
+    prog.assert_(prog.call_raw(bytes(protocol), supply_data), "supply failed")
+    prog.builder.stop()
+    return prog.build()
+
+
 def build_witness_typed_data(
     token: Address,
     amount: int,
-    router: Address,
+    defivm: Address,
     nonce: int,
     deadline: int,
-    protocol: Address,
-    supply_data: bytes,
+    program: bytes,
     chain_id: int,
 ) -> dict[str, Any]:
     """EIP-712 ``PermitWitnessTransferFrom`` for Permit2, witness =
-    ``Witness(protocol, keccak(supply_data))``.  ``spender`` is the router."""
+    ``Witness(keccak(program))``. ``spender`` is the DeFiVM."""
     return {
         "types": {
             "EIP712Domain": [
@@ -74,41 +98,32 @@ def build_witness_typed_data(
                 {"name": "witness", "type": "Witness"},
             ],
             "TokenPermissions": [{"name": "token", "type": "address"}, {"name": "amount", "type": "uint256"}],
-            "Witness": [{"name": "protocol", "type": "address"}, {"name": "supplyDataHash", "type": "bytes32"}],
+            "Witness": [{"name": "programHash", "type": "bytes32"}],
         },
         "domain": {"name": "Permit2", "chainId": chain_id, "verifyingContract": PERMIT2},
         "primaryType": "PermitWitnessTransferFrom",
         "message": {
-            "permitted": {"token": "0x" + bytes(token).hex(), "amount": amount},
-            "spender": "0x" + bytes(router).hex(),
+            "permitted": {"token": token.to_0x_hex(), "amount": amount},
+            "spender": defivm.to_0x_hex(),
             "nonce": nonce,
             "deadline": deadline,
-            "witness": {"protocol": "0x" + bytes(protocol).hex(), "supplyDataHash": "0x" + keccak(supply_data).hex()},
+            "witness": {"programHash": "0x" + keccak(program).hex()},
         },
     }
 
 
 def build_supply_tx(
-    router: Address,
+    defivm: Address,
     token: Address,
     amount: int,
     nonce: int,
     deadline: int,
     owner: Address,
     signature: bytes,
-    protocol: Address,
-    supply_data: bytes,
+    program: bytes,
     gas: int = _SUPPLY_GAS,
 ) -> dict[str, Any]:
-    """Encode ``Permit2SupplyRouter.supply(...)`` into a broadcast-ready tx dict."""
-    permit = (("0x" + bytes(token).hex(), amount), nonce, deadline)
-    data = PERMIT2_SUPPLY_ROUTER.fns.supply(
-        permit, "0x" + bytes(owner).hex(), signature, "0x" + bytes(protocol).hex(), supply_data
-    ).data
-    return {"to": "0x" + bytes(router).hex(), "data": "0x" + data.hex(), "value": "0", "gas": str(gas)}
-
-
-def build_prime_tx(router: Address, token: Address, protocol: Address) -> dict[str, Any]:
-    """One-time ``router.prime(token, protocol)`` — max-approve the protocol to pull from the router."""
-    data = PERMIT2_SUPPLY_ROUTER.fns.prime("0x" + bytes(token).hex(), "0x" + bytes(protocol).hex()).data
-    return {"to": "0x" + bytes(router).hex(), "data": "0x" + data.hex(), "value": "0", "gas": "60000"}
+    """Encode ``DeFiVM.executeWithPermit2(...)`` into a broadcast-ready tx dict."""
+    permit = ((token.to_0x_hex(), amount), nonce, deadline)
+    data = DeFiVM.fns.executeWithPermit2(permit, owner.to_0x_hex(), signature, program).data
+    return {**to_tx(defivm, data), "gas": str(gas)}

@@ -1,8 +1,9 @@
-"""Fork tests for :sol:`Permit2SupplyRouter` — the gasless deposit path.
+"""Fork tests for :sol:`DeFiVM.executeWithPermit2` — the Permit2 gasless deposit path.
 
-End-to-end: ``build_yield_route(gasless_router=…)`` → ``sign_route`` → one tx
-pulls USDC via a Permit2 witness signature and supplies it on the owner's behalf
-(Compound V3, Morpho Blue); a tampered ``supplyData`` reverts.
+End-to-end: ``build_yield_route(defivm=…)`` → ``sign_route`` → one tx pulls USDC
+via a Permit2 witness signature bound to the compiled ``[approve, supply]``
+program and runs it in the VM, crediting the owner (Compound V3, Morpho Blue);
+a tampered program reverts.
 
 A fresh keypair signs — Anvil/vitalik accounts carry EIP-7702 delegations that
 break Permit2's ECDSA path. Run with::
@@ -19,12 +20,12 @@ from eth_account import Account
 from web3 import Web3
 from web3.exceptions import ContractLogicError
 
-from pydefi.lending import CompoundV3, MorphoBlue
+from pydefi.lending import CompoundV3
 from pydefi.types import Address, ChainId, TokenAmount
 from pydefi.vm.eip712 import sign_typed_data
 from pydefi.vm.permit2_supply import (
     PERMIT2,
-    build_prime_tx,
+    build_supply_program,
     build_supply_tx,
     build_witness_typed_data,
     random_nonce,
@@ -43,15 +44,18 @@ from tests.live.gasless_common import (
 )
 from tests.live.sol_utils import compile_sol_file, deploy
 
-ROUTER_SOL = Path(__file__).resolve().parents[2] / "pydefi" / "vm" / "Permit2SupplyRouter.sol"
+DEFI_VM_SOL = Path(__file__).resolve().parents[2] / "pydefi" / "vm" / "DeFiVM.sol"
+# Constructor arg: address(0) selects the pre-deployed Analog-Labs interpreter,
+# which exists on the mainnet fork.
+ZERO = Address("0x" + "00" * 20)
 
 
-async def _setup(fork_w3, protocol_addr: Address):
-    """Deploy + prime the router for (USDC, protocol), mint a fresh code-less owner,
-    seed USDC, and do the one-time owner ``approve(Permit2)``."""
+async def _setup(fork_w3):
+    """Deploy DeFiVM, mint a fresh code-less owner, seed USDC, and do the
+    one-time owner ``approve(Permit2)``. No prime step: the program approves
+    the protocol inline."""
     deployer = (await fork_w3.eth.accounts)[0]
-    router = await deploy(fork_w3, compile_sol_file(ROUTER_SOL, "Permit2SupplyRouter"), deployer)
-    await send_tx(fork_w3, deployer, build_prime_tx(router, USDC.address, protocol_addr))
+    defivm = await deploy(fork_w3, compile_sol_file(DEFI_VM_SOL, "DeFiVM"), deployer, ZERO)
 
     owner_acct = Account.create()
     owner = Address(owner_acct.address)
@@ -60,10 +64,10 @@ async def _setup(fork_w3, protocol_addr: Address):
     await set_balance(fork_w3, owner, 100 * 10**18)
     await fund_usdc(fork_w3, USDC.address, owner, AMT)
     await erc20_approve(fork_w3, USDC.address, owner, Address(PERMIT2), 2**256 - 1)
-    return deployer, router, owner_acct, owner
+    return deployer, defivm, owner_acct, owner
 
 
-async def _gasless_deposit(fork_w3, deployer, router, owner_acct, owner, target: YieldMarket):
+async def _gasless_deposit(fork_w3, deployer, defivm, owner_acct, owner, target: YieldMarket):
     """build_yield_route → sign_route → broadcast (relayer submits; owner pays no gas)."""
     route = await build_yield_route(
         "supply_then_bridge",
@@ -72,7 +76,7 @@ async def _gasless_deposit(fork_w3, deployer, router, owner_acct, owner, target:
         w3s={ChainId.ETHEREUM: fork_w3},
         target_market=target,
         target_chain=ChainId.KITE,
-        gasless_router=router,
+        defivm=defivm,
     )
     assert [s.kind for s in route.steps] == ["supply_with_permit2"]
     signed = sign_route(route, owner_acct.key.hex())
@@ -81,34 +85,37 @@ async def _gasless_deposit(fork_w3, deployer, router, owner_acct, owner, target:
 
 
 @pytest.mark.fork
-class TestPermit2SupplyRouterFork:
+class TestPermit2SupplyFork:
     async def test_compound_via_build_yield_route(self, fork_w3):
-        ctx = await _setup(fork_w3, COMET_USDC)
+        ctx = await _setup(fork_w3)
         await assert_compound_credited(
             fork_w3, ctx[3], lambda: _gasless_deposit(fork_w3, *ctx, market("compound_v3", "compound_v3:1:USDC"))
         )
 
     async def test_morpho_blue_via_build_yield_route(self, fork_w3):
-        morpho = MorphoBlue.from_chain(fork_w3, ChainId.ETHEREUM)
-        ctx = await _setup(fork_w3, morpho.morpho_address)
+        ctx = await _setup(fork_w3)
         await assert_morpho_credited(
             fork_w3,
             ctx[3],
             lambda: _gasless_deposit(fork_w3, *ctx, market("morpho", "morpho:1:0x" + MORPHO_CBBTC_USDC.hex())),
         )
 
-    async def test_tampered_supply_data_reverts(self, fork_w3):
-        """Signing for one supplyData but submitting another → witness mismatch →
-        Permit2 reverts (eth_call, no state change)."""
-        deployer, router, owner_acct, owner = await _setup(fork_w3, COMET_USDC)
+    async def test_tampered_program_reverts(self, fork_w3):
+        """Signing the witness for one program but submitting another → witness
+        mismatch → Permit2 reverts (eth_call, no state change)."""
+        deployer, defivm, owner_acct, owner = await _setup(fork_w3)
         comet = CompoundV3(w3=fork_w3, chain_id=ChainId.ETHEREUM, comet_address=COMET_USDC)
-        good = bytes.fromhex(comet.build_supply_tx(TokenAmount(USDC, AMT), dst=owner)["data"][2:])
-        evil = bytes.fromhex(comet.build_supply_tx(TokenAmount(USDC, AMT), dst=Address("0x" + "99" * 20))["data"][2:])
+        good_data = bytes.fromhex(comet.build_supply_tx(TokenAmount(USDC, AMT), dst=owner)["data"][2:])
+        evil_data = bytes.fromhex(
+            comet.build_supply_tx(TokenAmount(USDC, AMT), dst=Address("0x" + "99" * 20))["data"][2:]
+        )
+        good = build_supply_program(USDC.address, Address(COMET_USDC), good_data)
+        evil = build_supply_program(USDC.address, Address(COMET_USDC), evil_data)
 
         nonce = random_nonce()
-        td = build_witness_typed_data(USDC.address, AMT, router, nonce, FUT, COMET_USDC, good, ChainId.ETHEREUM)
+        td = build_witness_typed_data(USDC.address, AMT, defivm, nonce, FUT, good, ChainId.ETHEREUM)
         sig = sign_typed_data(td, owner_acct.key.hex())
-        tx = build_supply_tx(router, USDC.address, AMT, nonce, FUT, owner, sig, COMET_USDC, evil)
+        tx = build_supply_tx(defivm, USDC.address, AMT, nonce, FUT, owner, sig, evil)
         with pytest.raises(ContractLogicError):
             await fork_w3.eth.call(
                 {
