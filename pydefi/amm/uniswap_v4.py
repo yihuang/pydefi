@@ -14,6 +14,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 from web3 import AsyncWeb3
+from web3.exceptions import ContractLogicError
 
 from pydefi.abi.amm import UNISWAP_V4_QUOTER, UNISWAP_V4_STATE_VIEW
 from pydefi.amm.base import BaseAMM
@@ -115,7 +116,7 @@ class UniswapV4(BaseAMM):
         tick_spacing = tick_spacing if tick_spacing is not None else self.default_tick_spacing
         hooks = hooks if hooks is not None else self.default_hooks
 
-        c0, c1 = self.sort_currencies(token_in.address, token_out.address)
+        c0, _c1 = self.sort_currencies(token_in.address, token_out.address)
         pool_id = self.pool_id(token_in.address, token_out.address, fee, tick_spacing, hooks)
 
         slot0 = await UNISWAP_V4_STATE_VIEW.fns.getSlot0(pool_id).call(self.w3, to=self.state_view_address)
@@ -171,8 +172,9 @@ class UniswapV4(BaseAMM):
         try:
             result = await UNISWAP_V4_QUOTER.fns.quoteExactInputSingle(params).call(self.w3, to=self.quoter_address)
             amount_out = result[0] if isinstance(result, (list, tuple)) else result
-        except Exception as exc:
-            raise InsufficientLiquidityError(f"V4 quoteExactInputSingle failed: {exc}") from exc
+        except ContractLogicError as exc:
+            # Quoter revert = pool can't fill the swap; transport/RPC errors propagate.
+            raise InsufficientLiquidityError(f"V4 quoteExactInputSingle reverted: {exc}") from exc
 
         return TokenAmount(token=token_out, amount=amount_out)
 
@@ -213,8 +215,9 @@ class UniswapV4(BaseAMM):
         try:
             result = await UNISWAP_V4_QUOTER.fns.quoteExactOutputSingle(params).call(self.w3, to=self.quoter_address)
             amount_in_raw = result[0] if isinstance(result, (list, tuple)) else result
-        except Exception as exc:
-            raise InsufficientLiquidityError(f"V4 quoteExactOutputSingle failed: {exc}") from exc
+        except ContractLogicError as exc:
+            # Quoter revert = pool can't fill the swap; transport/RPC errors propagate.
+            raise InsufficientLiquidityError(f"V4 quoteExactOutputSingle reverted: {exc}") from exc
 
         return [TokenAmount(token=token_in, amount=amount_in_raw), amount_out]
 

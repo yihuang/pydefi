@@ -987,7 +987,7 @@ class UniversalRouter:
         addr_out = token_out.address
 
         currency0, currency1 = self._sort_v4_currencies(addr_in, addr_out)
-        zero_for_one = addr_in.lower() == currency0.lower()
+        zero_for_one = addr_in == currency0
 
         swap_params = self.encode_v4_exact_in_single_params(
             currency0=currency0,
@@ -1055,7 +1055,7 @@ class UniversalRouter:
         addr_out = token_out.address
 
         currency0, currency1 = self._sort_v4_currencies(addr_in, addr_out)
-        zero_for_one = addr_in.lower() == currency0.lower()
+        zero_for_one = addr_in == currency0
 
         # Command 1: wrap ETH → WETH inside the router
         wrap_input = self.encode_wrap_eth(ADDRESS_THIS, eth_amount)
