@@ -1,9 +1,10 @@
-"""Fork tests for :sol:`EIP7702BatchExecutor` — the EIP-7702 gasless deposit path.
+"""Fork tests for the EIP-7702 gasless deposit path via the Calibur delegate.
 
-End-to-end: ``build_yield_route(delegate=…)`` → ``sign_route`` → one type-4 tx,
-submitted and paid for by a *sponsor*, delegates the owner's EOA and runs a signed
-``[approve, supply]`` batch in the owner's own context (Compound V3, Morpho Blue).
-The owner spends no gas; a tampered batch reverts ``BadSig``.
+End-to-end: ``build_yield_route(delegate=CALIBUR)`` → ``sign_route`` → one type-4
+tx, submitted and paid for by a *sponsor*, delegates the owner's EOA to the
+already-deployed Calibur singleton and runs a signed ``[approve, supply]`` batch
+in the owner's own context (Compound V3, Morpho Blue). The owner spends no gas;
+a tampered batch reverts ``InvalidSignature``.
 
 A fresh code-less keypair is the owner; a second funded keypair is the sponsor.
 Run with::
@@ -12,8 +13,6 @@ Run with::
 """
 
 from __future__ import annotations
-
-from pathlib import Path
 
 import pytest
 from eth_account import Account
@@ -24,10 +23,11 @@ from pydefi.lending import CompoundV3
 from pydefi.types import Address, ChainId, TokenAmount
 from pydefi.vm.eip712 import sign_typed_data
 from pydefi.vm.eip7702_supply import (
-    batch_nonce,
+    CALIBUR,
     build_batch_typed_data,
     build_execute_tx,
     build_revoke_authorization,
+    delegation_status,
     is_delegated_to,
 )
 from pydefi.yields import YieldMarket, build_yield_route, sign_route
@@ -43,9 +43,6 @@ from tests.live.gasless_common import (
     assert_morpho_credited,
     market,
 )
-from tests.live.sol_utils import compile_sol_file, deploy
-
-EXECUTOR_SOL = Path(__file__).resolve().parents[2] / "pydefi" / "vm" / "EIP7702BatchExecutor.sol"
 
 
 async def _send_sponsored(fork_w3, sponsor_acct, tx: dict) -> dict:
@@ -70,10 +67,12 @@ async def _send_sponsored(fork_w3, sponsor_acct, tx: dict) -> dict:
 
 
 async def _setup(fork_w3):
-    """Deploy the executor, mint a fresh code-less, gas-less owner seeded with USDC,
-    and a separately-funded sponsor. The owner does NO approve — that is batched."""
-    deployer = (await fork_w3.eth.accounts)[0]
-    executor = await deploy(fork_w3, compile_sol_file(EXECUTOR_SOL, "EIP7702BatchExecutor"), deployer)
+    """Mint a fresh code-less, gas-less owner seeded with USDC and a
+    separately-funded sponsor. No contract deployment: the delegate is the
+    Calibur singleton already on the mainnet fork. The owner does NO approve —
+    that is batched."""
+    code = bytes(await fork_w3.eth.get_code(Web3.to_checksum_address(bytes(CALIBUR))))
+    assert len(code) > 2, "Calibur singleton not present on this fork"
 
     owner_acct = Account.create()
     owner = Address(owner_acct.address)
@@ -83,11 +82,11 @@ async def _setup(fork_w3):
 
     sponsor_acct = Account.create()
     await set_balance(fork_w3, Address(sponsor_acct.address), 100 * 10**18)
-    return executor, owner_acct, owner, sponsor_acct
+    return owner_acct, owner, sponsor_acct
 
 
-async def _gasless_deposit(fork_w3, executor, owner_acct, owner, sponsor_acct, target: YieldMarket):
-    """build_yield_route(delegate=…) → sign_route → sponsor broadcasts the type-4 tx."""
+async def _gasless_deposit(fork_w3, owner_acct, owner, sponsor_acct, target: YieldMarket):
+    """build_yield_route(delegate=CALIBUR) → sign_route → sponsor broadcasts the type-4 tx."""
     route = await build_yield_route(
         "supply_then_bridge",
         user=owner,
@@ -95,7 +94,7 @@ async def _gasless_deposit(fork_w3, executor, owner_acct, owner, sponsor_acct, t
         w3s={ChainId.ETHEREUM: fork_w3},
         target_market=target,
         target_chain=ChainId.KITE,
-        delegate=executor,
+        delegate=CALIBUR,
     )
     assert [s.kind for s in route.steps] == ["supply_with_7702"]
     signed = sign_route(route, owner_acct.key.hex())
@@ -103,7 +102,7 @@ async def _gasless_deposit(fork_w3, executor, owner_acct, owner, sponsor_acct, t
     assert tx["type"] == 4 and len(tx["authorizationList"]) == 1  # first deposit sets the code
     rc = await _send_sponsored(fork_w3, sponsor_acct, tx)
     assert rc["status"] == 1, "supply_with_7702 reverted"
-    assert await is_delegated_to(fork_w3, owner, executor)
+    assert await is_delegated_to(fork_w3, owner, CALIBUR)
     assert await fork_w3.eth.get_balance(owner_acct.address) == 0  # owner paid no gas
 
 
@@ -112,48 +111,45 @@ class TestEIP7702SupplyFork:
     async def test_compound_via_build_yield_route(self, fork_w3):
         ctx = await _setup(fork_w3)
         await assert_compound_credited(
-            fork_w3, ctx[2], lambda: _gasless_deposit(fork_w3, *ctx, market("compound_v3", "compound_v3:1:USDC"))
+            fork_w3, ctx[1], lambda: _gasless_deposit(fork_w3, *ctx, market("compound_v3", "compound_v3:1:USDC"))
         )
 
     async def test_morpho_blue_via_build_yield_route(self, fork_w3):
         ctx = await _setup(fork_w3)
         await assert_morpho_credited(
             fork_w3,
-            ctx[2],
+            ctx[1],
             lambda: _gasless_deposit(fork_w3, *ctx, market("morpho", "morpho:1:0x" + MORPHO_CBBTC_USDC.hex())),
         )
 
     async def test_revoke_clears_delegation(self, fork_w3):
         """After a deposit delegates the owner, a sponsor-submitted revoke tx
         (authorization to 0x0) leaves the EOA code-less again."""
-        executor, owner_acct, owner, sponsor_acct = await _setup(fork_w3)
-        await _gasless_deposit(
-            fork_w3, executor, owner_acct, owner, sponsor_acct, market("compound_v3", "compound_v3:1:USDC")
-        )
-        assert await is_delegated_to(fork_w3, owner, executor)
+        owner_acct, owner, sponsor_acct = await _setup(fork_w3)
+        await _gasless_deposit(fork_w3, owner_acct, owner, sponsor_acct, market("compound_v3", "compound_v3:1:USDC"))
+        assert await is_delegated_to(fork_w3, owner, CALIBUR)
 
         nonce = await fork_w3.eth.get_transaction_count(owner_acct.address)
         revoke = build_revoke_authorization(owner_acct.key.hex(), await fork_w3.eth.chain_id, nonce)
         rc = await _send_sponsored(fork_w3, sponsor_acct, revoke)
         assert rc["status"] == 1, "revoke reverted"
         assert len(bytes(await fork_w3.eth.get_code(owner_acct.address))) == 0
-        assert not await is_delegated_to(fork_w3, owner, executor)
+        assert not await is_delegated_to(fork_w3, owner, CALIBUR)
 
     async def test_tampered_batch_reverts(self, fork_w3):
-        """Sign one batch but submit another → signer recovers to the wrong address
-        → execute reverts BadSig. Run after a real deposit so the EOA is delegated
-        (an undelegated EOA has no code to call)."""
-        executor, owner_acct, owner, sponsor_acct = await _setup(fork_w3)
-        await _gasless_deposit(
-            fork_w3, executor, owner_acct, owner, sponsor_acct, market("compound_v3", "compound_v3:1:USDC")
-        )
+        """Sign one batch but submit another → Calibur recovers the wrong signer
+        → execute reverts InvalidSignature. Run after a real deposit so the EOA
+        is delegated (an undelegated EOA has no code to call)."""
+        owner_acct, owner, sponsor_acct = await _setup(fork_w3)
+        await _gasless_deposit(fork_w3, owner_acct, owner, sponsor_acct, market("compound_v3", "compound_v3:1:USDC"))
 
         comet = CompoundV3(w3=fork_w3, chain_id=ChainId.ETHEREUM, comet_address=COMET_USDC)
         approve = build_approve_tx(USDC, Address(COMET_USDC), AMT)
         good = [approve, comet.build_supply_tx(TokenAmount(USDC, AMT))]
         evil = [approve, comet.build_supply_tx(TokenAmount(USDC, AMT), dst=Address("0x" + "99" * 20))]
 
-        nonce = await batch_nonce(fork_w3, owner)  # 1 after the first deposit
+        nonce, needs_auth = await delegation_status(fork_w3, owner)
+        assert not needs_auth  # delegated by the first deposit
         td = build_batch_typed_data(good, nonce, FUT, owner, ChainId.ETHEREUM)
         sig = sign_typed_data(td, owner_acct.key.hex())
         # Already delegated → no authorization needed; submit the mismatched batch.

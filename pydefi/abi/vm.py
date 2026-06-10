@@ -15,12 +15,13 @@ PERMIT2_SUPPLY_ROUTER = Contract.from_abi(
     ]
 )
 
-# EIP7702BatchExecutor (pydefi/vm/EIP7702BatchExecutor.sol) — EIP-7702 delegate.
-# The owner delegates its EOA here, signs a ``Batch`` of calls, and a sponsor
-# submits the type-4 tx; ``execute`` runs the batch in the EOA's own context.
-EIP7702_EXECUTOR = Contract.from_abi(
+# Uniswap Calibur (https://github.com/Uniswap/calibur) — audited EIP-7702
+# delegate singleton: the owner signs an EIP-712 ``SignedBatchedCall`` and a
+# sponsor submits ``execute`` as a plain tx targeting the EOA.
+CALIBUR = Contract.from_abi(
     [
-        "function execute((address to, uint256 value, bytes data)[] calls, uint256 nonce, uint256 deadline, bytes signature) external",
-        "function batchNonce() view returns (uint256)",
+        "function execute((((address to, uint256 value, bytes data)[] calls, bool revertOnFailure) batchedCall, uint256 nonce, bytes32 keyHash, address executor, uint256 deadline) signedBatchedCall, bytes wrappedSignature) payable",
+        "function getSeq(uint256 key) view returns (uint256)",
+        "function invalidateNonce(uint256 newNonce)",
     ]
 )
