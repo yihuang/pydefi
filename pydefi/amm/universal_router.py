@@ -316,9 +316,13 @@ class UniversalRouter:
         Returns:
             ABI-encoded bytes ready to be used as an element in ``inputs``.
         """
+        # Router-generation specific: >= 2.1.1 routers decode a trailing
+        # ``uint256[] minHopPriceX36`` on all V2/V3 swap commands (empty = no
+        # per-hop limits) and revert with SliceOutOfBounds on the 5-field
+        # layout — see :meth:`encode_v4_exact_in_single_params`.
         return abi_encode(
-            ["address", "uint256", "uint256", "bytes", "bool"],
-            [recipient, amount_in, amount_out_minimum, path, payer_is_user],
+            ["address", "uint256", "uint256", "bytes", "bool", "uint256[]"],
+            [recipient, amount_in, amount_out_minimum, path, payer_is_user, []],
         )
 
     @staticmethod
@@ -343,9 +347,11 @@ class UniversalRouter:
         Returns:
             ABI-encoded bytes.
         """
+        # Same >= 2.1.1 trailing ``uint256[] minHopPriceX36`` requirement as
+        # :meth:`encode_v3_swap_exact_in`.
         return abi_encode(
-            ["address", "uint256", "uint256", "bytes", "bool"],
-            [recipient, amount_out, amount_in_maximum, path, payer_is_user],
+            ["address", "uint256", "uint256", "bytes", "bool", "uint256[]"],
+            [recipient, amount_out, amount_in_maximum, path, payer_is_user, []],
         )
 
     @staticmethod
@@ -368,9 +374,11 @@ class UniversalRouter:
         Returns:
             ABI-encoded bytes.
         """
+        # Same >= 2.1.1 trailing ``uint256[] minHopPriceX36`` requirement as
+        # :meth:`encode_v3_swap_exact_in`.
         return abi_encode(
-            ["address", "uint256", "uint256", "address[]", "bool"],
-            [recipient, amount_in, amount_out_minimum, path, payer_is_user],
+            ["address", "uint256", "uint256", "address[]", "bool", "uint256[]"],
+            [recipient, amount_in, amount_out_minimum, path, payer_is_user, []],
         )
 
     @staticmethod
@@ -393,9 +401,11 @@ class UniversalRouter:
         Returns:
             ABI-encoded bytes.
         """
+        # Same >= 2.1.1 trailing ``uint256[] minHopPriceX36`` requirement as
+        # :meth:`encode_v3_swap_exact_in`.
         return abi_encode(
-            ["address", "uint256", "uint256", "address[]", "bool"],
-            [recipient, amount_out, amount_in_maximum, path, payer_is_user],
+            ["address", "uint256", "uint256", "address[]", "bool", "uint256[]"],
+            [recipient, amount_out, amount_in_maximum, path, payer_is_user, []],
         )
 
     @staticmethod
