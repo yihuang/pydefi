@@ -11,7 +11,7 @@ from typing import Any
 
 import aiohttp
 
-from pydefi._math import slippage_to_percent
+from pydefi._math import apply_slippage, slippage_to_percent
 from pydefi.aggregator.base import AggregatorQuote
 from pydefi.exceptions import AggregatorError
 from pydefi.types import SwapRoute, SwapStep, Token, TokenAmount
@@ -94,8 +94,7 @@ class OneInch:
         data = await self._get("quote", params)
 
         dst_amount = int(data["dstAmount"])
-        slippage_fraction = 10_000 - slippage_bps
-        min_amount_out_raw = dst_amount * slippage_fraction // 10_000
+        min_amount_out_raw = apply_slippage(dst_amount, slippage_bps)
 
         return AggregatorQuote(
             token_in=amount_in.token,
@@ -142,8 +141,7 @@ class OneInch:
 
         tx = data.get("tx", {})
         dst_amount = int(data["dstAmount"])
-        slippage_fraction = 10_000 - slippage_bps
-        min_amount_out_raw = dst_amount * slippage_fraction // 10_000
+        min_amount_out_raw = apply_slippage(dst_amount, slippage_bps)
 
         return AggregatorQuote(
             token_in=amount_in.token,

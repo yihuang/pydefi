@@ -11,6 +11,7 @@ from typing import Any
 
 import aiohttp
 
+from pydefi._math import apply_slippage
 from pydefi.aggregator.base import AggregatorQuote
 from pydefi.exceptions import AggregatorError
 from pydefi.types import SwapRoute, SwapStep, Token, TokenAmount
@@ -122,8 +123,7 @@ class ParaSwap:
         price_route = data.get("priceRoute", {})
 
         dest_amount = int(price_route.get("destAmount", 0))
-        slippage_fraction = 10_000 - slippage_bps
-        min_amount_out_raw = dest_amount * slippage_fraction // 10_000
+        min_amount_out_raw = apply_slippage(dest_amount, slippage_bps)
         gas_cost = int(price_route.get("gasCost", 0))
         price_impact_raw = price_route.get("percentChange", "0")
 
@@ -165,8 +165,7 @@ class ParaSwap:
         price_route = price_data.get("priceRoute", {})
         dest_amount = int(price_route.get("destAmount", 0))
 
-        slippage_fraction = 10_000 - slippage_bps
-        min_amount_out_raw = dest_amount * slippage_fraction // 10_000
+        min_amount_out_raw = apply_slippage(dest_amount, slippage_bps)
 
         body: dict[str, Any] = {
             "srcToken": amount_in.token.encoded_address,

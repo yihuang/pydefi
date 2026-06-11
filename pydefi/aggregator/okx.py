@@ -11,7 +11,7 @@ from typing import Any
 
 import aiohttp
 
-from pydefi._math import slippage_to_percent
+from pydefi._math import apply_slippage, slippage_to_percent
 from pydefi.aggregator.base import AggregatorQuote
 from pydefi.exceptions import AggregatorError
 from pydefi.types import SwapRoute, SwapStep, Token, TokenAmount
@@ -95,8 +95,7 @@ class OKX:
         result = data["data"]
 
         to_amount = int(result["toTokenAmount"])
-        slippage_factor = 10_000 - slippage_bps
-        min_amount_out_raw = to_amount * slippage_factor // 10_000
+        min_amount_out_raw = apply_slippage(to_amount, slippage_bps)
         gas_estimate = int(result.get("estimateGasFee", 0))
 
         return AggregatorQuote(
@@ -145,8 +144,7 @@ class OKX:
         result = data["data"]
 
         to_amount = int(result["routerResult"]["toTokenAmount"])
-        slippage_factor = 10_000 - slippage_bps
-        min_amount_out_raw = to_amount * slippage_factor // 10_000
+        min_amount_out_raw = apply_slippage(to_amount, slippage_bps)
 
         tx_info = result.get("tx", {})
         gas_estimate = int(tx_info.get("gas", result.get("estimateGasFee", 0)))

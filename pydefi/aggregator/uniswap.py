@@ -11,7 +11,7 @@ from typing import Any, Optional
 
 import aiohttp
 
-from pydefi._math import slippage_to_percent
+from pydefi._math import apply_slippage, slippage_to_percent
 from pydefi._utils import encode_address
 from pydefi.aggregator.base import AggregatorQuote
 from pydefi.exceptions import AggregatorError
@@ -111,8 +111,7 @@ class UniswapAPI:
             # CLASSIC / WRAP / UNWRAP / BRIDGE — standard AMM response shape.
             output = quote_data.get("output", {})
             amount_out_raw = int(output.get("amount", quote_data.get("amountOut", 0)))
-            slippage_factor = 10_000 - slippage_bps
-            min_amount_out_raw = amount_out_raw * slippage_factor // 10_000
+            min_amount_out_raw = apply_slippage(amount_out_raw, slippage_bps)
             gas_fee = quote_data.get("gasFee") or quote_data.get("gasUseEstimate", 0)
             gas_estimate = int(gas_fee) if gas_fee else 0
             price_impact_raw = quote_data.get("priceImpact", 0)
@@ -125,13 +124,12 @@ class UniswapAPI:
                 amount_out_raw = int(aggregated[0].get("amount", 0))
                 min_amount_out_raw = int(aggregated[0].get("minAmount", 0))
                 if not min_amount_out_raw:
-                    slippage_factor = 10_000 - slippage_bps
-                    min_amount_out_raw = amount_out_raw * slippage_factor // 10_000
+                    min_amount_out_raw = apply_slippage(amount_out_raw, slippage_bps)
             else:
                 order_outputs = quote_data.get("orderInfo", {}).get("outputs", [])
                 amount_out_raw = int(order_outputs[0]["startAmount"]) if order_outputs else 0
                 end_amount = int(order_outputs[0]["endAmount"]) if order_outputs else 0
-                min_amount_out_raw = end_amount or (amount_out_raw * (10_000 - slippage_bps) // 10_000)
+                min_amount_out_raw = end_amount or apply_slippage(amount_out_raw, slippage_bps)
             gas_estimate = 0
             price_impact_raw = 0
             route_summary = routing

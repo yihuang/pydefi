@@ -11,7 +11,7 @@ from typing import Any
 
 import aiohttp
 
-from pydefi._math import slippage_to_fraction
+from pydefi._math import apply_slippage, slippage_to_fraction
 from pydefi.aggregator.base import AggregatorQuote
 from pydefi.exceptions import AggregatorError
 from pydefi.types import Address, SwapRoute, SwapStep, Token, TokenAmount
@@ -124,8 +124,7 @@ class ZeroX:
         data = await self._get("swap/v1/quote", params)
 
         buy_amount = int(data["buyAmount"])
-        slippage_factor = 10_000 - slippage_bps
-        min_amount_out_raw = buy_amount * slippage_factor // 10_000
+        min_amount_out_raw = apply_slippage(buy_amount, slippage_bps)
         gas_estimate = int(data.get("estimatedGas", data.get("gas", 0)))
         price_impact_raw = float(data.get("estimatedPriceImpact", "0"))
 

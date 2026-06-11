@@ -11,7 +11,7 @@ from typing import Any
 
 import aiohttp
 
-from pydefi._math import slippage_to_percent
+from pydefi._math import apply_slippage, slippage_to_percent
 from pydefi._utils import encode_address
 from pydefi.aggregator.base import AggregatorQuote
 from pydefi.exceptions import AggregatorError
@@ -148,8 +148,7 @@ class OpenOcean:
         result = data["data"]
 
         out_amount = int(result["outAmount"])
-        slippage_factor = 10_000 - slippage_bps
-        min_amount_out_raw = out_amount * slippage_factor // 10_000
+        min_amount_out_raw = apply_slippage(out_amount, slippage_bps)
         gas_estimate = int(result.get("estimatedGas", 0))
 
         return AggregatorQuote(
@@ -204,8 +203,7 @@ class OpenOcean:
         result = data["data"]
 
         out_amount = int(result["outAmount"])
-        slippage_factor = 10_000 - slippage_bps
-        min_amount_out_raw = out_amount * slippage_factor // 10_000
+        min_amount_out_raw = apply_slippage(out_amount, slippage_bps)
 
         gas_estimate = int(result.get("estimatedGas", 0))
         tx_info = result
