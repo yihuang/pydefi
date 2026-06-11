@@ -162,12 +162,6 @@ class TestStargate:
             sg._pool_id(unknown_token)
 
     def test_apply_slippage(self):
-        sg = Stargate(
-            w3=None,
-            src_chain_id=1,
-            dst_chain_id=42161,
-            router_address=STARGATE_ROUTER_ETH,
-        )
         assert apply_slippage(1_000_000, 50) == 995_000
         assert apply_slippage(1_000_000, 0) == 1_000_000
 
@@ -206,12 +200,7 @@ class TestStargate:
 
 class TestAcross:
     def test_protocol_name(self):
-        ac = Across(
-            w3=None,
-            src_chain_id=1,
-            dst_chain_id=42161,
-            spoke_pool_address=SPOKE_POOL_ETH,
-        )
+        ac = Across(w3=None, src_chain_id=1, dst_chain_id=42161, spoke_pool_address=SPOKE_POOL_ETH)
         assert ac.protocol_name == "Across"
 
     def test_chain_ids_stored(self):
@@ -258,12 +247,6 @@ class TestAcross:
         assert quote.estimated_time_seconds == 120
 
     def test_apply_slippage(self):
-        ac = Across(
-            w3=None,
-            src_chain_id=1,
-            dst_chain_id=42161,
-            spoke_pool_address=SPOKE_POOL_ETH,
-        )
         result = apply_slippage(1_000_000, 50)
         assert result == 995_000
 
@@ -680,12 +663,7 @@ OFT_TOKEN_ARB_ALT = Token(
 
 class TestLayerZeroOFT:
     def test_protocol_name(self):
-        oft = LayerZeroOFT(
-            w3=None,
-            src_chain_id=1,
-            dst_chain_id=42161,
-            oft_address=OFT_ADDRESS,
-        )
+        oft = LayerZeroOFT(w3=None, src_chain_id=1, dst_chain_id=42161, oft_address=OFT_ADDRESS)
         assert oft.protocol_name == "LayerZeroOFT"
 
     def test_chain_ids_stored(self):
@@ -750,12 +728,6 @@ class TestLayerZeroOFT:
         assert result[12:] == bytes(addr)
 
     def test_apply_slippage(self):
-        oft = LayerZeroOFT(
-            w3=None,
-            src_chain_id=1,
-            dst_chain_id=42161,
-            oft_address=OFT_ADDRESS,
-        )
         assert apply_slippage(1_000_000, 50) == 995_000
         assert apply_slippage(1_000_000, 0) == 1_000_000
 

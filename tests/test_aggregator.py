@@ -72,12 +72,10 @@ class TestOneInch:
         assert headers["Authorization"] == "Bearer mykey"
 
     def test_slippage_to_percent(self):
-        client = OneInch(chain_id=1)
         assert slippage_to_percent(50) == 0.5
         assert slippage_to_percent(100) == 1.0
 
     def test_slippage_to_fraction(self):
-        client = OneInch(chain_id=1)
         assert slippage_to_fraction(50) == 0.005
 
     @pytest.mark.asyncio
@@ -278,7 +276,6 @@ class TestUniswapAPI:
         assert headers["Origin"] == "https://app.uniswap.org"
 
     def test_slippage_to_percent(self):
-        client = UniswapAPI(chain_id=1)
         assert slippage_to_percent(50) == 0.5
         assert slippage_to_percent(100) == 1.0
 
@@ -505,7 +502,6 @@ class TestOKX:
         assert headers["OK-ACCESS-KEY"] == "mykey"
 
     def test_slippage_to_percent(self):
-        client = OKX(chain_id=1)
         assert slippage_to_percent(50) == 0.5
         assert slippage_to_percent(100) == 1.0
 
@@ -626,7 +622,6 @@ class TestOpenOcean:
         assert "quote" in url
 
     def test_slippage_to_percent(self):
-        client = OpenOcean(chain_id=1)
         assert slippage_to_percent(50) == 0.5
         assert slippage_to_percent(100) == 1.0
 

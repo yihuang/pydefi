@@ -451,7 +451,6 @@ class TestGeckoTerminal:
             reserve0=1_000 * 10**18,
             reserve1=2_000_000 * 10**6,
         )
-        client = GeckoTerminal(chain_id=ChainId.ETHEREUM)
         graph = build_graph([pool])
         assert len(graph.edges_from(WETH)) == 1
         assert len(graph.edges_from(USDC)) == 1
