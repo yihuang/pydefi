@@ -113,11 +113,9 @@ _CONTRACTS: dict[str, dict[int, str]] = {
         _ETH: "0x61fFE014bA17989E743c5F6cB21bF9697530B21e",
         _SEP: "0xEd1f6473345F45b75F8179591dd5bA1888cf2FB3",
     },  # QuoterV2
-    # UNISWAP_V3_FACTORY and UNISWAP_V4_POOL_MANAGER / _STATE_VIEW / _QUOTER are
-    # generated per-chain from @uniswap/sdk-core into uniswap.json (see
+    # UNISWAP_V3_FACTORY, UNISWAP_V4_POOL_MANAGER / _STATE_VIEW / _QUOTER and
+    # UNIVERSAL_ROUTER are generated per-chain into uniswap.json (see
     # update.sh) and merged below.
-    # Universal Router is not in sdk-core, so it stays pinned here.
-    "UNIVERSAL_ROUTER": {_ETH: "0x66a9893cC07D91D95644AEDD05D03f95e1dBA8Af"},
     # Well-known Uniswap V3 pools
     "POOL_WETH_USDC_500": {_ETH: "0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640"},  # 0.05%
     "POOL_WETH_USDC_3000": {_ETH: "0x8ad599c3A0ff1De082011EFDDc58f1908eb6e6D8"},  # 0.30%

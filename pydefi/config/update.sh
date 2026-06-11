@@ -67,12 +67,15 @@ deno eval 'import { addressesRegistry } from "npm:@morpho-org/blue-sdk"; import 
     }' \
   > morpho.json
 
-# Uniswap V3 factory + V4 PoolManager / StateView / Quoter, per chain (uniswap.json).
-# Source: @uniswap/sdk-core's CHAIN_TO_ADDRESSES_MAP. Only ABI-compatible fields are emitted;
-# the V3 router/quoter and UniversalRouter stay pinned in deployments.py.
+# Uniswap V3 factory + V4 PoolManager / StateView / Quoter + UniversalRouter, per chain (uniswap.json).
+# Source: @uniswap/sdk-core's CHAIN_TO_ADDRESSES_MAP, plus
+# @uniswap/universal-router-sdk for the UniversalRouter (not in sdk-core).
+# Only routers >= 2.1.1 are emitted (newest per chain) — older V2_0 routers
+# use the pre-minHopPriceX36 V4 structs and would misdecode pydefi's calldata.
 echo "Fetching Uniswap V3/V4 addresses"
 deno eval '
 import { CHAIN_TO_ADDRESSES_MAP as M } from "https://esm.sh/@uniswap/sdk-core@7";
+import { UNIVERSAL_ROUTER_ADDRESS, UniversalRouterVersion } from "https://esm.sh/@uniswap/universal-router-sdk@5";
 const FIELDS = {
   UNISWAP_V3_FACTORY: "v3CoreFactoryAddress",
   UNISWAP_V4_POOL_MANAGER: "v4PoolManagerAddress",
@@ -84,6 +87,17 @@ for (const [name, field] of Object.entries(FIELDS)) {
   const m = {};
   for (const [cid, a] of Object.entries(M)) if (a[field]) m[cid] = a[field];
   out[name] = m;
+}
+out.UNIVERSAL_ROUTER = {};
+for (const cid of Object.keys(M)) {
+  for (const v of [UniversalRouterVersion.V2_2_0, UniversalRouterVersion.V2_1_1]) {
+    try {
+      out.UNIVERSAL_ROUTER[cid] = UNIVERSAL_ROUTER_ADDRESS(v, Number(cid));
+      break;
+    } catch {
+      // chain has no UniversalRouter of this generation
+    }
+  }
 }
 console.log(JSON.stringify(out));
 ' \
