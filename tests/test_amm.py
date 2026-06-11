@@ -10,9 +10,9 @@ from pydefi.amm.uniswap_v2 import UniswapV2
 from pydefi.amm.uniswap_v3 import UniswapV3
 from pydefi.amm.universal_router import (
     ADDRESS_THIS,
-    CONTRACT_BALANCE_V3,
-    CONTRACT_BALANCE_V4,
+    CONTRACT_BALANCE,
     MSG_SENDER,
+    OPEN_DELTA,
     UNIVERSAL_ROUTER_ADDRESSES,
     RouterCommand,
     UniversalRouter,
@@ -254,8 +254,11 @@ def test_v4_action_values():
 
 
 def test_contract_balance_sentinels():
-    assert CONTRACT_BALANCE_V3 == (1 << 256) - 1
-    assert CONTRACT_BALANCE_V4 == (1 << 128) - 1
+    # v4-periphery ActionConstants: one CONTRACT_BALANCE sentinel (1 << 255)
+    # shared by V2/V3 swap amounts and V4 SETTLE amounts; OPEN_DELTA (0) is
+    # the V4 swap-amount sentinel.
+    assert CONTRACT_BALANCE == 1 << 255
+    assert OPEN_DELTA == 0
 
 
 class TestUniversalRouterConstants:

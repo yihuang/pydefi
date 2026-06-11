@@ -55,16 +55,17 @@ MSG_SENDER: str = "0x0000000000000000000000000000000000000001"
 ADDRESS_THIS: str = "0x0000000000000000000000000000000000000002"
 
 # ---------------------------------------------------------------------------
-# Intermediate-hop sentinel amounts
+# Intermediate-hop sentinel amounts (v4-periphery ActionConstants)
 # ---------------------------------------------------------------------------
 
-#: Pass as ``amount_in`` for a V2 or V3 intermediate hop to instruct the router
-#: to spend its entire ERC-20 balance of the input token (``type(uint256).max``).
-CONTRACT_BALANCE_V3: int = (1 << 256) - 1
+#: ``ActionConstants.CONTRACT_BALANCE``: as a V2/V3 ``amount_in`` the router
+#: spends its entire ERC-20 balance; as a V4 ``SETTLE`` amount it settles its
+#: entire currency balance into the PoolManager.
+CONTRACT_BALANCE: int = 1 << 255
 
-#: Pass as ``amount_in`` for a V4 intermediate hop (``type(uint128).max``).
-#: The V4 router replaces this with the router's full currency balance.
-CONTRACT_BALANCE_V4: int = (1 << 128) - 1
+#: ``ActionConstants.OPEN_DELTA``: as a V4 swap amount, consume the open
+#: PoolManager delta (e.g. the credit created by a preceding ``SETTLE``).
+OPEN_DELTA: int = 0
 
 # ---------------------------------------------------------------------------
 # Pool hop descriptors
@@ -979,8 +980,8 @@ class UniversalRouter:
                 hooks, hookData)`` tuples — one per hop.  The last entry's
                 *intermediateCurrency* is the final output token.
             amount_in: Exact input amount (raw units).  Pass
-                :data:`CONTRACT_BALANCE_V4` for intermediate segments where
-                the router should spend its entire balance.
+                :data:`OPEN_DELTA` for intermediate segments to consume the
+                input-currency credit created by a preceding ``SETTLE``.
             amount_out_minimum: Minimum acceptable output amount (raw units).
 
         Returns:
@@ -1532,7 +1533,7 @@ class UniversalRouter:
             if isinstance(first_hop, V2Hop):
                 v2_segment: list[V2Hop] = [h for h in segment if isinstance(h, V2Hop)]
                 seg_path = [v2_segment[0].token_in] + [h.token_out for h in v2_segment]
-                seg_amount_in = amount_in.amount if is_first else CONTRACT_BALANCE_V3
+                seg_amount_in = amount_in.amount if is_first else CONTRACT_BALANCE
                 input_data = self.encode_v2_swap_exact_in(
                     seg_recipient,
                     seg_amount_in,
@@ -1547,7 +1548,7 @@ class UniversalRouter:
                 v3_segment: list[V3Hop] = [h for h in segment if isinstance(h, V3Hop)]
                 seg_tokens = [v3_segment[0].token_in] + [h.token_out for h in v3_segment]
                 seg_fees = [h.fee for h in v3_segment]
-                seg_amount_in = amount_in.amount if is_first else CONTRACT_BALANCE_V3
+                seg_amount_in = amount_in.amount if is_first else CONTRACT_BALANCE
                 encoded_path = UniswapV3._encode_path(seg_tokens, seg_fees)
                 input_data = self.encode_v3_swap_exact_in(
                     seg_recipient,
@@ -1563,27 +1564,40 @@ class UniversalRouter:
                 v4_segment: list[V4Hop] = [h for h in segment if isinstance(h, V4Hop)]
                 seg_currency_in = v4_segment[0].token_in.address
                 path_keys = [(h.token_out.address, h.fee, h.tick_spacing, h.hooks, h.hook_data) for h in v4_segment]
-                seg_amount_in = amount_in.amount if is_first else CONTRACT_BALANCE_V4
                 seg_addr_out = v4_segment[-1].token_out.address
-
-                swap_params = self.encode_v4_exact_in_params(
-                    currency_in=seg_currency_in,
-                    path=path_keys,
-                    amount_in=seg_amount_in,
-                    amount_out_minimum=seg_amount_out_min,
-                )
-                if seg_payer_is_user:
-                    settle_action = V4Action.SETTLE_ALL
-                    settle_params = self.encode_v4_settle_all_params(seg_currency_in, amount_in.amount)
-                else:
-                    settle_action = V4Action.SETTLE
-                    settle_params = self.encode_v4_settle_params(seg_currency_in, 0, payer_is_user=False)
                 take_params = self.encode_v4_take_params(seg_addr_out, seg_recipient, 0)
 
-                v4_input = self.encode_v4_swap_actions(
-                    [V4Action.SWAP_EXACT_IN, settle_action, V4Action.TAKE],
-                    [swap_params, settle_params, take_params],
-                )
+                if is_first:
+                    swap_params = self.encode_v4_exact_in_params(
+                        currency_in=seg_currency_in,
+                        path=path_keys,
+                        amount_in=amount_in.amount,
+                        amount_out_minimum=seg_amount_out_min,
+                    )
+                    if seg_payer_is_user:
+                        settle_action = V4Action.SETTLE_ALL
+                        settle_params = self.encode_v4_settle_all_params(seg_currency_in, amount_in.amount)
+                    else:
+                        settle_action = V4Action.SETTLE
+                        settle_params = self.encode_v4_settle_params(seg_currency_in, 0, payer_is_user=False)
+                    v4_actions = [V4Action.SWAP_EXACT_IN, settle_action, V4Action.TAKE]
+                    v4_params = [swap_params, settle_params, take_params]
+                else:
+                    # Mid-route: a V4 swap can't see the ERC-20 the previous
+                    # command left in the router, so SETTLE(CONTRACT_BALANCE)
+                    # moves it into the PoolManager first and the swap consumes
+                    # that credit via OPEN_DELTA (router-sdk action order).
+                    settle_params = self.encode_v4_settle_params(seg_currency_in, CONTRACT_BALANCE, payer_is_user=False)
+                    swap_params = self.encode_v4_exact_in_params(
+                        currency_in=seg_currency_in,
+                        path=path_keys,
+                        amount_in=OPEN_DELTA,
+                        amount_out_minimum=seg_amount_out_min,
+                    )
+                    v4_actions = [V4Action.SETTLE, V4Action.SWAP_EXACT_IN, V4Action.TAKE]
+                    v4_params = [settle_params, swap_params, take_params]
+
+                v4_input = self.encode_v4_swap_actions(v4_actions, v4_params)
                 commands.append(RouterCommand.V4_SWAP)
                 inputs.append(v4_input)
 

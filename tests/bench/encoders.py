@@ -26,8 +26,18 @@ from pydefi.abi.dex_aggregator import (
     RouterPath,
 )
 from pydefi.abi.vm import DeFiVM
-from pydefi.amm.universal_router import UniversalRouter
-from pydefi.pathfinder.graph import PoolEdge, V3PoolEdge
+from pydefi.amm.uniswap_v3 import UniswapV3
+from pydefi.amm.universal_router import (
+    PoolHop,
+    RouterCommand,
+    UniversalRouter,
+    V2Hop,
+    V3Hop,
+    V4Action,
+    V4Hop,
+)
+from pydefi.amm.v4_pool_key import sort_currencies
+from pydefi.pathfinder.graph import PoolEdge, V3PoolEdge, V4PoolEdge
 from pydefi.types import (
     Address,
     RouteDAG,
@@ -58,6 +68,25 @@ class EncodedTx:
     value: int
 
 
+def _edge_to_hop(edge) -> PoolHop:
+    """Map a pathfinder pool edge to the matching Universal Router hop. V4 hops
+    rebuild the PoolKey from the edge, so dynamic-fee pools (no static key fee
+    on the edge) are refused."""
+    if isinstance(edge, V4PoolEdge):
+        if edge.lp_fee_pips & 0x800000:
+            raise ValueError("_edge_to_hop: dynamic-fee V4 pools carry no static key fee")
+        return V4Hop(
+            token_in=edge.token_in,
+            token_out=edge.token_out,
+            fee=edge.lp_fee_pips,
+            tick_spacing=edge.tick_spacing,
+            hooks=edge.hooks,
+        )
+    if isinstance(edge, V3PoolEdge):
+        return V3Hop(token_in=edge.token_in, token_out=edge.token_out, fee=edge.fee_bps * 100)
+    return V2Hop(token_in=edge.token_in, token_out=edge.token_out)
+
+
 def encode_universal_router(
     dag: RouteDAG,
     *,
@@ -67,45 +96,164 @@ def encode_universal_router(
     router_address: Address,
     deadline: int,
 ) -> EncodedTx:
-    """Linear pure-V3 via UR V3_SWAP_EXACT_IN. Permit2 setup happens in the
-    bench fixture; not counted in gas."""
+    """Linear V2/V3/V4 (or mixed) path via the Universal Router. Single hops use
+    the dedicated single-swap encodings; multi-hop paths go through
+    ``build_multihop_exact_in_transaction``, which merges consecutive
+    same-protocol hops into one command per segment. Permit2 setup happens in
+    the bench fixture; not counted in gas."""
     if dag.token_in is None:
         raise ValueError("encode_universal_router: DAG missing token_in")
-    if not _is_pure_v3_linear(dag):
-        raise ValueError("encode_universal_router: pure-V3 linear paths only")
+    if not all(isinstance(a, RouteSwap) for a in dag.actions):
+        raise ValueError("encode_universal_router: linear paths only (no splits)")
 
     ur = UniversalRouter(router_address)
-    if len(dag.actions) == 1:
-        swap = dag.actions[0]
-        assert isinstance(swap, RouteSwap)
-        assert isinstance(swap.pool, V3PoolEdge)
+    total_in = TokenAmount(token=dag.token_in, amount=amount_in)
+    hops = [_edge_to_hop(a.pool) for a in dag.actions]
+    if len(hops) == 1 and isinstance(hops[0], V3Hop):
         tx = ur.build_v3_exact_in_transaction(
-            amount_in=TokenAmount(token=dag.token_in, amount=amount_in),
-            token_out=swap.token_out,
+            amount_in=total_in,
+            token_out=hops[0].token_out,
             recipient=recipient,
             amount_out_minimum=min_amount_out,
-            fee=swap.pool.fee_bps * 100,
+            fee=hops[0].fee,
             deadline=deadline,
-            payer_is_user=True,
+        )
+    elif len(hops) == 1 and isinstance(hops[0], V4Hop):
+        tx = ur.build_v4_exact_in_single_transaction(
+            amount_in=total_in,
+            token_out=hops[0].token_out,
+            fee=hops[0].fee,
+            tick_spacing=hops[0].tick_spacing,
+            recipient=recipient,
+            amount_out_minimum=min_amount_out,
+            hooks=hops[0].hooks,
+            deadline=deadline,
         )
     else:
-        tokens = [dag.token_in]
-        fees: list[int] = []
-        for action in dag.actions:
-            assert isinstance(action, RouteSwap)
-            assert isinstance(action.pool, V3PoolEdge)
-            fees.append(action.pool.fee_bps * 100)
-            tokens.append(action.token_out)
-        tx = ur.build_v3_multihop_exact_in_transaction(
-            amount_in=TokenAmount(token=dag.token_in, amount=amount_in),
-            path=tokens,
-            fees=fees,
+        tx = ur.build_multihop_exact_in_transaction(
+            amount_in=total_in,
+            hops=hops,
             recipient=recipient,
             amount_out_minimum=min_amount_out,
             deadline=deadline,
-            payer_is_user=True,
         )
     return EncodedTx(to=tx.to, data=bytes(tx.data), value=0)
+
+
+def _split_leg_edges(dag: RouteDAG, encoder_name: str) -> list:
+    """Validate a one-action single-hop split DAG and return one edge per leg."""
+    if dag.token_in is None:
+        raise ValueError(f"{encoder_name}: DAG missing token_in")
+    if len(dag.actions) != 1 or not isinstance(dag.actions[0], RouteSplit):
+        raise ValueError(f"{encoder_name}: DAG must be a single RouteSplit action")
+    split = dag.actions[0]
+    edges = []
+    for leg in split.legs:
+        if len(leg.actions) != 1 or not isinstance(leg.actions[0], RouteSwap):
+            raise ValueError(f"{encoder_name}: each split leg must be a single swap")
+        edges.append(leg.actions[0].pool)
+    return edges
+
+
+def _split_amounts(amount_in: int, legs) -> list[int]:
+    """Per-leg input amounts: floor by fraction_bps, remainder to the last leg."""
+    amounts = [amount_in * leg.fraction_bps // 10_000 for leg in legs]
+    amounts[-1] += amount_in - sum(amounts)
+    return amounts
+
+
+def encode_universal_router_v4_split(
+    dag: RouteDAG,
+    *,
+    amount_in: int,
+    min_amount_out: int,
+    recipient: Address,
+    router_address: Address,
+    deadline: int,
+) -> EncodedTx:
+    """Single-hop split across V4 pools as ONE ``V4_SWAP`` command: all legs run
+    in one PoolManager lock, then one ``SETTLE_ALL`` pulls the total input via
+    Permit2 and one take pays out — no per-leg transfers. A non-zero
+    ``min_amount_out`` is enforced whole-route via ``TAKE_ALL``, which pays the
+    transaction sender (no recipient-carrying take-with-minimum action exists);
+    with ``min_amount_out == 0`` the output goes to ``recipient`` via ``TAKE``."""
+    edges = _split_leg_edges(dag, "encode_universal_router_v4_split")
+    split = dag.actions[0]
+    assert isinstance(split, RouteSplit)
+    token_in = dag.token_in
+    assert token_in is not None
+    token_out = split.token_out
+    currency0, currency1 = sort_currencies(token_in.address, token_out.address)
+
+    ur = UniversalRouter(router_address)
+    actions: list[V4Action | int] = []
+    params: list[bytes] = []
+    for edge, leg_amount in zip(edges, _split_amounts(amount_in, split.legs)):
+        if not isinstance(edge, V4PoolEdge):
+            raise ValueError("encode_universal_router_v4_split: V4 pools only")
+        actions.append(V4Action.SWAP_EXACT_IN_SINGLE)
+        params.append(
+            ur.encode_v4_exact_in_single_params(
+                currency0=currency0,
+                currency1=currency1,
+                fee=edge.lp_fee_pips,
+                tick_spacing=edge.tick_spacing,
+                hooks=edge.hooks,
+                zero_for_one=token_in.address == currency0,
+                amount_in=leg_amount,
+                amount_out_minimum=0,
+            )
+        )
+
+    actions.append(V4Action.SETTLE_ALL)
+    params.append(ur.encode_v4_settle_all_params(token_in.address, amount_in))
+    if min_amount_out > 0:
+        actions.append(V4Action.TAKE_ALL)
+        params.append(ur.encode_v4_take_all_params(token_out.address, min_amount_out))
+    else:
+        actions.append(V4Action.TAKE)
+        params.append(ur.encode_v4_take_params(token_out.address, recipient, 0))
+
+    v4_input = ur.encode_v4_swap_actions(actions, params)
+    calldata = ur.build_execute_calldata([RouterCommand.V4_SWAP], [v4_input], deadline)
+    return EncodedTx(to=router_address, data=bytes(calldata), value=0)
+
+
+def encode_universal_router_v3_split(
+    dag: RouteDAG,
+    *,
+    amount_in: int,
+    min_amount_out: int,
+    recipient: Address,
+    router_address: Address,
+    deadline: int,
+) -> EncodedTx:
+    """Single-hop split across V3 pools as one ``V3_SWAP_EXACT_IN`` command per
+    leg — the UR split baseline. Like SR02.multicall there is no whole-route
+    output check, so a non-zero ``min_amount_out`` is refused rather than
+    silently weakened to per-leg zero (same semantics as :func:`encode_uniswap`)."""
+    if min_amount_out > 0:
+        raise ValueError(
+            "encode_universal_router_v3_split: per-command V3 splits cannot enforce a whole-route min_amount_out"
+        )
+    edges = _split_leg_edges(dag, "encode_universal_router_v3_split")
+    split = dag.actions[0]
+    assert isinstance(split, RouteSplit)
+    token_in = dag.token_in
+    assert token_in is not None
+
+    ur = UniversalRouter(router_address)
+    commands: list[RouterCommand | int] = []
+    inputs: list[bytes] = []
+    for edge, leg_amount in zip(edges, _split_amounts(amount_in, split.legs)):
+        if not isinstance(edge, V3PoolEdge) or isinstance(edge, V4PoolEdge):
+            raise ValueError("encode_universal_router_v3_split: V3 pools only")
+        path = UniswapV3._encode_path([token_in, split.token_out], [edge.fee_bps * 100])
+        commands.append(RouterCommand.V3_SWAP_EXACT_IN)
+        inputs.append(ur.encode_v3_swap_exact_in(recipient, leg_amount, 0, path, payer_is_user=True))
+
+    calldata = ur.build_execute_calldata(commands, inputs, deadline)
+    return EncodedTx(to=router_address, data=bytes(calldata), value=0)
 
 
 # ---------------------------------------------------------------------------

@@ -21,9 +21,7 @@ from pathlib import Path
 from typing import Callable
 
 import pytest
-from eth_abi.abi import encode as abi_encode
 from eth_contract.erc20 import ERC20
-from eth_utils.abi import function_signature_to_4byte_selector
 from hexbytes import HexBytes
 from web3 import AsyncWeb3
 
@@ -57,6 +55,7 @@ from tests.live.anvil_helpers import (
     erc20_approve,
     fund_usdc,
     impersonate,
+    permit2_approve,
     send_ok,
     set_balance,
     wrap_eth,
@@ -71,7 +70,9 @@ _DEADLINE: int = 2**63 - 1
 _TEST_USER: Address = ETH_WHALE
 _MAX_UINT: int = 2**256 - 1
 
-_FORK_BLOCK: int = 25_000_000
+# Must be past 25_195_294: the registry's >= 2.1.1 UniversalRouter doesn't exist
+# before that, and calls to a codeless address no-op with status 1.
+_FORK_BLOCK: int = 25_250_000
 
 POOL_WETH_USDC_10000: Address = Address("0x7BeA39867e4169DBe237d55C8242a8f2fcDcc387")
 POOL_WETH_DAI_3000: Address = Address("0xC2e9F25Be6257c210d7Adf0D4Cd6E3E881ba25f8")
@@ -80,8 +81,6 @@ POOL_USDC_USDT_100: Address = Address("0x3416cF6C708Da44DB2624D63ea0AAef7113527C
 AAVE_V3_POOL_ETHEREUM: Address = Address("0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2")
 OKX_ROUTER: Address = Address("0x5E1f62Dac767b0491e3CE72469C217365D5B48cC")
 OKX_TOKEN_APPROVE: Address = Address("0x40aA958dd87FC8305b97f2BA922CDdCa374bcD7f")
-# Permit2 — same address on every chain.
-PERMIT2_ETHEREUM: str = "0x000000000022D473030F116dDEE9F6B43aC78BA3"
 
 
 @dataclass(frozen=True)
@@ -125,6 +124,11 @@ async def bench_fork_w3():
             "--port",
             str(port),
             "--silent",
+            # Throttle upstream requests — free-tier RPCs 408 on bursts of uncached reads.
+            "--compute-units-per-second",
+            "150",
+            "--retries",
+            "10",
         ],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -195,20 +199,7 @@ async def bench_ctx(bench_fork_w3: AsyncWeb3) -> dict:
     await erc20_approve(w3, WETH.address, _TEST_USER, vm_address, _MAX_UINT)
     await erc20_approve(w3, WETH.address, _TEST_USER, OKX_TOKEN_APPROVE, _MAX_UINT)
     await erc20_approve(w3, WETH.address, _TEST_USER, UNISWAP_V3_ROUTER, _MAX_UINT)
-    # UR pulls via Permit2: ERC20.approve(Permit2), then Permit2.approve(token, UR).
-    permit2_addr = Address(PERMIT2_ETHEREUM)
-    await erc20_approve(w3, WETH.address, _TEST_USER, permit2_addr, _MAX_UINT)
-    permit2_selector = function_signature_to_4byte_selector("approve(address,address,uint160,uint48)")
-    permit2_args = abi_encode(
-        ["address", "address", "uint160", "uint48"],
-        [bytes(WETH.address), bytes(UNIVERSAL_ROUTER), (1 << 160) - 1, (1 << 48) - 1],
-    )
-    await send_ok(
-        w3,
-        _TEST_USER,
-        {"to": permit2_addr, "data": "0x" + permit2_selector.hex() + permit2_args.hex(), "value": 0},
-        "Permit2.approve(WETH, UR, max, max)",
-    )
+    await permit2_approve(w3, _TEST_USER, WETH.address, UNIVERSAL_ROUTER)
 
     # USDC for cross-protocol V3+V2 split (USDC→DAI). 6 decimals.
     await fund_usdc(w3, USDC.address, _TEST_USER, 10_000 * 10**6)
