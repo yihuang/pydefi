@@ -30,6 +30,6 @@ This file only states principles that aren't already covered there.
 
 5. **Thin abstractions on top of primitives.** Build pure functions first. Only add a class wrapper when state or lifecycle management justifies it. A convenience class that delegates to module-level functions is fine.
 
-6. **Pure functions are independently testable.** Math helpers (`apply_slippage`, constant-product formulas, rate conversions) belong at module level as pure functions — not as `@staticmethod` inside a protocol class. They should be importable and testable without instantiating a client.
+6. **Pure functions are independently testable.** Math helpers (`apply_slippage`, constant-product formulas, rate conversions, calldata builders) belong at module level as pure functions — not as `@staticmethod` inside a protocol class. They should be importable and testable without instantiating a client.
 
 7. **No duplicate code.** A single `pydefi/_math.py` for shared arithmetic (`apply_slippage`, `slippage_to_fraction`, `slippage_to_percent`), not copy-pasted into every base class.
