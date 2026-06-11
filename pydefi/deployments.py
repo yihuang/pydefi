@@ -83,6 +83,21 @@ _TOKENS: dict[str, dict] = {
 # { name: { chain_id: address } }
 
 _CONTRACTS: dict[str, dict[int, str]] = {
+    # Uniswap Calibur — audited EIP-7702 delegate singleton, one address on every
+    # chain it is deployed on (per the Uniswap smart-wallet deployments page).
+    "CALIBUR": {
+        chain: "0x000000009B1D0aF20D8C6d0A44e162d11F9b8f00"
+        for chain in (_ETH, ChainId.OPTIMISM, ChainId.BSC, ChainId.UNICHAIN, ChainId.BASE, ChainId.ARBITRUM, _SEP)
+    },
+    # Safe v1.4.1 canonical deployments (github.com/safe-global/safe-deployments).
+    "SAFE_PROXY_FACTORY": {
+        chain: "0x4e1DCf7AD4e460CfD30791CCC4F9c8a4f820ec67"
+        for chain in (_ETH, ChainId.OPTIMISM, ChainId.BSC, ChainId.BASE, ChainId.ARBITRUM, _SEP)
+    },
+    "SAFE_SINGLETON": {
+        chain: "0x41675C099F32341bf84BFc5382aF534df5C7461a"
+        for chain in (_ETH, ChainId.OPTIMISM, ChainId.BSC, ChainId.BASE, ChainId.ARBITRUM, _SEP)
+    },
     # Uniswap V2
     "UNISWAP_V2_ROUTER": {
         _ETH: "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D",
