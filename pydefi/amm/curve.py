@@ -614,6 +614,7 @@ class CurveMetaPool:
         self._base = base
 
         c = CURVE_POOL
+        is_ng = self._kind is CurvePoolKind.STABLE_NG
         if self._kind is CurvePoolKind.STABLE_LEGACY:
             # Legacy meta-pools may not expose A_precise at all.
             amp = await c.fns.A().call(self.w3, to=self.pool_address)
@@ -621,15 +622,24 @@ class CurveMetaPool:
         else:
             amp = await c.fns.A_precise().call(self.w3, to=self.pool_address)
             a_precision = curve_math.A_PRECISION
-        virtual_price = await c.fns.get_virtual_price().call(self.w3, to=self.base_pool.router_address)
+        if is_ng:
+            # NG metas expose stored_rates, which already folds the base pool's
+            # virtual price into rates[1] (and any oracle rate for coin 0).
+            rates = list(await c.fns.stored_rates().call(self.w3, to=self.pool_address))
+            offpeg = await c.fns.offpeg_fee_multiplier().call(self.w3, to=self.pool_address)
+        else:
+            virtual_price = await c.fns.get_virtual_price().call(self.w3, to=self.base_pool.router_address)
+            rates = [10 ** (36 - self.primary_token.decimals), virtual_price]
+            offpeg = 0
         self._meta = {
             "balances": [await c.fns.balances(k).call(self.w3, to=self.pool_address) for k in range(2)],
             # rates[1] is the base LP token's price (its virtual price).
-            "rates": [10 ** (36 - self.primary_token.decimals), virtual_price],
+            "rates": rates,
             "amp": amp,
             "fee": await c.fns.fee().call(self.w3, to=self.pool_address),
             "a_precision": a_precision,
-            "ng_d_form": self._kind is CurvePoolKind.STABLE_NG,
+            "ng_d_form": is_ng,
+            "offpeg_fee_multiplier": offpeg,
         }
 
     def get_dy_underlying(self, token_in: Token, token_out: Token, amount_in: int) -> int:

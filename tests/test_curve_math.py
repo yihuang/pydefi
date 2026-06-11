@@ -254,6 +254,32 @@ class TestMetaPool:
         outs = [m.meta_get_dy_underlying(0, 2, amt * 10**18, META, META_BASE) for amt in (100, 1_000, 10_000)]
         assert strictly_increasing(outs)
 
+    def test_ng_dynamic_fee_matches_flat_at_parity(self):
+        # At parity the NG off-peg fee equals the base fee, so a balanced pool
+        # quotes identically with the multiplier on or off (0→2: no deposit leg).
+        ng_meta = {**META, "offpeg_fee_multiplier": 20_000_000_000}
+        dx = 1000 * 10**18
+        assert m.meta_get_dy_underlying(0, 2, dx, ng_meta, META_BASE) == m.meta_get_dy_underlying(
+            0, 2, dx, META, META_BASE
+        )
+
+    def test_ng_dynamic_fee_grows_when_imbalanced(self):
+        skewed = {**META, "balances": [80_000_000 * 10**18, 20_000_000 * 10**18]}
+        ng_skewed = {**skewed, "offpeg_fee_multiplier": 20_000_000_000}
+        dx = 1000 * 10**18
+        assert m.meta_get_dy_underlying(0, 2, dx, ng_skewed, META_BASE) < m.meta_get_dy_underlying(
+            0, 2, dx, skewed, META_BASE
+        )
+
+    def test_ng_skips_approximate_deposit_fee(self):
+        # Base coin → primary deposits into the base pool first; NG quotes the
+        # ideal mint (no ½-fee deduction), so it pays out slightly more.
+        ng_meta = {**META, "ng_d_form": True}
+        dx = 1000 * 10**6
+        assert m.meta_get_dy_underlying(2, 0, dx, ng_meta, META_BASE) > m.meta_get_dy_underlying(
+            2, 0, dx, META, META_BASE
+        )
+
 
 # ---------------------------------------------------------------------------
 # Pathfinder edges

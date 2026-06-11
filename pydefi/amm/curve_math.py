@@ -369,8 +369,14 @@ def meta_get_dy_underlying(i: int, j: int, dx: int, meta: dict, base: dict) -> i
     ``total_supply`` key.  Mirrors Curve's ``get_dy_underlying`` for USD/BTC
     factory meta-pools.
 
-    Vyper: ``SwapTemplateMeta.vy::get_dy_underlying`` (the factory MetaUSD
-    implementations, e.g. MIM/3CRV, use the same math).
+    Stable-NG metas differ in two ways, both keyed off the ``meta`` dict:
+    ``offpeg_fee_multiplier`` selects the off-peg dynamic fee, and
+    ``ng_d_form=True`` skips the factory metas' approximate ½-fee deduction on
+    the base-deposit leg (NG quotes the ideal mint).
+
+    Vyper: ``SwapTemplateMeta.vy::get_dy_underlying`` (factory MetaUSD
+    implementations, e.g. MIM/3CRV);
+    ``CurveStableSwapNGViews.vy::get_dy_underlying`` (Stable-NG metas).
     """
     rates = meta["rates"]
     amp, fee = meta["amp"], meta["fee"]
@@ -400,12 +406,16 @@ def meta_get_dy_underlying(i: int, j: int, dx: int, meta: dict, base: dict) -> i
             ng_d_form=base["ng_d_form"],
         )
         x = minted * rates[1] // PRECISION
-        x -= x * base["fee"] // (2 * FEE_DENOMINATOR)  # approximate deposit fee
+        if not ng:
+            x -= x * base["fee"] // (2 * FEE_DENOMINATOR)  # approximate deposit fee
         x += xp[1]
 
     d = stable_get_D(xp, amp, a_prec, ng_d_form=ng)
     y = stable_get_y(meta_i, meta_j, x, xp, amp, d, a_prec)
     dy = xp[meta_j] - y - 1
+    offpeg = meta.get("offpeg_fee_multiplier", 0)
+    if offpeg:
+        fee = stable_dynamic_fee((xp[meta_i] + x) // 2, (xp[meta_j] + y) // 2, fee, offpeg)
     dy -= fee * dy // FEE_DENOMINATOR
 
     if j == 0:
