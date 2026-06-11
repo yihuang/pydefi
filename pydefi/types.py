@@ -181,7 +181,7 @@ class SwapRoute:
     amount_in: TokenAmount
     amount_out: TokenAmount
     price_impact: Decimal = Decimal(0)
-    dag: "RouteDAG | None" = None
+    dag: RouteDAG | None = None
 
     def __post_init__(self) -> None:
         if not self.steps:
@@ -292,9 +292,6 @@ class RouteBridge:
 
 
 RouteAction: TypeAlias = RouteSwap | RouteSplit | RouteBridge
-
-# RouteDAG is defined in pydefi.pathfinder.dag and re-exported for backwards compatibility.
-# Make sure to import RouteDAG early in any module that uses it as a forward reference.
 
 
 @dataclass
