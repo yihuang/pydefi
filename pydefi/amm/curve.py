@@ -494,12 +494,19 @@ class CurvePool(BaseAMM):
         amount_out_raw = await self.get_dy(amount_in.token, token_out, amount_in.amount)
         amount_out = TokenAmount(token=token_out, amount=amount_out_raw)
 
+        # SwapStep.fee is in basis points; use the pool's real fee when state
+        # is loaded (mid_fee at parity for cryptoswap), else Curve's typical 4.
+        fee_bps = 4
+        if self._state is not None:
+            raw_fee = self._state["mid_fee" if self._kind.is_crypto else "fee"]
+            fee_bps = raw_fee * 10_000 // curve_math.FEE_DENOMINATOR
+
         step = SwapStep(
             token_in=amount_in.token,
             token_out=token_out,
             pool_address=self.router_address,
             protocol=self.protocol_name,
-            fee=400,  # Curve base fee is 0.04% (4 bps = 400 hundredths of a bp)
+            fee=fee_bps,
         )
 
         return SwapRoute(

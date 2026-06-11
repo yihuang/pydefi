@@ -287,6 +287,25 @@ class TestCurveEdges:
             impact = edge.estimate_price_impact(big)
             assert not impact.is_nan() and 0 < impact < 1
 
+    def test_zero_for_one_does_not_raise(self):
+        # Inherited PoolEdge.zero_for_one needs extra['is_token0_in'] and would
+        # raise; Curve edges fall back to coin-index ordering.
+        edge = CurveStableEdge(token_in=DAI, token_out=USDC, pool_address=ADDR, protocol="Curve", i=0, j=1, **THREEPOOL)
+        assert edge.zero_for_one(USDC.address) is True
+        back = CurveStableEdge(token_in=USDC, token_out=DAI, pool_address=ADDR, protocol="Curve", i=1, j=0, **THREEPOOL)
+        assert back.zero_for_one(DAI.address) is False
+
+    def test_edge_keys_unique_for_multi_coin_pool(self):
+        # A 3-coin pool yields several edges sharing (pool, token_in); the
+        # router's split index must key on token_out too, or edges overwrite
+        # each other and find_best_split resolves steps to the wrong edge.
+        from pydefi.pathfinder.router import _edge_key
+
+        graph = PoolGraph()
+        graph.add_curve_pool(_stub_pool(CurvePoolKind.STABLE_LEGACY))
+        keys = {_edge_key(e) for e in graph}
+        assert len(keys) == len(graph) == 6
+
     def test_add_curve_pool_sets_real_fee_bps(self):
         # Router copies edge.fee_bps into SwapStep.fee — it must reflect the
         # pool's actual fee, not the PoolEdge default of 30 bps.
@@ -354,6 +373,12 @@ class TestCurvePoolLocal:
         # With state loaded, get_dy must not touch w3 (which is None here).
         pool = _stub_pool(CurvePoolKind.STABLE_LEGACY)
         assert await pool.get_dy(DAI, USDC, 1000 * 10**18) == pool.get_dy_local(DAI, USDC, 1000 * 10**18)
+
+    async def test_build_swap_route_reports_fee_in_bps(self):
+        pool = _stub_pool(CurvePoolKind.STABLE_LEGACY)
+        route = await pool.build_swap_route(TokenAmount(token=DAI, amount=1000 * 10**18), USDC)
+        # SwapStep.fee is basis points: THREEPOOL's 1e6/1e10 fee is 1 bp.
+        assert route.steps[0].fee == THREEPOOL["fee"] * 10_000 // m.FEE_DENOMINATOR == 1
 
     def test_protocol_name_by_kind(self):
         assert CurvePool(w3=None, pool_address=ADDR, tokens=[DAI, USDC]).protocol_name == "Curve"

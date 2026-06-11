@@ -395,6 +395,13 @@ class _CurveEdgeBase(PoolEdge):
     j: int = 0
     balances: list[int] = field(default_factory=list)
 
+    def zero_for_one(self, token_out: Address) -> bool:
+        """Curve has no token0/token1 ordering; return ``i < j`` for callers
+        that key on direction.  Swap codegen uses ``exchange(i, j, …)``, which
+        doesn't need it.
+        """
+        return self.i < self.j
+
     @property
     def spot_price(self) -> Decimal:
         """Marginal price of ``token_out`` per ``token_in`` (probe of 1 unit)."""

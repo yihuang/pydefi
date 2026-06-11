@@ -8,7 +8,17 @@ can be computed locally from a pool-state snapshot, no RPC per quote.
 * **Cryptoswap / Curve V2** (:func:`crypto_get_dy`) — the ``newton_D`` /
   ``newton_y`` invariant with gamma (Twocrypto / Tricrypto).
 
-All functions use integer floor division to mirror the EVM exactly.
+All functions use integer floor division to mirror the EVM exactly.  Each
+function's docstring carries a ``Vyper:`` line naming the contract source it
+ports, in these canonical Curve repositories:
+
+* ``curve-contract`` — legacy plain pools (``contracts/pools/3pool/
+  StableSwap3Pool.vy``) and the factory/meta templates
+  (``contracts/pool-templates/{base,meta}/SwapTemplate{Base,Meta}.vy``).
+* ``stableswap-ng`` — ``contracts/main/CurveStableSwapNGViews.vy`` (NG quoting
+  lives in the Views contract, not the pool).
+* ``curve-crypto-contract`` — ``contracts/tricrypto/CurveCryptoMath3.vy`` /
+  ``CurveCryptoSwap.vy`` / ``CurveCryptoViews3.vy``.
 """
 
 from __future__ import annotations
@@ -45,6 +55,8 @@ def _xp_mem(rates: list[int], balances: list[int]) -> list[int]:
     ``xp[i] = rates[i] * balances[i] / PRECISION``.  For a plain pool the rate
     is ``10**(36 - decimals)`` (so every coin is scaled to 18 decimals); for a
     rate-stabilised pool it additionally folds in the oracle exchange rate.
+
+    Vyper: ``StableSwap3Pool.vy::_xp_mem`` (same shape in every stableswap).
     """
     return [r * b // PRECISION for r, b in zip(rates, balances)]
 
@@ -65,6 +77,10 @@ def stable_get_D(xp: list[int], amp: int, a_precision: int = A_PRECISION, *, ng_
 
     Returns:
         The invariant ``D``.
+
+    Vyper: ``StableSwap3Pool.vy::get_D`` (legacy, ``a_precision=1``);
+    ``SwapTemplateBase.vy::get_D`` (factory, ``A_PRECISION=100``);
+    ``CurveStableSwapNGViews.vy::get_D`` (``ng_d_form=True``).
     """
     n = len(xp)
     s = sum(xp)
@@ -103,6 +119,9 @@ def stable_get_y(
 
     Given that coin *i* will hold ``x`` (in normalised units), return the
     resulting normalised balance of coin *j* that keeps the invariant ``d``.
+
+    Vyper: ``StableSwap3Pool.vy::get_y`` / ``SwapTemplateBase.vy::get_y`` /
+    ``CurveStableSwapNGViews.vy::get_y`` (identical iteration in all three).
     """
     n = len(xp)
     if i == j:
@@ -138,6 +157,8 @@ def stable_dynamic_fee(xpi: int, xpj: int, fee: int, fee_multiplier: int) -> int
 
     When ``fee_multiplier <= FEE_DENOMINATOR`` the flat *fee* applies; otherwise
     the fee scales up as the two balances diverge from parity.
+
+    Vyper: ``CurveStableSwapNGViews.vy::_dynamic_fee``.
     """
     if fee_multiplier <= FEE_DENOMINATOR:
         return fee
@@ -180,6 +201,10 @@ def stable_get_dy(
 
     Returns:
         Raw output amount in coin *j*'s units (``0`` if the swap is infeasible).
+
+    Vyper: ``StableSwap3Pool.vy::get_dy`` (``legacy_fee_order=True``);
+    ``SwapTemplateBase.vy::get_dy`` (factory); ``CurveStableSwapNGViews.vy::
+    get_dy`` (NG, with the off-peg dynamic fee).
     """
     xp = _xp_mem(rates, balances)
     d = stable_get_D(xp, amp, a_precision, ng_d_form=ng_d_form)
@@ -223,6 +248,9 @@ def stable_get_dx(
 
     Returns:
         Raw input amount in coin *i*'s units (``0`` if the swap is infeasible).
+
+    Vyper: ``CurveStableSwapNGViews.vy::get_dx`` (older pools have no on-chain
+    ``get_dx``; the same inversion applies to every stableswap flavour).
     """
     xp = _xp_mem(rates, balances)
     d = stable_get_D(xp, amp, a_precision, ng_d_form=ng_d_form)
@@ -248,6 +276,8 @@ def stable_get_y_D(amp: int, i: int, xp: list[int], d: int, a_precision: int = A
 
     Unlike :func:`stable_get_y` (which fixes another coin's new balance), this
     fixes ``D`` directly — used by single-coin withdrawals.
+
+    Vyper: ``StableSwap3Pool.vy::get_y_D`` / ``SwapTemplateMeta.vy::get_y_D``.
     """
     n = len(xp)
     ann = amp * n
@@ -285,6 +315,9 @@ def stable_calc_token_amount(
 
     Matches Curve's ``calc_token_amount`` (the ideal, fee-excluding estimate);
     meta-pool pricing applies the approximate deposit/withdraw fee separately.
+
+    Vyper: ``StableSwap3Pool.vy::calc_token_amount`` /
+    ``SwapTemplateMeta.vy::calc_token_amount``.
     """
     d0 = stable_get_D(_xp_mem(rates, balances), amp, a_precision, ng_d_form=ng_d_form)
     new_balances = [b + a if is_deposit else b - a for b, a in zip(balances, amounts)]
@@ -305,7 +338,11 @@ def stable_calc_withdraw_one_coin(
     a_precision: int = A_PRECISION,
     ng_d_form: bool = False,
 ) -> int:
-    """Coin *i* received for burning *token_amount* LP tokens (Curve withdraw)."""
+    """Coin *i* received for burning *token_amount* LP tokens (Curve withdraw).
+
+    Vyper: ``StableSwap3Pool.vy::_calc_withdraw_one_coin`` /
+    ``SwapTemplateMeta.vy::_calc_withdraw_one_coin``.
+    """
     n = len(balances)
     xp = _xp_mem(rates, balances)
     precisions = [r // PRECISION for r in rates]  # 10**(18 - decimals)
@@ -331,6 +368,9 @@ def meta_get_dy_underlying(i: int, j: int, dx: int, meta: dict, base: dict) -> i
     the base pool's virtual price; ``base`` is the base pool's state dict plus a
     ``total_supply`` key.  Mirrors Curve's ``get_dy_underlying`` for USD/BTC
     factory meta-pools.
+
+    Vyper: ``SwapTemplateMeta.vy::get_dy_underlying`` (the factory MetaUSD
+    implementations, e.g. MIM/3CRV, use the same math).
     """
     rates = meta["rates"]
     amp, fee = meta["amp"], meta["fee"]
@@ -407,7 +447,10 @@ def base_swap_kwargs(base: dict) -> dict:
 
 
 def _geometric_mean(x: list[int]) -> int:
-    """Integer geometric mean of *x* (Curve V2 helper; caller sorts desc)."""
+    """Integer geometric mean of *x* (Curve V2 helper; caller sorts desc).
+
+    Vyper: ``CurveCryptoMath3.vy::geometric_mean``.
+    """
     n = len(x)
     d = x[0]
     for _ in range(255):
@@ -423,13 +466,20 @@ def _geometric_mean(x: list[int]) -> int:
 
 
 def _g1k0(gamma: int, k0: int) -> int:
-    """``|gamma + 1e18 - K0| + 1`` — shared Newton term for Curve V2."""
+    """``|gamma + 1e18 - K0| + 1`` — shared Newton term for Curve V2.
+
+    Vyper: inlined in ``CurveCryptoMath3.vy::newton_D`` / ``newton_y`` (the
+    ``g1k0`` block); extracted here because both iterations repeat it verbatim.
+    """
     g1k0 = gamma + PRECISION
     return g1k0 - k0 + 1 if g1k0 > k0 else k0 - g1k0 + 1
 
 
 def _mul1(d: int, gamma: int, g1k0: int, ann: int) -> int:
-    """The ``mul1`` Newton term shared by :func:`newton_D` / :func:`newton_y`."""
+    """The ``mul1`` Newton term shared by :func:`newton_D` / :func:`newton_y`.
+
+    Vyper: inlined in ``CurveCryptoMath3.vy::newton_D`` / ``newton_y``.
+    """
     return PRECISION * d // gamma * g1k0 // gamma * g1k0 * A_MULTIPLIER // ann
 
 
@@ -442,6 +492,8 @@ def newton_D(ann: int, gamma: int, x_unsorted: list[int]) -> int:
         gamma: Pool ``gamma`` parameter (1e18 base).
         x_unsorted: Balances transformed into ``D`` space (precision- and
             price-scaled, see :func:`crypto_get_dy`).
+
+    Vyper: ``CurveCryptoMath3.vy::newton_D``.
     """
     n = len(x_unsorted)
     x = sorted(x_unsorted, reverse=True)
@@ -473,7 +525,12 @@ def newton_D(ann: int, gamma: int, x_unsorted: list[int]) -> int:
 
 
 def newton_y(ann: int, gamma: int, x: list[int], d: int, i: int) -> int:
-    """Solve the cryptoswap invariant for coin *i*'s balance (Curve V2)."""
+    """Solve the cryptoswap invariant for coin *i*'s balance (Curve V2).
+
+    Vyper: ``CurveCryptoMath3.vy::newton_y`` (the classic tricrypto2 solver;
+    tricrypto-NG replaced it with an analytic ``get_y``, which agrees to
+    ~1e-12 — see ``tests/live/test_curve_boa.py``).
+    """
     n = len(x)
     y = d // n
     k0_i = PRECISION
@@ -520,6 +577,9 @@ def crypto_fee(xp: list[int], mid_fee: int, out_fee: int, fee_gamma: int) -> int
     The fee interpolates between *mid_fee* (balanced) and *out_fee* (imbalanced)
     as the pool moves away from parity, controlled by *fee_gamma*.  All fee
     values are in units of ``1/1e10``.
+
+    Vyper: ``CurveCryptoSwap.vy::_fee`` (the ``K`` term is
+    ``CurveCryptoMath3.vy::reduction_coefficient``, folded inline here).
     """
     n = len(xp)
     sum_xp = sum(xp)
@@ -564,6 +624,9 @@ def crypto_get_dy(
 
     Returns:
         Raw output amount in coin *j*'s units.
+
+    Vyper: ``CurveCryptoViews3.vy::get_dy`` (the quoting wrapper around
+    ``newton_y`` + ``_fee``; same flow in the pool's own ``get_dy``).
     """
     n = len(balances)
 
