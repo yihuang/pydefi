@@ -11,6 +11,7 @@ V3 math); quotes go through the V4 ``Quoter``. Swap execution lives elsewhere
 
 from __future__ import annotations
 
+from dataclasses import dataclass, replace
 from decimal import Decimal
 
 from web3 import AsyncWeb3
@@ -18,6 +19,7 @@ from web3.exceptions import ContractLogicError
 
 from pydefi.abi.amm import UNISWAP_V4_QUOTER, UNISWAP_V4_STATE_VIEW
 from pydefi.amm.base import BaseAMM
+from pydefi.amm.v4_hooks import affects_swap_pricing
 from pydefi.amm.v4_pool_key import pool_id, sort_currencies
 from pydefi.deployments import get_address
 from pydefi.exceptions import InsufficientLiquidityError
@@ -33,6 +35,26 @@ MAINNET_QUOTER: Address = get_address("UNISWAP_V4_QUOTER", ChainId.ETHEREUM)
 #: PoolKey ``fee`` value marking a dynamic-fee pool; the actual fee charged is
 #: the hook-controlled ``lpFee`` returned by ``getSlot0``.
 DYNAMIC_FEE_FLAG = 0x800000
+
+
+@dataclass
+class HookCalibration:
+    """Result of probing a hooked pool's effective fee via the on-chain quoter.
+
+    Attributes:
+        implied_fee_pips: Hook-inclusive effective fee (pips; negative = subsidy).
+        linear: Both probes implied the same fee — the hook take is proportional.
+        deviation_pips: ``abs(fee_small - fee_large)``; large = custom curve
+            (or a crossed tick boundary).
+        probe_small: Small probe input amount (raw ``token_in`` units).
+        probe_large: Large probe input amount (4x the small probe).
+    """
+
+    implied_fee_pips: int
+    linear: bool
+    deviation_pips: int
+    probe_small: int
+    probe_large: int
 
 
 class UniswapV4(BaseAMM):
@@ -99,6 +121,7 @@ class UniswapV4(BaseAMM):
         fee: int | None = None,
         tick_spacing: int | None = None,
         hooks: Address | None = None,
+        calibrate_hooks: bool = False,
     ) -> V4PoolEdge:
         """Read live pool state from ``StateView`` and return a ``V4PoolEdge``.
 
@@ -107,6 +130,12 @@ class UniswapV4(BaseAMM):
         the live ``lpFee`` from ``slot0`` (in pips), so dynamic-fee pools are
         priced at their *current* fee. The protocol fee (``slot0.protocolFee``,
         zero on mainnet today) is not modelled.
+
+        ``hook_affects_pricing`` is derived from the hook address's permission
+        bits (:mod:`pydefi.amm.v4_hooks`); when set, local pricing is a
+        hook-blind estimate — rank with it, confirm on-chain. Pass
+        ``calibrate_hooks=True`` to run :meth:`calibrate_hook_fee` on such
+        pools.
 
         Raises:
             :class:`~pydefi.exceptions.InsufficientLiquidityError`: If the pool
@@ -134,7 +163,8 @@ class UniswapV4(BaseAMM):
                 f"V4 pool {pool_id.hex()} ({token_in.symbol}/{token_out.symbol}) is uninitialised"
             )
 
-        return V4PoolEdge(
+        is_dynamic_fee = bool(fee & DYNAMIC_FEE_FLAG)
+        edge = V4PoolEdge(
             token_in=token_in,
             token_out=token_out,
             pool_address=self.router_address,  # singleton PoolManager
@@ -147,7 +177,94 @@ class UniswapV4(BaseAMM):
             hooks=hooks,
             pool_id=pool_id.hex(),
             lp_fee_pips=lp_fee,
+            key_fee_pips=fee,
+            is_dynamic_fee=is_dynamic_fee,
+            hook_affects_pricing=affects_swap_pricing(hooks, is_dynamic_fee=is_dynamic_fee),
         )
+        if calibrate_hooks and edge.hook_affects_pricing:
+            await self.calibrate_hook_fee(edge)
+        return edge
+
+    # ------------------------------------------------------------------
+    # Hook-fee calibration
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _probe_amount(edge: V4PoolEdge) -> int:
+        """Input amount that moves the pool price by ~1 bp (single-tick approx).
+
+        Small enough to stay within the current tick on any realistic pool,
+        large enough that integer rounding is negligible against pip-level
+        fee resolution.
+        """
+        if edge.is_token0_in:
+            amount = edge.liquidity * (1 << 96) // edge.sqrt_price_x96 // 10_000
+        else:
+            amount = edge.liquidity * edge.sqrt_price_x96 // (1 << 96) // 10_000
+        return max(amount, 1)
+
+    async def calibrate_hook_fee(
+        self,
+        edge: V4PoolEdge,
+        *,
+        hook_data: bytes = b"",
+        tolerance_pips: int = 20,
+    ) -> HookCalibration:
+        """Back out a hooked pool's effective fee from two on-chain quotes.
+
+        Quotes at 1x and 4x of a ~1 bp price move and compares against the
+        local zero-fee curve; the shortfall is the hook-inclusive effective
+        fee. If both probes agree within *tolerance_pips* (proportional hook
+        take), the implied fee is folded into ``edge.lp_fee_pips`` and
+        ``edge.hook_fee_calibrated`` is set; otherwise (custom curve, crossed
+        tick) only the flag is cleared and the edge stays an estimate.
+
+        Repeat-safe: the PoolKey comes from ``edge.key_fee_pips``, never the
+        mutated ``lp_fee_pips``. Sender-dependent hooks may still quote
+        differently than they execute.
+        """
+        key_fee = edge.key_fee_pips
+        if not key_fee and not edge.is_dynamic_fee and not edge.hook_fee_calibrated:
+            # Hand-built static edges may omit key_fee_pips; before any
+            # calibration lp_fee_pips still equals the key fee. Backfill so
+            # later calls key the same pool (fee-0 keys are legitimate).
+            key_fee = edge.key_fee_pips = edge.lp_fee_pips
+
+        probe_small = self._probe_amount(edge)
+        probe_large = probe_small * 4
+        # Zero-fee twin of the edge: raw concentrated-liquidity curve output.
+        raw_curve = replace(edge, lp_fee_pips=0, fee_bps=0)
+
+        implied: list[int] = []
+        for amount in (probe_small, probe_large):
+            quoted = await self.quote_exact_input_single(
+                TokenAmount(token=edge.token_in, amount=amount),
+                edge.token_out,
+                fee=key_fee,
+                tick_spacing=edge.tick_spacing,
+                hooks=edge.hooks,
+                hook_data=hook_data,
+            )
+            raw_out = raw_curve.amount_out(amount)
+            if raw_out <= 0:
+                raise InsufficientLiquidityError(f"V4 pool {edge.pool_id}: zero raw-curve output at probe {amount}")
+            implied.append(round((1 - quoted.amount / raw_out) * 1_000_000))
+
+        deviation = abs(implied[0] - implied[1])
+        linear = deviation <= tolerance_pips
+        result = HookCalibration(
+            implied_fee_pips=implied[0],
+            linear=linear,
+            deviation_pips=deviation,
+            probe_small=probe_small,
+            probe_large=probe_large,
+        )
+        if linear:
+            # fee_bps stays untouched: it is part of the router's edge identity.
+            edge.lp_fee_pips = implied[0]
+        # nonlinear revokes any stale trust from an earlier calibration
+        edge.hook_fee_calibrated = linear
+        return result
 
     # ------------------------------------------------------------------
     # Price queries (via the V4 Quoter)
@@ -161,14 +278,21 @@ class UniswapV4(BaseAMM):
         fee: int | None = None,
         tick_spacing: int | None = None,
         hooks: Address | None = None,
+        hook_data: bytes = b"",
     ) -> TokenAmount:
-        """On-chain quote for a single-hop exact-input swap via the V4 Quoter."""
+        """On-chain quote for a single-hop exact-input swap via the V4 Quoter.
+
+        The Quoter executes the real swap path inside the PoolManager lock
+        (revert-and-catch), so hooks run for real: hook fees, dynamic-fee
+        overrides and custom curves are all reflected in the returned amount.
+        Pass *hook_data* for hooks that require it.
+        """
         fee = fee if fee is not None else self.default_fee
         tick_spacing = tick_spacing if tick_spacing is not None else self.default_tick_spacing
         hooks = hooks if hooks is not None else self.default_hooks
 
         pool_key, zero_for_one, _c0 = self._pool_key_tuple(amount_in.token, token_out, fee, tick_spacing, hooks)
-        params = (pool_key, zero_for_one, amount_in.amount, b"")
+        params = (pool_key, zero_for_one, amount_in.amount, hook_data)
         try:
             result = await UNISWAP_V4_QUOTER.fns.quoteExactInputSingle(params).call(self.w3, to=self.quoter_address)
             amount_out = result[0] if isinstance(result, (list, tuple)) else result

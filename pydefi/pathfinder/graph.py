@@ -365,20 +365,45 @@ class V4PoolEdge(V3PoolEdge):
             for pricing. V4 fees need not be a multiple of 100, so the
             basis-point ``fee_bps`` field alone would truncate (e.g. a 10-pip
             fee would price as free).
+        key_fee_pips: The ``fee`` field of the PoolKey (pips; equals
+            ``LPFeeLibrary.DYNAMIC_FEE_FLAG`` for dynamic-fee pools). Needed to
+            reconstruct the pool key for quoting — ``lp_fee_pips`` cannot be
+            used for that once calibration rewrites it.
+        is_dynamic_fee: True if the PoolKey carries the dynamic-fee flag; the
+            edge is then priced at the *current* ``lpFee``, which the hook may
+            change (or override per-swap) at any time.
+        hook_affects_pricing: True if the hook can change swap amounts (hook
+            fees / custom curves / dynamic-fee overrides — see
+            :func:`pydefi.amm.v4_hooks.affects_swap_pricing`). ``amount_out``
+            is then an estimate that ignores the hook's cut: still useful for
+            ranking candidate routes, but quote such pools on-chain (the V4
+            Quoter executes the real hook) before acting on the number.
+        hook_fee_calibrated: True once
+            :meth:`~pydefi.amm.uniswap_v4.UniswapV4.calibrate_hook_fee` has
+            verified the hook take is size-independent and folded it into
+            ``lp_fee_pips``, making local pricing trustworthy again.
     """
 
     tick_spacing: int = 0
     hooks: Address = ZERO_ADDRESS
     pool_id: str = ""
     lp_fee_pips: int = 0
+    key_fee_pips: int = 0
+    is_dynamic_fee: bool = False
+    hook_affects_pricing: bool = False
+    hook_fee_calibrated: bool = False
 
     def _net_amount_in(self, amount_in: int) -> int:
         """Return *amount_in* after deducting the LP fee (``lp_fee_pips``, base 1 000 000).
 
         Falls back to ``fee_bps`` when ``lp_fee_pips`` is unset (e.g. edges
-        constructed without slot0 data).
+        constructed without slot0 data) — unless calibration explicitly set
+        it (a calibrated fee of 0 is a real zero-fee pool, not "unset").
         """
-        fee_pips = self.lp_fee_pips if self.lp_fee_pips else self.fee_bps * 100
+        if self.lp_fee_pips or self.hook_fee_calibrated:
+            fee_pips = self.lp_fee_pips
+        else:
+            fee_pips = self.fee_bps * 100
         return amount_in * (1_000_000 - fee_pips) // 1_000_000
 
 
