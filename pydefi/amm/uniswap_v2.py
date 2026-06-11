@@ -17,7 +17,6 @@ from pydefi.abi.amm import UNISWAP_V2_FACTORY, UNISWAP_V2_PAIR, UNISWAP_V2_ROUTE
 from pydefi.exceptions import InsufficientLiquidityError
 from pydefi.types import Address, SwapRoute, SwapStep, Token, TokenAmount
 
-
 # ---------------------------------------------------------------------------
 # Module-level pure math functions — importable without instantiating a client
 # ---------------------------------------------------------------------------

@@ -7,7 +7,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import ROUND_DOWN, Decimal
 from enum import Enum, IntEnum
-from typing import Any, TypeAlias
+from typing import TYPE_CHECKING, TypeAlias
+
+if TYPE_CHECKING:
+    from pydefi.pathfinder.dag import RouteDAG  # noqa: F401
 
 from hexbytes import HexBytes
 

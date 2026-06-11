@@ -6,10 +6,10 @@ from decimal import Decimal
 import pytest
 
 from pydefi.exceptions import NoRouteFoundError
+from pydefi.pathfinder.dag import RouteDAG
 from pydefi.pathfinder.graph import PoolEdge, PoolGraph, V3PoolEdge
 from pydefi.pathfinder.router import Router, _estimate_price_impact
 from pydefi.types import Address, ChainId, RouteSwap, Token, TokenAmount
-from pydefi.pathfinder.dag import RouteDAG
 from tests.addrs import DAI, USDC, WETH
 
 # ---------------------------------------------------------------------------

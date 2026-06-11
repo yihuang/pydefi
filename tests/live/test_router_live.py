@@ -10,6 +10,7 @@ import pytest
 from eth_contract import Contract
 
 from pydefi.exceptions import NoRouteFoundError
+from pydefi.pathfinder.dag import RouteDAG
 from pydefi.pathfinder.graph import PoolGraph, V3PoolEdge
 from pydefi.pathfinder.router import Router
 from pydefi.types import RouteSplit, TokenAmount

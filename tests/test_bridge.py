@@ -1,5 +1,3 @@
-from pydefi._math import apply_slippage
-
 """Tests for pydefi.bridge (no live calls)."""
 
 from types import SimpleNamespace
@@ -8,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from hexbytes import HexBytes
 
+from pydefi._math import apply_slippage
 from pydefi.bridge.across import Across
 from pydefi.bridge.ccip import (
     _CCIP_CHAIN_SELECTOR,

@@ -60,6 +60,7 @@ import asyncio
 import logging
 from typing import Any, Optional
 
+from eth_contract.erc20 import ERC20
 from hexbytes import HexBytes
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlmodel import Session, SQLModel, create_engine, select
@@ -67,7 +68,6 @@ from web3 import AsyncWeb3, Web3
 from web3.types import BlockNumber
 
 from pydefi.abi.amm import UNISWAP_V2_FACTORY, UNISWAP_V2_PAIR, UNISWAP_V3_FACTORY, UNISWAP_V3_POOL
-from eth_contract.erc20 import ERC20
 from pydefi.indexer.models import Factory, IndexerState, Pool, V2SyncEvent, V3SwapEvent
 
 logger = logging.getLogger(__name__)

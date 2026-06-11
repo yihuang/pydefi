@@ -1,5 +1,3 @@
-from pydefi._math import slippage_to_fraction, slippage_to_percent
-
 """Tests for pydefi.aggregator (no live HTTP calls)."""
 
 from decimal import Decimal
@@ -8,6 +6,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from hexbytes import HexBytes
 
+from pydefi._math import slippage_to_fraction, slippage_to_percent
 from pydefi.abi.dex_aggregator import OKX_DEX_ROUTER
 from pydefi.aggregator.base import AggregatorQuote
 from pydefi.aggregator.okx import OKX
@@ -23,9 +22,9 @@ from pydefi.aggregator.paraswap import ParaSwap
 from pydefi.aggregator.uniswap import UniswapAPI
 from pydefi.aggregator.zerox import ZeroX
 from pydefi.exceptions import AggregatorError
+from pydefi.pathfinder.dag import RouteDAG
 from pydefi.pathfinder.graph import PoolEdge
 from pydefi.types import Address, ChainId, Token, TokenAmount
-from pydefi.pathfinder.dag import RouteDAG
 from tests.addrs import USDC, WETH
 
 # ---------------------------------------------------------------------------

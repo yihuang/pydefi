@@ -11,7 +11,7 @@ from typing import Any
 
 import aiohttp
 
-from pydefi._math import slippage_to_fraction, slippage_to_percent
+from pydefi._math import slippage_to_percent
 from pydefi.aggregator.base import AggregatorQuote
 from pydefi.exceptions import AggregatorError
 from pydefi.types import SwapRoute, SwapStep, Token, TokenAmount
