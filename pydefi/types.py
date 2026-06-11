@@ -150,6 +150,10 @@ class SwapStep:
             expose individual pool addresses).
         protocol: Human-readable protocol name (e.g. ``"UniswapV2"``).
         fee: Swap fee in basis points (base 10000, e.g. ``30`` = 0.3%).
+        tick_spacing: V4 only — tick spacing for the pool key (e.g. ``60`` for
+            the 0.3 % fee tier).  ``0`` for V2/V3 pools.
+        hooks: V4 only — address of the hooks contract, or the zero address if
+            the pool has no hooks.  Ignored for V2/V3 pools.
     """
 
     token_in: Token
@@ -157,6 +161,8 @@ class SwapStep:
     pool_address: Address | None
     protocol: str
     fee: int = 30
+    tick_spacing: int = 0
+    hooks: Address = ZERO_ADDRESS
 
 
 @dataclass
@@ -214,6 +220,9 @@ class SwapProtocol(str, Enum):
     The pool fires a flash-swap callback (``uniswapV3SwapCallback`` or a
     compatible variant) which ``DeFiVM.fallback()`` handles automatically.
     """
+
+    UNISWAP_V4 = "uniswap_v4"
+    """Uniswap V4 pool, traded via the singleton PoolManager."""
 
 
 class BasePool(ABC):

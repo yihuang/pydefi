@@ -18,7 +18,40 @@ from decimal import Decimal
 
 from pydefi.exceptions import NoRouteFoundError
 from pydefi.pathfinder.graph import PoolEdge, PoolGraph
-from pydefi.types import MAX_BPS, Address, RouteDAG, RouteSplit, RouteSwap, SwapRoute, SwapStep, Token, TokenAmount
+from pydefi.types import (
+    MAX_BPS,
+    ZERO_ADDRESS,
+    Address,
+    RouteDAG,
+    RouteSplit,
+    RouteSwap,
+    SwapRoute,
+    SwapStep,
+    Token,
+    TokenAmount,
+)
+
+#: Full pool identity: ``(pool_address, token_in, fee, tick_spacing, hooks)``.
+#: ``pool_address`` alone is not unique — every Uniswap V4 pool on a chain
+#: shares the singleton PoolManager address, so the PoolKey fields are needed
+#: to tell pools apart.
+EdgeKey = tuple[Address, Address, int, int, Address]
+
+
+def _edge_key(edge: PoolEdge) -> EdgeKey:
+    """Return the :data:`EdgeKey` identifying *edge*'s underlying pool + direction."""
+    return (
+        edge.pool_address,
+        edge.token_in.address,
+        edge.fee_bps,
+        getattr(edge, "tick_spacing", 0),
+        getattr(edge, "hooks", ZERO_ADDRESS),
+    )
+
+
+def _step_key(step: SwapStep) -> EdgeKey:
+    """Return the :data:`EdgeKey` for a :class:`~pydefi.types.SwapStep` (round-trips :func:`_edge_key`)."""
+    return (step.pool_address, step.token_in.address, step.fee, step.tick_spacing, step.hooks)
 
 
 class Router:
@@ -169,6 +202,8 @@ class Router:
                 pool_address=edge.pool_address,
                 protocol=edge.protocol,
                 fee=edge.fee_bps,
+                tick_spacing=getattr(edge, "tick_spacing", 0),
+                hooks=getattr(edge, "hooks", ZERO_ADDRESS),
             )
             for edge in final_path
         ]
@@ -221,6 +256,8 @@ class Router:
                     pool_address=edge.pool_address,
                     protocol=edge.protocol,
                     fee=edge.fee_bps,
+                    tick_spacing=getattr(edge, "tick_spacing", 0),
+                    hooks=getattr(edge, "hooks", ZERO_ADDRESS),
                 )
                 for edge in path
             ],
@@ -300,6 +337,8 @@ class Router:
                         pool_address=e.pool_address,
                         protocol=e.protocol,
                         fee=e.fee_bps,
+                        tick_spacing=getattr(e, "tick_spacing", 0),
+                        hooks=getattr(e, "hooks", ZERO_ADDRESS),
                     )
                     for e in path
                 ]
@@ -426,9 +465,7 @@ class Router:
         if max_splits < 1:
             raise ValueError("max_splits must be >= 1")
         routes = self._find_top_routes(amount_in, token_out, top_n=max_splits, max_hops=max_hops)
-        edge_index: dict[tuple[Address, Address], PoolEdge] = {
-            (edge.pool_address, edge.token_in.address): edge for edge in self.graph
-        }
+        edge_index: dict[EdgeKey, PoolEdge] = {_edge_key(edge): edge for edge in self.graph}
         legs = self._best_n_way_split(routes, amount_in, edge_index, step_bps)
 
         if len(legs) == 1:
@@ -519,10 +556,10 @@ class Router:
 
         all_candidates.sort(key=lambda x: x[0], reverse=True)
 
-        seen_first_pools: set[Address] = set()
+        seen_first_pools: set[EdgeKey] = set()
         diverse: list[tuple[int, list[PoolEdge]]] = []
         for amount, path in all_candidates:
-            first_pool: Address = path[0].pool_address
+            first_pool: EdgeKey = _edge_key(path[0])
             if first_pool not in seen_first_pools:
                 seen_first_pools.add(first_pool)
                 diverse.append((amount, path))
@@ -538,6 +575,8 @@ class Router:
                     pool_address=edge.pool_address,
                     protocol=edge.protocol,
                     fee=edge.fee_bps,
+                    tick_spacing=getattr(edge, "tick_spacing", 0),
+                    hooks=getattr(edge, "hooks", ZERO_ADDRESS),
                 )
                 for edge in final_path
             ]
@@ -555,13 +594,12 @@ class Router:
         self,
         route: SwapRoute,
         raw_amount: int,
-        edge_index: dict[tuple[Address, Address], PoolEdge],
+        edge_index: dict[EdgeKey, PoolEdge],
     ) -> int:
         """Walk each step of *route* at *raw_amount* and return the output amount."""
         current = raw_amount
         for step in route.steps:
-            key = (step.pool_address, step.token_in.address)
-            edge = edge_index.get(key)
+            edge = edge_index.get(_step_key(step))
             if edge is None:
                 return 0
             current = edge.amount_out(current)
@@ -573,7 +611,7 @@ class Router:
         self,
         routes: list[SwapRoute],
         amount_in: TokenAmount,
-        edge_index: dict[tuple[Address, Address], PoolEdge],
+        edge_index: dict[EdgeKey, PoolEdge],
         step_bps: int,
     ) -> list[tuple[int, list[PoolEdge]]]:
         """Return the best N-way weight allocation across *routes* at *step_bps* granularity.
@@ -599,11 +637,7 @@ class Router:
         # Pre-build per-route edge lists once to avoid repeated dict lookups.
         route_edges: list[list[PoolEdge]] = []
         for route in routes:
-            edges = [
-                edge_index[(step.pool_address, step.token_in.address)]
-                for step in route.steps
-                if step.pool_address is not None
-            ]
+            edges = [edge_index[_step_key(step)] for step in route.steps if step.pool_address is not None]
             route_edges.append(edges)
 
         def _enumerate(idx: int, remaining_bps: int, weights: list[int]) -> None:
