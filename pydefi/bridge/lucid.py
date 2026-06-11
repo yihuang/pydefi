@@ -98,7 +98,6 @@ _DEFAULT_ADAPTER_BY_SRC: dict[int, AdapterKind] = {
 }
 
 
-
 def _encode_transfer_message(
     nonce: int,
     dest_chain_id: int,
@@ -152,7 +151,6 @@ class LucidBridge:
     @property
     def protocol_name(self) -> str:
         return "Lucid"
-
 
     def _encode_bridge_options(self, refund_address: Address, gas_limit: int) -> bytes:
         # LayerZero uses uint128 gasLimit, Hyperlane uses uint256 — only field

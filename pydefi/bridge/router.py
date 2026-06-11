@@ -18,6 +18,7 @@ from typing import Any
 
 from pydefi.exceptions import BridgeError
 from pydefi.types import BridgeQuote, Token, TokenAmount
+
 #: Returns the fee in ``quote.token_out`` sub-units, or ``None`` if unpriced.
 FeeConverter = Callable[[BridgeQuote], "int | None"]
 

@@ -1,4 +1,5 @@
 from pydefi._math import apply_slippage
+
 """Tests for pydefi.bridge (no live calls)."""
 
 from types import SimpleNamespace

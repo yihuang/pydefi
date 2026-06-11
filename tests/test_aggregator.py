@@ -1,4 +1,5 @@
 from pydefi._math import slippage_to_fraction, slippage_to_percent
+
 """Tests for pydefi.aggregator (no live HTTP calls)."""
 
 from decimal import Decimal

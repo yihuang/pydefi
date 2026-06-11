@@ -37,7 +37,6 @@ _CHAIN_SLUGS: dict[int, str] = {
 }
 
 
-
 def _parse_price_impact(value: Any) -> Decimal:
     """Parse a price impact value that may carry a trailing ``%`` sign."""
     raw = str(value).rstrip("%") if value is not None else "0"
@@ -102,7 +101,6 @@ class OpenOcean:
                         status_code=resp.status,
                     )
                 return data  # type: ignore[return-value]
-
 
     async def _get_gas_price(self) -> str:
         """Fetch the current gas price (in Wei) from the OpenOcean ``/gasPrice`` endpoint.
