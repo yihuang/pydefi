@@ -26,7 +26,7 @@ from typing import Any
 
 import aiohttp
 
-from pydefi.aggregator.base import AggregatorQuote, BaseAggregator
+from pydefi.aggregator.base import AggregatorQuote
 from pydefi.exceptions import AggregatorError
 from pydefi.types import ChainId, SwapRoute, SwapStep, Token, TokenAmount
 
@@ -34,7 +34,7 @@ _JUPITER_API_BASE = "https://lite-api.jup.ag/swap/v1"
 _JUPITER_SWAP_V2_BASE = "https://api.jup.ag/swap/v2"
 
 
-class Jupiter(BaseAggregator):
+class Jupiter:
     """Jupiter DEX aggregator API client for Solana.
 
     Jupiter routes swaps across all major Solana DEXes.  Token addresses are
@@ -53,7 +53,8 @@ class Jupiter(BaseAggregator):
         api_key: str | None = None,
         base_url: str | None = None,
     ) -> None:
-        super().__init__(chain_id=ChainId.SOLANA, api_key=api_key)
+        self.chain_id = ChainId.SOLANA
+        self.api_key = api_key
         self._base_url = base_url or self._DEFAULT_BASE_URL
 
     @property
@@ -226,7 +227,7 @@ class Jupiter(BaseAggregator):
         )
 
 
-class JupiterSwapV2(BaseAggregator):
+class JupiterSwapV2:
     """Jupiter unified Swap V2 API client.
 
     Integrates the ``https://api.jup.ag/swap/v2`` API.  Requires an API key
@@ -260,7 +261,8 @@ class JupiterSwapV2(BaseAggregator):
         api_key: str | None = None,
         base_url: str | None = None,
     ) -> None:
-        super().__init__(chain_id=ChainId.SOLANA, api_key=api_key)
+        self.chain_id = ChainId.SOLANA
+        self.api_key = api_key
         self._base_url = base_url or self._DEFAULT_BASE_URL
 
     @property

@@ -18,7 +18,6 @@ from web3 import AsyncWeb3
 
 from pydefi._utils import address_to_bytes32
 from pydefi.abi.bridge import CCIP_ROUTER, CCIPEVM2AnyMessage, CCIPEVMTokenAmount
-from pydefi.bridge.base import BaseBridge
 from pydefi.exceptions import BridgeError
 from pydefi.types import ZERO_ADDRESS, Address, BridgeQuote, Token, TokenAmount
 
@@ -51,7 +50,7 @@ _DEFAULT_SEND_GAS = 500_000
 _DEFAULT_COMPOSE_GAS = 600_000
 
 
-class CCIP(BaseBridge):
+class CCIP:
     """Chainlink CCIP bridge — token-only or compose ``ccipSend`` via the Router.
 
     Tokens are bridged 1:1; the per-message fee is paid in native gas
@@ -84,7 +83,8 @@ class CCIP(BaseBridge):
         fee_token_decimals: int = 18,
         fee_token_symbol: str | None = None,
     ) -> None:
-        super().__init__(src_chain_id, dst_chain_id)
+        self.src_chain_id = src_chain_id
+        self.dst_chain_id = dst_chain_id
         self.w3 = w3
 
         self.router_address = router_address or _CCIP_ROUTER.get(src_chain_id, "")

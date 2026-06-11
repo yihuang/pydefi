@@ -11,8 +11,9 @@ from typing import Any
 
 import aiohttp
 
+from pydefi._math import apply_slippage, slippage_to_percent
 from pydefi._utils import encode_address
-from pydefi.aggregator.base import AggregatorQuote, BaseAggregator
+from pydefi.aggregator.base import AggregatorQuote
 from pydefi.exceptions import AggregatorError
 from pydefi.types import Address, SwapRoute, SwapStep, Token, TokenAmount
 
@@ -36,7 +37,16 @@ _CHAIN_SLUGS: dict[int, str] = {
 }
 
 
-class OpenOcean(BaseAggregator):
+def _parse_price_impact(value: Any) -> Decimal:
+    """Parse a price impact value that may carry a trailing ``%`` sign."""
+    raw = str(value).rstrip("%") if value is not None else "0"
+    try:
+        return Decimal(raw)
+    except Exception:
+        return Decimal("0")
+
+
+class OpenOcean:
     """OpenOcean DEX aggregator API client.
 
     Args:
@@ -53,7 +63,8 @@ class OpenOcean(BaseAggregator):
         api_key: str | None = None,
         base_url: str | None = None,
     ) -> None:
-        super().__init__(chain_id, api_key)
+        self.chain_id = chain_id
+        self.api_key = api_key
         self._base_url = base_url or self._DEFAULT_BASE_URL
 
     @property
@@ -90,15 +101,6 @@ class OpenOcean(BaseAggregator):
                         status_code=resp.status,
                     )
                 return data  # type: ignore[return-value]
-
-    @staticmethod
-    def _parse_price_impact(value: Any) -> Decimal:
-        """Parse a price impact value that may carry a trailing ``%`` sign."""
-        raw = str(value).rstrip("%") if value is not None else "0"
-        try:
-            return Decimal(raw)
-        except Exception:
-            return Decimal("0")
 
     async def _get_gas_price(self) -> str:
         """Fetch the current gas price (in Wei) from the OpenOcean ``/gasPrice`` endpoint.
@@ -139,15 +141,14 @@ class OpenOcean(BaseAggregator):
             "inTokenAddress": amount_in.token.encoded_address,
             "outTokenAddress": token_out.encoded_address,
             "amount": str(amount_in.human_amount),
-            "slippage": str(self._slippage_to_percent(slippage_bps)),
+            "slippage": str(slippage_to_percent(slippage_bps)),
             **kwargs,
         }
         data = await self._get("quote", params)
         result = data["data"]
 
         out_amount = int(result["outAmount"])
-        slippage_factor = 10_000 - slippage_bps
-        min_amount_out_raw = out_amount * slippage_factor // 10_000
+        min_amount_out_raw = apply_slippage(out_amount, slippage_bps)
         gas_estimate = int(result.get("estimatedGas", 0))
 
         return AggregatorQuote(
@@ -157,7 +158,7 @@ class OpenOcean(BaseAggregator):
             amount_out=TokenAmount(token=token_out, amount=out_amount),
             min_amount_out=TokenAmount(token=token_out, amount=min_amount_out_raw),
             gas_estimate=gas_estimate,
-            price_impact=self._parse_price_impact(result.get("price_impact")),
+            price_impact=_parse_price_impact(result.get("price_impact")),
             protocol=self.protocol_name,
             route_summary=str(result.get("path", "")),
         )
@@ -194,7 +195,7 @@ class OpenOcean(BaseAggregator):
             "inTokenAddress": amount_in.token.encoded_address,
             "outTokenAddress": token_out.encoded_address,
             "amount": str(amount_in.human_amount),
-            "slippage": str(self._slippage_to_percent(slippage_bps)),
+            "slippage": str(slippage_to_percent(slippage_bps)),
             "account": encode_address(from_address, self.chain_id),
             **kwargs,
         }
@@ -202,8 +203,7 @@ class OpenOcean(BaseAggregator):
         result = data["data"]
 
         out_amount = int(result["outAmount"])
-        slippage_factor = 10_000 - slippage_bps
-        min_amount_out_raw = out_amount * slippage_factor // 10_000
+        min_amount_out_raw = apply_slippage(out_amount, slippage_bps)
 
         gas_estimate = int(result.get("estimatedGas", 0))
         tx_info = result
@@ -222,7 +222,7 @@ class OpenOcean(BaseAggregator):
             amount_out=TokenAmount(token=token_out, amount=out_amount),
             min_amount_out=TokenAmount(token=token_out, amount=min_amount_out_raw),
             gas_estimate=gas_estimate,
-            price_impact=self._parse_price_impact(result.get("price_impact")),
+            price_impact=_parse_price_impact(result.get("price_impact")),
             tx_data=tx_data,
             protocol=self.protocol_name,
             route_summary=str(result.get("path", "")),

@@ -16,7 +16,8 @@ from eth_contract.erc20 import ERC20
 from eth_utils import keccak
 
 from pydefi.abi.amm import UNISWAP_V2_PAIR, UNISWAP_V3_POOL, UNISWAP_V3_QUOTER_V2
-from pydefi.types import Address, RouteDAG, RouteSwap, SwapProtocol, SwapRoute, SwapTransaction
+from pydefi.pathfinder.dag import RouteDAG
+from pydefi.types import Address, RouteSwap, SwapProtocol, SwapRoute, SwapTransaction
 from pydefi.vm.context import Operand, Program
 
 # ---------------------------------------------------------------------------

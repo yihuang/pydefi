@@ -12,12 +12,12 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 
+from pydefi.pathfinder.dag import RouteDAG
 from pydefi.types import (
     ZERO_ADDRESS,
     Address,
     RouteAction,
     RouteBridge,
-    RouteDAG,
     RouteSplit,
     RouteSwap,
     SwapProtocol,

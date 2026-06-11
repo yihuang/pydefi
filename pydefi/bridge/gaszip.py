@@ -15,7 +15,6 @@ from typing import Any
 import aiohttp
 
 from pydefi.abi.bridge import GASZIP
-from pydefi.bridge.base import BaseBridge
 from pydefi.exceptions import BridgeError
 from pydefi.types import Address, BridgeQuote, Token, TokenAmount
 
@@ -40,7 +39,7 @@ _SUPPORTED_CHAINS: set[int] = {
 }
 
 
-class GasZip(BaseBridge):
+class GasZip:
     """GasZip cross-chain gas bridge integration.
 
     GasZip bridges native gas tokens from a source chain to one or more
@@ -61,7 +60,8 @@ class GasZip(BaseBridge):
         contract_address: str,
         api_base_url: str = _GASZIP_API_BASE,
     ) -> None:
-        super().__init__(src_chain_id, dst_chain_id)
+        self.src_chain_id = src_chain_id
+        self.dst_chain_id = dst_chain_id
         self.contract_address = contract_address
         self._api_base = api_base_url.rstrip("/")
 

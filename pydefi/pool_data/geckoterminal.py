@@ -14,7 +14,7 @@ import aiohttp
 
 from pydefi._utils import decode_address, encode_address
 from pydefi.exceptions import PoolDataError
-from pydefi.pool_data.base import BasePoolDataProvider, PoolData
+from pydefi.pool_data.base import PoolData
 from pydefi.types import Address, ChainId, Token
 
 # GeckoTerminal network slugs keyed by EVM chain ID
@@ -54,7 +54,7 @@ _MAX_ADDRESSES_PER_REQUEST = 10
 logger = logging.getLogger(__name__)
 
 
-class GeckoTerminal(BasePoolDataProvider):
+class GeckoTerminal:
     """GeckoTerminal pool data provider.
 
     Fetches pool data from the public GeckoTerminal REST API (v2).  No API
