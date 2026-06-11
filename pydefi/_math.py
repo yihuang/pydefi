@@ -6,8 +6,6 @@ These are stateless, importable without any client instantiation.
 
 from __future__ import annotations
 
-from decimal import Decimal
-
 MAX_BPS = 10_000  #: 100% expressed in basis points.
 
 
@@ -34,10 +32,3 @@ def slippage_to_fraction(slippage_bps: int) -> float:
 def slippage_to_percent(slippage_bps: int) -> float:
     """Convert basis points to a percentage (e.g. 50 → 0.5)."""
     return slippage_bps / 100
-
-
-def price_impact(amount_in_usd: Decimal, amount_out_usd: Decimal) -> Decimal:
-    """Estimate price impact as a fraction in [0, 1]."""
-    if amount_in_usd == 0:
-        return Decimal(0)
-    return abs(amount_in_usd - amount_out_usd) / amount_in_usd
