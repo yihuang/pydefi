@@ -6,7 +6,7 @@ import pytest
 
 from pydefi.exceptions import PoolDataError
 from pydefi.pathfinder.graph import PoolEdge, V3PoolEdge
-from pydefi.pool_data.base import BasePoolDataProvider, PoolData
+from pydefi.pool_data.base import PoolData, build_graph
 from pydefi.pool_data.geckoterminal import GeckoTerminal
 from pydefi.pool_data.subgraph import UniswapV2Subgraph, UniswapV3Subgraph
 from pydefi.types import Address, ChainId
@@ -127,12 +127,12 @@ class TestPoolData:
 
 
 # ---------------------------------------------------------------------------
-# BasePoolDataProvider.build_graph tests
+# build_graph tests — moved to module-level function
 # ---------------------------------------------------------------------------
 
 
-class ConcreteProvider(BasePoolDataProvider):
-    """Minimal concrete implementation for testing build_graph."""
+class ConcreteProvider:
+    """Minimal concrete implementation for testing."""
 
     @property
     def provider_name(self) -> str:
@@ -143,6 +143,10 @@ class ConcreteProvider(BasePoolDataProvider):
 
     async def get_top_pools(self, limit: int = 100) -> list[PoolData]:
         raise NotImplementedError
+
+    def build_graph(self, pools):
+        """Delegate to module-level build_graph."""
+        return build_graph(pools)
 
     async def get_pools_for_token(self, token_address: str, limit: int = 100) -> list[PoolData]:
         raise NotImplementedError
@@ -448,7 +452,7 @@ class TestGeckoTerminal:
             reserve1=2_000_000 * 10**6,
         )
         client = GeckoTerminal(chain_id=ChainId.ETHEREUM)
-        graph = client.build_graph([pool])
+        graph = build_graph([pool])
         assert len(graph.edges_from(WETH)) == 1
         assert len(graph.edges_from(USDC)) == 1
 

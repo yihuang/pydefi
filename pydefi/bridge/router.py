@@ -16,10 +16,8 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from pydefi.bridge.base import BaseBridge
 from pydefi.exceptions import BridgeError
 from pydefi.types import BridgeQuote, Token, TokenAmount
-
 #: Returns the fee in ``quote.token_out`` sub-units, or ``None`` if unpriced.
 FeeConverter = Callable[[BridgeQuote], "int | None"]
 
@@ -106,10 +104,10 @@ class BridgeRouter:
         ranked = rank_bridge_quotes(quotes, fee_converter=fee_to_usdc)
     """
 
-    def __init__(self, bridges: Sequence[BaseBridge]) -> None:
+    def __init__(self, bridges: list[Any]) -> None:
         if not bridges:
             raise ValueError("BridgeRouter requires at least one bridge")
-        self.bridges: list[BaseBridge] = list(bridges)
+        self.bridges = list(bridges)
 
     async def quote_all(
         self,

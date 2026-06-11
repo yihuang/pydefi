@@ -67,6 +67,7 @@ from web3 import AsyncWeb3, Web3
 from web3.types import BlockNumber
 
 from pydefi.abi.amm import UNISWAP_V2_FACTORY, UNISWAP_V2_PAIR, UNISWAP_V3_FACTORY, UNISWAP_V3_POOL
+from eth_contract.erc20 import ERC20
 from pydefi.indexer.models import Factory, IndexerState, Pool, V2SyncEvent, V3SwapEvent
 
 logger = logging.getLogger(__name__)
@@ -829,8 +830,6 @@ class PoolIndexer:
         Falls back to ``("", 18)`` for non-standard or non-ERC-20 tokens.
         Unexpected errors (network timeouts, etc.) are logged and re-raised.
         """
-        from eth_contract.erc20 import ERC20
-
         to = Web3.to_checksum_address(token_address)
         try:
             symbol: str = await ERC20.fns.symbol().call(self.w3, to=to)

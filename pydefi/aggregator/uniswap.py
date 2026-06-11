@@ -12,7 +12,8 @@ from typing import Any, Optional
 import aiohttp
 
 from pydefi._utils import encode_address
-from pydefi.aggregator.base import AggregatorQuote, BaseAggregator
+from pydefi._math import slippage_to_fraction, slippage_to_percent
+from pydefi.aggregator.base import AggregatorQuote
 from pydefi.exceptions import AggregatorError
 from pydefi.types import Address, SwapRoute, SwapStep, Token, TokenAmount
 
@@ -21,7 +22,7 @@ from pydefi.types import Address, SwapRoute, SwapStep, Token, TokenAmount
 _SWAP_COMPATIBLE_ROUTING: frozenset[str] = frozenset({"CLASSIC", "WRAP", "UNWRAP", "BRIDGE"})
 
 
-class UniswapAPI(BaseAggregator):
+class UniswapAPI:
     """Uniswap Trading API client.
 
     Implements the end-to-end swap flow described in the Uniswap Trading API
@@ -47,7 +48,8 @@ class UniswapAPI(BaseAggregator):
         base_url: Optional[str] = None,
         origin: Optional[str] = None,
     ) -> None:
-        super().__init__(chain_id, api_key)
+        self.chain_id = chain_id
+        self.api_key = api_key
         self._base_url = (base_url or self._DEFAULT_BASE_URL).rstrip("/")
         self._origin = origin
 
@@ -179,7 +181,7 @@ class UniswapAPI(BaseAggregator):
             "tokenOutChainId": self.chain_id,
             "amount": str(amount_in.amount),
             "type": "EXACT_INPUT",
-            "slippageTolerance": self._slippage_to_percent(slippage_bps),
+            "slippageTolerance": slippage_to_percent(slippage_bps),
         }
         if swapper is not None:
             body["swapper"] = encode_address(swapper, self.chain_id)
@@ -251,7 +253,7 @@ class UniswapAPI(BaseAggregator):
             "amount": str(amount_in.amount),
             "type": "EXACT_INPUT",
             "swapper": encode_address(wallet_address, self.chain_id),
-            "slippageTolerance": self._slippage_to_percent(slippage_bps),
+            "slippageTolerance": slippage_to_percent(slippage_bps),
         }
         quote_body.update(kwargs)
         quote_response = await self._post("v1/quote", quote_body)

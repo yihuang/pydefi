@@ -11,12 +11,13 @@ from typing import Any
 
 import aiohttp
 
-from pydefi.aggregator.base import AggregatorQuote, BaseAggregator
+from pydefi._math import slippage_to_fraction, slippage_to_percent
+from pydefi.aggregator.base import AggregatorQuote
 from pydefi.exceptions import AggregatorError
 from pydefi.types import SwapRoute, SwapStep, Token, TokenAmount
 
 
-class OKX(BaseAggregator):
+class OKX:
     """OKX DEX aggregator API client.
 
     Args:
@@ -33,7 +34,8 @@ class OKX(BaseAggregator):
         api_key: str | None = None,
         base_url: str | None = None,
     ) -> None:
-        super().__init__(chain_id, api_key)
+        self.chain_id = chain_id
+        self.api_key = api_key
         self._base_url = base_url or self._DEFAULT_BASE_URL
 
     @property
@@ -86,7 +88,7 @@ class OKX(BaseAggregator):
             "amount": str(amount_in.amount),
             "fromTokenAddress": amount_in.token.address,
             "toTokenAddress": token_out.address,
-            "slippagePercent": str(self._slippage_to_percent(slippage_bps)),
+            "slippagePercent": str(slippage_to_percent(slippage_bps)),
             **kwargs,
         }
         data = await self._get("quote", params)
@@ -135,7 +137,7 @@ class OKX(BaseAggregator):
             "amount": str(amount_in.amount),
             "fromTokenAddress": amount_in.token.address,
             "toTokenAddress": token_out.address,
-            "slippagePercent": str(self._slippage_to_percent(slippage_bps)),
+            "slippagePercent": str(slippage_to_percent(slippage_bps)),
             "userWalletAddress": from_address,
             **kwargs,
         }

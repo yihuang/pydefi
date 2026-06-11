@@ -1,3 +1,4 @@
+from pydefi._math import apply_slippage
 """Tests for pydefi.bridge (no live calls)."""
 
 from types import SimpleNamespace
@@ -7,7 +8,6 @@ import pytest
 from hexbytes import HexBytes
 
 from pydefi.bridge.across import Across
-from pydefi.bridge.base import BaseBridge
 from pydefi.bridge.ccip import (
     _CCIP_CHAIN_SELECTOR,
     _CCIP_ROUTER,
@@ -26,7 +26,7 @@ from pydefi.bridge.eureka import (
 )
 from pydefi.bridge.gaszip import _SUPPORTED_CHAINS, GasZip
 from pydefi.bridge.layerzero_oft import _LZ_EID, LayerZeroOFT
-from pydefi.bridge.lucid import LucidBridge, discover_adapter
+from pydefi.bridge.lucid import LucidBridge, _encode_transfer_message, discover_adapter
 from pydefi.bridge.mayan import _CHAIN_NAMES, _MAYAN_FORWARDER, Mayan
 from pydefi.bridge.relay import Relay
 from pydefi.bridge.router import BridgeRouter, rank_bridge_quotes
@@ -168,8 +168,8 @@ class TestStargate:
             dst_chain_id=42161,
             router_address=STARGATE_ROUTER_ETH,
         )
-        assert sg._apply_slippage(1_000_000, 50) == 995_000
-        assert sg._apply_slippage(1_000_000, 0) == 1_000_000
+        assert apply_slippage(1_000_000, 50) == 995_000
+        assert apply_slippage(1_000_000, 0) == 1_000_000
 
     @pytest.mark.asyncio
     async def test_get_quote(self):
@@ -264,19 +264,13 @@ class TestAcross:
             dst_chain_id=42161,
             spoke_pool_address=SPOKE_POOL_ETH,
         )
-        result = ac._apply_slippage(1_000_000, 50)
+        result = apply_slippage(1_000_000, 50)
         assert result == 995_000
 
 
 # ---------------------------------------------------------------------------
-# BaseBridge abstract interface
+# BaseBridge was removed — concrete bridges are duck-typed
 # ---------------------------------------------------------------------------
-
-
-class TestBaseBridge:
-    def test_cannot_instantiate_abstract(self):
-        with pytest.raises(TypeError):
-            BaseBridge(src_chain_id=1, dst_chain_id=42161)
 
 
 # ---------------------------------------------------------------------------
@@ -762,8 +756,8 @@ class TestLayerZeroOFT:
             dst_chain_id=42161,
             oft_address=OFT_ADDRESS,
         )
-        assert oft._apply_slippage(1_000_000, 50) == 995_000
-        assert oft._apply_slippage(1_000_000, 0) == 1_000_000
+        assert apply_slippage(1_000_000, 50) == 995_000
+        assert apply_slippage(1_000_000, 0) == 1_000_000
 
     @pytest.mark.asyncio
     async def test_get_quote(self):
@@ -1421,8 +1415,8 @@ def _native_fee_to_usdc(q: BridgeQuote) -> int | None:
 
 
 def _mock_bridge(*, quote: BridgeQuote | None = None, side_effect: BaseException | None = None) -> MagicMock:
-    """Build a fake BaseBridge whose ``get_quote`` returns a quote or raises."""
-    b = MagicMock(spec=BaseBridge)
+    """Build a fake bridge whose ``get_quote`` returns a quote or raises."""
+    b = MagicMock()
     if side_effect is not None:
         b.get_quote = AsyncMock(side_effect=side_effect)
     else:
@@ -1709,7 +1703,7 @@ class TestLucidAdapter:
 
     def test_encode_transfer_message_length(self):
         # 7 fixed-size words → 224 bytes. Chain-agnostic.
-        msg = LucidBridge._encode_transfer_message(
+        msg = _encode_transfer_message(
             nonce=0,
             dest_chain_id=ChainId.BASE,
             recipient=_RECIPIENT,

@@ -20,15 +20,64 @@ from pydefi.abi.amm import (
     QuoteExactInputSingleParams,
     QuoteExactOutputSingleParams,
 )
-from pydefi.amm.base import BaseAMM
 from pydefi.exceptions import InsufficientLiquidityError
 from pydefi.types import Address, SwapRoute, SwapStep, Token, TokenAmount
+
+
+# ---------------------------------------------------------------------------
+# Module-level pure functions
+# ---------------------------------------------------------------------------
+
+
+def v3_sqrt_price_to_price(
+    sqrt_price_x96: int,
+    token0_decimals: int = 18,
+    token1_decimals: int = 18,
+) -> Decimal:
+    """Convert a V3 ``sqrtPriceX96`` value to a human-readable price.
+
+    Args:
+        sqrt_price_x96: The raw ``sqrtPriceX96`` value from ``slot0()``.
+        token0_decimals: Decimals of token0.
+        token1_decimals: Decimals of token1.
+
+    Returns:
+        Price of token0 denominated in token1.
+    """
+    sqrt_price = Decimal(sqrt_price_x96) / Decimal(2**96)
+    price_raw = sqrt_price**2
+    adj = Decimal(10**token0_decimals) / Decimal(10**token1_decimals)
+    return price_raw * adj
+
+
+def v3_encode_path(tokens: list[Token], fees: list[int]) -> bytes:
+    """Encode a token path as ABI-packed bytes for V3 multi-hop calls.
+
+    Args:
+        tokens: Ordered list of tokens.
+        fees: Fee tier between each consecutive pair of tokens.
+
+    Returns:
+        ABI-packed bytes path.
+    """
+    if len(fees) != len(tokens) - 1:
+        raise ValueError("len(fees) must equal len(tokens) - 1")
+    result = tokens[0].address
+    for fee, token in zip(fees, tokens[1:]):
+        result += fee.to_bytes(3, "big")
+        result += token.address
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Client class
+# ---------------------------------------------------------------------------
 
 # Canonical fee tiers (in hundredths of a basis point)
 FEE_TIERS: tuple[int, ...] = (100, 500, 3000, 10000)
 
 
-class UniswapV3(BaseAMM):
+class UniswapV3:
     """Uniswap V3 AMM integration.
 
     Args:
@@ -48,7 +97,8 @@ class UniswapV3(BaseAMM):
         protocol_name: str = "UniswapV3",
         default_fee: int = 3000,
     ) -> None:
-        super().__init__(w3, router_address)
+        self.w3 = w3
+        self.router_address = router_address
         self._protocol_name = protocol_name
         self.default_fee = default_fee
         self.quoter_address = quoter_address
@@ -224,42 +274,5 @@ class UniswapV3(BaseAMM):
     # Math helpers
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def sqrt_price_to_price(
-        sqrt_price_x96: int,
-        token0_decimals: int = 18,
-        token1_decimals: int = 18,
-    ) -> Decimal:
-        """Convert a V3 ``sqrtPriceX96`` value to a human-readable price.
-
-        Args:
-            sqrt_price_x96: The raw ``sqrtPriceX96`` value from ``slot0()``.
-            token0_decimals: Decimals of token0.
-            token1_decimals: Decimals of token1.
-
-        Returns:
-            Price of token0 denominated in token1.
-        """
-        sqrt_price = Decimal(sqrt_price_x96) / Decimal(2**96)
-        price_raw = sqrt_price**2
-        adj = Decimal(10**token0_decimals) / Decimal(10**token1_decimals)
-        return price_raw * adj
-
-    @staticmethod
-    def _encode_path(tokens: list[Token], fees: list[int]) -> bytes:
-        """Encode a token path as ABI-packed bytes for V3 multi-hop calls.
-
-        Args:
-            tokens: Ordered list of tokens.
-            fees: Fee tier between each consecutive pair of tokens.
-
-        Returns:
-            ABI-packed bytes path.
-        """
-        if len(fees) != len(tokens) - 1:
-            raise ValueError("len(fees) must equal len(tokens) - 1")
-        result = tokens[0].address
-        for fee, token in zip(fees, tokens[1:]):
-            result += fee.to_bytes(3, "big")
-            result += token.address
-        return result
+    sqrt_price_to_price = staticmethod(v3_sqrt_price_to_price)
+    _encode_path = staticmethod(v3_encode_path)

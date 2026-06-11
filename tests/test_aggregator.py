@@ -1,3 +1,4 @@
+from pydefi._math import slippage_to_fraction, slippage_to_percent
 """Tests for pydefi.aggregator (no live HTTP calls)."""
 
 from decimal import Decimal
@@ -22,7 +23,8 @@ from pydefi.aggregator.uniswap import UniswapAPI
 from pydefi.aggregator.zerox import ZeroX
 from pydefi.exceptions import AggregatorError
 from pydefi.pathfinder.graph import PoolEdge
-from pydefi.types import Address, ChainId, RouteDAG, Token, TokenAmount
+from pydefi.types import Address, ChainId, Token, TokenAmount
+from pydefi.pathfinder.dag import RouteDAG
 from tests.addrs import USDC, WETH
 
 # ---------------------------------------------------------------------------
@@ -71,12 +73,12 @@ class TestOneInch:
 
     def test_slippage_to_percent(self):
         client = OneInch(chain_id=1)
-        assert client._slippage_to_percent(50) == 0.5
-        assert client._slippage_to_percent(100) == 1.0
+        assert slippage_to_percent(50) == 0.5
+        assert slippage_to_percent(100) == 1.0
 
     def test_slippage_to_fraction(self):
         client = OneInch(chain_id=1)
-        assert client._slippage_to_fraction(50) == 0.005
+        assert slippage_to_fraction(50) == 0.005
 
     @pytest.mark.asyncio
     async def test_get_quote_success(self):
@@ -277,8 +279,8 @@ class TestUniswapAPI:
 
     def test_slippage_to_percent(self):
         client = UniswapAPI(chain_id=1)
-        assert client._slippage_to_percent(50) == 0.5
-        assert client._slippage_to_percent(100) == 1.0
+        assert slippage_to_percent(50) == 0.5
+        assert slippage_to_percent(100) == 1.0
 
     @pytest.mark.asyncio
     async def test_get_quote_success(self):
@@ -504,8 +506,8 @@ class TestOKX:
 
     def test_slippage_to_percent(self):
         client = OKX(chain_id=1)
-        assert client._slippage_to_percent(50) == 0.5
-        assert client._slippage_to_percent(100) == 1.0
+        assert slippage_to_percent(50) == 0.5
+        assert slippage_to_percent(100) == 1.0
 
     @pytest.mark.asyncio
     async def test_get_quote_success(self):
@@ -625,8 +627,8 @@ class TestOpenOcean:
 
     def test_slippage_to_percent(self):
         client = OpenOcean(chain_id=1)
-        assert client._slippage_to_percent(50) == 0.5
-        assert client._slippage_to_percent(100) == 1.0
+        assert slippage_to_percent(50) == 0.5
+        assert slippage_to_percent(100) == 1.0
 
     @pytest.mark.asyncio
     async def test_get_quote_success(self):

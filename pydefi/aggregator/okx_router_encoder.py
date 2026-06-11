@@ -61,7 +61,9 @@ from __future__ import annotations
 
 from pydefi import Token
 from pydefi.abi.dex_aggregator import OKX_DEX_ROUTER, BaseRequest, RouterPath
-from pydefi.types import MAX_BPS, Address, RouteAction, RouteDAG, RouteSplit, RouteSwap, SwapProtocol
+from pydefi._math import MAX_BPS
+from pydefi.types import Address, RouteAction, RouteSplit, RouteSwap, SwapProtocol
+from pydefi.pathfinder.dag import RouteDAG
 
 # ---------------------------------------------------------------------------
 # DexRouter bit-mask constants (from CommonUtils.sol)

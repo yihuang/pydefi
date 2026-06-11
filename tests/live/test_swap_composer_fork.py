@@ -34,7 +34,8 @@ from web3.types import Wei
 from pydefi.abi.amm import UNISWAP_V3_POOL
 from pydefi.abi.codec import codec
 from pydefi.pathfinder.graph import PoolEdge, V3PoolEdge
-from pydefi.types import Address, ChainId, RouteDAG, Token
+from pydefi.types import Address, ChainId, Token
+from pydefi.pathfinder.dag import RouteDAG
 from pydefi.vm import build_execution_program_for_dag, build_quote_program_for_dag
 from pydefi.vm.swap import (
     encode_v2_callback_data,

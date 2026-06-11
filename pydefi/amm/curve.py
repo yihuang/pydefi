@@ -15,12 +15,11 @@ from eth_contract import Contract
 from web3 import AsyncWeb3
 
 from pydefi.abi.amm import CURVE_POOL, CURVE_REGISTRY
-from pydefi.amm.base import BaseAMM
 from pydefi.exceptions import InsufficientLiquidityError
 from pydefi.types import SwapRoute, SwapStep, Token, TokenAmount
 
 
-class CurvePool(BaseAMM):
+class CurvePool:
     """Curve Finance stableswap pool integration.
 
     Each instance is bound to a *single* Curve pool.  Use
@@ -43,7 +42,8 @@ class CurvePool(BaseAMM):
         tokens: list[Token],
         use_underlying: bool = False,
     ) -> None:
-        super().__init__(w3, pool_address)
+        self.w3 = w3
+        self.router_address = pool_address
         self._tokens = tokens
         self._use_underlying = use_underlying
 

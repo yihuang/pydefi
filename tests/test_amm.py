@@ -115,15 +115,15 @@ class TestUniswapV2Math:
         assert abs(amount_in_back - amount_in) < amount_in // 10_000
 
     def test_apply_slippage(self):
-        from pydefi.amm.base import BaseAMM
+        from pydefi._math import apply_slippage
 
-        result = BaseAMM._apply_slippage(1_000_000, 50)
+        result = apply_slippage(1_000_000, 50)
         assert result == 995_000
 
     def test_apply_slippage_zero(self):
-        from pydefi.amm.base import BaseAMM
+        from pydefi._math import apply_slippage
 
-        result = BaseAMM._apply_slippage(1_000_000, 0)
+        result = apply_slippage(1_000_000, 0)
         assert result == 1_000_000
 
 
