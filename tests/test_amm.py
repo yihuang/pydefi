@@ -269,8 +269,8 @@ class TestUniversalRouterConstants:
         assert 42161 in UNIVERSAL_ROUTER_ADDRESSES
 
     def test_sentinels(self):
-        assert MSG_SENDER == "0x0000000000000000000000000000000000000001"
-        assert ADDRESS_THIS == "0x0000000000000000000000000000000000000002"
+        assert MSG_SENDER == Address("0x0000000000000000000000000000000000000001")
+        assert ADDRESS_THIS == Address("0x0000000000000000000000000000000000000002")
 
     def test_class_known_addresses(self, router):
         assert router.KNOWN_ADDRESSES[1] == UNIVERSAL_ROUTER_ADDRESSES[1]
@@ -286,9 +286,9 @@ class TestHopDataclasses:
         assert V3_WETH_USDC.fee == 500
 
     def test_v4_hop_defaults_and_custom_hooks(self):
-        assert V4_WETH_USDC.hooks == ZERO_ADDR.to_0x_hex()
+        assert V4_WETH_USDC.hooks == ZERO_ADDR
         assert V4_WETH_USDC.hook_data == b""
-        hooks = "0x1234567890abcdef1234567890abcdef12345678"
+        hooks = Address("0x1234567890abcdef1234567890abcdef12345678")
         hop = V4Hop(token_in=WETH, token_out=USDC, fee=500, tick_spacing=10, hooks=hooks)
         assert hop.hooks == hooks
 
@@ -562,7 +562,7 @@ class TestV4SwapParamsEncoders:
             currency1=c1,
             fee=500,
             tick_spacing=10,
-            hooks=ZERO_ADDR.to_0x_hex(),
+            hooks=ZERO_ADDR,
             zero_for_one=False,
             amount_in=10**18,
             amount_out_minimum=1_800 * 10**6,
@@ -585,7 +585,7 @@ class TestV4SwapParamsEncoders:
             currency1=c1,
             fee=500,
             tick_spacing=10,
-            hooks=ZERO_ADDR.to_0x_hex(),
+            hooks=ZERO_ADDR,
             zero_for_one=False,
             amount_out=2_000 * 10**6,
             amount_in_maximum=2 * 10**18,
@@ -879,7 +879,7 @@ class TestTransactionBuilders:
         assert decoded_commands == commands
 
     def test_v4_exact_in_single_with_hooks(self, router):
-        custom_hooks = "0x1234567890abcdef1234567890abcdef12345678"
+        custom_hooks = Address("0x1234567890abcdef1234567890abcdef12345678")
         tx = router.build_v4_exact_in_single_transaction(
             amount_in=WETH_1,
             token_out=USDC,
@@ -891,7 +891,7 @@ class TestTransactionBuilders:
             hook_data=b"\x01\x02\x03",
         )
         assert isinstance(tx, SwapTransaction)
-        assert bytes.fromhex(custom_hooks[2:]) in tx.data
+        assert custom_hooks in tx.data
         assert b"\x01\x02\x03" in tx.data
 
 
