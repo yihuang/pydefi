@@ -230,6 +230,9 @@ _PROTOCOL_LOOKUP: dict[str, SwapProtocol] = {
     "uniswapv3": SwapProtocol.UNISWAP_V3,
     "uniswap_v3": SwapProtocol.UNISWAP_V3,
     "uniswap v3": SwapProtocol.UNISWAP_V3,
+    "uniswapv4": SwapProtocol.UNISWAP_V4,
+    "uniswap_v4": SwapProtocol.UNISWAP_V4,
+    "uniswap v4": SwapProtocol.UNISWAP_V4,
 }
 
 
@@ -255,6 +258,10 @@ def _swap_hop_from_route_swap(swap_action: RouteSwap, *, recipient: Address) -> 
 
 def _build_route_swap(prog: Program, amount_in: Operand, action: RouteSwap, recipient: Address) -> Operand:
     hop = _swap_hop_from_route_swap(action, recipient=recipient)
+    if hop.protocol == SwapProtocol.UNISWAP_V4:
+        raise NotImplementedError(
+            "Uniswap V4 execution is not supported by DeFiVM; build the swap via UniversalRouter (V4_SWAP) instead"
+        )
     if hop.protocol == SwapProtocol.UNISWAP_V3:
         return _build_v3_pool_swap(prog, amount_in, hop)
     return _build_v2_direct_swap(prog, amount_in, hop)

@@ -162,6 +162,11 @@ def _build_dag_quote_actions(
     for action in actions:
         if isinstance(action, RouteSwap):
             hop = _swap_hop_from_route_swap(action, recipient=ZERO_ADDRESS)
+            if hop.protocol == SwapProtocol.UNISWAP_V4:
+                raise NotImplementedError(
+                    "Uniswap V4 quoting is not supported by DeFiVM programs; "
+                    "use UniswapV4.quote_exact_input_single instead"
+                )
             if hop.protocol == SwapProtocol.UNISWAP_V3:
                 if quoter_address is None:
                     raise ValueError("build_quote_program_for_dag: quoter_address required for V3 hops")
