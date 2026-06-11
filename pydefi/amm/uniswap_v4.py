@@ -17,7 +17,6 @@ from web3 import AsyncWeb3
 from web3.exceptions import ContractLogicError
 
 from pydefi.abi.amm import UNISWAP_V4_QUOTER, UNISWAP_V4_STATE_VIEW
-from pydefi.amm.base import BaseAMM
 from pydefi.amm.v4_pool_key import pool_id, sort_currencies
 from pydefi.deployments import get_address
 from pydefi.exceptions import InsufficientLiquidityError
@@ -35,7 +34,7 @@ MAINNET_QUOTER: Address = get_address("UNISWAP_V4_QUOTER", ChainId.ETHEREUM)
 DYNAMIC_FEE_FLAG = 0x800000
 
 
-class UniswapV4(BaseAMM):
+class UniswapV4:
     """Uniswap V4 AMM integration (singleton PoolManager).
 
     Args:
@@ -60,7 +59,8 @@ class UniswapV4(BaseAMM):
         default_tick_spacing: int = 10,
         default_hooks: Address = ZERO_ADDRESS,
     ) -> None:
-        super().__init__(w3, pool_manager_address)  # router_address := PoolManager singleton
+        self.w3 = w3
+        self.router_address = pool_manager_address  # router_address := PoolManager singleton
         self._protocol_name = protocol_name
         self.state_view_address = state_view_address
         self.quoter_address = quoter_address

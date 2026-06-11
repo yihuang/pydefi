@@ -18,9 +18,9 @@ from eth_contract.erc20 import ERC20
 from web3 import AsyncWeb3
 from web3.exceptions import BadFunctionCallOutput, ContractLogicError
 
+from pydefi._math import apply_slippage
 from pydefi.abi.amm import CURVE_METAREGISTRY, CURVE_POOL, CURVE_REGISTRY, CURVE_V2_POOL
 from pydefi.amm import curve_math
-from pydefi.amm.base import BaseAMM
 from pydefi.exceptions import InsufficientLiquidityError, PoolDataError
 from pydefi.types import Address, SwapRoute, SwapStep, Token, TokenAmount
 
@@ -46,7 +46,7 @@ class CurvePoolKind(str, Enum):
         return self is CurvePoolKind.CRYPTO_V2
 
 
-class CurvePool(BaseAMM):
+class CurvePool:
     """Curve Finance pool integration.
 
     Each instance is bound to a *single* Curve pool.  Use
@@ -73,7 +73,8 @@ class CurvePool(BaseAMM):
         kind: CurvePoolKind = CurvePoolKind.STABLE_LEGACY,
         use_underlying: bool = False,
     ) -> None:
-        super().__init__(w3, pool_address)
+        self.w3 = w3
+        self.router_address = pool_address
         self._tokens = tokens
         self._kind = kind
         self._use_underlying = use_underlying
@@ -545,7 +546,7 @@ class CurvePool(BaseAMM):
         j = self._coin_index(token_out)
         if min_amount_out is None:
             expected = self.get_dy_local(amount_in.token, token_out, amount_in.amount)
-            min_amount_out = self._apply_slippage(expected, slippage_bps)
+            min_amount_out = apply_slippage(expected, slippage_bps)
         fn_name = "exchange_underlying" if underlying else "exchange"
         data = getattr(self._contract.fns, fn_name)(i, j, amount_in.amount, min_amount_out).data
         return {"to": self.router_address, "data": "0x" + data.hex(), "value": "0"}
@@ -671,6 +672,6 @@ class CurveMetaPool:
         j = self._underlying_index(token_out)
         if min_amount_out is None:
             expected = self.get_dy_underlying(amount_in.token, token_out, amount_in.amount)
-            min_amount_out = expected * (10_000 - slippage_bps) // 10_000
+            min_amount_out = apply_slippage(expected, slippage_bps)
         data = CURVE_POOL.fns.exchange_underlying(i, j, amount_in.amount, min_amount_out).data
         return {"to": self.pool_address, "data": "0x" + data.hex(), "value": "0"}

@@ -11,8 +11,9 @@ from typing import Any, Optional
 
 import aiohttp
 
+from pydefi._math import apply_slippage, slippage_to_percent
 from pydefi._utils import encode_address
-from pydefi.aggregator.base import AggregatorQuote, BaseAggregator
+from pydefi.aggregator.base import AggregatorQuote
 from pydefi.exceptions import AggregatorError
 from pydefi.types import Address, SwapRoute, SwapStep, Token, TokenAmount
 
@@ -21,7 +22,7 @@ from pydefi.types import Address, SwapRoute, SwapStep, Token, TokenAmount
 _SWAP_COMPATIBLE_ROUTING: frozenset[str] = frozenset({"CLASSIC", "WRAP", "UNWRAP", "BRIDGE"})
 
 
-class UniswapAPI(BaseAggregator):
+class UniswapAPI:
     """Uniswap Trading API client.
 
     Implements the end-to-end swap flow described in the Uniswap Trading API
@@ -47,7 +48,8 @@ class UniswapAPI(BaseAggregator):
         base_url: Optional[str] = None,
         origin: Optional[str] = None,
     ) -> None:
-        super().__init__(chain_id, api_key)
+        self.chain_id = chain_id
+        self.api_key = api_key
         self._base_url = (base_url or self._DEFAULT_BASE_URL).rstrip("/")
         self._origin = origin
 
@@ -109,8 +111,7 @@ class UniswapAPI(BaseAggregator):
             # CLASSIC / WRAP / UNWRAP / BRIDGE — standard AMM response shape.
             output = quote_data.get("output", {})
             amount_out_raw = int(output.get("amount", quote_data.get("amountOut", 0)))
-            slippage_factor = 10_000 - slippage_bps
-            min_amount_out_raw = amount_out_raw * slippage_factor // 10_000
+            min_amount_out_raw = apply_slippage(amount_out_raw, slippage_bps)
             gas_fee = quote_data.get("gasFee") or quote_data.get("gasUseEstimate", 0)
             gas_estimate = int(gas_fee) if gas_fee else 0
             price_impact_raw = quote_data.get("priceImpact", 0)
@@ -123,13 +124,12 @@ class UniswapAPI(BaseAggregator):
                 amount_out_raw = int(aggregated[0].get("amount", 0))
                 min_amount_out_raw = int(aggregated[0].get("minAmount", 0))
                 if not min_amount_out_raw:
-                    slippage_factor = 10_000 - slippage_bps
-                    min_amount_out_raw = amount_out_raw * slippage_factor // 10_000
+                    min_amount_out_raw = apply_slippage(amount_out_raw, slippage_bps)
             else:
                 order_outputs = quote_data.get("orderInfo", {}).get("outputs", [])
                 amount_out_raw = int(order_outputs[0]["startAmount"]) if order_outputs else 0
                 end_amount = int(order_outputs[0]["endAmount"]) if order_outputs else 0
-                min_amount_out_raw = end_amount or (amount_out_raw * (10_000 - slippage_bps) // 10_000)
+                min_amount_out_raw = end_amount or apply_slippage(amount_out_raw, slippage_bps)
             gas_estimate = 0
             price_impact_raw = 0
             route_summary = routing
@@ -179,7 +179,7 @@ class UniswapAPI(BaseAggregator):
             "tokenOutChainId": self.chain_id,
             "amount": str(amount_in.amount),
             "type": "EXACT_INPUT",
-            "slippageTolerance": self._slippage_to_percent(slippage_bps),
+            "slippageTolerance": slippage_to_percent(slippage_bps),
         }
         if swapper is not None:
             body["swapper"] = encode_address(swapper, self.chain_id)
@@ -251,7 +251,7 @@ class UniswapAPI(BaseAggregator):
             "amount": str(amount_in.amount),
             "type": "EXACT_INPUT",
             "swapper": encode_address(wallet_address, self.chain_id),
-            "slippageTolerance": self._slippage_to_percent(slippage_bps),
+            "slippageTolerance": slippage_to_percent(slippage_bps),
         }
         quote_body.update(kwargs)
         quote_response = await self._post("v1/quote", quote_body)

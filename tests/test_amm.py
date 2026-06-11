@@ -5,7 +5,7 @@ from decimal import Decimal
 import pytest
 from eth_abi import decode as abi_decode
 
-from pydefi.amm.base import BaseAMM
+from pydefi._math import apply_slippage
 from pydefi.amm.uniswap_v2 import UniswapV2
 from pydefi.amm.uniswap_v3 import UniswapV3
 from pydefi.amm.universal_router import (
@@ -148,8 +148,13 @@ class TestUniswapV2Math:
         assert abs(amount_in_back - amount_in) < amount_in // 10_000
 
     def test_apply_slippage(self):
-        assert BaseAMM._apply_slippage(1_000_000, 50) == 995_000
-        assert BaseAMM._apply_slippage(1_000_000, 0) == 1_000_000
+
+        result = apply_slippage(1_000_000, 50)
+        assert result == 995_000
+
+    def test_apply_slippage_zero(self):
+        result = apply_slippage(1_000_000, 0)
+        assert result == 1_000_000
 
 
 # ---------------------------------------------------------------------------

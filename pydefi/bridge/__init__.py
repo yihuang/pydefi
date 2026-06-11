@@ -1,7 +1,6 @@
 """Cross-chain bridge integrations."""
 
 from pydefi.bridge.across import Across
-from pydefi.bridge.base import BaseBridge
 from pydefi.bridge.ccip import CCIP, EVM_EXTRA_ARGS_V2_TAG
 from pydefi.bridge.cctp import (
     CCTP,
@@ -25,7 +24,6 @@ from pydefi.bridge.router import BridgeRouter, RankedBridgeQuote, rank_bridge_qu
 from pydefi.bridge.stargate import Stargate
 
 __all__ = [
-    "BaseBridge",
     "BridgeRouter",
     "RankedBridgeQuote",
     "Stargate",

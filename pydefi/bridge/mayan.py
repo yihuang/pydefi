@@ -20,7 +20,6 @@ from hexbytes import HexBytes
 
 from pydefi._utils import address_to_bytes32, encode_address, token_to_bytes32
 from pydefi.abi.bridge import MAYAN_FORWARDER, MAYAN_SWIFT_V2, MayanSwiftOrderParams
-from pydefi.bridge.base import BaseBridge
 from pydefi.exceptions import BridgeError
 from pydefi.types import NATIVE_SENTINEL, Address, BridgeQuote, Token, TokenAmount
 
@@ -95,7 +94,7 @@ def _mayan_token_address(address: Address, chain_id: int) -> str:
     return encode_address(address, chain_id)
 
 
-class Mayan(BaseBridge):
+class Mayan:
     """Mayan Finance cross-chain bridge integration.
 
     Args:
@@ -110,7 +109,8 @@ class Mayan(BaseBridge):
         dst_chain_id: int,
         api_base_url: str = _MAYAN_API_BASE,
     ) -> None:
-        super().__init__(src_chain_id, dst_chain_id)
+        self.src_chain_id = src_chain_id
+        self.dst_chain_id = dst_chain_id
         self._api_base = api_base_url.rstrip("/")
 
     @property

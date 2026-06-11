@@ -18,7 +18,6 @@ from typing import Any
 import aiohttp
 
 from pydefi._utils import decode_address
-from pydefi.amm.base import BaseSolanaAMM
 from pydefi.exceptions import InsufficientLiquidityError
 from pydefi.types import Address, ChainId, SwapRoute, SwapStep, Token, TokenAmount
 
@@ -26,7 +25,7 @@ _RAYDIUM_API_BASE = "https://transaction-v1.raydium.io"
 _SOL_MINT = "So11111111111111111111111111111111111111112"
 
 
-class Raydium(BaseSolanaAMM):
+class Raydium:
     """Raydium AMM client for Solana.
 
     Queries the Raydium V3 compute API to obtain swap quotes.  No Solana RPC
@@ -40,7 +39,7 @@ class Raydium(BaseSolanaAMM):
     _DEFAULT_API_URL = _RAYDIUM_API_BASE
 
     def __init__(self, api_url: str | None = None) -> None:
-        super().__init__(api_url or self._DEFAULT_API_URL)
+        self.api_url = api_url or self._DEFAULT_API_URL
 
     @property
     def protocol_name(self) -> str:
