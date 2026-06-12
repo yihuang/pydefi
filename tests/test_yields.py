@@ -646,6 +646,24 @@ async def test_cross_chain_route_rejects_bridge_without_spender():
         )
 
 
+@pytest.mark.asyncio
+async def test_cross_chain_route_rejects_bridge_lacking_spender_attribute():
+    """A bridge class that never defines spender (most native-asset bridges,
+    e.g. GasZip) is rejected with the same ValueError — not an AttributeError."""
+    bridge = _fake_bridge(ChainId.MANTRA, ChainId.BASE)
+    del bridge.spender  # mock attribute deletion → AttributeError on access
+    bridge.protocol_name = "NativeOnly"
+    with pytest.raises(ValueError, match="NativeOnly bridge exposes no ERC-20 spender"):
+        await build_yield_route(
+            "bridge_then_supply",
+            _USER,
+            TokenAmount(USDC_MANTRA, 1_000_000),
+            w3s={ChainId.MANTRA: object()},
+            target_market=_market("aave_v3", ChainId.BASE, USDC_BASE),
+            bridge=bridge,
+        )
+
+
 # ---------------------------------------------------------------------------
 # build_yield_route — validation paths
 # ---------------------------------------------------------------------------

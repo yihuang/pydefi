@@ -384,7 +384,9 @@ def sign_route(route: YieldRoute, private_key: str) -> YieldRoute:
 
 async def _bridge_steps(bridge: Bridge, user: Address, amount: TokenAmount, target_token: Token) -> list[YieldStep]:
     """``[approve, bridge]`` — approve the bridge's token spender, then bridge."""
-    spender = bridge.spender
+    # getattr, not direct access: bridges without an ERC-20 approval target
+    # (native-only movers) simply don't define spender.
+    spender = getattr(bridge, "spender", None)
     if spender is None:
         raise ValueError(f"{bridge.protocol_name} bridge exposes no ERC-20 spender — it cannot carry a yield route")
     bridge_tx = await bridge.build_bridge_tx(amount.token, target_token, amount, user)

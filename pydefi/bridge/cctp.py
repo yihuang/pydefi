@@ -270,12 +270,13 @@ class CCTP:
         self._api_base = api_base_url.rstrip("/")
         self.is_mainnet = is_mainnet
 
-        self.token_messenger_address = token_messenger_address or _TOKEN_MESSENGER_V2.get(src_chain_id)
-        if not self.token_messenger_address:
+        messenger = token_messenger_address or _TOKEN_MESSENGER_V2.get(src_chain_id)
+        if not messenger:
             raise BridgeError(
                 f"CCTP: no TokenMessengerV2 address known for chain {src_chain_id}. "
                 "Pass token_messenger_address explicitly."
             )
+        self.token_messenger_address = Address(messenger)
 
         self.src_usdc_address = src_usdc_address or _USDC.get(src_chain_id)
         if not self.src_usdc_address:
@@ -290,7 +291,7 @@ class CCTP:
     @property
     def spender(self) -> Address:
         """The CCTP ``TokenMessengerV2`` — the contract ``depositForBurn`` pulls USDC through."""
-        return Address(self.token_messenger_address)
+        return self.token_messenger_address
 
     # -----------------------------------------------------------------------
     # Helpers

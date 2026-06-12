@@ -1041,14 +1041,16 @@ class TestCCIP:
         assert ccip.protocol_name == "CCIP"
 
     def test_router_address_defaults_to_registry(self, ccip):
-        assert ccip.router_address == _CCIP_ROUTER[1]
+        assert ccip.router_address == Address(_CCIP_ROUTER[1])
 
     def test_spender_is_the_router(self, ccip):
-        assert ccip.spender == Address(ccip.router_address)
+        assert ccip.spender == ccip.router_address
 
     def test_router_address_override(self):
         custom = "0x" + "11" * 20
-        assert CCIP(w3=None, src_chain_id=1, dst_chain_id=42161, router_address=custom).router_address == custom
+        assert CCIP(w3=None, src_chain_id=1, dst_chain_id=42161, router_address=custom).router_address == Address(
+            custom
+        )
 
     def test_unknown_src_chain_raises(self):
         with pytest.raises(BridgeError, match="Router"):
@@ -1159,7 +1161,7 @@ class TestCCIP:
         """Native fee → tx.value carries the fee, tx.to is the Router."""
         with _patched_quote_fee(ccip, 5 * 10**15):
             tx = await ccip.build_bridge_tx(CCIP_USDC_ETH, CCIP_USDC_ARB, amount_in, _CCIP_RECIPIENT)
-        assert tx["to"] == _CCIP_ROUTER[1]
+        assert tx["to"] == Address(_CCIP_ROUTER[1])
         assert tx["data"].startswith("0x" + _CCIP_SEND_SELECTOR)
         assert tx["value"] == str(5 * 10**15)
         assert int(tx["gas"]) > 0

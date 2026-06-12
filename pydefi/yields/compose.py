@@ -104,13 +104,16 @@ async def build_compose_supply_route(
             f"build_compose_supply_route: target_market is on chain {target_market.chain_id}, "
             f"bridge destination is {bridge.dst_chain_id}"
         )
+    spender = getattr(bridge, "spender", None)
+    if spender is None:
+        raise ValueError(f"{bridge.protocol_name} bridge exposes no ERC-20 spender — it cannot carry a compose route")
     supply_target = await _supply_target(target_market, w3s[target_market.chain_id])
     program = build_supply_program(target_market.protocol, supply_target, target_market.token, user)
     build_compose_tx = getattr(bridge, "build_bridge_compose_tx", None)
     if build_compose_tx is None:
         raise NotImplementedError(f"{bridge.protocol_name} bridge has no compose path")
     bridge_tx = await build_compose_tx(amount_in, composer_address, program)
-    approve_tx = build_approve_tx(amount_in.token, Address(bridge_tx["to"]), amount_in.amount)
+    approve_tx = build_approve_tx(amount_in.token, spender, amount_in.amount)
     return YieldRoute(
         strategy="compose_supply",
         source_chain=bridge.src_chain_id,
