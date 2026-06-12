@@ -560,15 +560,16 @@ def newton_D(ann: int, gamma: int, x_unsorted: list[int]) -> int:
         k0 = PRECISION
         for _x in x:
             k0 = k0 * _x * n // d
-        mul1 = _mul1(d, gamma, _g1k0(gamma, k0), ann)
-        mul2 = (2 * PRECISION) * n // k0
+        g1k0 = _g1k0(gamma, k0)
+        mul1 = _mul1(d, gamma, g1k0, ann)
+        mul2 = (2 * PRECISION) * n * k0 // g1k0  # 2*N*K0 / _g1k0
         neg_fprime = (s + s * mul2 // PRECISION) + mul1 * n // k0 - mul2 * d // PRECISION
         d_plus = d * (neg_fprime + s) // neg_fprime
         d_minus = d * d // neg_fprime
         if PRECISION > k0:
-            d_minus += d_plus * (mul1 // neg_fprime) // PRECISION * (PRECISION - k0) // k0
+            d_minus += d * (mul1 // neg_fprime) // PRECISION * (PRECISION - k0) // k0
         else:
-            d_minus -= d_plus * (mul1 // neg_fprime) // PRECISION * (k0 - PRECISION) // k0
+            d_minus -= d * (mul1 // neg_fprime) // PRECISION * (k0 - PRECISION) // k0
         if d_plus > d_minus:
             d = d_plus - d_minus
         else:
