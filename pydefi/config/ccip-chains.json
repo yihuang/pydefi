@@ -495,25 +495,6 @@
     "tokenAdminRegistry": "0x2e1543255119CfB9D3501E32d7f5B244E59A06F4",
     "tokenPoolFactory": "0x5931822f394baBC2AACF4588E98FC77a9f5aa8C9"
   },
-  "228": {
-    "chainFamily": "evm",
-    "chainId": 228,
-    "chainType": "evm",
-    "displayName": "Mind Network",
-    "feeTokens": [
-      "LINK",
-      "WETH",
-      "ETH"
-    ],
-    "internalId": "mind-mainnet",
-    "registryModule": "0x7bc6fB227983Ad829dF8b210407A589F2EB34f64",
-    "rmn": "0x4F26203d04A57A73df795DBed362d3A8d5C34D0c",
-    "router": "0x3E13485E767D53f938cD4AF502111d3fF8726A2D",
-    "selector": "11690709103138290329",
-    "supported": true,
-    "tokenAdminRegistry": "0x469169915210462F5e01EFBE0822Cf7079F9306b",
-    "tokenPoolFactory": "0xD3F31950e5Ec340b021D0d27454F44Edb7304C18"
-  },
   "232": {
     "chainFamily": "evm",
     "chainId": 232,

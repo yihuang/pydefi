@@ -31,11 +31,10 @@ import pytest
 from eth_contract import Contract
 from eth_contract.erc20 import ERC20
 
-from pydefi.bridge import CCIP, CCTP, BaseBridge
-from pydefi.deployments import get_address
+from pydefi._utils import to_tx
+from pydefi.bridge import CCIP, CCTP
 from pydefi.exceptions import BridgeError
 from pydefi.lending import AaveV3, CompoundV3
-from pydefi.lending.utils import to_tx
 from pydefi.types import Address, ChainId, Token, TokenAmount
 from pydefi.yields import (
     PendingLeg,
@@ -47,15 +46,13 @@ from pydefi.yields import (
     build_yield_route,
 )
 from pydefi.yields.router import Protocol
-from tests.addrs import ETH_WHALE, USDC
+from tests.addrs import COMET_USDC, ETH_WHALE, USDC
 from tests.live.anvil_helpers import fund_usdc, impersonate, send_tx, set_balance
 from tests.live.sol_utils import MOCK_TOKEN_SOL, compile_sol_source, deploy
 
 # ---------------------------------------------------------------------------
-# Pinned addresses + per-test constants
+# Per-test constants
 # ---------------------------------------------------------------------------
-
-COMET_USDC = get_address("COMPOUND_V3_USDC", ChainId.ETHEREUM)
 
 USDC_TEST_AMOUNT = 1_000 * 10**6  # 1000 USDC
 
@@ -67,7 +64,7 @@ _ATOKEN_SUPPLY_SLACK = 5
 
 
 # ---------------------------------------------------------------------------
-# MockBridge — a BaseBridge test double for the cross-chain end-to-end test
+# MockBridge — a duck-typed bridge double for the cross-chain end-to-end test
 # ---------------------------------------------------------------------------
 
 #: ``bridge`` pulls the token on the source chain; ``deliver`` releases it on
@@ -104,17 +101,16 @@ _MOCK_BRIDGE = Contract.from_abi(
 )
 
 
-class _MockBridge(BaseBridge):
-    """A :class:`BaseBridge` double backed by a ``MockBridge.sol`` on the
+class _MockBridge:
+    """A duck-typed bridge double backed by a ``MockBridge.sol`` on the
     source chain — the test drives the relay to the destination."""
 
-    def __init__(self, src_chain_id: int, dst_chain_id: int, contract: Address) -> None:
-        super().__init__(src_chain_id, dst_chain_id)
-        self._contract = contract
+    protocol_name: str = "MockBridge"
 
-    @property
-    def protocol_name(self) -> str:
-        return "MockBridge"
+    def __init__(self, src_chain_id: int, dst_chain_id: int, contract: Address) -> None:
+        self.src_chain_id = src_chain_id
+        self.dst_chain_id = dst_chain_id
+        self._contract = contract
 
     @property
     def spender(self) -> Address:

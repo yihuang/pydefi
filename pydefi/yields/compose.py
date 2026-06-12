@@ -10,8 +10,9 @@ chain; there is no follow-up leg.
 
 Both CCTP v2 (``depositForBurnWithHook`` → ``CCTPComposer``) and Chainlink
 CCIP (``ccipSend`` with ``data`` → ``CCIPComposer``) expose this pattern
-behind :meth:`~pydefi.bridge.BaseBridge.build_bridge_compose_tx`, so
-:func:`build_compose_supply_route` works with either bridge unchanged.
+behind a duck-typed ``build_bridge_compose_tx`` method (see
+:class:`~pydefi.bridge.Bridge`), so :func:`build_compose_supply_route` works
+with either bridge unchanged.
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ from vyper.venom.basicblock import IRLiteral
 from web3 import AsyncWeb3
 
 from pydefi.abi.lending import AAVE_V3_POOL, COMPOUND_V3_COMET
-from pydefi.bridge.base import BaseBridge
+from pydefi.bridge import Bridge
 from pydefi.lending import AaveV3, CompoundV3
 from pydefi.types import Address, Token, TokenAmount
 from pydefi.vm import ProgramContext
@@ -72,7 +73,7 @@ async def build_compose_supply_route(
     amount_in: TokenAmount,
     target_market: YieldMarket,
     composer_address: Address,
-    bridge: BaseBridge,
+    bridge: Bridge,
     w3s: dict[int, AsyncWeb3],
 ) -> YieldRoute:
     """Build a one-signature cross-chain yield deposit via bridge compose hooks.
@@ -105,7 +106,10 @@ async def build_compose_supply_route(
         )
     supply_target = await _supply_target(target_market, w3s[target_market.chain_id])
     program = build_supply_program(target_market.protocol, supply_target, target_market.token, user)
-    bridge_tx = await bridge.build_bridge_compose_tx(amount_in, composer_address, program)
+    build_compose_tx = getattr(bridge, "build_bridge_compose_tx", None)
+    if build_compose_tx is None:
+        raise NotImplementedError(f"{bridge.protocol_name} bridge has no compose path")
+    bridge_tx = await build_compose_tx(amount_in, composer_address, program)
     approve_tx = build_approve_tx(amount_in.token, Address(bridge_tx["to"]), amount_in.amount)
     return YieldRoute(
         strategy="compose_supply",

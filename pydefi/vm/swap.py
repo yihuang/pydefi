@@ -16,8 +16,26 @@ from eth_contract.erc20 import ERC20
 from eth_utils import keccak
 
 from pydefi.abi.amm import UNISWAP_V2_PAIR, UNISWAP_V3_POOL, UNISWAP_V3_QUOTER_V2
-from pydefi.types import Address, RouteDAG, RouteSwap, SwapProtocol, SwapRoute, SwapTransaction
+from pydefi.pathfinder.dag import RouteDAG, RouteSwap
+from pydefi.types import Address, SwapProtocol, SwapRoute
 from pydefi.vm.context import Operand, Program
+
+
+@dataclass
+class SwapTransaction:
+    """An encoded transaction ready to submit to the Uniswap Universal Router.
+
+    Attributes:
+        to: Target contract address (the Universal Router).
+        data: ABI-encoded calldata for the ``execute`` call.
+        value: Amount of native ETH (in wei) to attach to the transaction.
+            Typically non-zero only when wrapping ETH as part of the swap.
+    """
+
+    to: str
+    data: bytes
+    value: int = 0
+
 
 # ---------------------------------------------------------------------------
 # Pool / quoter / token function ABI signatures (sourced from pydefi.abi)
@@ -229,6 +247,9 @@ _PROTOCOL_LOOKUP: dict[str, SwapProtocol] = {
     "uniswapv3": SwapProtocol.UNISWAP_V3,
     "uniswap_v3": SwapProtocol.UNISWAP_V3,
     "uniswap v3": SwapProtocol.UNISWAP_V3,
+    "uniswapv4": SwapProtocol.UNISWAP_V4,
+    "uniswap_v4": SwapProtocol.UNISWAP_V4,
+    "uniswap v4": SwapProtocol.UNISWAP_V4,
 }
 
 
@@ -254,6 +275,10 @@ def _swap_hop_from_route_swap(swap_action: RouteSwap, *, recipient: Address) -> 
 
 def _build_route_swap(prog: Program, amount_in: Operand, action: RouteSwap, recipient: Address) -> Operand:
     hop = _swap_hop_from_route_swap(action, recipient=recipient)
+    if hop.protocol == SwapProtocol.UNISWAP_V4:
+        raise NotImplementedError(
+            "Uniswap V4 execution is not supported by DeFiVM; build the swap via UniversalRouter (V4_SWAP) instead"
+        )
     if hop.protocol == SwapProtocol.UNISWAP_V3:
         return _build_v3_pool_swap(prog, amount_in, hop)
     return _build_v2_direct_swap(prog, amount_in, hop)

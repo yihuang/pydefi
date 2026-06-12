@@ -5,12 +5,12 @@ from __future__ import annotations
 import dataclasses
 from decimal import Decimal
 from typing import cast
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from web3 import AsyncWeb3, Web3
 
-from pydefi.bridge import CCIP, CCTP, BaseBridge, LucidBridge
+from pydefi.bridge import CCIP, CCTP, Bridge, LucidBridge
 from pydefi.deployments import get_token
 from pydefi.exceptions import BridgeError
 from pydefi.lending.aave_v3 import ReserveData
@@ -37,8 +37,10 @@ from pydefi.yields.router import (
     RouteStrategy,
     YieldStep,
     _morpho_markets,
+    _supply_steps,
     aave_v4_ref,
     morpho_id,
+    sign_route,
 )
 
 # ---------------------------------------------------------------------------
@@ -79,7 +81,7 @@ def _market(protocol: Protocol, chain_id: int, token: Token, apy: str = "0.04") 
 
 
 def _fake_bridge(src_chain: int, dst_chain: int, spender: Address = Address("0x" + "CC" * 20)) -> object:
-    """Stand-in for a BaseBridge — exposes only the attributes build_yield_route reads."""
+    """Stand-in for a Bridge — exposes only the attributes build_yield_route reads."""
     bridge = AsyncMock()
     bridge.src_chain_id = src_chain
     bridge.dst_chain_id = dst_chain
@@ -569,18 +571,18 @@ async def test_followup_route_consumes_the_token_the_user_holds():
 
 
 # ---------------------------------------------------------------------------
-# build_yield_route — bridge-agnostic (any BaseBridge, not just Lucid)
+# build_yield_route — bridge-agnostic (any Bridge, not just Lucid)
 # ---------------------------------------------------------------------------
 
 
-def _ccip_bridge_case() -> tuple[BaseBridge, Token, Token]:
+def _ccip_bridge_case() -> tuple[Bridge, Token, Token]:
     """A real CCIP bridge with its source / destination USDC tokens."""
     src = Token(chain_id=ChainId.ETHEREUM, address=Address("0x" + "E7" * 20), symbol="USDC", decimals=6)
     dst = Token(chain_id=42161, address=Address("0x" + "A7" * 20), symbol="USDC", decimals=6)
     return CCIP(w3=None, src_chain_id=ChainId.ETHEREUM, dst_chain_id=42161), src, dst  # type: ignore[arg-type]
 
 
-def _lucid_bridge_case() -> tuple[BaseBridge, Token, Token]:
+def _lucid_bridge_case() -> tuple[Bridge, Token, Token]:
     """A real LucidBridge with its source / destination USDC tokens."""
     src = Token(chain_id=ChainId.MANTRA, address=Address("0x" + "E8" * 20), symbol="USDC", decimals=6)
     dst = Token(chain_id=ChainId.BASE, address=Address("0x" + "A8" * 20), symbol="USDC", decimals=6)
@@ -594,7 +596,7 @@ def _lucid_bridge_case() -> tuple[BaseBridge, Token, Token]:
     return bridge, src, dst
 
 
-def _cctp_bridge_case() -> tuple[BaseBridge, Token, Token]:
+def _cctp_bridge_case() -> tuple[Bridge, Token, Token]:
     """A real CCTP bridge with its source / destination USDC tokens."""
     src = Token(chain_id=ChainId.ETHEREUM, address=Address("0x" + "E9" * 20), symbol="USDC", decimals=6)
     dst = Token(chain_id=42161, address=Address("0x" + "A9" * 20), symbol="USDC", decimals=6)
@@ -606,7 +608,7 @@ def _cctp_bridge_case() -> tuple[BaseBridge, Token, Token]:
     "make_case", [_ccip_bridge_case, _lucid_bridge_case, _cctp_bridge_case], ids=["ccip", "lucid", "cctp"]
 )
 async def test_build_yield_route_accepts_any_concrete_bridge(make_case):
-    """build_yield_route works with every BaseBridge that exposes a spender —
+    """build_yield_route works with every Bridge that exposes a spender —
     CCIP, Lucid, and CCTP — encoding that bridge's own spender (Router /
     controller / TokenMessenger) into the approve step, with no per-bridge
     coupling."""
@@ -628,7 +630,7 @@ async def test_build_yield_route_accepts_any_concrete_bridge(make_case):
 
 @pytest.mark.asyncio
 async def test_cross_chain_route_rejects_bridge_without_spender():
-    """A bridge that exposes no ERC-20 spender (the BaseBridge default) cannot
+    """A bridge that exposes no ERC-20 spender (the Bridge default) cannot
     carry a yield route — rejected before any transaction is built."""
     bridge = _fake_bridge(ChainId.MANTRA, ChainId.BASE)
     bridge.spender = None
@@ -985,7 +987,7 @@ async def test_rebalance_tick_forwards_thresholds():
 USDC_ETH = Token(chain_id=ChainId.ETHEREUM, address=Address("0x" + "E7" * 20), symbol="USDC", decimals=6)
 
 
-def _compose_bridge(kind: str) -> BaseBridge:
+def _compose_bridge(kind: str) -> Bridge:
     """A compose-capable bridge moving USDC from Ethereum to Base."""
     if kind == "cctp":
         return CCTP(w3=None, src_chain_id=ChainId.ETHEREUM, dst_chain_id=ChainId.BASE)
@@ -1049,3 +1051,146 @@ async def test_build_compose_supply_route_validates_chains(bridge_kind):
             bridge=bridge,
             w3s={ChainId.BASE: object()},
         )
+
+
+# ---------------------------------------------------------------------------
+# Gasless deposits via DeFiVM.executeWithPermit2 (supply_with_permit2)
+# ---------------------------------------------------------------------------
+
+_DEFIVM = Address("0x" + "DD" * 20)
+_COMET = Address("0x" + "CE" * 20)
+_USDC_ETH = Token(chain_id=ChainId.ETHEREUM, address=Address("0x" + "a0" * 20), symbol="USDC", decimals=6)
+_MOCK_W3 = cast(AsyncWeb3, object())  # never called; protocol client is mocked
+ANVIL_PK = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"  # Anvil account[0]
+
+
+def _mock_comet(comet_addr: Address):
+    """CompoundV3.from_chain → client with comet_address + build_supply_tx(amount, dst)."""
+    client = AsyncMock()
+    client.comet_address = comet_addr
+    client.build_supply_tx = lambda amount, dst=None: {
+        "to": "0x" + bytes(comet_addr).hex(),
+        "data": "0xdeadbeef",  # stand-in supply / supplyTo calldata
+        "value": "0",
+        "gas": "100000",
+    }
+    return patch("pydefi.yields.router.CompoundV3"), client
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "allowance,approve,reset",
+    [(0, True, False), (10, True, True), (2**255, False, False)],
+    ids=["first", "partial", "primed"],
+)
+async def test_supply_steps_gasless_emits_permit2_step(allowance, approve, reset):
+    """With a defivm, the supply leg is a single supply_with_permit2 step whose
+    compiled program the witness signature will bind; the approve leg is included
+    only when the VM's standing allowance is insufficient, and the USDT-safe
+    reset only when that allowance is nonzero."""
+    from pydefi.vm.permit2_supply import build_supply_program
+
+    market = _market("compound_v3", ChainId.ETHEREUM, _USDC_ETH)
+    comet_patch, client = _mock_comet(_COMET)
+    w3 = MagicMock()
+    w3.eth.call = AsyncMock(return_value=allowance.to_bytes(32, "big"))  # ERC20.allowance(vm, protocol)
+    with comet_patch as Comet, patch("pydefi.yields.router.pick_nonce", AsyncMock(return_value=42)):
+        Comet.from_chain = lambda *a, **k: client  # from_chain is sync
+        steps = await _supply_steps(market, _USER, w3, TokenAmount(_USDC_ETH, 1_000_000), defivm=_DEFIVM)
+
+    assert [s.kind for s in steps] == ["supply_with_permit2"]
+    req = steps[0].sign_request
+    assert req["defivm"] == _DEFIVM
+    assert req["nonce"] == 42
+    # The program embeds the supply calldata and matches a direct compile.
+    assert bytes.fromhex("deadbeef") in req["program"]
+    assert req["program"] == build_supply_program(
+        _USDC_ETH.address, _COMET, bytes.fromhex("deadbeef"), approve=approve, reset=reset
+    )
+    assert "deadline" not in req  # stamped at sign time, not build time
+    assert steps[0].tx is None  # unbroadcastable until sign_route fills it in
+
+
+@pytest.mark.asyncio
+async def test_supply_steps_7702_auth_nonce_skips_preceding_user_txs():
+    """The 7702 authorization is consumed at submission time: route steps the EOA
+    broadcasts first (e.g. a withdraw) each consume an account nonce, so the auth
+    must be signed past them or it is silently skipped on-chain."""
+    market = _market("compound_v3", ChainId.ETHEREUM, _USDC_ETH)
+    comet_patch, client = _mock_comet(_COMET)
+    w3 = MagicMock()
+    w3.eth.get_transaction_count = AsyncMock(return_value=7)
+    with (
+        comet_patch as Comet,
+        patch("pydefi.yields.router.delegation_status", AsyncMock(return_value=(0, True))),
+    ):
+        Comet.from_chain = lambda *a, **k: client
+        steps = await _supply_steps(
+            market,
+            _USER,
+            w3,
+            TokenAmount(_USDC_ETH, 1_000_000),
+            delegate=_DEFIVM,
+            user_txs_before=1,
+        )
+    assert steps[0].sign_request["auth_nonce"] == 8  # 7 current + 1 preceding withdraw
+
+
+@pytest.mark.asyncio
+async def test_supply_steps_gasless_rejects_aave_v4():
+    """Aave V4's Spoke gates onBehalfOf supplies behind position-manager approval,
+    so the Permit2 path can never succeed — refuse it up front."""
+    market = _market("aave_v4", ChainId.ETHEREUM, _USDC_ETH)
+    with pytest.raises(ValueError, match="position manager"):
+        await _supply_steps(market, _USER, _MOCK_W3, TokenAmount(_USDC_ETH, 1_000_000), defivm=_DEFIVM)
+
+
+@pytest.mark.asyncio
+async def test_supply_steps_without_defivm_keeps_approve_supply():
+    """No defivm → the classic [approve, supply] pair."""
+    market = _market("compound_v3", ChainId.ETHEREUM, _USDC_ETH)
+    comet_patch, client = _mock_comet(_COMET)
+    with comet_patch as Comet:
+        Comet.from_chain = lambda *a, **k: client
+        steps = await _supply_steps(market, _USER, _MOCK_W3, TokenAmount(_USDC_ETH, 1_000_000))
+    assert [s.kind for s in steps] == ["approve", "supply"]
+
+
+def test_sign_route_builds_permit2_supply_tx():
+    """sign_route stamps a fresh deadline, signs the program-bound witness, and
+    fills in the DeFiVM.executeWithPermit2 calldata."""
+    import time
+
+    from pydefi.abi.vm import DeFiVM
+
+    step = YieldStep(
+        "supply_with_permit2",
+        ChainId.ETHEREUM,
+        None,
+        sign_request={
+            "defivm": _DEFIVM,
+            "token": _USDC_ETH.address,
+            "amount": 1_000_000,
+            "nonce": 42,
+            "owner": _USER,
+            "program": bytes.fromhex("deadbeef"),
+        },
+    )
+    route = YieldRoute("supply_then_bridge", ChainId.ETHEREUM, (step,), "test")
+    signed = sign_route(route, ANVIL_PK)
+    tx = signed.steps[0].tx
+    assert signed.steps[0].sign_request is None
+    assert tx["to"].lower() == "0x" + "dd" * 20
+    assert tx["data"][2:10] == DeFiVM.fns.executeWithPermit2.selector.hex()
+    # The permit deadline (3rd word of the permit tail, after the 4-word head:
+    # permit offset, owner, signature offset, program offset) starts at sign
+    # time — roughly now + 1h, never a stale build-time stamp.
+    deadline = int.from_bytes(bytes.fromhex(tx["data"][2:])[4 + 32 * 6 : 4 + 32 * 7], "big")
+    assert abs(deadline - (int(time.time()) + 3600)) < 60
+
+
+def test_build_transactions_raises_on_unsigned_permit2_step():
+    step = YieldStep("supply_with_permit2", ChainId.ETHEREUM, None, sign_request={"x": 1})
+    route = YieldRoute("supply_then_bridge", ChainId.ETHEREUM, (step,), "test")
+    with pytest.raises(RuntimeError, match="unsigned steps"):
+        route.build_transactions()

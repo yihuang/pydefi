@@ -1,15 +1,13 @@
-"""
-Base class and data types for DEX aggregator API integrations.
-"""
+"""Data types for DEX aggregator API integrations."""
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any
 
-from pydefi.types import SwapRoute, Token, TokenAmount
+from pydefi._math import apply_slippage
+from pydefi.types import Address, SwapRoute, SwapStep, Token, TokenAmount
 
 
 @dataclass
@@ -40,75 +38,57 @@ class AggregatorQuote:
     protocol: str = ""
     route_summary: str = ""
 
+    def to_swap_route(self, *, pool_address: Address | None = None) -> SwapRoute:
+        """Build a single-hop :class:`~pydefi.types.SwapRoute` from this quote.
 
-class BaseAggregator(ABC):
-    """Abstract base class for DEX aggregator API clients.
+        Args:
+            pool_address: Address of the pool or router contract.  ``None`` for
+                aggregator quotes where the individual pool is unknown.
+        """
+        step = SwapStep(
+            token_in=self.token_in,
+            token_out=self.token_out,
+            pool_address=pool_address,
+            protocol=self.protocol,
+            fee=0,
+        )
+        return SwapRoute(
+            steps=[step],
+            amount_in=self.amount_in,
+            amount_out=self.amount_out,
+            price_impact=self.price_impact,
+        )
 
-    Args:
-        chain_id: EVM chain ID to query.
-        api_key: Optional API key for authenticated endpoints.
-    """
-
-    def __init__(self, chain_id: int, api_key: str | None = None) -> None:
-        self.chain_id = chain_id
-        self.api_key = api_key
-
-    @property
-    @abstractmethod
-    def base_url(self) -> str:
-        """Base URL for the aggregator API."""
-
-    @property
-    @abstractmethod
-    def protocol_name(self) -> str:
-        """Human-readable aggregator name."""
-
-    @abstractmethod
-    async def get_quote(
-        self,
-        amount_in: TokenAmount,
+    @classmethod
+    def from_quote(
+        cls,
+        *,
+        token_in: Token,
         token_out: Token,
-        slippage_bps: int = 50,
-        **kwargs: Any,
+        amount_in: TokenAmount,
+        amount_out_raw: int,
+        slippage_bps: int,
+        gas_estimate: int = 0,
+        price_impact: Decimal = Decimal(0),
+        protocol: str = "",
+        route_summary: str = "",
+        tx_data: dict[str, Any] | None = None,
     ) -> AggregatorQuote:
-        """Fetch a swap quote from the aggregator API.
+        """Construct an :class:`AggregatorQuote` from raw quote fields.
 
-        Args:
-            amount_in: Exact input amount.
-            token_out: Desired output token.
-            slippage_bps: Maximum acceptable slippage in basis points.
-            **kwargs: Additional aggregator-specific parameters.
-
-        Returns:
-            An :class:`AggregatorQuote`.
-
-        Raises:
-            :class:`~pydefi.exceptions.AggregatorError`: On API errors.
+        ``min_amount_out`` is computed from *amount_out_raw* via
+        :func:`~pydefi._math.apply_slippage`.
         """
-
-    @abstractmethod
-    async def build_swap_route(
-        self,
-        amount_in: TokenAmount,
-        token_out: Token,
-        slippage_bps: int = 50,
-        **kwargs: Any,
-    ) -> SwapRoute:
-        """Build a :class:`~pydefi.types.SwapRoute` from an aggregator quote.
-
-        Args:
-            amount_in: Exact input amount.
-            token_out: Desired output token.
-            slippage_bps: Maximum acceptable slippage in basis points.
-
-        Returns:
-            A :class:`~pydefi.types.SwapRoute`.
-        """
-
-    def _slippage_to_fraction(self, slippage_bps: int) -> float:
-        """Convert basis points to a fraction (e.g. 50 → 0.005)."""
-        return slippage_bps / 10_000
-
-    def _slippage_to_percent(self, slippage_bps: int) -> float:
-        """Convert basis points to a percentage (e.g. 50 → 0.5)."""
-        return slippage_bps / 100
+        min_out = apply_slippage(amount_out_raw, slippage_bps)
+        return cls(
+            token_in=token_in,
+            token_out=token_out,
+            amount_in=amount_in,
+            amount_out=TokenAmount(token=token_out, amount=amount_out_raw),
+            min_amount_out=TokenAmount(token=token_out, amount=min_out),
+            gas_estimate=gas_estimate,
+            price_impact=price_impact,
+            tx_data=tx_data or {},
+            protocol=protocol,
+            route_summary=route_summary,
+        )

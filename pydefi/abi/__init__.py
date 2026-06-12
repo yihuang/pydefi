@@ -37,6 +37,7 @@ from .bridge import (
     MessagingFee,
     OFTSendParam,
 )
+from .dex_aggregator import OKX_DEX_ROUTER, BaseRequest, RouterPath
 from .lending import (
     AAVE_V3_ADDRESSES_PROVIDER,
     AAVE_V3_DATA_PROVIDER,
@@ -65,6 +66,10 @@ __all__ = [
     "ExactOutputSingleParams",
     "QuoteExactInputSingleParams",
     "QuoteExactOutputSingleParams",
+    # dex aggregator
+    "OKX_DEX_ROUTER",
+    "BaseRequest",
+    "RouterPath",
     # bridge
     "ACROSS_SPOKE_POOL",
     "CCTP_TOKEN_MESSENGER_V2",

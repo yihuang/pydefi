@@ -70,7 +70,6 @@ from web3 import AsyncWeb3, Web3
 
 from pydefi._utils import address_to_bytes32
 from pydefi.abi.bridge import CCTP_TOKEN_MESSENGER_V2
-from pydefi.bridge.base import BaseBridge
 from pydefi.exceptions import BridgeError
 from pydefi.types import Address, BridgeQuote, ChainId, Token, TokenAmount
 
@@ -218,7 +217,7 @@ def encode_cctp_forward_hook_data(
     return magic + version + data_length + recipient + dex_bytes
 
 
-class CCTP(BaseBridge):
+class CCTP:
     """Circle CCTP v2 cross-chain USDC bridge integration.
 
     CCTP v2 burns USDC on the source chain and mints it on the destination chain
@@ -265,7 +264,8 @@ class CCTP(BaseBridge):
         cctp_forwarder_address: Address | None = None,
         is_mainnet: bool = True,
     ) -> None:
-        super().__init__(src_chain_id, dst_chain_id)
+        self.src_chain_id = src_chain_id
+        self.dst_chain_id = dst_chain_id
         self.w3 = w3
         self._api_base = api_base_url.rstrip("/")
         self.is_mainnet = is_mainnet
@@ -285,9 +285,7 @@ class CCTP(BaseBridge):
 
         self.cctp_forwarder_address = cctp_forwarder_address or _CCTP_FORWARDER[is_mainnet]
 
-    @property
-    def protocol_name(self) -> str:
-        return "CCTP"
+    protocol_name: str = "CCTP"
 
     @property
     def spender(self) -> Address:
@@ -351,7 +349,7 @@ class CCTP(BaseBridge):
                 return data  # type: ignore[return-value]
 
     # -----------------------------------------------------------------------
-    # BaseBridge interface
+    # Bridge interface
     # -----------------------------------------------------------------------
 
     async def get_quote(

@@ -34,7 +34,7 @@ from web3.types import Wei
 
 from pydefi.abi.amm import UNISWAP_V3_POOL
 from pydefi.pathfinder.graph import PoolGraph, V3PoolEdge
-from pydefi.pathfinder.router import Router
+from pydefi.pathfinder.router import Router, _dag_leg_weights
 from pydefi.types import Address, TokenAmount
 from pydefi.vm import Program
 from pydefi.vm.swap import build_swap_transaction
@@ -871,7 +871,7 @@ class TestBuildSwapTransactionFork:
             )
 
         dag = Router(graph).find_best_split(TokenAmount(WETH, amount_in), USDC, step_bps=1000)
-        assert len(Router.dag_leg_weights(dag)) >= 1, "expected at least one leg in split DAG"
+        assert len(_dag_leg_weights(dag)) >= 1, "expected at least one leg in split DAG"
 
         # min_final_out=0: actual output verified by balance check below.
         swap_tx = build_swap_transaction(dag, amount_in, vm_address, deployer)

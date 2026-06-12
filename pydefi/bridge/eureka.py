@@ -8,10 +8,10 @@ References: `IBC v2 spec <https://github.com/cosmos/ibc/tree/main/spec/IBC_V2>`_
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from pydefi.abi.bridge import ICS20_DEFAULT_PORT, ICS20_TRANSFER
-from pydefi.bridge.base import BaseBridge
 from pydefi.exceptions import BridgeError
 from pydefi.types import Address, BridgeQuote, Token, TokenAmount
 
@@ -47,7 +47,7 @@ def encode_send_transfer_calldata(
     )
 
 
-class Eureka(BaseBridge):
+class Eureka:
     """IBC v2 (Eureka) bridge via :class:`ICS20Transfer.sendTransfer`.
 
     ``dst_chain_id`` is informational only (Cosmos chain ids are strings;
@@ -55,7 +55,7 @@ class Eureka(BaseBridge):
     the source chain that points at the destination (e.g. ``"07-tendermint-0"``).
     """
 
-    PROTOCOL = "Eureka"
+    protocol_name: str = "Eureka"
 
     def __init__(
         self,
@@ -68,7 +68,8 @@ class Eureka(BaseBridge):
         timeout_seconds: int = 600,
         estimated_time_seconds: int = 60,
     ) -> None:
-        super().__init__(src_chain_id, dst_chain_id)
+        self.src_chain_id = src_chain_id
+        self.dst_chain_id = dst_chain_id
         if len(ics20_transfer_addr) != 20:
             raise ValueError(f"ics20_transfer_addr must be a 20-byte EVM address, got {len(ics20_transfer_addr)} bytes")
         self.ics20_transfer_addr = ics20_transfer_addr
@@ -76,10 +77,6 @@ class Eureka(BaseBridge):
         self.dest_port = dest_port
         self.timeout_seconds = timeout_seconds
         self.estimated_time_seconds = estimated_time_seconds
-
-    @property
-    def protocol_name(self) -> str:
-        return self.PROTOCOL
 
     async def get_quote(
         self,
@@ -136,15 +133,13 @@ class Eureka(BaseBridge):
 
         ``receiver`` defaults to ``recipient`` hex-encoded — pass a bech32
         string when the destination is a Cosmos chain. ``slippage_bps`` is
-        accepted for :class:`BaseBridge` parity but has no effect (ICS-20 is
+        accepted for :class:`~pydefi.bridge.Bridge` parity but has no effect (ICS-20 is
         amount-preserving).
         """
         if amount_in.token.address != token_in.address:
             raise BridgeError(f"amount_in.token ({amount_in.token}) must match token_in ({token_in})")
         if token_in.is_native():
             raise BridgeError("Eureka ICS-20 transfers require an ERC-20; wrap native gas first")
-        import time
-
         timeout_at = (now if now is not None else int(time.time())) + self.timeout_seconds
         receiver_str = receiver if receiver is not None else "0x" + bytes(recipient).hex()
 

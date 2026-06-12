@@ -16,9 +16,78 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+from pydefi._math import MAX_BPS
 from pydefi.exceptions import NoRouteFoundError
+from pydefi.pathfinder.dag import RouteDAG, RouteSplit, RouteSwap
 from pydefi.pathfinder.graph import PoolEdge, PoolGraph
-from pydefi.types import MAX_BPS, Address, RouteDAG, RouteSplit, RouteSwap, SwapRoute, SwapStep, Token, TokenAmount
+from pydefi.types import ZERO_ADDRESS, Address, SwapRoute, SwapStep, Token, TokenAmount
+
+#: Full pool identity: ``(pool_address, token_in, fee, tick_spacing, hooks)``.
+#: ``pool_address`` alone is not unique — every Uniswap V4 pool on a chain
+#: shares the singleton PoolManager address, so the PoolKey fields are needed
+#: to tell pools apart.
+EdgeKey = tuple[Address, Address, int, int, Address]
+
+
+def _edge_key(edge: PoolEdge) -> EdgeKey:
+    """Return the :data:`EdgeKey` identifying *edge*'s underlying pool + direction."""
+    return (
+        edge.pool_address,
+        edge.token_in.address,
+        edge.fee_bps,
+        getattr(edge, "tick_spacing", 0),
+        getattr(edge, "hooks", ZERO_ADDRESS),
+    )
+
+
+def _step_key(step: SwapStep) -> EdgeKey:
+    """Return the :data:`EdgeKey` for a :class:`~pydefi.types.SwapStep` (round-trips :func:`_edge_key`)."""
+    return (step.pool_address, step.token_in.address, step.fee, step.tick_spacing, step.hooks)
+
+
+# ---------------------------------------------------------------------------
+# Module-level helpers
+# ---------------------------------------------------------------------------
+
+
+def _dag_leg_weights(dag: RouteDAG) -> list[int]:
+    """Return ``fraction_bps`` for each split leg, or ``[10000]`` for a linear DAG."""
+    payload = dag.to_dict()
+    if payload["actions"] and isinstance(payload["actions"][0], RouteSplit):
+        return [leg.fraction_bps for leg in payload["actions"][0].legs]
+    return [MAX_BPS]
+
+
+def _edges_to_dag(token_in: Token, edges: list["PoolEdge"]) -> RouteDAG:
+    dag = RouteDAG().from_token(token_in)
+    for edge in edges:
+        dag.swap(edge.token_out, edge)
+    return dag
+
+
+def _estimate_price_impact(edges: list["PoolEdge"], amount_in: int) -> Decimal:
+    """Estimate cumulative price impact across a multi-hop path.
+
+    Delegates per-hop impact estimation to each edge's polymorphic
+    :meth:`~pydefi.pathfinder.graph.PoolEdge.estimate_price_impact` method.
+
+    If a hop returns ``Decimal('NaN')`` (impact unestimable) and no other
+    hop yields a positive estimate, the cumulative result is
+    ``Decimal('NaN')`` to signal "impact unknown" rather than "zero impact".
+    """
+    total_impact = Decimal(0)
+    current_amount = amount_in
+    has_unestimated_hop = False
+    for edge in edges:
+        hop_impact = edge.estimate_price_impact(current_amount)
+        if hop_impact.is_nan():
+            has_unestimated_hop = True
+        else:
+            total_impact += hop_impact
+        current_amount = edge.amount_out(current_amount)
+    if has_unestimated_hop and total_impact == Decimal(0):
+        return Decimal("NaN")
+    return min(total_impact, Decimal(1))
 
 
 class Router:
@@ -169,6 +238,8 @@ class Router:
                 pool_address=edge.pool_address,
                 protocol=edge.protocol,
                 fee=edge.fee_bps,
+                tick_spacing=getattr(edge, "tick_spacing", 0),
+                hooks=getattr(edge, "hooks", ZERO_ADDRESS),
             )
             for edge in final_path
         ]
@@ -176,8 +247,8 @@ class Router:
             steps=steps,
             amount_in=amount_in,
             amount_out=TokenAmount(token=token_out, amount=final_amount),
-            price_impact=self._estimate_price_impact(final_path, amount_in.amount),
-            dag=self._edges_to_dag(src, final_path),
+            price_impact=_estimate_price_impact(final_path, amount_in.amount),
+            dag=_edges_to_dag(src, final_path),
         )
 
     def _find_best_route_gas_aware(
@@ -221,13 +292,15 @@ class Router:
                     pool_address=edge.pool_address,
                     protocol=edge.protocol,
                     fee=edge.fee_bps,
+                    tick_spacing=getattr(edge, "tick_spacing", 0),
+                    hooks=getattr(edge, "hooks", ZERO_ADDRESS),
                 )
                 for edge in path
             ],
             amount_in=amount_in,
             amount_out=TokenAmount(token=token_out, amount=final_amount),
-            price_impact=self._estimate_price_impact(path, amount_in.amount),
-            dag=self._edges_to_dag(amount_in.token, path),
+            price_impact=_estimate_price_impact(path, amount_in.amount),
+            dag=_edges_to_dag(amount_in.token, path),
         )
 
     def find_all_routes(
@@ -300,6 +373,8 @@ class Router:
                         pool_address=e.pool_address,
                         protocol=e.protocol,
                         fee=e.fee_bps,
+                        tick_spacing=getattr(e, "tick_spacing", 0),
+                        hooks=getattr(e, "hooks", ZERO_ADDRESS),
                     )
                     for e in path
                 ]
@@ -308,8 +383,8 @@ class Router:
                         steps=steps,
                         amount_in=amount_in,
                         amount_out=TokenAmount(token=token_out, amount=current_amount),
-                        price_impact=self._estimate_price_impact(path, amount_in.amount),
-                        dag=self._edges_to_dag(src, path),
+                        price_impact=_estimate_price_impact(path, amount_in.amount),
+                        dag=_edges_to_dag(src, path),
                     )
                 )
                 return
@@ -426,14 +501,12 @@ class Router:
         if max_splits < 1:
             raise ValueError("max_splits must be >= 1")
         routes = self._find_top_routes(amount_in, token_out, top_n=max_splits, max_hops=max_hops)
-        edge_index: dict[tuple[Address, Address], PoolEdge] = {
-            (edge.pool_address, edge.token_in.address): edge for edge in self.graph
-        }
+        edge_index: dict[EdgeKey, PoolEdge] = {_edge_key(edge): edge for edge in self.graph}
         legs = self._best_n_way_split(routes, amount_in, edge_index, step_bps)
 
         if len(legs) == 1:
             _, edges = legs[0]
-            return self._edges_to_dag(amount_in.token, edges)
+            return _edges_to_dag(amount_in.token, edges)
 
         dag = RouteDAG().from_token(amount_in.token)
         dag.split()
@@ -519,10 +592,10 @@ class Router:
 
         all_candidates.sort(key=lambda x: x[0], reverse=True)
 
-        seen_first_pools: set[Address] = set()
+        seen_first_pools: set[EdgeKey] = set()
         diverse: list[tuple[int, list[PoolEdge]]] = []
         for amount, path in all_candidates:
-            first_pool: Address = path[0].pool_address
+            first_pool: EdgeKey = _edge_key(path[0])
             if first_pool not in seen_first_pools:
                 seen_first_pools.add(first_pool)
                 diverse.append((amount, path))
@@ -538,6 +611,8 @@ class Router:
                     pool_address=edge.pool_address,
                     protocol=edge.protocol,
                     fee=edge.fee_bps,
+                    tick_spacing=getattr(edge, "tick_spacing", 0),
+                    hooks=getattr(edge, "hooks", ZERO_ADDRESS),
                 )
                 for edge in final_path
             ]
@@ -546,7 +621,7 @@ class Router:
                     steps=steps,
                     amount_in=amount_in,
                     amount_out=TokenAmount(token=token_out, amount=final_amount),
-                    price_impact=self._estimate_price_impact(final_path, amount_in.amount),
+                    price_impact=_estimate_price_impact(final_path, amount_in.amount),
                 )
             )
         return routes
@@ -555,13 +630,12 @@ class Router:
         self,
         route: SwapRoute,
         raw_amount: int,
-        edge_index: dict[tuple[Address, Address], PoolEdge],
+        edge_index: dict[EdgeKey, PoolEdge],
     ) -> int:
         """Walk each step of *route* at *raw_amount* and return the output amount."""
         current = raw_amount
         for step in route.steps:
-            key = (step.pool_address, step.token_in.address)
-            edge = edge_index.get(key)
+            edge = edge_index.get(_step_key(step))
             if edge is None:
                 return 0
             current = edge.amount_out(current)
@@ -573,7 +647,7 @@ class Router:
         self,
         routes: list[SwapRoute],
         amount_in: TokenAmount,
-        edge_index: dict[tuple[Address, Address], PoolEdge],
+        edge_index: dict[EdgeKey, PoolEdge],
         step_bps: int,
     ) -> list[tuple[int, list[PoolEdge]]]:
         """Return the best N-way weight allocation across *routes* at *step_bps* granularity.
@@ -599,11 +673,7 @@ class Router:
         # Pre-build per-route edge lists once to avoid repeated dict lookups.
         route_edges: list[list[PoolEdge]] = []
         for route in routes:
-            edges = [
-                edge_index[(step.pool_address, step.token_in.address)]
-                for step in route.steps
-                if step.pool_address is not None
-            ]
+            edges = [edge_index[_step_key(step)] for step in route.steps if step.pool_address is not None]
             route_edges.append(edges)
 
         def _enumerate(idx: int, remaining_bps: int, weights: list[int]) -> None:
@@ -654,61 +724,3 @@ class Router:
                     total += self._simulate_actions(leg.actions, leg_amount)
                 amount = total
         return amount
-
-    @staticmethod
-    def dag_leg_weights(dag: RouteDAG) -> list[int]:
-        """Return ``fraction_bps`` for each split leg, or ``[10000]`` for a linear DAG."""
-
-        payload = dag.to_dict()
-        if payload["actions"] and isinstance(payload["actions"][0], RouteSplit):
-            return [leg.fraction_bps for leg in payload["actions"][0].legs]
-        return [MAX_BPS]
-
-    @staticmethod
-    def _edges_to_dag(token_in: Token, edges: list[PoolEdge]) -> RouteDAG:
-        dag = RouteDAG().from_token(token_in)
-        for edge in edges:
-            dag.swap(edge.token_out, edge)
-        return dag
-
-    @staticmethod
-    def _estimate_price_impact(edges: list[PoolEdge], amount_in: int) -> Decimal:
-        """Estimate cumulative price impact across a multi-hop path.
-
-        Delegates per-hop impact estimation to each edge's polymorphic
-        :meth:`~pydefi.pathfinder.graph.PoolEdge.estimate_price_impact` method,
-        allowing each pool type (V2, V3, Curve, …) to implement its own model:
-
-        * :class:`~pydefi.pathfinder.graph.PoolEdge` (V2-style): uses
-          ``amount_in / (reserve_in + amount_in)``.
-        * :class:`~pydefi.pathfinder.graph.V3PoolEdge`: uses virtual reserves
-          derived from ``sqrtPriceX96`` / ``liquidity``.
-
-        If a hop returns ``Decimal('NaN')`` (impact unestimable) and no other
-        hop yields a positive estimate, the cumulative result is
-        ``Decimal('NaN')`` to signal "impact unknown" rather than "zero impact".
-
-        Args:
-            edges: Ordered pool edges in the route.
-            amount_in: Input amount at the first hop.
-
-        Returns:
-            Estimated cumulative price impact in ``[0, 1]``, or
-            ``Decimal('NaN')`` if the entire path consists of pools where
-            impact cannot be estimated.
-        """
-        total_impact = Decimal(0)
-        current_amount = amount_in
-        has_unestimated_hop = False
-        for edge in edges:
-            hop_impact = edge.estimate_price_impact(current_amount)
-            if hop_impact.is_nan():
-                has_unestimated_hop = True
-            else:
-                total_impact += hop_impact
-            # Always propagate the simulated amount forward so that later hops
-            # use the correct intermediate amount.
-            current_amount = edge.amount_out(current_amount)
-        if has_unestimated_hop and total_impact == Decimal(0):
-            return Decimal("NaN")
-        return min(total_impact, Decimal(1))
