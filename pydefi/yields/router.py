@@ -216,6 +216,22 @@ def aave_v4_ref(market: YieldMarket) -> tuple[str, int]:
     return parts[2], int(parts[3])
 
 
+async def supply_contract(market: YieldMarket, w3: AsyncWeb3) -> Address:
+    """The contract a supply into *market* hits — and therefore the ERC-20
+    approve target: the Aave V3 ``Pool``, the Compound III ``Comet``, the
+    Aave V4 ``Spoke``, or the Morpho Blue singleton."""
+    if market.protocol == "aave_v3":
+        return (await AaveV3.from_chain(w3, market.chain_id)).pool_address
+    if market.protocol == "compound_v3":
+        return CompoundV3.from_chain(w3, market.chain_id, market.token.symbol).comet_address
+    if market.protocol == "aave_v4":
+        spoke_name, _ = aave_v4_ref(market)
+        return AaveV4.from_chain(w3, market.chain_id, spoke_name).spoke_address
+    if market.protocol == "morpho":
+        return MorphoBlue.from_chain(w3, market.chain_id).morpho_address
+    raise ValueError(f"unknown protocol: {market.protocol!r}")
+
+
 async def _withdraw_tx(market: YieldMarket, user: Address, w3: AsyncWeb3, amount: TokenAmount) -> dict[str, Any]:
     if market.protocol == "aave_v3":
         aave = await AaveV3.from_chain(w3, market.chain_id)
@@ -815,8 +831,8 @@ async def build_followup_route(
     destination chain.
 
     Raises :class:`ValueError` if *route* has no :attr:`~YieldRoute.pending`
-    leg (it was same-chain, or already a follow-up), or if *received* is not
-    the pending market's token.
+    leg (it was same-chain, or already a follow-up), if *received* is not
+    the pending market's token, or if *w3s* lacks the destination chain.
     """
     pending = route.pending
     if pending is None:
@@ -826,7 +842,10 @@ async def build_followup_route(
         pending.market.token,
         "build_followup_route: received.token must match the pending market token",
     )
-    steps = await _supply_steps(pending.market, user, w3s[pending.chain_id], received)
+    w3 = w3s.get(pending.chain_id)
+    if w3 is None:
+        raise ValueError(f"build_followup_route: w3s has no entry for destination chain {pending.chain_id}")
+    steps = await _supply_steps(pending.market, user, w3, received)
     return YieldRoute(
         strategy=route.strategy,
         source_chain=pending.chain_id,

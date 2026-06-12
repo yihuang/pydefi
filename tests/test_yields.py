@@ -21,9 +21,9 @@ from pydefi.yields import (
     YieldMarket,
     YieldRoute,
     build_approve_tx,
+    build_compose_supply_program,
     build_compose_supply_route,
     build_followup_route,
-    build_supply_program,
     build_yield_route,
     expected_apy_gain,
     find_best_rebalance,
@@ -1013,15 +1013,15 @@ def _compose_bridge(kind: str) -> Bridge:
 
 
 @pytest.mark.parametrize("protocol", ["aave_v3", "compound_v3"])
-def test_build_supply_program_compiles(protocol):
-    """build_supply_program emits DeFiVM bytecode for each supported protocol."""
-    program = build_supply_program(protocol, Address("0x" + "A0" * 20), USDC_ETH, _USER)
+def test_build_compose_supply_program_compiles(protocol):
+    """build_compose_supply_program emits DeFiVM bytecode for each supported protocol."""
+    program = build_compose_supply_program(protocol, Address("0x" + "A0" * 20), USDC_ETH, _USER)
     assert isinstance(program, bytes) and len(program) > 0
 
 
-def test_build_supply_program_rejects_unsupported_protocol():
+def test_build_compose_supply_program_rejects_unsupported_protocol():
     with pytest.raises(ValueError, match="unsupported protocol"):
-        build_supply_program("morpho", Address("0x" + "A0" * 20), USDC_ETH, _USER)  # type: ignore[arg-type]
+        build_compose_supply_program("morpho", Address("0x" + "A0" * 20), USDC_ETH, _USER)  # type: ignore[arg-type]
 
 
 @pytest.mark.asyncio
@@ -1034,7 +1034,7 @@ async def test_build_compose_supply_route_is_single_signature(bridge_kind):
     target = _market("aave_v3", ChainId.BASE, USDC_BASE)
     pool = Address("0x" + "A0" * 20)
     with (
-        patch("pydefi.yields.compose._supply_target", new=AsyncMock(return_value=pool)),
+        patch("pydefi.yields.compose.supply_contract", new=AsyncMock(return_value=pool)),
         patch.object(CCIP, "quote_fee", new=AsyncMock(return_value=10**15)),
     ):
         route = await build_compose_supply_route(

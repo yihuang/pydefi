@@ -40,9 +40,9 @@ from pydefi.yields import (
     PendingLeg,
     YieldMarket,
     YieldRoute,
+    build_compose_supply_program,
     build_compose_supply_route,
     build_followup_route,
-    build_supply_program,
     build_yield_route,
 )
 from pydefi.yields.router import Protocol
@@ -383,7 +383,7 @@ class TestYieldRouterFork:
     async def test_compose_supply_broadcasts_a_real_cctp_burn(self, fork_w3):
         """A compose_supply route built with a real CCTP bridge: its
         [approve, depositForBurnWithHook] source leg — the burn carrying a real
-        build_supply_program DeFiVM program as hookData — must be accepted by
+        build_compose_supply_program DeFiVM program as hookData — must be accepted by
         the live CCTP v2 TokenMessenger on the mainnet fork. CCTP's off-chain
         attestation and the destination compose are out of scope; the
         CCTPComposer side is covered by test_cctp_composer_fork.py."""
@@ -391,7 +391,7 @@ class TestYieldRouterFork:
 
         # The destination Aave Pool is resolved on the dst chain, which a
         # single-chain Ethereum fork can't reach — pin it to the live mainnet
-        # Aave V3 Pool so build_supply_program emits genuine DeFiVM bytecode.
+        # Aave V3 Pool so build_compose_supply_program emits genuine DeFiVM bytecode.
         # The program rides as opaque CCTP hookData; this source leg never runs it.
         pool = (await AaveV3.from_chain(fork_w3, ChainId.ETHEREUM)).pool_address
         usdc_base = Token(
@@ -399,7 +399,7 @@ class TestYieldRouterFork:
         )
         bridge = CCTP(fork_w3, src_chain_id=ChainId.ETHEREUM, dst_chain_id=ChainId.BASE)
 
-        with patch("pydefi.yields.compose._supply_target", new=AsyncMock(return_value=pool)):
+        with patch("pydefi.yields.compose.supply_contract", new=AsyncMock(return_value=pool)):
             route = await build_compose_supply_route(
                 user=ETH_WHALE,
                 amount_in=TokenAmount(USDC, USDC_TEST_AMOUNT),
@@ -414,7 +414,7 @@ class TestYieldRouterFork:
         assert [s.kind for s in route.steps] == ["approve", "bridge"]
         approve_step, bridge_step = route.steps
         assert Address(bridge_step.tx["to"]) == Address(bridge.token_messenger_address)
-        program = build_supply_program("aave_v3", pool, usdc_base, ETH_WHALE)
+        program = build_compose_supply_program("aave_v3", pool, usdc_base, ETH_WHALE)
         assert program.hex() in bridge_step.tx["data"].lower(), "hookData does not carry the supply program"
 
         await _send_ok(fork_w3, ETH_WHALE, approve_step.tx, "approve (CCTP)")

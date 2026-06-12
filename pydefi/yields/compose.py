@@ -23,17 +23,16 @@ from web3 import AsyncWeb3
 
 from pydefi.abi.lending import AAVE_V3_POOL, COMPOUND_V3_COMET
 from pydefi.bridge import Bridge
-from pydefi.lending import AaveV3, CompoundV3
 from pydefi.types import Address, Token, TokenAmount
 from pydefi.vm import ProgramContext
-from pydefi.yields.router import Protocol, YieldMarket, YieldRoute, YieldStep, build_approve_tx
+from pydefi.yields.router import Protocol, YieldMarket, YieldRoute, YieldStep, build_approve_tx, supply_contract
 
 #: The composer stages the bridged amount in this transient-storage slot
 #: before delegatecalling the program (slot 1 holds the source domain/selector).
 _AMOUNT_RECEIVED_SLOT = 0
 
 
-def build_supply_program(protocol: Protocol, supply_target: Address, token: Token, user: Address) -> bytes:
+def build_compose_supply_program(protocol: Protocol, supply_target: Address, token: Token, user: Address) -> bytes:
     """Build the DeFiVM program a composer runs after the bridged tokens arrive.
 
     The composer stages the received amount in transient slot 0; the program
@@ -53,19 +52,10 @@ def build_supply_program(protocol: Protocol, supply_target: Address, token: Toke
     elif protocol == "compound_v3":
         supplied = prog.call_contract(supply_target, COMPOUND_V3_COMET.fns.supplyTo, user, token.address, amount)
     else:
-        raise ValueError(f"build_supply_program: unsupported protocol {protocol!r}")
+        raise ValueError(f"build_compose_supply_program: unsupported protocol {protocol!r}")
     prog.assert_(supplied)
     prog.builder.stop()
     return prog.build()
-
-
-async def _supply_target(market: YieldMarket, w3: AsyncWeb3) -> Address:
-    """Resolve the contract a supply into *market* is sent to (Pool / Comet)."""
-    if market.protocol == "aave_v3":
-        return (await AaveV3.from_chain(w3, market.chain_id)).pool_address
-    if market.protocol == "compound_v3":
-        return CompoundV3.from_chain(w3, market.chain_id, market.token.symbol).comet_address
-    raise ValueError(f"build_compose_supply_route: unsupported protocol {market.protocol!r}")
 
 
 async def build_compose_supply_route(
@@ -107,8 +97,11 @@ async def build_compose_supply_route(
     spender = getattr(bridge, "spender", None)
     if spender is None:
         raise ValueError(f"{bridge.protocol_name} bridge exposes no ERC-20 spender — it cannot carry a compose route")
-    supply_target = await _supply_target(target_market, w3s[target_market.chain_id])
-    program = build_supply_program(target_market.protocol, supply_target, target_market.token, user)
+    w3 = w3s.get(target_market.chain_id)
+    if w3 is None:
+        raise ValueError(f"build_compose_supply_route: w3s has no entry for destination chain {target_market.chain_id}")
+    supply_target = await supply_contract(target_market, w3)
+    program = build_compose_supply_program(target_market.protocol, supply_target, target_market.token, user)
     build_compose_tx = getattr(bridge, "build_bridge_compose_tx", None)
     if build_compose_tx is None:
         raise NotImplementedError(f"{bridge.protocol_name} bridge has no compose path")
@@ -127,4 +120,4 @@ async def build_compose_supply_route(
     )
 
 
-__all__ = ["build_compose_supply_route", "build_supply_program"]
+__all__ = ["build_compose_supply_route", "build_compose_supply_program"]
