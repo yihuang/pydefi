@@ -15,8 +15,8 @@ from eth_contract import Contract
 from eth_contract.erc20 import ERC20
 from eth_utils import keccak
 
+from pydefi._utils import UINT256_MAX, to_tx
 from pydefi.abi.vm import DeFiVM
-from pydefi.lending.utils import UINT256_MAX, to_tx
 from pydefi.types import Address
 from pydefi.vm.context import Program
 
@@ -125,4 +125,4 @@ def build_supply_tx(
     """Encode ``DeFiVM.executeWithPermit2(...)`` into a broadcast-ready tx dict."""
     permit = ([(token.to_0x_hex(), amount) for token, amount in permitted], nonce, deadline)
     data = DeFiVM.fns.executeWithPermit2(permit, owner.to_0x_hex(), signature, program).data
-    return {**to_tx(defivm, data), "gas": str(gas)}
+    return to_tx(defivm, data, gas=gas)

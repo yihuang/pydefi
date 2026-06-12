@@ -82,9 +82,7 @@ class LayerZeroOFT:
         self.oft_address = oft_address
         self.dst_oft_address = dst_oft_address or oft_address
 
-    @property
-    def protocol_name(self) -> str:
-        return "LayerZeroOFT"
+    protocol_name: str = "LayerZeroOFT"
 
     def _lz_eid(self, evm_chain_id: int) -> int:
         """Map an EVM chain ID to a LayerZero v2 endpoint ID (EID)."""

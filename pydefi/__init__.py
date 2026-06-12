@@ -57,7 +57,13 @@ from pydefi.exceptions import (
     PydefiError,
     SlippageExceededError,
 )
-from pydefi.pathfinder.dag import RouteDAG
+from pydefi.pathfinder.dag import (
+    RouteBridge,
+    RouteDAG,
+    RouteSplit,
+    RouteSplitLeg,
+    RouteSwap,
+)
 from pydefi.pool_data.base import PoolData
 from pydefi.rpc import MultiRpcProvider, fetch_chain_rpcs, get_w3
 from pydefi.types import (
@@ -65,16 +71,12 @@ from pydefi.types import (
     BridgeQuote,
     ChainId,
     Hash,
-    RouteBridge,
-    RouteSplit,
-    RouteSplitLeg,
-    RouteSwap,
     SwapRoute,
     SwapStep,
-    SwapTransaction,
     Token,
     TokenAmount,
 )
+from pydefi.vm.swap import SwapTransaction
 
 __version__ = "0.1.0"
 

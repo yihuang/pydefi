@@ -18,9 +18,9 @@ from decimal import Decimal
 
 from pydefi._math import MAX_BPS
 from pydefi.exceptions import NoRouteFoundError
-from pydefi.pathfinder.dag import RouteDAG
+from pydefi.pathfinder.dag import RouteDAG, RouteSplit, RouteSwap
 from pydefi.pathfinder.graph import PoolEdge, PoolGraph
-from pydefi.types import ZERO_ADDRESS, Address, RouteSplit, RouteSwap, SwapRoute, SwapStep, Token, TokenAmount
+from pydefi.types import ZERO_ADDRESS, Address, SwapRoute, SwapStep, Token, TokenAmount
 
 #: Full pool identity: ``(pool_address, token_in, fee, tick_spacing, hooks)``.
 #: ``pool_address`` alone is not unique — every Uniswap V4 pool on a chain

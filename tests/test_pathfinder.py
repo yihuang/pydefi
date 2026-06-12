@@ -6,10 +6,10 @@ from decimal import Decimal
 import pytest
 
 from pydefi.exceptions import NoRouteFoundError
-from pydefi.pathfinder.dag import RouteDAG
+from pydefi.pathfinder.dag import RouteDAG, RouteSwap
 from pydefi.pathfinder.graph import PoolEdge, PoolGraph, V3PoolEdge
 from pydefi.pathfinder.router import Router, _estimate_price_impact
-from pydefi.types import Address, ChainId, RouteSwap, Token, TokenAmount
+from pydefi.types import Address, ChainId, Token, TokenAmount
 from tests.addrs import DAI, USDC, WETH
 
 # ---------------------------------------------------------------------------
@@ -732,7 +732,7 @@ class TestFindBestSplit:
         dag = router.find_best_split(TokenAmount(WETH, 10**18), USDC)
         payload = dag.to_dict()
         assert payload["token_in"] == WETH
-        from pydefi.types import RouteSplit
+        from pydefi.pathfinder.dag import RouteSplit
 
         assert not any(isinstance(a, RouteSplit) for a in payload["actions"])
         assert payload["actions"][-1].token_out == USDC
@@ -755,7 +755,7 @@ class TestFindBestSplit:
         input: price impact per pool is ~9% for 100% allocation but only ~5%
         per pool for 50/50, so splitting strictly wins.
         """
-        from pydefi.types import RouteSplit
+        from pydefi.pathfinder.dag import RouteSplit
 
         g = PoolGraph()
         g.add_pool(
@@ -780,7 +780,7 @@ class TestFindBestSplit:
         router = Router(g)
         dag = router.find_best_split(TokenAmount(WETH, 10**18), USDC, max_splits=1)
         payload = dag.to_dict()
-        from pydefi.types import RouteSplit
+        from pydefi.pathfinder.dag import RouteSplit
 
         assert not any(isinstance(a, RouteSplit) for a in payload["actions"])
 
@@ -890,7 +890,7 @@ class TestRouterSimulate:
         result = router.simulate(dag, amount_in)
 
         # Manual: each leg gets amount_in * bps / 10000
-        from pydefi.types import RouteSplit
+        from pydefi.pathfinder.dag import RouteSplit
 
         payload = dag.to_dict()
         split = payload["actions"][0]

@@ -113,9 +113,7 @@ class Mayan:
         self.dst_chain_id = dst_chain_id
         self._api_base = api_base_url.rstrip("/")
 
-    @property
-    def protocol_name(self) -> str:
-        return "Mayan"
+    protocol_name: str = "Mayan"
 
     def _chain_name(self, chain_id: int) -> str:
         """Return the Mayan chain name slug for *chain_id*."""
