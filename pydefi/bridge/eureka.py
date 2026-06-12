@@ -78,7 +78,6 @@ class Eureka:
         self.timeout_seconds = timeout_seconds
         self.estimated_time_seconds = estimated_time_seconds
 
-    protocol_name: str = "Eureka"
 
     async def get_quote(
         self,
