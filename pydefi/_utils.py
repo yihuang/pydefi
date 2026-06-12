@@ -126,10 +126,12 @@ def resolve_amount(amount: TokenAmount | tuple[Token, Literal["max"]]) -> tuple[
     raise TypeError("amount must be a TokenAmount or (Token, 'max') tuple")
 
 
-def to_tx(to: Address, call_data: bytes, **kwargs) -> dict[str, Any]:
+def to_tx(to: Address, call_data: bytes, **kwargs: Any) -> dict[str, Any]:
     """Format a calldata payload as the project-wide tx dict shape."""
+    value = kwargs.pop("value", "0")
     return {
         "to": to.to_0x_hex(),
         "data": "0x" + call_data.hex(),
+        "value": value,
         **kwargs,
     }
