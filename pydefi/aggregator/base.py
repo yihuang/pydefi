@@ -48,7 +48,7 @@ class AggregatorQuote:
         step = SwapStep(
             token_in=self.token_in,
             token_out=self.token_out,
-            pool_address=pool_address if pool_address is not None else None,
+            pool_address=pool_address,
             protocol=self.protocol,
             fee=0,
         )
