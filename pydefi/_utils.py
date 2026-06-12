@@ -121,17 +121,14 @@ def resolve_amount(amount: TokenAmount | tuple[Token, Literal["max"]]) -> tuple[
     """Accept either an exact :class:`TokenAmount` or ``(token, "max")``."""
     if isinstance(amount, TokenAmount):
         return amount.token, amount.amount
-    if isinstance(amount, tuple) and len(amount) == 2 and amount[1] == "max":
-        return amount[0], UINT256_MAX
-    raise TypeError("amount must be a TokenAmount or (Token, 'max') tuple")
+    return amount[0], UINT256_MAX
 
 
-def to_tx(to: Address, call_data: bytes, **kwargs: Any) -> dict[str, Any]:
+def to_tx(to: Address, data: bytes, **kwargs: Any) -> dict[str, Any]:
     """Format a calldata payload as the project-wide tx dict shape."""
-    value = kwargs.pop("value", "0")
+    kwargs.setdefault("value", "0")
     return {
         "to": to.to_0x_hex(),
-        "data": "0x" + call_data.hex(),
-        "value": value,
+        "data": "0x" + data.hex(),
         **kwargs,
     }
