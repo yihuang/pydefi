@@ -4,13 +4,11 @@ from decimal import Decimal
 
 import pytest
 
+from pydefi.pathfinder.dag import RouteDAG, RouteSplit, RouteSwap
 from pydefi.types import (
     Address,
     BridgeQuote,
     ChainId,
-    RouteDAG,
-    RouteSplit,
-    RouteSwap,
     SwapRoute,
     SwapStep,
     Token,

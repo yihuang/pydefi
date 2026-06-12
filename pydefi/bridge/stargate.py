@@ -18,8 +18,8 @@ from typing import Any
 
 from web3 import AsyncWeb3
 
+from pydefi._math import apply_slippage
 from pydefi.abi.bridge import STARGATE_ROUTER
-from pydefi.bridge.base import BaseBridge
 from pydefi.exceptions import BridgeError
 from pydefi.types import Address, BridgeQuote, Token, TokenAmount
 
@@ -53,7 +53,7 @@ _POOL_IDS: dict[str, int] = {
 }
 
 
-class Stargate(BaseBridge):
+class Stargate:
     """Stargate Finance cross-chain bridge integration.
 
     Args:
@@ -71,13 +71,12 @@ class Stargate(BaseBridge):
         dst_chain_id: int,
         router_address: Address,
     ) -> None:
-        super().__init__(src_chain_id, dst_chain_id)
+        self.src_chain_id = src_chain_id
+        self.dst_chain_id = dst_chain_id
         self.w3 = w3
         self.router_address = router_address
 
-    @property
-    def protocol_name(self) -> str:
-        return "Stargate"
+    protocol_name: str = "Stargate"
 
     def _lz_chain_id(self, evm_chain_id: int) -> int:
         """Map an EVM chain ID to a LayerZero chain ID."""
@@ -187,7 +186,7 @@ class Stargate(BaseBridge):
         PROTOCOL_FEE_BPS = 6
         fee_raw = amount_in.amount * PROTOCOL_FEE_BPS // 10_000
         amount_out_raw = amount_in.amount - fee_raw
-        min_amount = self._apply_slippage(amount_out_raw, slippage_bps)
+        min_amount = apply_slippage(amount_out_raw, slippage_bps)
 
         lz_tx_params = (dst_gas, 0, b"")
 

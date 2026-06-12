@@ -30,15 +30,10 @@ from typing import Any, Literal
 
 from web3 import AsyncWeb3
 
+from pydefi._utils import UINT256_MAX, resolve_amount, to_tx
 from pydefi.abi.lending import COMPOUND_V3_COMET
 from pydefi.deployments import comet_contract_for, get_address
-from pydefi.lending.utils import (
-    SECONDS_PER_YEAR,
-    UINT256_MAX,
-    per_second_rate_to_apy,
-    resolve_amount,
-    to_tx,
-)
+from pydefi.lending.utils import SECONDS_PER_YEAR, per_second_rate_to_apy
 from pydefi.types import Address, Token, TokenAmount
 
 #: Compound III scales rates and factors by 1e18 (no separate "RAY").

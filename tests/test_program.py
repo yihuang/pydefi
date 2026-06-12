@@ -7,7 +7,9 @@ from eth_contract.contract import ContractFunction
 from hexbytes import HexBytes
 
 from pydefi.bridge.eureka import encode_send_transfer_calldata
-from pydefi.types import Address, BasePool, ChainId, RouteBridge, RouteDAG, SwapProtocol, Token
+from pydefi.pathfinder.dag import RouteBridge, RouteDAG
+from pydefi.pathfinder.graph import BasePool
+from pydefi.types import Address, ChainId, SwapProtocol, Token
 from pydefi.vm import (
     IIBC_SENDER_CALLBACKS_INTERFACE_ID,
     Operand,
