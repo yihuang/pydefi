@@ -41,7 +41,16 @@ RouteStrategy = Literal["withdraw_then_supply", "supply_then_bridge", "bridge_th
 # Every strategy a YieldRoute can carry. "compose_supply" routes are built by
 # build_compose_supply_route (one-signature compose), not build_yield_route.
 Strategy = RouteStrategy | Literal["compose_supply"]
-StepKind = Literal["approve", "supply", "supply_with_permit2", "supply_with_7702", "withdraw", "bridge"]
+StepKind = Literal[
+    "approve",
+    "supply",
+    "supply_with_permit2",
+    "supply_with_7702",
+    "withdraw",
+    "bridge",
+    "bridge_with_7702",
+    "bridge_with_permit2",
+]
 
 # Generous; fits quirky tokens whose approve consumes more than the EIP-20 minimum.
 _APPROVE_GAS = 100_000
@@ -312,46 +321,81 @@ async def _supply_steps(
         # 7702: the EOA is msg.sender, so the plain supply_tx credits the user —
         # no supplyTo / onBehalfOf indirection. Batch a fresh approve before it.
         approve_tx = build_approve_tx(amount.token, spender, amount.amount)
-        nonce, needs_auth = await delegation_status(w3, user, delegate)
-        sign_req = {
-            "delegate": delegate,
-            "owner": user,
-            "chain_id": market.chain_id,
-            "calls": [approve_tx, supply_tx],
-            "nonce": nonce,
-            "auth_nonce": await w3.eth.get_transaction_count(bytes(user)) + user_txs_before,
-            "needs_auth": needs_auth,
-        }
+        sign_req = await _sign_request_7702(
+            w3, user, delegate, market.chain_id, [approve_tx, supply_tx], user_txs_before
+        )
         return [YieldStep("supply_with_7702", market.chain_id, None, sign_request=sign_req)]
 
     if defivm is not None:
         supply_data = bytes.fromhex(gasless_supply_tx["data"][2:])
-        # The VM keeps a max allowance per (token, protocol) once set; repeats
-        # skip the approve leg entirely.
-        nonce, allowance = await asyncio.gather(
-            pick_nonce(w3, user),
-            ERC20.fns.allowance(bytes(defivm), bytes(spender)).call(w3, to=bytes(amount.token.address)),
-        )
-        sign_req = {
-            "defivm": defivm,
-            "token": amount.token.address,
-            "amount": amount.amount,
-            "nonce": nonce,
-            "owner": user,
-            "program": build_supply_program(
-                amount.token.address,
-                spender,
-                supply_data,
-                approve=allowance < amount.amount,
-                reset=0 < allowance < amount.amount,
-            ),
-        }
+        sign_req = await _sign_request_permit2(w3, user, defivm, amount, spender, supply_data)
         return [YieldStep("supply_with_permit2", market.chain_id, None, sign_request=sign_req)]
 
     return [
         YieldStep("approve", market.chain_id, build_approve_tx(amount.token, spender, amount.amount)),
         YieldStep("supply", market.chain_id, supply_tx),
     ]
+
+
+async def _sign_request_permit2(
+    w3: AsyncWeb3,
+    user: Address,
+    defivm: Address,
+    amount: TokenAmount,
+    target: Address,
+    call_data: bytes,
+) -> dict[str, Any]:
+    """The unsigned half of a ``DeFiVM.executeWithPermit2`` step: everything
+    :func:`sign_route` needs to sign a witness pulling *amount* and running
+    ``[approve(target), target.call(call_data)]`` inside the VM.
+
+    The VM keeps a max allowance per (token, target) once set, so the approve
+    leg is compiled in only when the standing allowance is short (with the
+    USDT-safe reset when it is nonzero)."""
+    nonce, allowance = await asyncio.gather(
+        pick_nonce(w3, user),
+        ERC20.fns.allowance(bytes(defivm), bytes(target)).call(w3, to=bytes(amount.token.address)),
+    )
+    return {
+        "defivm": defivm,
+        "token": amount.token.address,
+        "amount": amount.amount,
+        "nonce": nonce,
+        "owner": user,
+        "program": build_supply_program(
+            amount.token.address,
+            target,
+            call_data,
+            approve=allowance < amount.amount,
+            reset=0 < allowance < amount.amount,
+        ),
+    }
+
+
+async def _sign_request_7702(
+    w3: AsyncWeb3,
+    user: Address,
+    delegate: Address,
+    chain_id: int,
+    calls: list[dict[str, Any]],
+    user_txs_before: int = 0,
+) -> dict[str, Any]:
+    """The unsigned half of a sponsored EIP-7702 batch: everything
+    :func:`sign_route` needs to sign *calls* running in the EOA's own context.
+
+    Call values are paid from the EOA's native balance — the sponsor covers
+    gas only. *user_txs_before* counts txs the EOA broadcasts before this one
+    (each consumes the account nonce the 7702 authorization is bound to)."""
+    nonce, needs_auth = await delegation_status(w3, user, delegate)
+    return {
+        "delegate": delegate,
+        "owner": user,
+        "chain_id": chain_id,
+        "calls": calls,
+        "nonce": nonce,
+        "auth_nonce": await w3.eth.get_transaction_count(bytes(user)) + user_txs_before,
+        "needs_auth": needs_auth,
+    }
 
 
 def _sign_7702_step(req: dict[str, Any], private_key: str, deadline: int) -> dict[str, Any]:
@@ -379,9 +423,10 @@ def _sign_permit2_step(req: dict[str, Any], private_key: str, deadline: int, cha
 
 
 def sign_route(route: YieldRoute, private_key: str) -> YieldRoute:
-    """Sign pending ``supply_with_permit2`` / ``supply_with_7702`` steps and return
-    a route with broadcast-ready txs. Steps without ``sign_request`` pass through.
-    Signature deadlines (``_SIGN_TTL``) start now, not at route-build time."""
+    """Sign pending gasless steps (``*_with_permit2`` / ``*_with_7702``) and
+    return a route with broadcast-ready txs. Steps without ``sign_request``
+    pass through. Signature deadlines (``_SIGN_TTL``) start now, not at
+    route-build time."""
 
     deadline = int(time.time()) + _SIGN_TTL
     signed: list[YieldStep] = []
@@ -390,7 +435,7 @@ def sign_route(route: YieldRoute, private_key: str) -> YieldRoute:
             signed.append(step)
             continue
         req = step.sign_request
-        if step.kind == "supply_with_7702":
+        if step.kind in ("supply_with_7702", "bridge_with_7702"):
             tx = _sign_7702_step(req, private_key, deadline)
         else:
             tx = _sign_permit2_step(req, private_key, deadline, step.chain_id)
@@ -821,6 +866,8 @@ async def build_followup_route(
     user: Address,
     received: TokenAmount,
     w3s: dict[int, AsyncWeb3],
+    defivm: Address | None = None,
+    delegate: Address | None = None,
 ) -> YieldRoute:
     """Build the deferred destination leg of a cross-chain *route*.
 
@@ -829,6 +876,11 @@ async def build_followup_route(
     on-chain balance, since bridge fees mean it is not known in advance.
     Returns a same-chain :class:`YieldRoute` of ``[approve, supply]`` on the
     destination chain.
+
+    Pass *delegate* (EIP-7702) or *defivm* (Permit2) to make the follow-up a
+    single gasless step on the destination chain — the same knobs as
+    :func:`build_yield_route`; finalize with :func:`sign_route` before
+    broadcast. *delegate* wins if both are set.
 
     Raises :class:`ValueError` if *route* has no :attr:`~YieldRoute.pending`
     leg (it was same-chain, or already a follow-up), if *received* is not
@@ -845,7 +897,7 @@ async def build_followup_route(
     w3 = w3s.get(pending.chain_id)
     if w3 is None:
         raise ValueError(f"build_followup_route: w3s has no entry for destination chain {pending.chain_id}")
-    steps = await _supply_steps(pending.market, user, w3, received)
+    steps = await _supply_steps(pending.market, user, w3, received, defivm=defivm, delegate=delegate)
     return YieldRoute(
         strategy=route.strategy,
         source_chain=pending.chain_id,

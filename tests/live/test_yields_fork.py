@@ -24,18 +24,23 @@ Run with::
 from __future__ import annotations
 
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from eth_account import Account
 from eth_contract import Contract
 from eth_contract.erc20 import ERC20
+from web3 import Web3
 
 from pydefi._utils import to_tx
 from pydefi.bridge import CCIP, CCTP
 from pydefi.exceptions import BridgeError
 from pydefi.lending import AaveV3, CompoundV3
 from pydefi.types import Address, ChainId, Token, TokenAmount
+from pydefi.vm.eip7702_supply import CALIBUR
+from pydefi.vm.permit2_supply import PERMIT2
 from pydefi.yields import (
     PendingLeg,
     YieldMarket,
@@ -44,11 +49,13 @@ from pydefi.yields import (
     build_compose_supply_route,
     build_followup_route,
     build_yield_route,
+    sign_route,
 )
 from pydefi.yields.router import Protocol
 from tests.addrs import COMET_USDC, ETH_WHALE, USDC
-from tests.live.anvil_helpers import fund_usdc, impersonate, send_tx, set_balance
-from tests.live.sol_utils import MOCK_TOKEN_SOL, compile_sol_source, deploy
+from tests.live.anvil_helpers import erc20_approve, fund_usdc, impersonate, send_tx, set_balance
+from tests.live.gasless_common import send_sponsored
+from tests.live.sol_utils import MOCK_TOKEN_SOL, compile_sol_file, compile_sol_source, deploy
 
 # ---------------------------------------------------------------------------
 # Per-test constants
@@ -420,3 +427,93 @@ class TestYieldRouterFork:
         await _send_ok(fork_w3, ETH_WHALE, approve_step.tx, "approve (CCTP)")
         receipt = await _send_ok(fork_w3, ETH_WHALE, bridge_step.tx, "depositForBurnWithHook")
         assert receipt["logs"], "depositForBurnWithHook accepted but emitted no MessageSent"
+
+
+# ---------------------------------------------------------------------------
+# Gasless compose — the source leg is ONE sponsored tx (CCTP, zero-value lane)
+# ---------------------------------------------------------------------------
+
+DEFI_VM_SOL = Path(__file__).resolve().parents[2] / "pydefi" / "vm" / "DeFiVM.sol"
+
+
+@pytest.mark.fork
+class TestGaslessComposeFork:
+    """build_compose_supply_route(defivm=… / delegate=…) → sign_route → one
+    relayer-paid source tx burning through the live CCTP v2 TokenMessenger.
+    The destination compose is out of scope (covered by the composer tests)."""
+
+    async def _compose_route(self, fork_w3, owner: Address, **knob):
+        # The destination Aave Pool lives on the dst chain a single-chain fork
+        # can't reach — pin it to the mainnet Pool; the program rides as opaque
+        # hookData and this source leg never runs it.
+        pool = (await AaveV3.from_chain(fork_w3, ChainId.ETHEREUM)).pool_address
+        usdc_base = Token(
+            chain_id=ChainId.BASE, address=Address(CCTP.usdc_address(ChainId.BASE)), symbol="USDC", decimals=6
+        )
+        bridge = CCTP(fork_w3, src_chain_id=ChainId.ETHEREUM, dst_chain_id=ChainId.BASE)
+        with patch("pydefi.yields.compose.supply_contract", new=AsyncMock(return_value=pool)):
+            return await build_compose_supply_route(
+                user=owner,
+                amount_in=TokenAmount(USDC, USDC_TEST_AMOUNT),
+                target_market=_usdc_market("aave_v3", chain_id=ChainId.BASE, token=usdc_base),
+                composer_address=Address("0x" + "C0" * 20),
+                bridge=bridge,
+                w3s={ChainId.BASE: fork_w3, ChainId.ETHEREUM: fork_w3},
+                **knob,
+            )
+
+    async def _assert_usdc_burned(self, fork_w3, owner: Address) -> None:
+        balance = await ERC20.fns.balanceOf(bytes(owner)).call(fork_w3, to=bytes(USDC.address))
+        assert balance == 0, "owner still holds USDC — the burn did not consume the pulled amount"
+
+    async def test_compose_with_permit2_is_one_sponsored_tx(self, fork_w3):
+        """defivm=: one executeWithPermit2 tx, paid by the relayer, pulls the
+        owner's USDC into the VM and runs [approve, depositForBurnWithHook]
+        bound by the witness — the owner signs once and spends no gas on it."""
+        deployer = Address((await fork_w3.eth.accounts)[0])
+        defivm = await deploy(fork_w3, compile_sol_file(DEFI_VM_SOL, "DeFiVM"), deployer, Address("0x" + "00" * 20))
+
+        # Fresh code-less owner (Anvil keys carry 7702 delegations that break
+        # Permit2 ECDSA); ETH only for the one-time approve(Permit2).
+        owner_acct = Account.create()
+        owner = Address(owner_acct.address)
+        await impersonate(fork_w3, owner)
+        await set_balance(fork_w3, owner, 10**18)
+        await fund_usdc(fork_w3, USDC.address, owner, USDC_TEST_AMOUNT)
+        await erc20_approve(fork_w3, USDC.address, owner, Address(PERMIT2), 2**256 - 1)
+
+        route = await self._compose_route(fork_w3, owner, defivm=defivm)
+        assert [s.kind for s in route.steps] == ["bridge_with_permit2"]
+        assert route.pending is None
+
+        signed = sign_route(route, owner_acct.key.hex())
+        receipt = await _send_ok(fork_w3, deployer, signed.steps[0].tx, "bridge_with_permit2")
+        assert receipt["logs"], "depositForBurnWithHook accepted but emitted no MessageSent"
+        await self._assert_usdc_burned(fork_w3, owner)
+
+    async def test_compose_with_7702_is_one_sponsored_tx(self, fork_w3):
+        """delegate=CALIBUR: one sponsor-paid type-4 tx delegates the EOA and
+        runs the [approve, depositForBurnWithHook] batch in its own context —
+        the owner holds zero ETH for the whole flow."""
+        code = bytes(await fork_w3.eth.get_code(Web3.to_checksum_address(bytes(CALIBUR))))
+        assert len(code) > 2, "Calibur singleton not present on this fork"
+
+        owner_acct = Account.create()
+        owner = Address(owner_acct.address)
+        await impersonate(fork_w3, owner)
+        await fund_usdc(fork_w3, USDC.address, owner, USDC_TEST_AMOUNT)  # USDC only — no ETH
+        sponsor_acct = Account.create()
+        await set_balance(fork_w3, Address(sponsor_acct.address), 100 * 10**18)
+
+        route = await self._compose_route(fork_w3, owner, delegate=CALIBUR)
+        assert [s.kind for s in route.steps] == ["bridge_with_7702"]
+        assert route.pending is None
+
+        signed = sign_route(route, owner_acct.key.hex())
+        tx = signed.steps[0].tx
+        assert tx["type"] == 4 and len(tx["authorizationList"]) == 1  # first use sets the delegation
+        receipt = await send_sponsored(fork_w3, sponsor_acct, tx)
+        assert receipt["status"] == 1, "bridge_with_7702 reverted"
+        assert receipt["logs"], "depositForBurnWithHook accepted but emitted no MessageSent"
+        assert await fork_w3.eth.get_balance(owner_acct.address) == 0  # owner paid no gas
+        await self._assert_usdc_burned(fork_w3, owner)

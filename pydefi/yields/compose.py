@@ -25,7 +25,16 @@ from pydefi.abi.lending import AAVE_V3_POOL, COMPOUND_V3_COMET
 from pydefi.bridge import Bridge
 from pydefi.types import Address, Token, TokenAmount
 from pydefi.vm import ProgramContext
-from pydefi.yields.router import Protocol, YieldMarket, YieldRoute, YieldStep, build_approve_tx, supply_contract
+from pydefi.yields.router import (
+    Protocol,
+    YieldMarket,
+    YieldRoute,
+    YieldStep,
+    _sign_request_7702,
+    _sign_request_permit2,
+    build_approve_tx,
+    supply_contract,
+)
 
 #: The composer stages the bridged amount in this transient-storage slot
 #: before delegatecalling the program (slot 1 holds the source domain/selector).
@@ -65,24 +74,25 @@ async def build_compose_supply_route(
     composer_address: Address,
     bridge: Bridge,
     w3s: dict[int, AsyncWeb3],
+    defivm: Address | None = None,
+    delegate: Address | None = None,
 ) -> YieldRoute:
     """Build a one-signature cross-chain yield deposit via bridge compose hooks.
 
-    Returns a :class:`YieldRoute` of ``[approve, bridge]``, both on the source
-    chain: approve the bridge entrypoint to pull *amount_in*, then a compose
-    transaction carrying a DeFiVM program that supplies into *target_market*
-    on the destination. There is no follow-up — the destination supply runs
-    inside the bridge's compose hook, so ``route.pending`` is ``None``.
+    Returns a ``[approve, bridge]`` :class:`YieldRoute` on the source chain: the
+    bridge message carries a DeFiVM program that supplies *amount_in* into
+    *target_market* the instant funds land, so there is no follow-up
+    (``route.pending is None``). *bridge* must match *amount_in*'s and
+    *target_market*'s chains; *w3s* must hold the destination chain (and the
+    source chain when going gasless).
 
-    Args:
-        user: The account credited with the destination supply position.
-        amount_in: Tokens on the source chain to bridge and supply.
-        target_market: The destination ``aave_v3`` / ``compound_v3`` market.
-        composer_address: The composer contract deployed on the destination.
-        bridge: A compose-capable bridge whose src / dst chains match
-            *amount_in*'s chain and *target_market*'s chain.
-        w3s: Per-chain ``AsyncWeb3`` map — the destination chain must be
-            present (its supply target is resolved on-chain).
+    Pass *delegate* (EIP-7702) or *defivm* (Permit2) — the same knobs as
+    :func:`build_yield_route` — to collapse the source leg to one sponsored step
+    signed via :func:`sign_route`. *delegate* batches approve + bridge in the
+    EOA's own context (``bridge_with_7702``), paying any native bridge fee from
+    the EOA; *defivm* runs them inside the VM (``bridge_with_permit2``), which
+    holds no native funds and so needs a zero-value lane (CCTP). *delegate* wins
+    if both are set.
     """
     if amount_in.token.chain_id != bridge.src_chain_id:
         raise ValueError(
@@ -107,13 +117,33 @@ async def build_compose_supply_route(
         raise NotImplementedError(f"{bridge.protocol_name} bridge has no compose path")
     bridge_tx = await build_compose_tx(amount_in, composer_address, program)
     approve_tx = build_approve_tx(amount_in.token, spender, amount_in.amount)
+    if delegate is not None or defivm is not None:
+        w3_src = w3s.get(bridge.src_chain_id)
+        if w3_src is None:
+            raise ValueError(f"build_compose_supply_route: w3s has no entry for source chain {bridge.src_chain_id}")
+    if delegate is not None:
+        sign_req = await _sign_request_7702(w3_src, user, delegate, bridge.src_chain_id, [approve_tx, bridge_tx])
+        steps: tuple[YieldStep, ...] = (
+            YieldStep("bridge_with_7702", bridge.src_chain_id, None, sign_request=sign_req),
+        )
+    elif defivm is not None:
+        if int(bridge_tx.get("value") or 0) != 0:
+            raise ValueError(
+                "build_compose_supply_route: defivm cannot pay the bridge's native fee "
+                f"(value={bridge_tx['value']}) — use a zero-value lane (CCTP) or delegate= instead"
+            )
+        bridge_data = bytes.fromhex(bridge_tx["data"][2:])
+        sign_req = await _sign_request_permit2(w3_src, user, defivm, amount_in, spender, bridge_data)
+        steps = (YieldStep("bridge_with_permit2", bridge.src_chain_id, None, sign_request=sign_req),)
+    else:
+        steps = (
+            YieldStep("approve", bridge.src_chain_id, approve_tx),
+            YieldStep("bridge", bridge.src_chain_id, bridge_tx),
+        )
     return YieldRoute(
         strategy="compose_supply",
         source_chain=bridge.src_chain_id,
-        steps=(
-            YieldStep("approve", bridge.src_chain_id, approve_tx),
-            YieldStep("bridge", bridge.src_chain_id, bridge_tx),
-        ),
+        steps=steps,
         route_id=f"compose_supply:chain:{bridge.src_chain_id}->{target_market.market_id}",
         target_market=target_market,
         target_chain=target_market.chain_id,

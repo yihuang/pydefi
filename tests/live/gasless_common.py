@@ -1,13 +1,16 @@
 """Shared bits for the gasless-deposit fork tests (Permit2 and EIP-7702).
 
-Each path keeps its own ``_setup`` / ``_gasless_deposit``; the market builder and
-the "did the supply credit the owner?" assertions live here, run by both.
+Each path keeps its own ``_setup`` / ``_gasless_deposit``; the market builder,
+the sponsor broadcast helper, and the "did the supply credit the owner?"
+assertions live here, run by both.
 """
 
 from __future__ import annotations
 
 from decimal import Decimal
 from typing import Awaitable, Callable
+
+from web3 import Web3
 
 from pydefi.lending import CompoundV3, MorphoBlue
 from pydefi.types import Address, ChainId, TokenAmount
@@ -19,6 +22,27 @@ FUT = 9_999_999_999
 
 # A deposit step: broadcast the (already-signed) route and wait for it to land.
 Deposit = Callable[[], Awaitable[object]]
+
+
+async def send_sponsored(fork_w3, sponsor_acct, tx: dict) -> dict:
+    """Locally sign *tx* with the sponsor key and broadcast it — the sponsor pays
+    gas. Handles both the type-4 (authorization attached) and plain shapes."""
+    full = {
+        "to": Web3.to_checksum_address(tx["to"]),
+        "data": tx["data"],
+        "value": int(tx["value"]),
+        "chainId": await fork_w3.eth.chain_id,
+        "nonce": await fork_w3.eth.get_transaction_count(sponsor_acct.address),
+        "gas": 3_000_000,
+        "maxFeePerGas": 200 * 10**9,
+        "maxPriorityFeePerGas": 10**9,
+    }
+    if tx.get("type") == 4:
+        full["type"] = 4
+        full["authorizationList"] = tx["authorizationList"]
+    signed = sponsor_acct.sign_transaction(full)
+    tx_hash = await fork_w3.eth.send_raw_transaction(signed.raw_transaction)
+    return await fork_w3.eth.wait_for_transaction_receipt(tx_hash)
 
 
 def market(protocol: str, market_id: str) -> YieldMarket:

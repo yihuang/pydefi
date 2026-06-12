@@ -42,28 +42,8 @@ from tests.live.gasless_common import (
     assert_compound_credited,
     assert_morpho_credited,
     market,
+    send_sponsored,
 )
-
-
-async def _send_sponsored(fork_w3, sponsor_acct, tx: dict) -> dict:
-    """Locally sign *tx* with the sponsor key and broadcast it — the sponsor pays
-    gas. Handles both the type-4 (authorization attached) and plain shapes."""
-    full = {
-        "to": Web3.to_checksum_address(tx["to"]),
-        "data": tx["data"],
-        "value": int(tx["value"]),
-        "chainId": await fork_w3.eth.chain_id,
-        "nonce": await fork_w3.eth.get_transaction_count(sponsor_acct.address),
-        "gas": 3_000_000,
-        "maxFeePerGas": 200 * 10**9,
-        "maxPriorityFeePerGas": 10**9,
-    }
-    if tx.get("type") == 4:
-        full["type"] = 4
-        full["authorizationList"] = tx["authorizationList"]
-    signed = sponsor_acct.sign_transaction(full)
-    tx_hash = await fork_w3.eth.send_raw_transaction(signed.raw_transaction)
-    return await fork_w3.eth.wait_for_transaction_receipt(tx_hash)
 
 
 async def _setup(fork_w3):
@@ -100,7 +80,7 @@ async def _gasless_deposit(fork_w3, owner_acct, owner, sponsor_acct, target: Yie
     signed = sign_route(route, owner_acct.key.hex())
     tx = signed.steps[0].tx
     assert tx["type"] == 4 and len(tx["authorizationList"]) == 1  # first deposit sets the code
-    rc = await _send_sponsored(fork_w3, sponsor_acct, tx)
+    rc = await send_sponsored(fork_w3, sponsor_acct, tx)
     assert rc["status"] == 1, "supply_with_7702 reverted"
     assert await is_delegated_to(fork_w3, owner, CALIBUR)
     assert await fork_w3.eth.get_balance(owner_acct.address) == 0  # owner paid no gas
@@ -131,7 +111,7 @@ class TestEIP7702SupplyFork:
 
         nonce = await fork_w3.eth.get_transaction_count(owner_acct.address)
         revoke = build_revoke_authorization(owner_acct.key.hex(), await fork_w3.eth.chain_id, nonce)
-        rc = await _send_sponsored(fork_w3, sponsor_acct, revoke)
+        rc = await send_sponsored(fork_w3, sponsor_acct, revoke)
         assert rc["status"] == 1, "revoke reverted"
         assert len(bytes(await fork_w3.eth.get_code(owner_acct.address))) == 0
         assert not await is_delegated_to(fork_w3, owner, CALIBUR)
