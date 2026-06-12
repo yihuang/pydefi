@@ -55,7 +55,7 @@ class Eureka:
     the source chain that points at the destination (e.g. ``"07-tendermint-0"``).
     """
 
-    PROTOCOL = "Eureka"
+    protocol_name: str = "Eureka"
 
     def __init__(
         self,
@@ -78,9 +78,7 @@ class Eureka:
         self.timeout_seconds = timeout_seconds
         self.estimated_time_seconds = estimated_time_seconds
 
-    @property
-    def protocol_name(self) -> str:
-        return self.PROTOCOL
+    protocol_name: str = "Eureka"
 
     async def get_quote(
         self,

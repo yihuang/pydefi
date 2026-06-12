@@ -9,10 +9,66 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TypeAlias
 
 from pydefi._math import MAX_BPS
-from pydefi.types import Address, BasePool, RouteAction, RouteBridge, RouteSplit, RouteSplitLeg, RouteSwap, Token
+from pydefi.pathfinder.graph import BasePool
+from pydefi.types import Address, Token
+
+
+@dataclass(frozen=True)
+class RouteSwap:
+    """A single swap edge in a route DAG."""
+
+    token_out: Token
+    pool: BasePool
+
+    def zero_for_one(self) -> bool:
+        return self.pool.zero_for_one(self.token_out.address)
+
+
+@dataclass(frozen=True)
+class RouteSplitLeg:
+    """One branch in a split section of a route DAG."""
+
+    fraction_bps: int
+    actions: tuple["RouteAction", ...]
+
+
+@dataclass(frozen=True)
+class RouteSplit:
+    """A split/merge section of a route DAG."""
+
+    legs: tuple[RouteSplitLeg, ...]
+    token_out: Token
+
+
+@dataclass(frozen=True)
+class RouteBridge:
+    """A cross-chain bridge edge in a route DAG (Eureka / ICS-20 today).
+
+    ``denom`` is the source-chain ERC-20 to escrow; ``token_out`` tracks the
+    destination-side type for branch-equality at ``.merge()``. Exactly one
+    of ``timeout_seconds`` (relative, resolved to ``block.timestamp + n``)
+    or ``timeout_timestamp`` (absolute) must be supplied.
+    """
+
+    denom: Address
+    token_out: Token
+    transfer_addr: Address
+    source_client: str
+    receiver: str
+    dest_port: str = "transfer"
+    memo: str = ""
+    timeout_seconds: int | None = None
+    timeout_timestamp: int | None = None
+
+    def __post_init__(self) -> None:
+        if (self.timeout_seconds is None) == (self.timeout_timestamp is None):
+            raise ValueError("RouteBridge: supply exactly one of timeout_seconds / timeout_timestamp")
+
+
+RouteAction: TypeAlias = RouteSwap | RouteSplit | RouteBridge
 
 
 @dataclass

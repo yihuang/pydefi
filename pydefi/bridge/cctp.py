@@ -285,9 +285,7 @@ class CCTP:
 
         self.cctp_forwarder_address = cctp_forwarder_address or _CCTP_FORWARDER[is_mainnet]
 
-    @property
-    def protocol_name(self) -> str:
-        return "CCTP"
+    protocol_name: str = "CCTP"
 
     # -----------------------------------------------------------------------
     # Helpers

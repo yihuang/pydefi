@@ -41,9 +41,7 @@ class Raydium:
     def __init__(self, api_url: str | None = None) -> None:
         self.api_url = api_url or self._DEFAULT_API_URL
 
-    @property
-    def protocol_name(self) -> str:
-        return "Raydium"
+    protocol_name: str = "Raydium"
 
     async def _get(self, endpoint: str, params: dict[str, Any]) -> dict[str, Any]:
         url = f"{self.api_url.rstrip('/')}/{endpoint.lstrip('/')}"

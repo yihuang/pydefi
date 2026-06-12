@@ -23,6 +23,7 @@ from typing import Any
 from eth_contract.erc20 import ERC20
 from web3 import AsyncWeb3
 
+from pydefi._utils import UINT256_MAX, to_tx
 from pydefi.abi.lending import (
     AAVE_V4_HUB,
     AAVE_V4_SPOKE,
@@ -31,7 +32,7 @@ from pydefi.abi.lending import (
 )
 from pydefi.deployments import get_address
 from pydefi.lending.aave_v3 import RAY, ray_rate_to_apy
-from pydefi.lending.utils import UINT256_MAX, WAD, to_tx
+from pydefi.lending.utils import WAD
 from pydefi.types import Address, Token, TokenAmount
 
 

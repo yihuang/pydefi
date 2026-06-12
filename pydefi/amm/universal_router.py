@@ -34,7 +34,8 @@ from eth_abi import encode as abi_encode
 from pydefi.amm.uniswap_v3 import UniswapV3
 from pydefi.amm.v4_pool_key import sort_currencies
 from pydefi.deployments import chains_for, get_address
-from pydefi.types import Address, SwapTransaction, Token, TokenAmount
+from pydefi.types import Address, Token, TokenAmount
+from pydefi.vm.swap import SwapTransaction
 
 #: Chain ID -> newest (>= 2.1.1) UniversalRouter deployment, from the registry
 #: (config/uniswap.json). Only >= 2.1.1 routers decode the minHopPriceX36 V4

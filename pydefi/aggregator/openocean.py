@@ -11,11 +11,12 @@ from typing import Any
 
 import aiohttp
 
-from pydefi._math import apply_slippage, slippage_to_percent
+from pydefi import Address
+from pydefi._math import slippage_to_percent
 from pydefi._utils import encode_address
 from pydefi.aggregator.base import AggregatorQuote
 from pydefi.exceptions import AggregatorError
-from pydefi.types import Address, SwapRoute, SwapStep, Token, TokenAmount
+from pydefi.types import SwapRoute, Token, TokenAmount
 
 # Mapping from EVM chain IDs to OpenOcean chain slugs
 _CHAIN_SLUGS: dict[int, str] = {
@@ -71,9 +72,7 @@ class OpenOcean:
     def base_url(self) -> str:
         return self._base_url
 
-    @property
-    def protocol_name(self) -> str:
-        return "OpenOcean"
+    protocol_name: str = "OpenOcean"
 
     @property
     def chain_slug(self) -> str:
@@ -148,15 +147,14 @@ class OpenOcean:
         result = data["data"]
 
         out_amount = int(result["outAmount"])
-        min_amount_out_raw = apply_slippage(out_amount, slippage_bps)
         gas_estimate = int(result.get("estimatedGas", 0))
 
-        return AggregatorQuote(
+        return AggregatorQuote.from_quote(
             token_in=amount_in.token,
             token_out=token_out,
             amount_in=amount_in,
-            amount_out=TokenAmount(token=token_out, amount=out_amount),
-            min_amount_out=TokenAmount(token=token_out, amount=min_amount_out_raw),
+            amount_out_raw=out_amount,
+            slippage_bps=slippage_bps,
             gas_estimate=gas_estimate,
             price_impact=_parse_price_impact(result.get("price_impact")),
             protocol=self.protocol_name,
@@ -203,7 +201,6 @@ class OpenOcean:
         result = data["data"]
 
         out_amount = int(result["outAmount"])
-        min_amount_out_raw = apply_slippage(out_amount, slippage_bps)
 
         gas_estimate = int(result.get("estimatedGas", 0))
         tx_info = result
@@ -215,12 +212,12 @@ class OpenOcean:
             "gasPrice": tx_info.get("gasPrice", ""),
         }
 
-        return AggregatorQuote(
+        return AggregatorQuote.from_quote(
             token_in=amount_in.token,
             token_out=token_out,
             amount_in=amount_in,
-            amount_out=TokenAmount(token=token_out, amount=out_amount),
-            min_amount_out=TokenAmount(token=token_out, amount=min_amount_out_raw),
+            amount_out_raw=out_amount,
+            slippage_bps=slippage_bps,
             gas_estimate=gas_estimate,
             price_impact=_parse_price_impact(result.get("price_impact")),
             tx_data=tx_data,
@@ -235,29 +232,6 @@ class OpenOcean:
         slippage_bps: int = 50,
         **kwargs: Any,
     ) -> SwapRoute:
-        """Build a :class:`~pydefi.types.SwapRoute` from an OpenOcean quote.
-
-        Args:
-            amount_in: Exact input amount.
-            token_out: Desired output token.
-            slippage_bps: Maximum slippage in basis points.
-
-        Returns:
-            A :class:`~pydefi.types.SwapRoute`.
-        """
+        """Build a :class:`~pydefi.types.SwapRoute` from an OpenOcean quote."""
         quote = await self.get_quote(amount_in, token_out, slippage_bps, **kwargs)
-
-        step = SwapStep(
-            token_in=amount_in.token,
-            token_out=token_out,
-            pool_address=None,
-            protocol=self.protocol_name,
-            fee=0,
-        )
-
-        return SwapRoute(
-            steps=[step],
-            amount_in=amount_in,
-            amount_out=quote.amount_out,
-            price_impact=quote.price_impact,
-        )
+        return quote.to_swap_route()

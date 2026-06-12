@@ -11,10 +11,10 @@ from typing import Any
 
 import aiohttp
 
-from pydefi._math import apply_slippage, slippage_to_percent
+from pydefi._math import slippage_to_percent
 from pydefi.aggregator.base import AggregatorQuote
 from pydefi.exceptions import AggregatorError
-from pydefi.types import SwapRoute, SwapStep, Token, TokenAmount
+from pydefi.types import SwapRoute, Token, TokenAmount
 
 
 class OKX:
@@ -42,9 +42,7 @@ class OKX:
     def base_url(self) -> str:
         return self._base_url
 
-    @property
-    def protocol_name(self) -> str:
-        return "OKX"
+    protocol_name: str = "OKX"
 
     def _headers(self) -> dict[str, str]:
         headers: dict[str, str] = {"Content-Type": "application/json"}
@@ -95,15 +93,14 @@ class OKX:
         result = data["data"]
 
         to_amount = int(result["toTokenAmount"])
-        min_amount_out_raw = apply_slippage(to_amount, slippage_bps)
         gas_estimate = int(result.get("estimateGasFee", 0))
 
-        return AggregatorQuote(
+        return AggregatorQuote.from_quote(
             token_in=amount_in.token,
             token_out=token_out,
             amount_in=amount_in,
-            amount_out=TokenAmount(token=token_out, amount=to_amount),
-            min_amount_out=TokenAmount(token=token_out, amount=min_amount_out_raw),
+            amount_out_raw=to_amount,
+            slippage_bps=slippage_bps,
             gas_estimate=gas_estimate,
             price_impact=Decimal(str(result.get("priceImpactPercentage", "0"))),
             protocol=self.protocol_name,
@@ -144,7 +141,6 @@ class OKX:
         result = data["data"]
 
         to_amount = int(result["routerResult"]["toTokenAmount"])
-        min_amount_out_raw = apply_slippage(to_amount, slippage_bps)
 
         tx_info = result.get("tx", {})
         gas_estimate = int(tx_info.get("gas", result.get("estimateGasFee", 0)))
@@ -157,12 +153,12 @@ class OKX:
             "gasPrice": tx_info.get("gasPrice", ""),
         }
 
-        return AggregatorQuote(
+        return AggregatorQuote.from_quote(
             token_in=amount_in.token,
             token_out=token_out,
             amount_in=amount_in,
-            amount_out=TokenAmount(token=token_out, amount=to_amount),
-            min_amount_out=TokenAmount(token=token_out, amount=min_amount_out_raw),
+            amount_out_raw=to_amount,
+            slippage_bps=slippage_bps,
             gas_estimate=gas_estimate,
             price_impact=Decimal(str(result.get("priceImpactPercentage", "0"))),
             tx_data=tx_data,
@@ -177,29 +173,6 @@ class OKX:
         slippage_bps: int = 50,
         **kwargs: Any,
     ) -> SwapRoute:
-        """Build a :class:`~pydefi.types.SwapRoute` from an OKX DEX quote.
-
-        Args:
-            amount_in: Exact input amount.
-            token_out: Desired output token.
-            slippage_bps: Maximum slippage in basis points.
-
-        Returns:
-            A :class:`~pydefi.types.SwapRoute`.
-        """
+        """Build a :class:`~pydefi.types.SwapRoute` from an OKX DEX quote."""
         quote = await self.get_quote(amount_in, token_out, slippage_bps, **kwargs)
-
-        step = SwapStep(
-            token_in=amount_in.token,
-            token_out=token_out,
-            pool_address=None,
-            protocol=self.protocol_name,
-            fee=0,
-        )
-
-        return SwapRoute(
-            steps=[step],
-            amount_in=amount_in,
-            amount_out=quote.amount_out,
-            price_impact=quote.price_impact,
-        )
+        return quote.to_swap_route()

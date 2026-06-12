@@ -55,9 +55,7 @@ class Relay:
         self.dst_chain_id = dst_chain_id
         self._api_base = api_base_url.rstrip("/")
 
-    @property
-    def protocol_name(self) -> str:
-        return "Relay"
+    protocol_name: str = "Relay"
 
     async def _request_quote(
         self,

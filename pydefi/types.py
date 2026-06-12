@@ -7,7 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import ROUND_DOWN, Decimal
 from enum import Enum, IntEnum
-from typing import TYPE_CHECKING, TypeAlias
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from pydefi.pathfinder.dag import RouteDAG  # noqa: F401
@@ -222,92 +222,6 @@ class SwapProtocol(str, Enum):
 
     UNISWAP_V4 = "uniswap_v4"
     """Uniswap V4 pool, traded via the singleton PoolManager."""
-
-
-class BasePool:
-    """Base class for pool descriptors used by RouteDAG actions.
-
-    Subclasses (e.g. :class:`~pydefi.pathfinder.graph.PoolEdge`) must
-    override :meth:`zero_for_one`.
-    """
-
-    pool_address: Address
-    protocol: SwapProtocol
-    fee_bps: int
-
-    def zero_for_one(self, token_out: Address) -> bool:
-        raise NotImplementedError("BasePool.zero_for_one() must be implemented by subclasses")
-
-
-@dataclass(frozen=True)
-class RouteSwap:
-    """A single swap edge in a route DAG."""
-
-    token_out: Token
-    pool: BasePool
-
-    def zero_for_one(self) -> bool:
-        return self.pool.zero_for_one(self.token_out.address)
-
-
-@dataclass(frozen=True)
-class RouteSplitLeg:
-    """One branch in a split section of a route DAG."""
-
-    fraction_bps: int
-    actions: tuple[RouteAction, ...]
-
-
-@dataclass(frozen=True)
-class RouteSplit:
-    """A split/merge section of a route DAG."""
-
-    legs: tuple[RouteSplitLeg, ...]
-    token_out: Token
-
-
-@dataclass(frozen=True)
-class RouteBridge:
-    """A cross-chain bridge edge in a route DAG (Eureka / ICS-20 today).
-
-    ``denom`` is the source-chain ERC-20 to escrow; ``token_out`` tracks the
-    destination-side type for branch-equality at ``.merge()``. Exactly one
-    of ``timeout_seconds`` (relative, resolved to ``block.timestamp + n``)
-    or ``timeout_timestamp`` (absolute) must be supplied.
-    """
-
-    denom: Address
-    token_out: Token
-    transfer_addr: Address
-    source_client: str
-    receiver: str
-    dest_port: str = "transfer"
-    memo: str = ""
-    timeout_seconds: int | None = None
-    timeout_timestamp: int | None = None
-
-    def __post_init__(self) -> None:
-        if (self.timeout_seconds is None) == (self.timeout_timestamp is None):
-            raise ValueError("RouteBridge: supply exactly one of timeout_seconds / timeout_timestamp")
-
-
-RouteAction: TypeAlias = RouteSwap | RouteSplit | RouteBridge
-
-
-@dataclass
-class SwapTransaction:
-    """An encoded transaction ready to submit to the Uniswap Universal Router.
-
-    Attributes:
-        to: Target contract address (the Universal Router).
-        data: ABI-encoded calldata for the ``execute`` call.
-        value: Amount of native ETH (in wei) to attach to the transaction.
-            Typically non-zero only when wrapping ETH as part of the swap.
-    """
-
-    to: str
-    data: bytes
-    value: int = 0
 
 
 @dataclass

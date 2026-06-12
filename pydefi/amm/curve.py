@@ -47,9 +47,7 @@ class CurvePool:
         self._tokens = tokens
         self._use_underlying = use_underlying
 
-    @property
-    def protocol_name(self) -> str:
-        return "Curve"
+    protocol_name: str = "Curve"
 
     @property
     def tokens(self) -> list[Token]:
