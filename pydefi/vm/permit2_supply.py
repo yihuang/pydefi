@@ -125,4 +125,4 @@ def build_supply_tx(
     """Encode ``DeFiVM.executeWithPermit2(...)`` into a broadcast-ready tx dict."""
     permit = ([(token.to_0x_hex(), amount) for token, amount in permitted], nonce, deadline)
     data = DeFiVM.fns.executeWithPermit2(permit, owner.to_0x_hex(), signature, program).data
-    return to_tx(defivm, data, gas= gas)
+    return to_tx(defivm, data, gas=gas)

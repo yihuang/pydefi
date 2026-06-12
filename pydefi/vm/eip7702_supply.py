@@ -215,7 +215,7 @@ def build_execute_tx(
     # Calibur expects ``abi.encode(bytes signature, bytes hookData)``.
     wrapped_signature = abi_encode(["bytes", "bytes"], [signature, b""])
     data = _CALIBUR_ABI.fns.execute(signed_batched_call, wrapped_signature).data
-    tx: dict[str, Any] = to_tx(eoa, data, gas= gas)
+    tx: dict[str, Any] = to_tx(eoa, data, gas=gas)
     if authorization is not None:
         tx["type"] = 4
         tx["authorizationList"] = [_auth_to_dict(authorization)]
