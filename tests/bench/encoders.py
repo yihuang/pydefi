@@ -37,12 +37,10 @@ from pydefi.amm.universal_router import (
     V4Hop,
 )
 from pydefi.amm.v4_pool_key import sort_currencies
+from pydefi.pathfinder.dag import RouteDAG, RouteSplit, RouteSwap
 from pydefi.pathfinder.graph import PoolEdge, V3PoolEdge, V4PoolEdge
 from pydefi.types import (
     Address,
-    RouteDAG,
-    RouteSplit,
-    RouteSwap,
     SwapProtocol,
     TokenAmount,
 )

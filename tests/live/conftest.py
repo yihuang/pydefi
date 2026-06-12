@@ -121,6 +121,18 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
+def _terminate(proc: subprocess.Popen) -> None:
+    proc.terminate()
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+
+
 @pytest.fixture
 async def fork_w3(request: pytest.FixtureRequest):
     """Start a temporary Anvil fork of Ethereum mainnet and return an AsyncWeb3 client.
@@ -171,29 +183,13 @@ async def fork_w3(request: pytest.FixtureRequest):
         except Exception:  # noqa: BLE001 — expected during startup
             await asyncio.sleep(0.25)
     else:
-        proc.terminate()
-        try:
-            proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                pass
+        _terminate(proc)
         pytest.fail("Anvil did not start within 30 seconds")
 
     w3.codec = codec
     yield w3
 
-    proc.terminate()
-    try:
-        proc.wait(timeout=10)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            pass
+    _terminate(proc)
 
 
 @pytest.fixture(scope="module")
@@ -230,29 +226,13 @@ async def fork_w3_module():
         except Exception:  # noqa: BLE001 — expected during startup
             await asyncio.sleep(0.25)
     else:
-        proc.terminate()
-        try:
-            proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                pass
+        _terminate(proc)
         pytest.fail("Anvil did not start within 60 seconds")
 
     w3.codec = codec
     yield w3
 
-    proc.terminate()
-    try:
-        proc.wait(timeout=10)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            pass
+    _terminate(proc)
 
 
 @pytest.fixture
@@ -306,25 +286,9 @@ async def surfpool_rpc():
         await asyncio.sleep(1)
 
     if not ready:
-        proc.terminate()
-        try:
-            proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                pass
+        _terminate(proc)
         pytest.fail("surfpool did not start within 60 seconds")
 
     yield url
 
-    proc.terminate()
-    try:
-        proc.wait(timeout=10)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            pass
+    _terminate(proc)

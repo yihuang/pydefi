@@ -1,8 +1,18 @@
-"""Gas benchmark — DEX aggregation encoders compared on a pinned mainnet fork.
+"""Gas benchmarks on a pinned mainnet fork — one anvil instance, two matrices.
 
-Runs each path through SSA composer / OKX router / Uniswap SwapRouter02 and
-prints a gas + calldata-size table. Every encoder pulls input via
-transferFrom inside the swap tx, so numbers are directly comparable.
+``TestAggregationGas`` compares DEX aggregation encoders: each path runs through
+SSA composer / OKX router / Uniswap SwapRouter02 and prints a gas +
+calldata-size table. Every encoder pulls input via transferFrom inside the swap
+tx, so numbers are directly comparable.
+
+``TestV4Gas`` compares protocol mechanics: Uniswap V4 vs V3 encodings through
+the same Universal Router, so the deltas isolate V4 flash accounting in the
+singleton PoolManager vs V3 per-pool transfers, not router dispatch. DeFiVM/SSA
+rows are absent by design: a V4 swap needs the PoolManager unlock callback,
+which a composed CALL program cannot provide (pydefi/vm/swap.py raises).
+
+V4 pool keys are pinned to no-hooks pools verified (via StateView) to hold
+liquidity at the fork block: WETH/USDC 500/10, WETH/USDC 3000/60, USDC/USDT 10/1.
 
 Run with ``pytest -m bench tests/live/test_bench_aggregation_gas.py -s``
 (``-s`` is required, pytest swallows the table without it).
@@ -12,7 +22,6 @@ from __future__ import annotations
 
 import asyncio
 import shutil
-import socket
 import subprocess
 import time
 from contextlib import asynccontextmanager
@@ -26,8 +35,10 @@ from hexbytes import HexBytes
 from web3 import AsyncWeb3
 
 from pydefi.abi.amm import UNISWAP_V2_PAIR, UNISWAP_V3_POOL
-from pydefi.pathfinder.graph import PoolEdge, V3PoolEdge
-from pydefi.types import Address, RouteDAG, Token
+from pydefi.amm.uniswap_v4 import UniswapV4
+from pydefi.pathfinder.dag import RouteDAG, RouteSplit
+from pydefi.pathfinder.graph import PoolEdge, V3PoolEdge, V4PoolEdge
+from pydefi.types import Address, Token
 from tests.addrs import (
     DAI,
     ETH_WHALE,
@@ -36,6 +47,9 @@ from tests.addrs import (
     POOL_WETH_USDC_500,
     POOL_WETH_USDC_3000,
     UNISWAP_V3_ROUTER,
+    UNISWAP_V4_POOL_MANAGER,
+    UNISWAP_V4_QUOTER,
+    UNISWAP_V4_STATE_VIEW,
     UNIVERSAL_ROUTER,
     USDC,
     USDT,
@@ -49,6 +63,8 @@ from tests.bench.encoders import (
     encode_ssa_swap_then_aave_supply,
     encode_uniswap,
     encode_universal_router,
+    encode_universal_router_v3_split,
+    encode_universal_router_v4_split,
 )
 from tests.bench.sol_sources import AAVE_V3_ADAPTER_SOL, UNI_V2_ADAPTER_SOL, UNI_V3_ADAPTER_SOL
 from tests.live.anvil_helpers import (
@@ -60,7 +76,7 @@ from tests.live.anvil_helpers import (
     set_balance,
     wrap_eth,
 )
-from tests.live.conftest import ETH_RPC_URL, _ensure_interpreter
+from tests.live.conftest import ETH_RPC_URL, _ensure_interpreter, _free_port, _terminate
 from tests.live.sol_utils import compile_sol_file, compile_sol_source
 
 DEFI_VM_SOL = Path(__file__).resolve().parents[2] / "pydefi" / "vm" / "DeFiVM.sol"
@@ -82,6 +98,11 @@ AAVE_V3_POOL_ETHEREUM: Address = Address("0x87870Bca3F3fD6335C3F4ce8392D69350B4f
 OKX_ROUTER: Address = Address("0x5E1f62Dac767b0491e3CE72469C217365D5B48cC")
 OKX_TOKEN_APPROVE: Address = Address("0x40aA958dd87FC8305b97f2BA922CDdCa374bcD7f")
 
+# V4 PoolKey (fee pips, tick spacing) constants — see module docstring.
+V4_WETH_USDC_500 = (500, 10)
+V4_WETH_USDC_3000 = (3000, 60)
+V4_USDC_USDT_10 = (10, 1)
+
 
 @dataclass(frozen=True)
 class BenchRow:
@@ -90,12 +111,6 @@ class BenchRow:
     gas_used: int
     calldata_bytes: int
     amount_out: int
-
-
-def _free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
 
 
 async def _deploy_adapter(w3: AsyncWeb3, deployer: str, source: str, name: str, *args) -> Address:
@@ -109,7 +124,8 @@ async def _deploy_adapter(w3: AsyncWeb3, deployer: str, source: str, name: str, 
 
 @pytest.fixture(scope="module")
 async def bench_fork_w3():
-    """Module-scoped anvil fork pinned to ``_FORK_BLOCK`` for reproducibility."""
+    """Module-scoped anvil fork pinned to ``_FORK_BLOCK``, shared by both
+    bench classes so the archive-state warmup is paid once."""
     if shutil.which("anvil") is None:
         pytest.skip("anvil not found on PATH — install Foundry to run fork tests")
 
@@ -141,27 +157,15 @@ async def bench_fork_w3():
         try:
             await w3.eth.chain_id
             break
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 — expected during startup
             await asyncio.sleep(0.25)
     else:
-        proc.terminate()
-        try:
-            proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            proc.kill()
+        _terminate(proc)
         pytest.fail(f"Anvil did not start within 120s (block {_FORK_BLOCK})")
 
     yield w3
 
-    proc.terminate()
-    try:
-        proc.wait(timeout=10)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            pass
+    _terminate(proc)
 
 
 @pytest.fixture(scope="module")
@@ -217,16 +221,12 @@ async def bench_ctx(bench_fork_w3: AsyncWeb3) -> dict:
     }
 
 
-async def _fetch_v3_pool_state(w3: AsyncWeb3, pool: Address) -> tuple:
-    return await asyncio.gather(
+async def _build_v3_edge(w3: AsyncWeb3, pool: Address, token_in: Token, token_out: Token, fee_bps: int) -> V3PoolEdge:
+    slot0, liquidity, pool_token0 = await asyncio.gather(
         UNISWAP_V3_POOL.fns.slot0().call(w3, to=pool),
         UNISWAP_V3_POOL.fns.liquidity().call(w3, to=pool),
         UNISWAP_V3_POOL.fns.token0().call(w3, to=pool),
     )
-
-
-async def _build_v3_edge(w3: AsyncWeb3, pool: Address, token_in: Token, token_out: Token, fee_bps: int) -> V3PoolEdge:
-    slot0, liquidity, pool_token0 = await _fetch_v3_pool_state(w3, pool)
     is_token0_in = HexBytes(pool_token0) == HexBytes(token_in.address)
     return V3PoolEdge(
         token_in=token_in,
@@ -258,128 +258,6 @@ async def _build_split_v3_two_pools_dag(w3: AsyncWeb3) -> RouteDAG:
     edge_500 = await _build_v3_edge(w3, POOL_WETH_USDC_500, WETH, USDC, fee_bps=5)
     edge_3000 = await _build_v3_edge(w3, POOL_WETH_USDC_3000, WETH, USDC, fee_bps=30)
     return RouteDAG().from_token(WETH).split().leg(5000).swap(USDC, edge_500).leg(5000).swap(USDC, edge_3000).merge()
-
-
-async def _build_v2_edge(
-    w3: AsyncWeb3, pair: Address, token_in: Token, token_out: Token, fee_bps: int = 30
-) -> PoolEdge:
-    reserves, pair_token0 = await asyncio.gather(
-        UNISWAP_V2_PAIR.fns.getReserves().call(w3, to=pair),
-        UNISWAP_V2_PAIR.fns.token0().call(w3, to=pair),
-    )
-    is_token0_in = HexBytes(pair_token0) == HexBytes(token_in.address)
-    reserve_in = reserves[0] if is_token0_in else reserves[1]
-    reserve_out = reserves[1] if is_token0_in else reserves[0]
-    return PoolEdge(
-        token_in=token_in,
-        token_out=token_out,
-        pool_address=pair,
-        protocol="UniswapV2",
-        reserve_in=reserve_in,
-        reserve_out=reserve_out,
-        fee_bps=fee_bps,
-        extra={"is_token0_in": is_token0_in},
-    )
-
-
-async def _build_cross_protocol_split_dag(w3: AsyncWeb3) -> RouteDAG:
-    """USDC → DAI, 50/50 V3 (fee=100) + V2. The V3-only routers (SR02 / UR /
-    OKX uniswapV3SwapTo) can't express this without falling back to multi-tx."""
-    v3_edge = await _build_v3_edge(w3, POOL_DAI_USDC_100, USDC, DAI, fee_bps=1)
-    v2_edge = await _build_v2_edge(w3, PAIR_USDC_DAI, USDC, DAI, fee_bps=30)
-    return RouteDAG().from_token(USDC).split().leg(5000).swap(DAI, v3_edge).leg(5000).swap(DAI, v2_edge).merge()
-
-
-async def _build_fan_in_dag(w3: AsyncWeb3) -> RouteDAG:
-    """WETH split across 2 V3 fee tiers → both end in USDC → merged USDC → DAI.
-    Composer-only: multicall can't pass sum-of-prior-legs to a downstream call."""
-    edge_500 = await _build_v3_edge(w3, POOL_WETH_USDC_500, WETH, USDC, fee_bps=5)
-    edge_3000 = await _build_v3_edge(w3, POOL_WETH_USDC_3000, WETH, USDC, fee_bps=30)
-    edge_usdc_dai = await _build_v3_edge(w3, POOL_DAI_USDC_100, USDC, DAI, fee_bps=1)
-    return (
-        RouteDAG()
-        .from_token(WETH)
-        .split()
-        .leg(5000)
-        .swap(USDC, edge_500)
-        .leg(5000)
-        .swap(USDC, edge_3000)
-        .merge()
-        .swap(DAI, edge_usdc_dai)
-    )
-
-
-async def _build_split_v3_five_pools_dag(w3: AsyncWeb3) -> RouteDAG:
-    """5-leg split: 3 single-hop + 2 multi-hop (via DAI and via USDT)."""
-    edge_500 = await _build_v3_edge(w3, POOL_WETH_USDC_500, WETH, USDC, fee_bps=5)
-    edge_3000 = await _build_v3_edge(w3, POOL_WETH_USDC_3000, WETH, USDC, fee_bps=30)
-    edge_10000 = await _build_v3_edge(w3, POOL_WETH_USDC_10000, WETH, USDC, fee_bps=100)
-    edge_weth_dai = await _build_v3_edge(w3, POOL_WETH_DAI_3000, WETH, DAI, fee_bps=30)
-    edge_dai_usdc = await _build_v3_edge(w3, POOL_DAI_USDC_100, DAI, USDC, fee_bps=1)
-    edge_weth_usdt = await _build_v3_edge(w3, POOL_WETH_USDT_500, WETH, USDT, fee_bps=5)
-    edge_usdt_usdc = await _build_v3_edge(w3, POOL_USDC_USDT_100, USDT, USDC, fee_bps=1)
-    return (
-        RouteDAG()
-        .from_token(WETH)
-        .split()
-        .leg(3000)
-        .swap(USDC, edge_500)
-        .leg(2500)
-        .swap(USDC, edge_3000)
-        .leg(2000)
-        .swap(USDC, edge_10000)
-        .leg(1500)
-        .swap(DAI, edge_weth_dai)
-        .swap(USDC, edge_dai_usdc)
-        .leg(1000)
-        .swap(USDT, edge_weth_usdt)
-        .swap(USDC, edge_usdt_usdc)
-        .merge()
-    )
-
-
-async def _build_split_v3_four_pools_dag(w3: AsyncWeb3) -> RouteDAG:
-    """4-leg split (40/30/20/10), last leg multi-hop via DAI. Forces
-    encode_okx_smart's N-batch layout."""
-    edge_500 = await _build_v3_edge(w3, POOL_WETH_USDC_500, WETH, USDC, fee_bps=5)
-    edge_3000 = await _build_v3_edge(w3, POOL_WETH_USDC_3000, WETH, USDC, fee_bps=30)
-    edge_10000 = await _build_v3_edge(w3, POOL_WETH_USDC_10000, WETH, USDC, fee_bps=100)
-    edge_weth_dai = await _build_v3_edge(w3, POOL_WETH_DAI_3000, WETH, DAI, fee_bps=30)
-    edge_dai_usdc = await _build_v3_edge(w3, POOL_DAI_USDC_100, DAI, USDC, fee_bps=1)
-    return (
-        RouteDAG()
-        .from_token(WETH)
-        .split()
-        .leg(4000)
-        .swap(USDC, edge_500)
-        .leg(3000)
-        .swap(USDC, edge_3000)
-        .leg(2000)
-        .swap(USDC, edge_10000)
-        .leg(1000)
-        .swap(DAI, edge_weth_dai)
-        .swap(USDC, edge_dai_usdc)
-        .merge()
-    )
-
-
-async def _build_split_v3_three_pools_dag(w3: AsyncWeb3) -> RouteDAG:
-    """3-leg split across all three V3 fee tiers (3333+3333+3334 bps)."""
-    edge_500 = await _build_v3_edge(w3, POOL_WETH_USDC_500, WETH, USDC, fee_bps=5)
-    edge_3000 = await _build_v3_edge(w3, POOL_WETH_USDC_3000, WETH, USDC, fee_bps=30)
-    edge_10000 = await _build_v3_edge(w3, POOL_WETH_USDC_10000, WETH, USDC, fee_bps=100)
-    return (
-        RouteDAG()
-        .from_token(WETH)
-        .split()
-        .leg(3333)
-        .swap(USDC, edge_500)
-        .leg(3333)
-        .swap(USDC, edge_3000)
-        .leg(3334)
-        .swap(USDC, edge_10000)
-        .merge()
-    )
 
 
 async def _run_encoder(
@@ -506,14 +384,21 @@ def _print_table(rows: list[BenchRow]) -> None:
 
 
 def _print_dag_shape(dag: RouteDAG, *, label: str) -> None:
-    from pydefi.types import RouteSplit
-
     if len(dag.actions) == 1 and isinstance(dag.actions[0], RouteSplit):
         bps = [leg.fraction_bps for leg in dag.actions[0].legs]
         print(f"\n{label} DAG: 1-action split, {len(bps)} legs, bps={bps}")
     else:
         types = [type(a).__name__ for a in dag.actions]
         print(f"\n{label} DAG: {len(dag.actions)} actions = {types}")
+
+
+def _assert_amount_out_consistent(rows: list[BenchRow], *, threshold: float = 0.001) -> None:
+    """Snapshot-fair harness makes amount_out wei-exact; threshold is a safety
+    margin for callers that bypass the snapshot wrapper."""
+    outs = [r.amount_out for r in rows]
+    assert min(outs) > 0, f"some encoder returned 0 amount_out: {outs}"
+    spread = (max(outs) - min(outs)) / max(outs)
+    assert spread < threshold, f"amount_out spread {spread:.4%} > {threshold:.2%}: {outs}"
 
 
 @pytest.mark.bench
@@ -540,22 +425,70 @@ class TestAggregationGas:
         _assert_amount_out_consistent(rows)
 
     async def test_split_v3_three_pools(self, bench_ctx: dict) -> None:
-        dag = await _build_split_v3_three_pools_dag(bench_ctx["w3"])
+        """3-leg split across all three V3 fee tiers (3333+3333+3334 bps)."""
+        w3 = bench_ctx["w3"]
+        dag = (
+            RouteDAG()
+            .from_token(WETH)
+            .split()
+            .leg(3333)
+            .swap(USDC, await _build_v3_edge(w3, POOL_WETH_USDC_500, WETH, USDC, fee_bps=5))
+            .leg(3333)
+            .swap(USDC, await _build_v3_edge(w3, POOL_WETH_USDC_3000, WETH, USDC, fee_bps=30))
+            .leg(3334)
+            .swap(USDC, await _build_v3_edge(w3, POOL_WETH_USDC_10000, WETH, USDC, fee_bps=100))
+            .merge()
+        )
         rows = await _run_v3_matrix(bench_ctx, dag=dag, token_out=USDC, path_name="split_v3_three_pools")
         _print_table(rows)
         _assert_amount_out_consistent(rows)
 
     async def test_split_v3_four_pools(self, bench_ctx: dict) -> None:
-        """4-leg split: SSA's per-leg lead over multicall should net out
-        ahead here (per-leg ~70-77K vs ~75-81K)."""
-        dag = await _build_split_v3_four_pools_dag(bench_ctx["w3"])
+        """4-leg split (40/30/20/10), last leg multi-hop via DAI — forces
+        encode_okx_smart's N-batch layout. SSA's per-leg lead over multicall
+        should net out ahead here (per-leg ~70-77K vs ~75-81K)."""
+        w3 = bench_ctx["w3"]
+        dag = (
+            RouteDAG()
+            .from_token(WETH)
+            .split()
+            .leg(4000)
+            .swap(USDC, await _build_v3_edge(w3, POOL_WETH_USDC_500, WETH, USDC, fee_bps=5))
+            .leg(3000)
+            .swap(USDC, await _build_v3_edge(w3, POOL_WETH_USDC_3000, WETH, USDC, fee_bps=30))
+            .leg(2000)
+            .swap(USDC, await _build_v3_edge(w3, POOL_WETH_USDC_10000, WETH, USDC, fee_bps=100))
+            .leg(1000)
+            .swap(DAI, await _build_v3_edge(w3, POOL_WETH_DAI_3000, WETH, DAI, fee_bps=30))
+            .swap(USDC, await _build_v3_edge(w3, POOL_DAI_USDC_100, DAI, USDC, fee_bps=1))
+            .merge()
+        )
         rows = await _run_v3_matrix(bench_ctx, dag=dag, token_out=USDC, path_name="split_v3_four_pools")
         _print_table(rows)
         _assert_amount_out_consistent(rows)
 
     async def test_split_v3_five_pools(self, bench_ctx: dict) -> None:
-        """5-leg split with two multi-hop legs — confirms SSA's lead keeps growing."""
-        dag = await _build_split_v3_five_pools_dag(bench_ctx["w3"])
+        """5-leg split: 3 single-hop + 2 multi-hop (via DAI and via USDT) —
+        confirms SSA's lead keeps growing."""
+        w3 = bench_ctx["w3"]
+        dag = (
+            RouteDAG()
+            .from_token(WETH)
+            .split()
+            .leg(3000)
+            .swap(USDC, await _build_v3_edge(w3, POOL_WETH_USDC_500, WETH, USDC, fee_bps=5))
+            .leg(2500)
+            .swap(USDC, await _build_v3_edge(w3, POOL_WETH_USDC_3000, WETH, USDC, fee_bps=30))
+            .leg(2000)
+            .swap(USDC, await _build_v3_edge(w3, POOL_WETH_USDC_10000, WETH, USDC, fee_bps=100))
+            .leg(1500)
+            .swap(DAI, await _build_v3_edge(w3, POOL_WETH_DAI_3000, WETH, DAI, fee_bps=30))
+            .swap(USDC, await _build_v3_edge(w3, POOL_DAI_USDC_100, DAI, USDC, fee_bps=1))
+            .leg(1000)
+            .swap(USDT, await _build_v3_edge(w3, POOL_WETH_USDT_500, WETH, USDT, fee_bps=5))
+            .swap(USDC, await _build_v3_edge(w3, POOL_USDC_USDT_100, USDT, USDC, fee_bps=1))
+            .merge()
+        )
         rows = await _run_v3_matrix(bench_ctx, dag=dag, token_out=USDC, path_name="split_v3_five_pools")
         _print_table(rows)
         _assert_amount_out_consistent(rows)
@@ -705,7 +638,23 @@ class TestAggregationGas:
         w3 = bench_ctx["w3"]
         user = bench_ctx["user"]
         vm_address = bench_ctx["vm_address"]
-        dag = await _build_cross_protocol_split_dag(w3)
+        v3_edge = await _build_v3_edge(w3, POOL_DAI_USDC_100, USDC, DAI, fee_bps=1)
+        reserves, pair_token0 = await asyncio.gather(
+            UNISWAP_V2_PAIR.fns.getReserves().call(w3, to=PAIR_USDC_DAI),
+            UNISWAP_V2_PAIR.fns.token0().call(w3, to=PAIR_USDC_DAI),
+        )
+        is_token0_in = HexBytes(pair_token0) == HexBytes(USDC.address)
+        v2_edge = PoolEdge(
+            token_in=USDC,
+            token_out=DAI,
+            pool_address=PAIR_USDC_DAI,
+            protocol="UniswapV2",
+            reserve_in=reserves[0] if is_token0_in else reserves[1],
+            reserve_out=reserves[1] if is_token0_in else reserves[0],
+            fee_bps=30,
+            extra={"is_token0_in": is_token0_in},
+        )
+        dag = RouteDAG().from_token(USDC).split().leg(5000).swap(DAI, v3_edge).leg(5000).swap(DAI, v2_edge).merge()
         _print_dag_shape(dag, label="cross-protocol")
 
         usdc_in = 100 * 10**6  # 100 USDC, 6 decimals
@@ -798,7 +747,17 @@ class TestAggregationGas:
         w3 = bench_ctx["w3"]
         user = bench_ctx["user"]
         vm_address = bench_ctx["vm_address"]
-        dag = await _build_fan_in_dag(w3)
+        dag = (
+            RouteDAG()
+            .from_token(WETH)
+            .split()
+            .leg(5000)
+            .swap(USDC, await _build_v3_edge(w3, POOL_WETH_USDC_500, WETH, USDC, fee_bps=5))
+            .leg(5000)
+            .swap(USDC, await _build_v3_edge(w3, POOL_WETH_USDC_3000, WETH, USDC, fee_bps=30))
+            .merge()
+            .swap(DAI, await _build_v3_edge(w3, POOL_DAI_USDC_100, USDC, DAI, fee_bps=1))
+        )
         _print_dag_shape(dag, label="fan-in")
 
         async def run(encoder_name: str, encode: Callable[[], EncodedTx]) -> BenchRow:
@@ -839,10 +798,197 @@ class TestAggregationGas:
         _assert_amount_out_consistent(rows)
 
 
-def _assert_amount_out_consistent(rows: list[BenchRow], *, threshold: float = 0.001) -> None:
-    """Snapshot-fair harness makes amount_out wei-exact; threshold is a safety
-    margin for callers that bypass the snapshot wrapper."""
-    outs = [r.amount_out for r in rows]
-    assert min(outs) > 0, f"some encoder returned 0 amount_out: {outs}"
-    spread = (max(outs) - min(outs)) / max(outs)
-    assert spread < threshold, f"amount_out spread {spread:.4%} > {threshold:.2%}: {outs}"
+# ---------------------------------------------------------------------------
+# V4 vs V3 — protocol mechanics through the Universal Router
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+async def v4_client(bench_fork_w3: AsyncWeb3) -> UniswapV4:
+    """UniswapV4 client wired to the mainnet singleton on the fork."""
+    return UniswapV4(
+        w3=bench_fork_w3,
+        pool_manager_address=UNISWAP_V4_POOL_MANAGER,
+        state_view_address=UNISWAP_V4_STATE_VIEW,
+        quoter_address=UNISWAP_V4_QUOTER,
+    )
+
+
+@pytest.fixture(scope="module")
+async def v4_bench_ctx(bench_fork_w3: AsyncWeb3) -> dict:
+    """Fund the test user and grant the Permit2 → Universal Router allowance,
+    so approval gas is identical across rows and excluded from measurements."""
+    w3 = bench_fork_w3
+    await impersonate(w3, _TEST_USER)
+    await set_balance(w3, _TEST_USER, 100 * 10**21)
+    await wrap_eth(w3, _TEST_USER, WETH.address, _AMOUNT_IN * 100)
+    await permit2_approve(w3, _TEST_USER, WETH.address, UNIVERSAL_ROUTER)
+    return {"w3": w3, "user": _TEST_USER}
+
+
+async def _build_v4_edge(v4_client: UniswapV4, token_in: Token, token_out: Token, key: tuple[int, int]) -> V4PoolEdge:
+    fee, tick_spacing = key
+    return await v4_client.get_pool_edge(token_in, token_out, fee=fee, tick_spacing=tick_spacing)
+
+
+async def _run_rows(
+    v4_bench_ctx: dict,
+    *,
+    path_name: str,
+    token_out: Token,
+    encoders: list[tuple[str, Callable[[], EncodedTx]]],
+) -> list[BenchRow]:
+    """Snapshot-fair run: every row starts from identical fork state."""
+    rows: list[BenchRow] = []
+    for encoder_name, encode in encoders:
+        async with _snapshot_revert(v4_bench_ctx["w3"]):
+            rows.append(
+                await _run_encoder(
+                    v4_bench_ctx,
+                    path_name=path_name,
+                    encoder_name=encoder_name,
+                    token_out=token_out,
+                    encode=encode,
+                )
+            )
+    return rows
+
+
+def _ur_encode(encoder, dag: RouteDAG, user: Address) -> Callable[[], EncodedTx]:
+    return lambda: encoder(
+        dag,
+        amount_in=_AMOUNT_IN,
+        min_amount_out=0,
+        recipient=user,
+        router_address=UNIVERSAL_ROUTER,
+        deadline=_DEADLINE,
+    )
+
+
+@pytest.mark.bench
+@pytest.mark.fork
+class TestV4Gas:
+    """V4 vs V3 gas matrix via the Universal Router — printed with ``-s``."""
+
+    async def test_single_hop(self, v4_bench_ctx: dict, v4_client: UniswapV4) -> None:
+        """WETH → USDC on the fee=500 tier of each protocol: the gas delta is
+        V3 pool mechanics vs V4 unlock + swap + settle/take on the singleton."""
+        w3 = v4_bench_ctx["w3"]
+        user = v4_bench_ctx["user"]
+        v3_dag = RouteDAG().from_token(WETH).swap(USDC, await _build_v3_edge(w3, POOL_WETH_USDC_500, WETH, USDC, 5))
+        v4_dag = RouteDAG().from_token(WETH).swap(USDC, await _build_v4_edge(v4_client, WETH, USDC, V4_WETH_USDC_500))
+
+        rows = await _run_rows(
+            v4_bench_ctx,
+            path_name="ur_single",
+            token_out=USDC,
+            encoders=[
+                ("v3", _ur_encode(encode_universal_router, v3_dag, user)),
+                ("v4", _ur_encode(encode_universal_router, v4_dag, user)),
+            ],
+        )
+        _print_table(rows)
+        # Both fee=500 pools are deep and arbed at the pinned block.
+        _assert_amount_out_consistent(rows, threshold=0.02)
+
+    async def test_two_hop(self, v4_bench_ctx: dict, v4_client: UniswapV4) -> None:
+        """WETH → USDC → USDT, two hops per protocol — where flash accounting
+        pays off: the V4 intermediate USDC never leaves the PoolManager."""
+        w3 = v4_bench_ctx["w3"]
+        user = v4_bench_ctx["user"]
+        v3_dag = (
+            RouteDAG()
+            .from_token(WETH)
+            .swap(USDC, await _build_v3_edge(w3, POOL_WETH_USDC_500, WETH, USDC, 5))
+            .swap(USDT, await _build_v3_edge(w3, POOL_USDC_USDT_100, USDC, USDT, 1))
+        )
+        v4_dag = (
+            RouteDAG()
+            .from_token(WETH)
+            .swap(USDC, await _build_v4_edge(v4_client, WETH, USDC, V4_WETH_USDC_500))
+            .swap(USDT, await _build_v4_edge(v4_client, USDC, USDT, V4_USDC_USDT_10))
+        )
+
+        rows = await _run_rows(
+            v4_bench_ctx,
+            path_name="ur_two_hop",
+            token_out=USDT,
+            encoders=[
+                ("v3", _ur_encode(encode_universal_router, v3_dag, user)),
+                ("v4", _ur_encode(encode_universal_router, v4_dag, user)),
+            ],
+        )
+        _print_table(rows)
+        _assert_amount_out_consistent(rows, threshold=0.02)
+
+    async def test_split_two_pools(self, v4_bench_ctx: dict, v4_client: UniswapV4) -> None:
+        """WETH → USDC, 50/50 across the 500 + 3000 tiers of each protocol. V4
+        runs both legs in one V4_SWAP / PoolManager lock with a single settle
+        and take — the route shape the EdgeKey diversity fix (#164) enables —
+        while the V3 baseline pays one command + Permit2 pull per leg."""
+        w3 = v4_bench_ctx["w3"]
+        user = v4_bench_ctx["user"]
+        v3_edge_500 = await _build_v3_edge(w3, POOL_WETH_USDC_500, WETH, USDC, 5)
+        v3_edge_3000 = await _build_v3_edge(w3, POOL_WETH_USDC_3000, WETH, USDC, 30)
+        v3_dag = (
+            RouteDAG()
+            .from_token(WETH)
+            .split()
+            .leg(5000)
+            .swap(USDC, v3_edge_500)
+            .leg(5000)
+            .swap(USDC, v3_edge_3000)
+            .merge()
+        )
+        v4_edge_500 = await _build_v4_edge(v4_client, WETH, USDC, V4_WETH_USDC_500)
+        v4_edge_3000 = await _build_v4_edge(v4_client, WETH, USDC, V4_WETH_USDC_3000)
+        v4_dag = (
+            RouteDAG()
+            .from_token(WETH)
+            .split()
+            .leg(5000)
+            .swap(USDC, v4_edge_500)
+            .leg(5000)
+            .swap(USDC, v4_edge_3000)
+            .merge()
+        )
+
+        rows = await _run_rows(
+            v4_bench_ctx,
+            path_name="ur_split_two_pools",
+            token_out=USDC,
+            encoders=[
+                ("v3", _ur_encode(encode_universal_router_v3_split, v3_dag, user)),
+                ("v4", _ur_encode(encode_universal_router_v4_split, v4_dag, user)),
+            ],
+        )
+        _print_table(rows)
+        # The V4 fee=3000 pool is thinner, so its leg slips a bit more.
+        _assert_amount_out_consistent(rows, threshold=0.05)
+
+    async def test_mixed_v3_v4_two_hop(self, v4_bench_ctx: dict, v4_client: UniswapV4) -> None:
+        """WETH → USDC → USDT crossing protocols in both directions — the
+        segment transitions the pathfinder can now emit (mid-route V4 settles
+        the router's ERC-20 balance, mid-route V3 spends CONTRACT_BALANCE).
+        Compare with the pure two-hop rows to price the transition overhead."""
+        w3 = v4_bench_ctx["w3"]
+        user = v4_bench_ctx["user"]
+        v3_weth_usdc = await _build_v3_edge(w3, POOL_WETH_USDC_500, WETH, USDC, 5)
+        v3_usdc_usdt = await _build_v3_edge(w3, POOL_USDC_USDT_100, USDC, USDT, 1)
+        v4_weth_usdc = await _build_v4_edge(v4_client, WETH, USDC, V4_WETH_USDC_500)
+        v4_usdc_usdt = await _build_v4_edge(v4_client, USDC, USDT, V4_USDC_USDT_10)
+
+        v3_to_v4 = RouteDAG().from_token(WETH).swap(USDC, v3_weth_usdc).swap(USDT, v4_usdc_usdt)
+        v4_to_v3 = RouteDAG().from_token(WETH).swap(USDC, v4_weth_usdc).swap(USDT, v3_usdc_usdt)
+
+        rows = await _run_rows(
+            v4_bench_ctx,
+            path_name="ur_mixed_two_hop",
+            token_out=USDT,
+            encoders=[
+                ("v3->v4", _ur_encode(encode_universal_router, v3_to_v4, user)),
+                ("v4->v3", _ur_encode(encode_universal_router, v4_to_v3, user)),
+            ],
+        )
+        _print_table(rows)
+        _assert_amount_out_consistent(rows, threshold=0.02)
