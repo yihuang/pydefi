@@ -17,9 +17,9 @@ from eth_account import Account
 from eth_utils import keccak
 from hexbytes import HexBytes
 
+from pydefi._utils import to_tx
 from pydefi.abi.vm import CALIBUR as _CALIBUR_ABI
 from pydefi.deployments import get_address
-from pydefi.lending.utils import to_tx
 from pydefi.types import ZERO_ADDRESS, Address, ChainId
 
 #: Calibur v1.0.0 singleton — one address on every chain it is deployed on;
@@ -215,7 +215,7 @@ def build_execute_tx(
     # Calibur expects ``abi.encode(bytes signature, bytes hookData)``.
     wrapped_signature = abi_encode(["bytes", "bytes"], [signature, b""])
     data = _CALIBUR_ABI.fns.execute(signed_batched_call, wrapped_signature).data
-    tx: dict[str, Any] = {**to_tx(eoa, data), "gas": str(gas)}
+    tx: dict[str, Any] = to_tx(eoa, data, gas=gas)
     if authorization is not None:
         tx["type"] = 4
         tx["authorizationList"] = [_auth_to_dict(authorization)]

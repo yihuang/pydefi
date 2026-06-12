@@ -12,16 +12,8 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 
-from pydefi.types import (
-    ZERO_ADDRESS,
-    Address,
-    RouteAction,
-    RouteBridge,
-    RouteDAG,
-    RouteSplit,
-    RouteSwap,
-    SwapProtocol,
-)
+from pydefi.pathfinder.dag import RouteAction, RouteBridge, RouteDAG, RouteSplit, RouteSwap
+from pydefi.types import ZERO_ADDRESS, Address, SwapProtocol
 from pydefi.vm.context import Operand, Program
 from pydefi.vm.eureka import approve_then_send_transfer
 from pydefi.vm.swap import (

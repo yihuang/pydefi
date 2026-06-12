@@ -22,6 +22,7 @@ from typing import Any, Literal
 from eth_contract.erc20 import ERC20
 from web3 import AsyncWeb3
 
+from pydefi._utils import UINT256_MAX, resolve_amount, to_tx
 from pydefi.abi.lending import (
     AAVE_V3_ADDRESSES_PROVIDER,
     AAVE_V3_DATA_PROVIDER,
@@ -30,7 +31,7 @@ from pydefi.abi.lending import (
 )
 from pydefi.deployments import get_address
 from pydefi.exceptions import PydefiError
-from pydefi.lending.utils import SECONDS_PER_YEAR, UINT256_MAX, resolve_amount, to_tx
+from pydefi.lending.utils import SECONDS_PER_YEAR
 from pydefi.types import Address, Token, TokenAmount
 
 #: 10**27 — Aave's fixed-point scale for rates and indices.

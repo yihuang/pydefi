@@ -16,8 +16,26 @@ from eth_contract.erc20 import ERC20
 from eth_utils import keccak
 
 from pydefi.abi.amm import UNISWAP_V2_PAIR, UNISWAP_V3_POOL, UNISWAP_V3_QUOTER_V2
-from pydefi.types import Address, RouteDAG, RouteSwap, SwapProtocol, SwapRoute, SwapTransaction
+from pydefi.pathfinder.dag import RouteDAG, RouteSwap
+from pydefi.types import Address, SwapProtocol, SwapRoute
 from pydefi.vm.context import Operand, Program
+
+
+@dataclass
+class SwapTransaction:
+    """An encoded transaction ready to submit to the Uniswap Universal Router.
+
+    Attributes:
+        to: Target contract address (the Universal Router).
+        data: ABI-encoded calldata for the ``execute`` call.
+        value: Amount of native ETH (in wei) to attach to the transaction.
+            Typically non-zero only when wrapping ETH as part of the swap.
+    """
+
+    to: str
+    data: bytes
+    value: int = 0
+
 
 # ---------------------------------------------------------------------------
 # Pool / quoter / token function ABI signatures (sourced from pydefi.abi)

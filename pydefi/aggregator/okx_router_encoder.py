@@ -60,6 +60,7 @@ Usage
 from __future__ import annotations
 
 from pydefi import Token
+from pydefi._math import MAX_BPS
 from pydefi.abi.dex_aggregator import (
     ADDRESS_MASK as _ADDRESS_MASK,
 )
@@ -80,7 +81,8 @@ from pydefi.abi.dex_aggregator import (
 from pydefi.abi.dex_aggregator import (
     WEIGHT_SHIFT as _WEIGHT_OFFSET,
 )
-from pydefi.types import MAX_BPS, Address, RouteAction, RouteDAG, RouteSplit, RouteSwap, SwapProtocol
+from pydefi.pathfinder.dag import RouteAction, RouteDAG, RouteSplit, RouteSwap
+from pydefi.types import Address, SwapProtocol
 
 # ---------------------------------------------------------------------------
 # Transfer mode masks — packed into the high bits of fromToken

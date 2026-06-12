@@ -21,11 +21,11 @@ from typing import Any
 from eth_contract.erc20 import ERC20
 from eth_utils import keccak, to_checksum_address
 
+from pydefi._utils import to_tx
 from pydefi.abi.safe import SAFE as _SAFE_ABI
 from pydefi.abi.safe import SAFE_PROXY_FACTORY as _FACTORY_ABI
 from pydefi.abi.vm import DeFiVM
 from pydefi.deployments import get_address
-from pydefi.lending.utils import to_tx
 from pydefi.types import ZERO_ADDRESS, Address, ChainId
 from pydefi.vm.context import Program
 
@@ -109,4 +109,4 @@ def build_sweep_tx(
     sweeps the balance; broadcast by any relayer (which earns the committed fee)."""
     initializer = build_initializer(owner, defivm, program)
     data = _FACTORY_ABI.fns.createProxyWithNonce(SAFE_SINGLETON.to_0x_hex(), initializer, salt_nonce).data
-    return {**to_tx(SAFE_PROXY_FACTORY, data), "gas": str(gas)}
+    return to_tx(SAFE_PROXY_FACTORY, data, gas=gas)

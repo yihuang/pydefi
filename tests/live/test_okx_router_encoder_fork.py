@@ -32,8 +32,8 @@ from pydefi.aggregator.okx_router_encoder import (
     encode_edge_raw_data,
     route_dag_to_router_paths,
 )
+from pydefi.pathfinder.dag import RouteDAG
 from pydefi.pathfinder.graph import PoolEdge
-from pydefi.types import RouteDAG
 from tests.addrs import (
     DAI,
     PAIR_USDC_DAI,

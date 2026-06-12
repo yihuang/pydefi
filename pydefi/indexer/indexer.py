@@ -60,6 +60,7 @@ import asyncio
 import logging
 from typing import Any, Optional
 
+from eth_contract.erc20 import ERC20
 from hexbytes import HexBytes
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlmodel import Session, SQLModel, create_engine, select
@@ -829,8 +830,6 @@ class PoolIndexer:
         Falls back to ``("", 18)`` for non-standard or non-ERC-20 tokens.
         Unexpected errors (network timeouts, etc.) are logged and re-raised.
         """
-        from eth_contract.erc20 import ERC20
-
         to = Web3.to_checksum_address(token_address)
         try:
             symbol: str = await ERC20.fns.symbol().call(self.w3, to=to)
