@@ -593,11 +593,13 @@ def newton_y(ann: int, gamma: int, x: list[int], d: int, i: int) -> int:
 
     x_sorted = sorted((x[k] for k in range(n) if k != i), reverse=True)
     convergence_limit = max(x_sorted[0] // 10**14, d // 10**14, 100)
-    for k in range(n - 1):
-        y = y * d // (x_sorted[k] * n)
-        s_i += x_sorted[k]
-    for k in range(n - 1):
-        k0_i = k0_i * x_sorted[k] * n // d
+    # Fold order matters under floor division and must match the contract:
+    # the y seed folds smallest balance first, K0 largest first.
+    for _x in reversed(x_sorted):
+        y = y * d // (_x * n)
+        s_i += _x
+    for _x in x_sorted:
+        k0_i = k0_i * _x * n // d
 
     for _ in range(255):
         y_prev = y
@@ -638,9 +640,11 @@ def crypto_fee(xp: list[int], mid_fee: int, out_fee: int, fee_gamma: int) -> int
     """
     n = len(xp)
     sum_xp = sum(xp)
-    k = PRECISION * n**n
+    # K accumulates as K * N * x_i / S per coin — the per-step floor division
+    # must match the contract exactly (pre-multiplying n**n rounds differently).
+    k = PRECISION
     for x in xp:
-        k = k * x // sum_xp
+        k = k * n * x // sum_xp
     f = fee_gamma * PRECISION // (fee_gamma + PRECISION - k)
     return (mid_fee * f + out_fee * (PRECISION - f)) // PRECISION
 

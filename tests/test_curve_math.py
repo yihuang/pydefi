@@ -224,6 +224,13 @@ class TestCryptoMath:
         d = m.newton_D(CRYPTO["amp"], CRYPTO["gamma"], xp)
         assert crypto_dy(CRYPTO, 0, 2, 10_000 * 10**6, d=d) == crypto_dy(CRYPTO, 0, 2, 10_000 * 10**6)
 
+    def test_newton_y_seed_fold_order_matches_deployed(self):
+        xp = [3190572954711000000000000, 3213021362223430026607666, 3166573738230628073833798]
+        d, amp, gamma = 9507115783281608466304004, 1707629, 11809167828997
+        assert m.newton_y(amp, gamma, xp, d, 0) == 3127828242325494437988297
+        assert m.newton_y(amp, gamma, xp, d, 1) == 3149995623309446728151286
+        assert m.newton_y(amp, gamma, xp, d, 2) == 3104212894825403328883793
+
     def test_crypto_fee_interpolates(self):
         args = (CRYPTO["mid_fee"], CRYPTO["out_fee"], CRYPTO["fee_gamma"])
         fee_balanced = m.crypto_fee([10**24, 10**24, 10**24], *args)
