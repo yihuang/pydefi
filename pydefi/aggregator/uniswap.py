@@ -15,7 +15,7 @@ from pydefi._math import apply_slippage, slippage_to_percent
 from pydefi._utils import encode_address
 from pydefi.aggregator.base import AggregatorQuote
 from pydefi.exceptions import AggregatorError
-from pydefi.types import Address, SwapRoute, SwapStep, Token, TokenAmount
+from pydefi.types import Address, SwapRoute, Token, TokenAmount
 
 # Routing types returned by /v1/quote that are compatible with POST /v1/swap.
 # UniswapX types (DUTCH_V2, DUTCH_V3, PRIORITY) must use POST /v1/order instead.
@@ -57,9 +57,7 @@ class UniswapAPI:
     def base_url(self) -> str:
         return self._base_url
 
-    @property
-    def protocol_name(self) -> str:
-        return "Uniswap"
+    protocol_name: str = "Uniswap"
 
     def _headers(self) -> dict[str, str]:
         headers: dict[str, str] = {
@@ -313,29 +311,6 @@ class UniswapAPI:
         slippage_bps: int = 50,
         **kwargs: Any,
     ) -> SwapRoute:
-        """Build a :class:`~pydefi.types.SwapRoute` from a Uniswap quote.
-
-        Args:
-            amount_in: Exact input amount.
-            token_out: Desired output token.
-            slippage_bps: Maximum slippage in basis points.
-
-        Returns:
-            A :class:`~pydefi.types.SwapRoute`.
-        """
+        """Build a :class:`~pydefi.types.SwapRoute` from a Uniswap quote."""
         quote = await self.get_quote(amount_in, token_out, slippage_bps, **kwargs)
-
-        step = SwapStep(
-            token_in=amount_in.token,
-            token_out=token_out,
-            pool_address=None,  # Uniswap API routes through multiple pools
-            protocol=self.protocol_name,
-            fee=0,
-        )
-
-        return SwapRoute(
-            steps=[step],
-            amount_in=amount_in,
-            amount_out=quote.amount_out,
-            price_impact=quote.price_impact,
-        )
+        return quote.to_swap_route()

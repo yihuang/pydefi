@@ -65,9 +65,7 @@ class GasZip:
         self.contract_address = contract_address
         self._api_base = api_base_url.rstrip("/")
 
-    @property
-    def protocol_name(self) -> str:
-        return "GasZip"
+    protocol_name: str = "GasZip"
 
     def _check_chain(self, chain_id: int) -> None:
         """Raise :class:`~pydefi.exceptions.BridgeError` for unsupported chains."""

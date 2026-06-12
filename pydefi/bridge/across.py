@@ -56,9 +56,7 @@ class Across:
         self.spoke_pool_address = spoke_pool_address
         self._api_base = api_base_url.rstrip("/")
 
-    @property
-    def protocol_name(self) -> str:
-        return "Across"
+    protocol_name: str = "Across"
 
     async def get_suggested_fees(
         self,

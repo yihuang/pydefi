@@ -76,9 +76,7 @@ class Stargate:
         self.w3 = w3
         self.router_address = router_address
 
-    @property
-    def protocol_name(self) -> str:
-        return "Stargate"
+    protocol_name: str = "Stargate"
 
     def _lz_chain_id(self, evm_chain_id: int) -> int:
         """Map an EVM chain ID to a LayerZero chain ID."""

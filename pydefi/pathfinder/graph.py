@@ -14,7 +14,21 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Callable, ClassVar, Iterator
 
-from pydefi.types import ZERO_ADDRESS, Address, BasePool, Token
+from pydefi.types import ZERO_ADDRESS, Address, SwapProtocol, Token
+
+
+class BasePool:
+    """Base class for pool descriptors used by RouteDAG actions.
+
+    Subclasses (e.g. :class:`PoolEdge`) must override :meth:`zero_for_one`.
+    """
+
+    pool_address: Address
+    protocol: SwapProtocol
+    fee_bps: int
+
+    def zero_for_one(self, token_out: Address) -> bool:
+        raise NotImplementedError("BasePool.zero_for_one() must be implemented by subclasses")
 
 
 @dataclass

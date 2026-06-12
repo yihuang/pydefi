@@ -25,9 +25,10 @@ from eth_contract.erc20 import ERC20
 from eth_utils import keccak
 from web3 import AsyncWeb3
 
+from pydefi._utils import to_tx
 from pydefi.abi.lending import MORPHO_BLUE, MORPHO_IRM, MORPHO_ORACLE, MorphoMarketParams, MorphoMarketStruct
 from pydefi.deployments import get_address
-from pydefi.lending.utils import WAD, per_second_rate_to_apy, to_tx
+from pydefi.lending.utils import WAD, per_second_rate_to_apy
 from pydefi.types import ZERO_ADDRESS, Address, Token, TokenAmount
 
 #: Morpho scales every oracle price by 1e36 (``ORACLE_PRICE_SCALE``). The

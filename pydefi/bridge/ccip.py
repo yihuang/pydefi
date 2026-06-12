@@ -105,9 +105,7 @@ class CCIP:
         # Resolve eagerly so unsupported destinations fail at construction.
         self.dst_chain_selector = _ccip_chain_selector(dst_chain_id)
 
-    @property
-    def protocol_name(self) -> str:
-        return "CCIP"
+    protocol_name: str = "CCIP"
 
     def _build_message(
         self,

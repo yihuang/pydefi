@@ -26,7 +26,8 @@ from pydefi.amm.universal_router import (
 )
 from pydefi.exceptions import InsufficientLiquidityError
 from pydefi.pathfinder.graph import V4PoolEdge
-from pydefi.types import Address, SwapTransaction, TokenAmount
+from pydefi.types import Address, TokenAmount
+from pydefi.vm.swap import SwapTransaction
 from tests.addrs import (
     DAI,
     ETH_WHALE,

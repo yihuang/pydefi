@@ -148,9 +148,7 @@ class LucidBridge:
             raise BridgeError(f"LucidBridge: unknown adapter_kind {self.adapter_kind!r}")
         self._cached_source_token: Address | None = None
 
-    @property
-    def protocol_name(self) -> str:
-        return "Lucid"
+    protocol_name: str = "Lucid"
 
     def _encode_bridge_options(self, refund_address: Address, gas_limit: int) -> bytes:
         # LayerZero uses uint128 gasLimit, Hyperlane uses uint256 — only field

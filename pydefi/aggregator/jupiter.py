@@ -28,7 +28,7 @@ import aiohttp
 
 from pydefi.aggregator.base import AggregatorQuote
 from pydefi.exceptions import AggregatorError
-from pydefi.types import ChainId, SwapRoute, SwapStep, Token, TokenAmount
+from pydefi.types import ChainId, SwapRoute, Token, TokenAmount
 
 _JUPITER_API_BASE = "https://lite-api.jup.ag/swap/v1"
 _JUPITER_SWAP_V2_BASE = "https://api.jup.ag/swap/v2"
@@ -61,9 +61,7 @@ class Jupiter:
     def base_url(self) -> str:
         return self._base_url
 
-    @property
-    def protocol_name(self) -> str:
-        return "Jupiter"
+    protocol_name: str = "Jupiter"
 
     def _headers(self) -> dict[str, str]:
         headers: dict[str, str] = {"Accept": "application/json"}
@@ -197,34 +195,9 @@ class Jupiter:
         slippage_bps: int = 50,
         **kwargs: Any,
     ) -> SwapRoute:
-        """Build a :class:`~pydefi.types.SwapRoute` from a Jupiter quote.
-
-        Args:
-            amount_in: Exact input amount.
-            token_out: Desired output token.
-            slippage_bps: Maximum acceptable slippage in basis points.
-            **kwargs: Extra query parameters forwarded to :meth:`get_quote`.
-
-        Returns:
-            A :class:`~pydefi.types.SwapRoute` with a single
-            :class:`~pydefi.types.SwapStep` (Jupiter aggregates internally).
-        """
+        """Build a :class:`~pydefi.types.SwapRoute` from a Jupiter quote."""
         quote = await self.get_quote(amount_in, token_out, slippage_bps, **kwargs)
-
-        step = SwapStep(
-            token_in=amount_in.token,
-            token_out=token_out,
-            pool_address=None,  # Jupiter routes across multiple pools internally
-            protocol=self.protocol_name,
-            fee=0,
-        )
-
-        return SwapRoute(
-            steps=[step],
-            amount_in=amount_in,
-            amount_out=quote.amount_out,
-            price_impact=quote.price_impact,
-        )
+        return quote.to_swap_route()
 
 
 class JupiterSwapV2:
@@ -269,9 +242,7 @@ class JupiterSwapV2:
     def base_url(self) -> str:
         return self._base_url
 
-    @property
-    def protocol_name(self) -> str:
-        return "Jupiter"
+    protocol_name: str = "Jupiter"
 
     def _headers(self) -> dict[str, str]:
         headers: dict[str, str] = {"Accept": "application/json"}
@@ -480,31 +451,6 @@ class JupiterSwapV2:
         slippage_bps: int = 50,
         **kwargs: Any,
     ) -> SwapRoute:
-        """Build a :class:`~pydefi.types.SwapRoute` from a Swap V2 quote.
-
-        Args:
-            amount_in: Exact input amount.
-            token_out: Desired output token.
-            slippage_bps: Maximum acceptable slippage in basis points.
-            **kwargs: Extra query parameters forwarded to :meth:`get_quote`.
-
-        Returns:
-            A :class:`~pydefi.types.SwapRoute` with a single
-            :class:`~pydefi.types.SwapStep` (Jupiter aggregates internally).
-        """
+        """Build a :class:`~pydefi.types.SwapRoute` from a Swap V2 quote."""
         quote = await self.get_quote(amount_in, token_out, slippage_bps, **kwargs)
-
-        step = SwapStep(
-            token_in=amount_in.token,
-            token_out=token_out,
-            pool_address=None,  # Jupiter routes across multiple pools internally
-            protocol=self.protocol_name,
-            fee=0,
-        )
-
-        return SwapRoute(
-            steps=[step],
-            amount_in=amount_in,
-            amount_out=quote.amount_out,
-            price_impact=quote.price_impact,
-        )
+        return quote.to_swap_route()

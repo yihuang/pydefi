@@ -6,7 +6,8 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any
 
-from pydefi.types import Token, TokenAmount
+from pydefi._math import apply_slippage
+from pydefi.types import Address, SwapRoute, SwapStep, Token, TokenAmount
 
 
 @dataclass
@@ -36,3 +37,58 @@ class AggregatorQuote:
     tx_data: dict[str, Any] = field(default_factory=dict)
     protocol: str = ""
     route_summary: str = ""
+
+    def to_swap_route(self, *, pool_address: Address | None = None) -> SwapRoute:
+        """Build a single-hop :class:`~pydefi.types.SwapRoute` from this quote.
+
+        Args:
+            pool_address: Address of the pool or router contract.  ``None`` for
+                aggregator quotes where the individual pool is unknown.
+        """
+        step = SwapStep(
+            token_in=self.token_in,
+            token_out=self.token_out,
+            pool_address=pool_address,
+            protocol=self.protocol,
+            fee=0,
+        )
+        return SwapRoute(
+            steps=[step],
+            amount_in=self.amount_in,
+            amount_out=self.amount_out,
+            price_impact=self.price_impact,
+        )
+
+    @classmethod
+    def from_quote(
+        cls,
+        *,
+        token_in: Token,
+        token_out: Token,
+        amount_in: TokenAmount,
+        amount_out_raw: int,
+        slippage_bps: int,
+        gas_estimate: int = 0,
+        price_impact: Decimal = Decimal(0),
+        protocol: str = "",
+        route_summary: str = "",
+        tx_data: dict[str, Any] | None = None,
+    ) -> AggregatorQuote:
+        """Construct an :class:`AggregatorQuote` from raw quote fields.
+
+        ``min_amount_out`` is computed from *amount_out_raw* via
+        :func:`~pydefi._math.apply_slippage`.
+        """
+        min_out = apply_slippage(amount_out_raw, slippage_bps)
+        return cls(
+            token_in=token_in,
+            token_out=token_out,
+            amount_in=amount_in,
+            amount_out=TokenAmount(token=token_out, amount=amount_out_raw),
+            min_amount_out=TokenAmount(token=token_out, amount=min_out),
+            gas_estimate=gas_estimate,
+            price_impact=price_impact,
+            tx_data=tx_data or {},
+            protocol=protocol,
+            route_summary=route_summary,
+        )
