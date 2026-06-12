@@ -121,7 +121,9 @@ def resolve_amount(amount: TokenAmount | tuple[Token, Literal["max"]]) -> tuple[
     """Accept either an exact :class:`TokenAmount` or ``(token, "max")``."""
     if isinstance(amount, TokenAmount):
         return amount.token, amount.amount
-    return amount[0], UINT256_MAX
+    if isinstance(amount, tuple) and len(amount) == 2 and amount[1] == "max":
+        return amount[0], UINT256_MAX
+    raise TypeError("amount must be a TokenAmount or (Token, 'max') tuple")
 
 
 def to_tx(to: Address, data: bytes, **kwargs: Any) -> dict[str, Any]:
