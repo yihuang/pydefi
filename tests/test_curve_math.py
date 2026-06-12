@@ -118,6 +118,20 @@ def _stub_crypto_pool() -> CurvePool:
     return pool
 
 
+def _stable_edge(i: int = 0, j: int = 1, token_in: Token = DAI, token_out: Token = USDC) -> CurveStableEdge:
+    """A DAI→USDC legacy-3pool edge by default."""
+    return CurveStableEdge(
+        token_in=token_in, token_out=token_out, pool_address=ADDR, protocol="Curve", i=i, j=j, **THREEPOOL
+    )
+
+
+def _crypto_edge() -> CurveCryptoEdge:
+    """A USDT→WETH Tricrypto edge."""
+    return CurveCryptoEdge(
+        token_in=USDT, token_out=WETH, pool_address=ADDR, protocol="CurveV2", i=0, j=2, d=None, **CRYPTO
+    )
+
+
 # ---------------------------------------------------------------------------
 # Stableswap invariant
 # ---------------------------------------------------------------------------
@@ -271,14 +285,17 @@ class TestMetaPool:
             0, 2, dx, skewed, META_BASE
         )
 
-    def test_ng_skips_approximate_deposit_fee(self):
-        # Base coin → primary deposits into the base pool first; NG quotes the
-        # ideal mint (no ½-fee deduction), so it pays out slightly more.
+    def test_ng_deposit_leg_charges_imbalance_fee(self):
+        # NG values base deposits with the fee-inclusive NG estimate (exact
+        # per-coin imbalance fee) instead of the factory ideal-mint − ½-fee.
         ng_meta = {**META, "ng_d_form": True}
         dx = 1000 * 10**6
-        assert m.meta_get_dy_underlying(2, 0, dx, ng_meta, META_BASE) > m.meta_get_dy_underlying(
-            2, 0, dx, META, META_BASE
-        )
+        ng = m.meta_get_dy_underlying(2, 0, dx, ng_meta, META_BASE)
+        factory = m.meta_get_dy_underlying(2, 0, dx, META, META_BASE)
+        no_fee = m.meta_get_dy_underlying(2, 0, dx, ng_meta, {**META_BASE, "fee": 0})
+        assert ng != factory  # different fee models
+        assert ng < no_fee  # the imbalance fee genuinely reduces the mint
+        assert 990 * 10**18 < ng < 1000 * 10**18  # still ≈ peg
 
 
 # ---------------------------------------------------------------------------
@@ -288,37 +305,28 @@ class TestMetaPool:
 
 class TestCurveEdges:
     def test_stable_edge_amount_out_matches_math(self):
-        edge = CurveStableEdge(token_in=DAI, token_out=USDC, pool_address=ADDR, protocol="Curve", i=0, j=1, **THREEPOOL)
+        edge = _stable_edge()
         assert edge.amount_out(1000 * 10**18) == stable_dy(THREEPOOL, 0, 1, 1000 * 10**18)
         assert edge.amount_out(0) == 0
         assert edge.spot_price > 0
 
     def test_crypto_edge_amount_out_matches_math(self):
-        edge = CurveCryptoEdge(
-            token_in=USDT, token_out=WETH, pool_address=ADDR, protocol="CurveV2", i=0, j=2, d=None, **CRYPTO
-        )
+        edge = _crypto_edge()
         assert edge.amount_out(10_000 * 10**6) == crypto_dy(CRYPTO, 0, 2, 10_000 * 10**6)
         assert edge.spot_price > 0
 
     def test_edges_estimate_finite_price_impact(self):
         # Both edge kinds share the probe-based impact estimate; a large trade
         # must register real (non-NaN) impact even though reserves are unset.
-        stable = CurveStableEdge(
-            token_in=DAI, token_out=USDC, pool_address=ADDR, protocol="Curve", i=0, j=1, **THREEPOOL
-        )
-        crypto = CurveCryptoEdge(
-            token_in=USDT, token_out=WETH, pool_address=ADDR, protocol="CurveV2", i=0, j=2, d=None, **CRYPTO
-        )
-        for edge, big in ((stable, 10_000_000 * 10**18), (crypto, 1_000_000 * 10**6)):
+        for edge, big in ((_stable_edge(), 10_000_000 * 10**18), (_crypto_edge(), 1_000_000 * 10**6)):
             impact = edge.estimate_price_impact(big)
             assert not impact.is_nan() and 0 < impact < 1
 
     def test_zero_for_one_does_not_raise(self):
         # Inherited PoolEdge.zero_for_one needs extra['is_token0_in'] and would
         # raise; Curve edges fall back to coin-index ordering.
-        edge = CurveStableEdge(token_in=DAI, token_out=USDC, pool_address=ADDR, protocol="Curve", i=0, j=1, **THREEPOOL)
-        assert edge.zero_for_one(USDC.address) is True
-        back = CurveStableEdge(token_in=USDC, token_out=DAI, pool_address=ADDR, protocol="Curve", i=1, j=0, **THREEPOOL)
+        assert _stable_edge().zero_for_one(USDC.address) is True
+        back = _stable_edge(i=1, j=0, token_in=USDC, token_out=DAI)
         assert back.zero_for_one(DAI.address) is False
 
     def test_edge_keys_unique_for_multi_coin_pool(self):
@@ -374,7 +382,7 @@ class TestCurvePoolLocal:
 
     def test_get_dx_local_stable_matches_math(self):
         pool = _stub_pool(CurvePoolKind.STABLE_LEGACY)
-        assert pool.get_dx_local(DAI, USDC, 1000 * 10**6) == m.stable_get_dx(0, 1, 1000 * 10**6, **THREEPOOL)
+        assert pool.get_dx_local(DAI, USDC, 1000 * 10**6) == stable_dx(THREEPOOL, 0, 1, 1000 * 10**6)
 
     def test_get_dx_local_crypto_roundtrips(self):
         pool = _stub_crypto_pool()

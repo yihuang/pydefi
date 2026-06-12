@@ -370,9 +370,10 @@ def meta_get_dy_underlying(i: int, j: int, dx: int, meta: dict, base: dict) -> i
     factory meta-pools.
 
     Stable-NG metas differ in two ways, both keyed off the ``meta`` dict:
-    ``offpeg_fee_multiplier`` selects the off-peg dynamic fee, and
-    ``ng_d_form=True`` skips the factory metas' approximate ½-fee deduction on
-    the base-deposit leg (NG quotes the ideal mint).
+    ``offpeg_fee_multiplier`` selects the off-peg dynamic fee at the meta leg,
+    and ``ng_d_form=True`` values the base-deposit leg with NG's fee-inclusive
+    mint instead of the factory metas' ideal mint minus an approximate ½-fee
+    (and, for an NG base, withdraws with NG's dynamic-fee model).
 
     Vyper: ``SwapTemplateMeta.vy::get_dy_underlying`` (factory MetaUSD
     implementations, e.g. MIM/3CRV);
@@ -395,18 +396,39 @@ def meta_get_dy_underlying(i: int, j: int, dx: int, meta: dict, base: dict) -> i
     else:
         # Base coin in → mint base LP, value it in meta units.
         base_inputs = [dx if k == base_i else 0 for k in range(base_n)]
-        minted = stable_calc_token_amount(
-            base_inputs,
-            base["balances"],
-            base["rates"],
-            base["amp"],
-            base["total_supply"],
-            is_deposit=True,
-            a_precision=base["a_precision"],
-            ng_d_form=base["ng_d_form"],
-        )
-        x = minted * rates[1] // PRECISION
-        if not ng:
+        if ng:
+            # NG metas value the deposit with the fee-inclusive NG mint
+            # (CurveStableSwapNGViews.vy::_calc_token_amount): NG-scaled amp
+            # and NG D form even when the base pool is legacy; dynamic fees
+            # only when the base itself is NG.
+            b_rates, b_bals = base["rates"], base["balances"]
+            b_amp = base["amp"] * A_PRECISION // base["a_precision"]
+            b_mult = base["offpeg_fee_multiplier"] if base["ng_d_form"] else 0
+            d0 = stable_get_D(_xp_mem(b_rates, b_bals), b_amp, A_PRECISION, ng_d_form=True)
+            new_bals = [b + a for b, a in zip(b_bals, base_inputs)]
+            d1 = stable_get_D(_xp_mem(b_rates, new_bals), b_amp, A_PRECISION, ng_d_form=True)
+            b_fee = base["fee"] * base_n // (4 * (base_n - 1))
+            ys = (d0 + d1) // base_n
+            for k in range(base_n):
+                difference = abs(d1 * b_bals[k] // d0 - new_bals[k])
+                xs = b_rates[k] * (b_bals[k] + new_bals[k]) // PRECISION
+                fee_k = stable_dynamic_fee(xs, ys, b_fee, b_mult)
+                new_bals[k] -= fee_k * difference // FEE_DENOMINATOR
+            d2 = stable_get_D(_xp_mem(b_rates, new_bals), b_amp, A_PRECISION, ng_d_form=True)
+            minted = (d2 - d0) * base["total_supply"] // d0
+            x = minted * rates[1] // PRECISION
+        else:
+            minted = stable_calc_token_amount(
+                base_inputs,
+                base["balances"],
+                base["rates"],
+                base["amp"],
+                base["total_supply"],
+                is_deposit=True,
+                a_precision=base["a_precision"],
+                ng_d_form=base["ng_d_form"],
+            )
+            x = minted * rates[1] // PRECISION
             x -= x * base["fee"] // (2 * FEE_DENOMINATOR)  # approximate deposit fee
         x += xp[1]
 
@@ -420,7 +442,30 @@ def meta_get_dy_underlying(i: int, j: int, dx: int, meta: dict, base: dict) -> i
 
     if j == 0:
         return dy // (rates[0] // PRECISION)
-    # Base coin out → burn the equivalent base LP for coin base_j.
+    # Base coin out → burn the equivalent base LP for coin base_j, using the
+    # *base pool's own* withdraw implementation (metas delegate on-chain).
+    if base["ng_d_form"]:
+        # NG base (CurveStableSwapNG.vy::_calc_withdraw_one_coin): per-coin
+        # dynamic fee against the average invariant, rate-converted output.
+        b_rates, b_amp = base["rates"], base["amp"]
+        xp_b = _xp_mem(b_rates, base["balances"])
+        d0 = stable_get_D(xp_b, b_amp, A_PRECISION, ng_d_form=True)
+        d1 = d0 - (dy * PRECISION // rates[1]) * d0 // base["total_supply"]
+        new_y = stable_get_y_D(b_amp, base_j, xp_b, d1, A_PRECISION)
+        b_fee = base["fee"] * base_n // (4 * (base_n - 1))
+        ys = (d0 + d1) // (2 * base_n)
+        xp_reduced = list(xp_b)
+        for k in range(base_n):
+            if k == base_j:
+                dx_expected = xp_b[k] * d1 // d0 - new_y
+                xavg = (xp_b[k] + new_y) // 2
+            else:
+                dx_expected = xp_b[k] - xp_b[k] * d1 // d0
+                xavg = xp_b[k]
+            fee_k = stable_dynamic_fee(xavg, ys, b_fee, base["offpeg_fee_multiplier"])
+            xp_reduced[k] = xp_b[k] - fee_k * dx_expected // FEE_DENOMINATOR
+        out = xp_reduced[base_j] - stable_get_y_D(b_amp, base_j, xp_reduced, d1, A_PRECISION)
+        return (out - 1) * PRECISION // b_rates[base_j]  # withdraw a touch less
     return stable_calc_withdraw_one_coin(
         dy * PRECISION // rates[1],
         base_j,
