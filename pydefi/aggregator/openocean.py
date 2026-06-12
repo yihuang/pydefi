@@ -11,12 +11,11 @@ from typing import Any
 
 import aiohttp
 
-from pydefi import Address
 from pydefi._math import slippage_to_percent
 from pydefi._utils import encode_address
 from pydefi.aggregator.base import AggregatorQuote
 from pydefi.exceptions import AggregatorError
-from pydefi.types import SwapRoute, Token, TokenAmount
+from pydefi.types import Address, SwapRoute, Token, TokenAmount
 
 # Mapping from EVM chain IDs to OpenOcean chain slugs
 _CHAIN_SLUGS: dict[int, str] = {
