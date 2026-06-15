@@ -14,7 +14,6 @@ from typing import Any
 import aiohttp
 
 from pydefi._utils import encode_address
-from pydefi.bridge.base import BaseBridge
 from pydefi.exceptions import BridgeError
 from pydefi.types import NATIVE_SENTINEL, Address, BridgeQuote, Token, TokenAmount
 
@@ -37,7 +36,7 @@ def _relay_currency(token: Token) -> str:
     return token.encoded_address
 
 
-class Relay(BaseBridge):
+class Relay:
     """Relay cross-chain bridge integration.
 
     Args:
@@ -52,12 +51,11 @@ class Relay(BaseBridge):
         dst_chain_id: int,
         api_base_url: str = _RELAY_API_BASE,
     ) -> None:
-        super().__init__(src_chain_id, dst_chain_id)
+        self.src_chain_id = src_chain_id
+        self.dst_chain_id = dst_chain_id
         self._api_base = api_base_url.rstrip("/")
 
-    @property
-    def protocol_name(self) -> str:
-        return "Relay"
+    protocol_name: str = "Relay"
 
     async def _request_quote(
         self,

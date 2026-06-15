@@ -14,7 +14,21 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Callable, ClassVar, Iterator
 
-from pydefi.types import Address, BasePool, Token
+from pydefi.types import ZERO_ADDRESS, Address, SwapProtocol, Token
+
+
+class BasePool:
+    """Base class for pool descriptors used by RouteDAG actions.
+
+    Subclasses (e.g. :class:`PoolEdge`) must override :meth:`zero_for_one`.
+    """
+
+    pool_address: Address
+    protocol: SwapProtocol
+    fee_bps: int
+
+    def zero_for_one(self, token_out: Address) -> bool:
+        raise NotImplementedError("BasePool.zero_for_one() must be implemented by subclasses")
 
 
 @dataclass
@@ -260,6 +274,10 @@ class V3PoolEdge(PoolEdge):
         """
         return self.is_token0_in
 
+    def _net_amount_in(self, amount_in: int) -> int:
+        """Return *amount_in* after deducting the swap fee (``fee_bps``, base 10 000)."""
+        return amount_in * (10_000 - self.fee_bps) // 10_000
+
     @property
     def spot_price(self) -> Decimal:
         """Spot price of ``token_out`` denominated in ``token_in``, adjusted
@@ -294,7 +312,7 @@ class V3PoolEdge(PoolEdge):
         sqrtP = self._effective_sqrt_price(overlay)
         if sqrtP == 0:
             return 0
-        amount_in_net = amount_in * (10_000 - self.fee_bps) // 10_000
+        amount_in_net = self._net_amount_in(amount_in)
         if amount_in_net <= 0:
             return 0
         new_sqrtP = self._new_sqrt_price(sqrtP, amount_in_net)
@@ -386,6 +404,41 @@ class V3PoolEdge(PoolEdge):
         if depth <= 0:
             return Decimal("NaN")
         return Decimal(amount_in) / Decimal(depth + amount_in)
+
+
+@dataclass
+class V4PoolEdge(V3PoolEdge):
+    """A directed edge for a Uniswap V4 pool.
+
+    V4 math is identical to V3 concentrated liquidity, so this subclass
+    inherits :meth:`~V3PoolEdge.amount_out` and
+    :meth:`~V3PoolEdge.estimate_price_impact` unchanged. ``pool_address`` is
+    the singleton ``PoolManager`` (shared by every V4 pool on a chain); pools
+    are distinguished by the ``PoolKey`` fields below.
+
+    Attributes:
+        tick_spacing: Pool tick spacing (e.g. 10 / 60 / 200).
+        hooks: Hooks contract address, or the zero address for no hooks.
+        pool_id: keccak256 of the PoolKey, hex. Optional (display/indexing).
+        lp_fee_pips: Current LP fee in pips (1e-6, from ``slot0.lpFee``), used
+            for pricing. V4 fees need not be a multiple of 100, so the
+            basis-point ``fee_bps`` field alone would truncate (e.g. a 10-pip
+            fee would price as free).
+    """
+
+    tick_spacing: int = 0
+    hooks: Address = ZERO_ADDRESS
+    pool_id: str = ""
+    lp_fee_pips: int = 0
+
+    def _net_amount_in(self, amount_in: int) -> int:
+        """Return *amount_in* after deducting the LP fee (``lp_fee_pips``, base 1 000 000).
+
+        Falls back to ``fee_bps`` when ``lp_fee_pips`` is unset (e.g. edges
+        constructed without slot0 data).
+        """
+        fee_pips = self.lp_fee_pips if self.lp_fee_pips else self.fee_bps * 100
+        return amount_in * (1_000_000 - fee_pips) // 1_000_000
 
 
 class PoolGraph:

@@ -12,16 +12,8 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 
-from pydefi.types import (
-    ZERO_ADDRESS,
-    Address,
-    RouteAction,
-    RouteBridge,
-    RouteDAG,
-    RouteSplit,
-    RouteSwap,
-    SwapProtocol,
-)
+from pydefi.pathfinder.dag import RouteAction, RouteBridge, RouteDAG, RouteSplit, RouteSwap
+from pydefi.types import ZERO_ADDRESS, Address, SwapProtocol
 from pydefi.vm.context import Operand, Program
 from pydefi.vm.eureka import approve_then_send_transfer
 from pydefi.vm.swap import (
@@ -172,6 +164,11 @@ def _build_dag_quote_actions(
     for action in actions:
         if isinstance(action, RouteSwap):
             hop = _swap_hop_from_route_swap(action, recipient=ZERO_ADDRESS)
+            if hop.protocol == SwapProtocol.UNISWAP_V4:
+                raise NotImplementedError(
+                    "Uniswap V4 quoting is not supported by DeFiVM programs; "
+                    "use UniswapV4.quote_exact_input_single instead"
+                )
             if hop.protocol == SwapProtocol.UNISWAP_V3:
                 if quoter_address is None:
                     raise ValueError("build_quote_program_for_dag: quoter_address required for V3 hops")

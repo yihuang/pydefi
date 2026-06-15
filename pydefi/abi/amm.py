@@ -160,6 +160,31 @@ UNISWAP_V3_POOL = Contract.from_abi(
 )
 
 # ---------------------------------------------------------------------------
+# Uniswap V4 — Contract objects (singleton PoolManager architecture)
+# ---------------------------------------------------------------------------
+# V4 keeps all pool state in one ``PoolManager``.  Pools are identified by a
+# ``PoolKey = (currency0, currency1, fee, tickSpacing, hooks)`` whose
+# keccak256 is the 32-byte ``poolId``.  ``StateView`` is the read-only view
+# over PoolManager storage; ``V4Quoter`` is the on-chain swap simulator.
+# Quoter params are encoded as raw tuples (nested-struct human-readable ABI is
+# ambiguous in eth_contract):
+#   QuoteExactSingleParams = (PoolKey, bool zeroForOne, uint128 exactAmount, bytes hookData)
+
+UNISWAP_V4_STATE_VIEW = Contract.from_abi(
+    [
+        "function getSlot0(bytes32 poolId) external view returns (uint160 sqrtPriceX96, int24 tick, uint24 protocolFee, uint24 lpFee)",
+        "function getLiquidity(bytes32 poolId) external view returns (uint128 liquidity)",
+    ]
+)
+
+UNISWAP_V4_QUOTER = Contract.from_abi(
+    [
+        "function quoteExactInputSingle(((address,address,uint24,int24,address),bool,uint128,bytes) params) external returns (uint256 amountOut, uint256 gasEstimate)",
+        "function quoteExactOutputSingle(((address,address,uint24,int24,address),bool,uint128,bytes) params) external returns (uint256 amountIn, uint256 gasEstimate)",
+    ]
+)
+
+# ---------------------------------------------------------------------------
 # Curve Finance
 # ---------------------------------------------------------------------------
 

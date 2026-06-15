@@ -14,7 +14,7 @@ from typing import Any, Optional
 import aiohttp
 
 from pydefi.exceptions import PoolDataError
-from pydefi.pool_data.base import BasePoolDataProvider, PoolData
+from pydefi.pool_data.base import PoolData
 from pydefi.types import Address, ChainId, Token
 
 # Well-known Uniswap V2 subgraph URLs keyed by chain ID
@@ -32,7 +32,7 @@ _UNISWAP_V3_SUBGRAPHS: dict[int, str] = {
 }
 
 
-class Subgraph(BasePoolDataProvider):
+class Subgraph:
     """Abstract base class for GraphQL subgraph clients.
 
     Provides the shared :meth:`_query` helper for executing GraphQL

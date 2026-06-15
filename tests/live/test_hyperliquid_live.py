@@ -11,6 +11,7 @@ Run with::
 from __future__ import annotations
 
 import pytest
+from hexbytes import HexBytes
 from web3 import AsyncWeb3
 from web3.exceptions import ContractLogicError
 
@@ -238,7 +239,7 @@ class TestCCTPHyperCoreLive:
             recipient=MOCK_RECIPIENT,
         )
 
-        assert tx.get("to") == bridge.token_messenger_address
+        assert HexBytes(tx["to"]) == bridge.token_messenger_address
         assert tx.get("data", "").startswith("0x")
         assert len(tx["data"]) > 2
         assert tx.get("value") == "0"
@@ -259,12 +260,12 @@ class TestCCTPHyperCoreLive:
     async def test_cctp_usdc_address_hypercore(self):
         """CCTP: USDC address is known for HyperCore."""
         addr = CCTP.usdc_address(ChainId.HYPERCORE)
-        assert addr.lower() == "0xb88339cb7199b77e23db6e890353e22632ba630f"
+        assert addr == HexBytes("0xb88339CB7199b77E23DB6E890353E22632Ba630f")
 
     async def test_cctp_message_transmitter_hypercore(self):
         """CCTP: MessageTransmitterV2 address is known for HyperCore."""
         addr = CCTP.message_transmitter_address(ChainId.HYPERCORE)
-        assert addr.lower() == "0x81d40f21f12a8f0e3252bccb954d722d4c464b64"
+        assert addr == HexBytes("0x81D40F21F12A8F0E3252Bccb954D722d4c464B64")
 
 
 # ---------------------------------------------------------------------------
@@ -316,12 +317,12 @@ class TestCCTPHyperEVMLive:
     async def test_cctp_usdc_address_hyperevm(self):
         """CCTP: USDC address is known for HyperEVM."""
         addr = CCTP.usdc_address(ChainId.HYPEREVM)
-        assert addr.lower() == "0xb88339cb7199b77e23db6e890353e22632ba630f"
+        assert addr == HexBytes("0xb88339CB7199b77E23DB6E890353E22632Ba630f")
 
     async def test_cctp_message_transmitter_hyperevm(self):
         """CCTP: MessageTransmitterV2 address is known for HyperEVM."""
         addr = CCTP.message_transmitter_address(ChainId.HYPEREVM)
-        assert addr.lower() == "0x81d40f21f12a8f0e3252bccb954d722d4c464b64"
+        assert addr == HexBytes("0x81D40F21F12A8F0E3252Bccb954D722d4c464B64")
 
 
 # ---------------------------------------------------------------------------

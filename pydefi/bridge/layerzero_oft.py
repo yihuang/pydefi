@@ -15,9 +15,9 @@ from typing import Any
 
 from web3 import AsyncWeb3, Web3
 
+from pydefi._math import apply_slippage
 from pydefi._utils import address_to_bytes32
 from pydefi.abi.bridge import LAYERZERO_OFT, MessagingFee, OFTSendParam
-from pydefi.bridge.base import BaseBridge
 from pydefi.exceptions import BridgeError
 from pydefi.types import Address, BridgeQuote, Token, TokenAmount
 
@@ -42,7 +42,7 @@ _LZ_EID: dict[int, int] = {
 }
 
 
-class LayerZeroOFT(BaseBridge):
+class LayerZeroOFT:
     """LayerZero OFT v2 cross-chain token bridge integration.
 
     This class wraps the ``IOFT`` interface used by OFT tokens built on
@@ -76,14 +76,13 @@ class LayerZeroOFT(BaseBridge):
         oft_address: str,
         dst_oft_address: str | None = None,
     ) -> None:
-        super().__init__(src_chain_id, dst_chain_id)
+        self.src_chain_id = src_chain_id
+        self.dst_chain_id = dst_chain_id
         self.w3 = w3
         self.oft_address = oft_address
         self.dst_oft_address = dst_oft_address or oft_address
 
-    @property
-    def protocol_name(self) -> str:
-        return "LayerZeroOFT"
+    protocol_name: str = "LayerZeroOFT"
 
     def _lz_eid(self, evm_chain_id: int) -> int:
         """Map an EVM chain ID to a LayerZero v2 endpoint ID (EID)."""
@@ -137,7 +136,7 @@ class LayerZeroOFT(BaseBridge):
         """
         dst_eid = self._lz_eid(self.dst_chain_id)
         to_bytes32 = address_to_bytes32(recipient)
-        min_amount = self._apply_slippage(amount, slippage_bps)
+        min_amount = apply_slippage(amount, slippage_bps)
 
         send_param = OFTSendParam(
             dstEid=dst_eid,
@@ -230,7 +229,7 @@ class LayerZeroOFT(BaseBridge):
         _refund = refund_address or recipient
         dst_eid = self._lz_eid(self.dst_chain_id)
         to_bytes32 = address_to_bytes32(recipient)
-        min_amount = self._apply_slippage(amount_in.amount, slippage_bps)
+        min_amount = apply_slippage(amount_in.amount, slippage_bps)
 
         send_param = OFTSendParam(
             dstEid=dst_eid,

@@ -6,10 +6,11 @@ import pytest
 
 from pydefi.exceptions import NoRouteFoundError
 from pydefi.pathfinder.asgm import _MARGINAL_EPS, _bundle_marginal, asgm_optimize
+from pydefi.pathfinder.dag import RouteDAG, RouteSplit, RouteSwap
 from pydefi.pathfinder.graph import PoolEdge, PoolGraph, ReserveOverlay, V3PoolEdge
 from pydefi.pathfinder.multipath import MultiEdgePath, PathWeights, _distribute_int, merge_and_expand
 from pydefi.pathfinder.router import Router
-from pydefi.types import Address, ChainId, RouteDAG, RouteSplit, RouteSwap, Token, TokenAmount
+from pydefi.types import Address, ChainId, Token, TokenAmount
 from tests._fixtures import make_v3_edge
 from tests.addrs import DAI, USDC, WETH
 

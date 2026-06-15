@@ -83,6 +83,21 @@ _TOKENS: dict[str, dict] = {
 # { name: { chain_id: address } }
 
 _CONTRACTS: dict[str, dict[int, str]] = {
+    # Uniswap Calibur — audited EIP-7702 delegate singleton, one address on every
+    # chain it is deployed on (per the Uniswap smart-wallet deployments page).
+    "CALIBUR": {
+        chain: "0x000000009B1D0aF20D8C6d0A44e162d11F9b8f00"
+        for chain in (_ETH, ChainId.OPTIMISM, ChainId.BSC, ChainId.UNICHAIN, ChainId.BASE, ChainId.ARBITRUM, _SEP)
+    },
+    # Safe v1.4.1 canonical deployments (github.com/safe-global/safe-deployments).
+    "SAFE_PROXY_FACTORY": {
+        chain: "0x4e1DCf7AD4e460CfD30791CCC4F9c8a4f820ec67"
+        for chain in (_ETH, ChainId.OPTIMISM, ChainId.BSC, ChainId.BASE, ChainId.ARBITRUM, _SEP)
+    },
+    "SAFE_SINGLETON": {
+        chain: "0x41675C099F32341bf84BFc5382aF534df5C7461a"
+        for chain in (_ETH, ChainId.OPTIMISM, ChainId.BSC, ChainId.BASE, ChainId.ARBITRUM, _SEP)
+    },
     # Uniswap V2
     "UNISWAP_V2_ROUTER": {
         _ETH: "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D",
@@ -98,13 +113,9 @@ _CONTRACTS: dict[str, dict[int, str]] = {
         _ETH: "0x61fFE014bA17989E743c5F6cB21bF9697530B21e",
         _SEP: "0xEd1f6473345F45b75F8179591dd5bA1888cf2FB3",
     },  # QuoterV2
-    "UNISWAP_V3_FACTORY": {
-        _ETH: "0x1F98431c8aD98523631AE4a59f267346ea31F984",
-        _SEP: "0x0227628f3F023bb0B980b67D528571c95c6DaC1c",
-    },
-    # Uniswap V4 / Universal Router
-    "UNISWAP_V4_POOL_MANAGER": {_ETH: "0x000000000004444c5dc75cB358380D2e3dE08A90"},
-    "UNIVERSAL_ROUTER": {_ETH: "0x66a9893cC07D91D95644AEDD05D03f95e1dBA8Af"},
+    # UNISWAP_V3_FACTORY, UNISWAP_V4_POOL_MANAGER / _STATE_VIEW / _QUOTER and
+    # UNIVERSAL_ROUTER are generated per-chain into uniswap.json (see
+    # update.sh) and merged below.
     # Well-known Uniswap V3 pools
     "POOL_WETH_USDC_500": {_ETH: "0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640"},  # 0.05%
     "POOL_WETH_USDC_3000": {_ETH: "0x8ad599c3A0ff1De082011EFDDc58f1908eb6e6D8"},  # 0.30%
@@ -141,8 +152,8 @@ _CONTRACTS: dict[str, dict[int, str]] = {
 def _merge_generated(contracts: dict[str, dict[int, str]], filename: str) -> None:
     """Merge a generated address file (config/<filename>) into *contracts*.
 
-    aave.json, aave_v4.json, compound.json and morpho.json are produced from
-    upstream registries by config/update.sh. Regenerate with
+    aave.json, aave_v4.json, compound.json, morpho.json and uniswap.json are
+    produced from upstream registries by config/update.sh. Regenerate with
     ``bash config/update.sh`` if a file is missing/empty/corrupt."""
     path = Path(__file__).resolve().parent / "config" / filename
     hint = "run config/update.sh to (re)generate it"
@@ -163,6 +174,7 @@ _merge_generated(_CONTRACTS, "aave.json")
 _merge_generated(_CONTRACTS, "aave_v4.json")
 _merge_generated(_CONTRACTS, "compound.json")
 _merge_generated(_CONTRACTS, "morpho.json")
+_merge_generated(_CONTRACTS, "uniswap.json")
 
 
 def get_address(name: str, chain_id: int) -> Address:

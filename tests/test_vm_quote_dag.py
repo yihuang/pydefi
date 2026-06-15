@@ -6,8 +6,9 @@ import pytest
 from eth_abi import encode
 
 from pydefi.abi import DeFiVM
+from pydefi.pathfinder.dag import RouteDAG
 from pydefi.pathfinder.graph import PoolEdge
-from pydefi.types import Address, RouteDAG
+from pydefi.types import Address
 from pydefi.vm.swap import quote_dag
 from tests.addrs import USDC, WETH
 

@@ -1,0 +1,122 @@
+{
+  "1": {
+    "Name": "Ethereum",
+    "TokenMessengerV2": "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d",
+    "MessageTransmitterV2": "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",
+    "USDC": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+  },
+  "43114": {
+    "Name": "Avalanche",
+    "TokenMessengerV2": "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d",
+    "MessageTransmitterV2": "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",
+    "USDC": "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E"
+  },
+  "10": {
+    "Name": "OP Mainnet",
+    "TokenMessengerV2": "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d",
+    "MessageTransmitterV2": "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",
+    "USDC": "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85"
+  },
+  "42161": {
+    "Name": "Arbitrum",
+    "TokenMessengerV2": "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d",
+    "MessageTransmitterV2": "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",
+    "USDC": "0xaf88d065e77c8cC2239327C5EDb3A432268e5831"
+  },
+  "8453": {
+    "Name": "Base",
+    "TokenMessengerV2": "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d",
+    "MessageTransmitterV2": "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",
+    "USDC": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+  },
+  "137": {
+    "Name": "Polygon PoS",
+    "TokenMessengerV2": "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d",
+    "MessageTransmitterV2": "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",
+    "USDC": "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"
+  },
+  "130": {
+    "Name": "Unichain",
+    "TokenMessengerV2": "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d",
+    "MessageTransmitterV2": "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",
+    "USDC": "0x078D782b760474a361dDA0AF3839290b0EF57AD6"
+  },
+  "59144": {
+    "Name": "Linea",
+    "TokenMessengerV2": "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d",
+    "MessageTransmitterV2": "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",
+    "USDC": "0x176211869cA2b568f2A7D4EE941E073a821EE1ff"
+  },
+  "5115": {
+    "Name": "Codex",
+    "TokenMessengerV2": "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d",
+    "MessageTransmitterV2": "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",
+    "USDC": "0xd996633a415985DBd7D6D12f4A4343E31f5037cf"
+  },
+  "146": {
+    "Name": "Sonic",
+    "TokenMessengerV2": "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d",
+    "MessageTransmitterV2": "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",
+    "USDC": "0x29219dd400f2Bf60E5a23d13Be72B486D4038894"
+  },
+  "480": {
+    "Name": "World Chain",
+    "TokenMessengerV2": "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d",
+    "MessageTransmitterV2": "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",
+    "USDC": "0x79A02482A880bCe3F13E09da970dC34dB4cD24D1"
+  },
+  "1329": {
+    "Name": "Sei",
+    "TokenMessengerV2": "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d",
+    "MessageTransmitterV2": "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",
+    "USDC": "0xe15fC38F6D8c56aF07bbCBe3BAf5708A2Bf42392"
+  },
+  "50": {
+    "Name": "XDC",
+    "TokenMessengerV2": "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d",
+    "MessageTransmitterV2": "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",
+    "USDC": "0xfA2958CB79b0491CC627c1557F441eF849Ca8eb1"
+  },
+  "999": {
+    "Name": "HyperEVM",
+    "TokenMessengerV2": "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d",
+    "MessageTransmitterV2": "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",
+    "USDC": "0xb88339CB7199b77E23DB6E890353E22632Ba630f"
+  },
+  "57073": {
+    "Name": "Ink",
+    "TokenMessengerV2": "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d",
+    "MessageTransmitterV2": "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",
+    "USDC": "0x2D270e6886d130D724215A266106e6832161EAEd"
+  },
+  "98865": {
+    "Name": "Plume",
+    "TokenMessengerV2": "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d",
+    "MessageTransmitterV2": "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",
+    "USDC": "0x222365EF19F7947e5484218551B56bb3965Aa7aF"
+  },
+  "3343": {
+    "Name": "EDGE",
+    "TokenMessengerV2": "0x98706A006bc632Df31CAdFCBD43F38887ce2ca5c",
+    "MessageTransmitterV2": "0x5b61381Fc9e58E70EfC13a4A97516997019198ee",
+    "USDC": "0x98d2919b9A214E6Fa5384AC81E6864bA686Ad74c"
+  },
+  "2525": {
+    "Name": "Injective",
+    "TokenMessengerV2": "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d",
+    "MessageTransmitterV2": "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",
+    "USDC": "0xa00C59fF5a080D2b954d0c75e46E22a0c371235a"
+  },
+  "2818": {
+    "Name": "Morph",
+    "TokenMessengerV2": "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d",
+    "MessageTransmitterV2": "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",
+    "USDC": "0xCfb1186F4e93D60E60a8bDd997427D1F33bc372B"
+  },
+  "10182": {
+    "Name": "Pharos",
+    "TokenMessengerV2": "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d",
+    "MessageTransmitterV2": "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",
+    "USDC": "0xC879C018dB60520F4355C26eD1a6D572cdAC1815"
+  }
+}
