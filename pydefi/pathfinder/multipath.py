@@ -136,17 +136,19 @@ def merge_and_expand(
         by_seq.setdefault(seq, []).append(path)
 
     result: list[MultiEdgePath] = []
-    claimed: set[Address] = set()
+    # Key on direction-agnostic ``pool_uid``, not ``pool_address``: all V4 pools
+    # share the singleton PoolManager address, so the latter collapses them.
+    claimed: set[tuple[Address, int, int, Address]] = set()
     for paths in by_seq.values():
         n_hops = len(paths[0])
         bundles: list[list[PoolEdge]] = [[] for _ in range(n_hops)]
-        seen: list[set[Address]] = [set() for _ in range(n_hops)]
+        seen: list[set[tuple[Address, int, int, Address]]] = [set() for _ in range(n_hops)]
         for path in paths:
             for i, edge in enumerate(path):
-                if edge.pool_address in claimed or edge.pool_address in seen[i]:
+                if edge.pool_uid in claimed or edge.pool_uid in seen[i]:
                     continue
                 bundles[i].append(edge)
-                seen[i].add(edge.pool_address)
+                seen[i].add(edge.pool_uid)
         for i in range(n_hops):
             if not bundles[i]:
                 continue
@@ -155,10 +157,10 @@ def merge_and_expand(
             for edge in graph.edges_from(t_in):
                 if edge.token_out.address != t_out_addr:
                     continue
-                if edge.pool_address in claimed or edge.pool_address in seen[i]:
+                if edge.pool_uid in claimed or edge.pool_uid in seen[i]:
                     continue
                 bundles[i].append(edge)
-                seen[i].add(edge.pool_address)
+                seen[i].add(edge.pool_uid)
                 if len(bundles[i]) >= max_parallel_per_hop:
                     break
         if any(not b for b in bundles):
@@ -166,5 +168,5 @@ def merge_and_expand(
         result.append(MultiEdgePath(hops=tuple(tuple(b) for b in bundles)))
         for bundle in bundles:
             for edge in bundle:
-                claimed.add(edge.pool_address)
+                claimed.add(edge.pool_uid)
     return result

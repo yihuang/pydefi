@@ -1201,6 +1201,22 @@ class TestMergeAndExpand:
         appearances = [pool for p in paths for bundle in p.hops for e in bundle if (pool := e.pool_address) == POOL_A]
         assert len(appearances) == 1, "POOL_A must not appear in more than one MultiEdgePath"
 
+    def test_v4_pools_sharing_pool_manager_address_not_collapsed(self):
+        """Distinct V4 pools share the singleton PoolManager address but differ
+        by fee/tickSpacing/hooks; they must NOT collapse into one bundle.
+        """
+        singleton = Address("0x" + "44" * 20)  # shared PoolManager address
+        g = PoolGraph()
+        e_lo = PoolEdge(WETH, USDC, singleton, "UniswapV4", reserve_in=10**21, reserve_out=2 * 10**9, fee_bps=5)
+        e_hi = PoolEdge(WETH, USDC, singleton, "UniswapV4", reserve_in=10**21, reserve_out=2 * 10**9, fee_bps=30)
+        g.add_pool(e_lo)
+        g.add_pool(e_hi)
+        paths = merge_and_expand([[e_lo], [e_hi]], g)
+        assert len(paths) == 1
+        # Both fee tiers must survive in the bundle despite the shared address.
+        assert len(paths[0].hops[0]) == 2
+        assert {e.fee_bps for e in paths[0].hops[0]} == {5, 30}
+
 
 # ---------------------------------------------------------------------------
 # ASGM solver (PRIME §V-C)

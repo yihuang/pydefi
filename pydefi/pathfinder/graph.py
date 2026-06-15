@@ -79,6 +79,22 @@ class PoolEdge(BasePool):
     extra: dict = field(default_factory=dict)
 
     @property
+    def pool_uid(self) -> tuple[Address, int, int, Address]:
+        """Direction-agnostic pool identity: ``(pool_address, fee, tick_spacing, hooks)``.
+
+        Every Uniswap V4 pool shares the singleton PoolManager address, so
+        ``pool_address`` alone can't tell pools apart. ``token_in`` is excluded
+        so both directions count as one pool for the pool-disjoint constraint in
+        :func:`~pydefi.pathfinder.multipath.merge_and_expand`.
+        """
+        return (
+            self.pool_address,
+            self.fee_bps,
+            getattr(self, "tick_spacing", 0),
+            getattr(self, "hooks", ZERO_ADDRESS),
+        )
+
+    @property
     def spot_price(self) -> Decimal:
         """Spot price of token_out denominated in token_in.
 
@@ -327,7 +343,7 @@ class V3PoolEdge(PoolEdge):
         sqrtP = self._effective_sqrt_price(overlay)
         if sqrtP == 0:
             return
-        amount_in_net = amount_in * (10_000 - self.fee_bps) // 10_000
+        amount_in_net = self._net_amount_in(amount_in)
         if amount_in_net <= 0:
             return
         new_sqrtP = self._new_sqrt_price(sqrtP, amount_in_net)
