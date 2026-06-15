@@ -105,6 +105,11 @@ class Router:
         self.graph = graph
         self.max_hops = max_hops
 
+    @staticmethod
+    def dag_leg_weights(dag: RouteDAG) -> list[int]:
+        """Return ``fraction_bps`` for each split leg, or ``[10000]`` for a linear DAG."""
+        return _dag_leg_weights(dag)
+
     def find_best_route(
         self,
         amount_in: TokenAmount,

@@ -184,6 +184,45 @@ UNISWAP_V4_QUOTER = Contract.from_abi(
     ]
 )
 
+UNISWAP_V4_POOL_MANAGER = Contract.from_abi(
+    [
+        "function unlock(bytes data) external returns (bytes memory)",
+    ]
+)
+
+# ---------------------------------------------------------------------------
+# Uniswap V4 — DeFiVM swap composer constants
+#
+# Layout offsets and the ABI fragment used by the SSA composer in
+# :mod:`pydefi.vm.swap` to build calldata for V4 swaps.
+# ---------------------------------------------------------------------------
+
+#: ABI fragment for the 10-word payload passed inside ``PoolManager.unlock(data)``.
+#: Layout: ``c0, c1, fee, tickSpacing, hooks, zeroForOne, amountSpecified,
+#: sqrtPriceLimitX96, tokenIn, recipient``.  Decoded by ``DeFiVM.unlockCallback``.
+V4_UNLOCK_DATA_TYPES: list[str] = [
+    "address",  # currency0
+    "address",  # currency1
+    "uint24",  # fee (pips)
+    "int24",  # tickSpacing
+    "address",  # hooks
+    "bool",  # zeroForOne
+    "int256",  # amountSpecified (negative for exactInput)
+    "uint160",  # sqrtPriceLimitX96
+    "address",  # tokenIn
+    "address",  # recipient
+]
+
+#: Calldata byte offset of ``amountSpecified`` (word 6 of the unlock data) in
+#: the full ``unlock(bytes)`` calldata.
+#: ``4 (selector) + 32 (bytes-arg offset) + 32 (bytes-arg length) + 6*32 = 260``.
+V4_UNLOCK_AMOUNT_SPEC_OFFSET: int = 260
+
+#: Byte offset of ``amountOut`` in the returndata of ``unlock()``.  The
+#: PoolManager wraps DeFiVM's ``abi.encode(amountOut)`` as ``bytes memory``:
+#: ``[0..32) offset, [32..64) length, [64..96) amountOut``.
+V4_UNLOCK_AMOUNT_OUT_OFFSET: int = 64
+
 # ---------------------------------------------------------------------------
 # Curve Finance
 # ---------------------------------------------------------------------------
