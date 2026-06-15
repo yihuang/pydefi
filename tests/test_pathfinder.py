@@ -1267,6 +1267,28 @@ class TestASGM:
         single_out = max(e1.amount_out(x), e2.amount_out(x))
         assert split_out >= single_out
 
+    def test_optimized_never_worse_than_uniform_split(self):
+        """ASGM's result must be >= the uniform allocation it starts from.
+
+        Guards the Armijo line search: a rejected trial must fully restore the
+        in-place-tuned intra_hop_weights, otherwise the optimizer can return an
+        allocation worse than its own starting point.
+        """
+        # Asymmetric depths/fees so the line search actually backtracks.
+        e1 = _v2_pool_edge(WETH, USDC, POOL_A, reserve_in=10**22, reserve_out=2 * 10**10, fee_bps=30)
+        e2 = _v2_pool_edge(WETH, USDC, POOL_B, reserve_in=10**21, reserve_out=2 * 10**9, fee_bps=5)
+        e3 = _v2_pool_edge(WETH, USDC, POOL_C, reserve_in=3 * 10**20, reserve_out=6 * 10**8, fee_bps=100)
+        paths = [MultiEdgePath(hops=((e,),)) for e in (e1, e2, e3)]
+        x = 5 * 10**18
+        n = len(paths)
+        uniform = [PathWeights(path_weight=1.0 / n, intra_hop_weights=[[1.0]]) for _ in paths]
+        uniform_inputs = _distribute_int(x, [1.0 / n] * n)
+        uniform_out = sum(p.amount_out(a, w) for p, w, a in zip(paths, uniform, uniform_inputs) if a > 0)
+        ws = asgm_optimize(paths, x)
+        opt_inputs = _distribute_int(x, [w.path_weight for w in ws])
+        opt_out = sum(p.amount_out(a, w) for p, w, a in zip(paths, ws, opt_inputs) if a > 0)
+        assert opt_out >= uniform_out
+
     def test_amount_in_zero_raises(self):
         edge = _v2_pool_edge(WETH, USDC, POOL_A)
         path = MultiEdgePath(hops=((edge,),))

@@ -90,10 +90,17 @@ def asgm_optimize(paths: list[MultiEdgePath], amount_in: int) -> list[PathWeight
 
         baseline = _total_output(paths, weights, amount_in)
         target_gain = _ARMIJO_ALPHA * delta * amount_in * gap
+        # Snapshot both fields a trial mutates: _optimize_intra_hops_inplace
+        # rewrites intra_hop_weights, so a rejected trial must restore those too
+        # — not just path_weight — or it returns an inconsistent allocation.
+        base_plus_pw = weights[i_plus].path_weight
+        base_minus_pw = weights[i_minus].path_weight
+        base_plus_ihw = [list(h) for h in weights[i_plus].intra_hop_weights]
+        base_minus_ihw = [list(h) for h in weights[i_minus].intra_hop_weights]
         accepted = False
         while delta > 1e-9:
-            weights[i_plus].path_weight += delta
-            weights[i_minus].path_weight -= delta
+            weights[i_plus].path_weight = base_plus_pw + delta
+            weights[i_minus].path_weight = base_minus_pw - delta
             # Re-tune intra-hop weights for the two paths whose share changed —
             # use the conservation-preserving distribution.
             current_inputs = _path_inputs(weights, amount_in)
@@ -104,9 +111,11 @@ def asgm_optimize(paths: list[MultiEdgePath], amount_in: int) -> list[PathWeight
             if new_total >= baseline + target_gain:
                 accepted = True
                 break
-            # Revert and shrink.
-            weights[i_plus].path_weight -= delta
-            weights[i_minus].path_weight += delta
+            # Reject: restore path_weight AND intra-hop weights, then shrink.
+            weights[i_plus].path_weight = base_plus_pw
+            weights[i_minus].path_weight = base_minus_pw
+            weights[i_plus].intra_hop_weights = [list(h) for h in base_plus_ihw]
+            weights[i_minus].intra_hop_weights = [list(h) for h in base_minus_ihw]
             delta *= _DECAY_BETA
             target_gain = _ARMIJO_ALPHA * delta * amount_in * gap
         if not accepted:
