@@ -197,21 +197,29 @@ UNISWAP_V4_POOL_MANAGER = Contract.from_abi(
 # :mod:`pydefi.vm.swap` to build calldata for V4 swaps.
 # ---------------------------------------------------------------------------
 
-#: ABI fragment for the 10-word payload passed inside ``PoolManager.unlock(data)``.
-#: Layout: ``c0, c1, fee, tickSpacing, hooks, zeroForOne, amountSpecified,
-#: sqrtPriceLimitX96, tokenIn, recipient``.  Decoded by ``DeFiVM.unlockCallback``.
-V4_UNLOCK_DATA_TYPES: list[str] = [
-    "address",  # currency0
-    "address",  # currency1
-    "uint24",  # fee (pips)
-    "int24",  # tickSpacing
-    "address",  # hooks
-    "bool",  # zeroForOne
-    "int256",  # amountSpecified (negative for exactInput)
-    "uint160",  # sqrtPriceLimitX96
-    "address",  # tokenIn
-    "address",  # recipient
-]
+
+class V4UnlockData(ABIStruct):
+    """The 10-word payload passed inside ``PoolManager.unlock(data)``.
+
+    Flattens v4-core ``PoolKey`` (currency0, currency1, fee, tickSpacing,
+    hooks) and ``SwapParams`` (zeroForOne, amountSpecified, sqrtPriceLimitX96)
+    plus ``tokenIn`` / ``recipient`` the callback settles and pays out.
+    Every field is static, so this encodes byte-identically to the
+    ``(PoolKey, SwapParams, address, address)`` tuple that
+    ``DEXCallbackRouter.unlockCallback`` decodes.
+    """
+
+    currency0: Annotated[str, "address"]
+    currency1: Annotated[str, "address"]
+    fee: Annotated[int, "uint24"]  # pips
+    tickSpacing: Annotated[int, "int24"]
+    hooks: Annotated[str, "address"]
+    zeroForOne: Annotated[bool, "bool"]
+    amountSpecified: Annotated[int, "int256"]  # negative for exactInput
+    sqrtPriceLimitX96: Annotated[int, "uint160"]
+    tokenIn: Annotated[str, "address"]
+    recipient: Annotated[str, "address"]
+
 
 #: Calldata byte offset of ``amountSpecified`` (word 6 of the unlock data) in
 #: the full ``unlock(bytes)`` calldata.

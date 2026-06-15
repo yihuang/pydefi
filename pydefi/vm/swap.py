@@ -26,7 +26,7 @@ from pydefi.abi.amm import (
     UNISWAP_V4_POOL_MANAGER,
     V4_UNLOCK_AMOUNT_OUT_OFFSET,
     V4_UNLOCK_AMOUNT_SPEC_OFFSET,
-    V4_UNLOCK_DATA_TYPES,
+    V4UnlockData,
 )
 from pydefi.pathfinder.dag import RouteDAG, RouteSwap
 from pydefi.types import ZERO_ADDRESS, Address, SwapProtocol, SwapRoute, TokenAmount
@@ -277,28 +277,22 @@ def _build_v4_swap(prog: Program, amount_in: Operand, hop: SwapHop) -> Operand:
     sqrt_price_limit = hop.sqrt_price_limit_x96 or (_SQRT_PRICE_MIN if hop.zero_for_one else _SQRT_PRICE_MAX)
     c0, c1 = _v4_pool_key_currencies(hop)
 
-    # Word layout matches the unlockCallback decoder in DEXCallbackRouter.sol:
-    #   c0(0), c1(1), fee(2), tickSpacing(3), hooks(4),
-    #   zeroForOne(5), amountSpecified(6), sqrtPriceLimitX96(7),
-    #   tokenIn(8), recipient(9)
-    # V4 PoolKey fee is uint24 in pips (1/1_000_000), e.g. 3000 = 0.3 %.  Use the
-    # exact ``fee_pips`` — ``fee_bps * 100`` would truncate non-100-multiple fees
-    # and address a non-existent PoolKey.
-    data_bytes = encode(
-        V4_UNLOCK_DATA_TYPES,
-        [
-            c0,
-            c1,
-            hop.fee_pips,
-            hop.tick_spacing,
-            hop.hooks,
-            hop.zero_for_one,
-            0,
-            sqrt_price_limit,
-            hop.token_in,
-            hop.recipient,
-        ],
-    )
+    # Decoded by the unlockCallback in DEXCallbackRouter.sol.  amountSpecified is
+    # a 0 placeholder, patched at runtime (word 6).  ``fee`` is the exact PoolKey
+    # fee in pips — ``fee_bps * 100`` would truncate non-100-multiple fees and
+    # address a non-existent PoolKey.
+    data_bytes = V4UnlockData(
+        currency0=c0,
+        currency1=c1,
+        fee=hop.fee_pips,
+        tickSpacing=hop.tick_spacing,
+        hooks=hop.hooks,
+        zeroForOne=hop.zero_for_one,
+        amountSpecified=0,
+        sqrtPriceLimitX96=sqrt_price_limit,
+        tokenIn=hop.token_in,
+        recipient=hop.recipient,
+    ).encode()
     calldata = bytes(_V4_PM_UNLOCK_FN(data_bytes).data)
 
     # Patch amountSpecified with -amount_in (two's-complement negation: NOT(x) + 1).
