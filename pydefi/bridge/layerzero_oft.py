@@ -13,24 +13,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from eth_contract import Contract
-from hexbytes import HexBytes
 from web3 import AsyncWeb3, Web3
 
-from pydefi.bridge.base import BaseBridge
+from pydefi._math import apply_slippage
+from pydefi._utils import address_to_bytes32
+from pydefi.abi.bridge import LAYERZERO_OFT, MessagingFee, OFTSendParam
 from pydefi.exceptions import BridgeError
-from pydefi.types import BridgeQuote, Token, TokenAmount
-
-# ---------------------------------------------------------------------------
-# ABI fragments
-# ---------------------------------------------------------------------------
-
-_OFT_ABI = [
-    # quoteSend(SendParam, payInLzToken) -> MessagingFee
-    "function quoteSend((uint32 dstEid, bytes32 to, uint256 amountLD, uint256 minAmountLD, bytes extraOptions, bytes composeMsg, bytes oftCmd) _sendParam, bool _payInLzToken) external view returns (uint256 nativeFee, uint256 lzTokenFee)",
-    # send(SendParam, MessagingFee, refundAddress) -> (MessagingReceipt, OFTReceipt)
-    "function send((uint32 dstEid, bytes32 to, uint256 amountLD, uint256 minAmountLD, bytes extraOptions, bytes composeMsg, bytes oftCmd) _sendParam, (uint256 nativeFee, uint256 lzTokenFee) _fee, address _refundAddress) external payable",
-]
+from pydefi.types import Address, BridgeQuote, Token, TokenAmount
 
 # LayerZero v2 endpoint IDs (EIDs) mapped from EVM chain IDs.
 # See: https://docs.layerzero.network/v2/developers/evm/technical-reference/deployed-contracts
@@ -53,7 +42,7 @@ _LZ_EID: dict[int, int] = {
 }
 
 
-class LayerZeroOFT(BaseBridge):
+class LayerZeroOFT:
     """LayerZero OFT v2 cross-chain token bridge integration.
 
     This class wraps the ``IOFT`` interface used by OFT tokens built on
@@ -87,15 +76,13 @@ class LayerZeroOFT(BaseBridge):
         oft_address: str,
         dst_oft_address: str | None = None,
     ) -> None:
-        super().__init__(src_chain_id, dst_chain_id)
+        self.src_chain_id = src_chain_id
+        self.dst_chain_id = dst_chain_id
         self.w3 = w3
         self.oft_address = oft_address
         self.dst_oft_address = dst_oft_address or oft_address
-        self._oft = Contract.from_abi(_OFT_ABI, to=oft_address)
 
-    @property
-    def protocol_name(self) -> str:
-        return "LayerZeroOFT"
+    protocol_name: str = "LayerZeroOFT"
 
     def _lz_eid(self, evm_chain_id: int) -> int:
         """Map an EVM chain ID to a LayerZero v2 endpoint ID (EID)."""
@@ -103,11 +90,6 @@ class LayerZeroOFT(BaseBridge):
         if eid is None:
             raise BridgeError(f"LayerZeroOFT: unsupported chain ID {evm_chain_id}")
         return eid
-
-    @staticmethod
-    def _address_to_bytes32(address: str) -> bytes:
-        """Convert an EVM address to a zero-padded 32-byte value."""
-        return HexBytes(address).rjust(32, b"\x00")
 
     def _validate_tokens(self, token_in: Token, token_out: Token) -> None:
         """Validate that token addresses match the configured OFT contracts.
@@ -132,7 +114,7 @@ class LayerZeroOFT(BaseBridge):
     async def quote_send_fee(
         self,
         amount: int,
-        recipient: str,
+        recipient: Address,
         slippage_bps: int = 50,
     ) -> int:
         """Estimate the native LayerZero messaging fee for a ``send`` call.
@@ -153,21 +135,21 @@ class LayerZeroOFT(BaseBridge):
             :class:`~pydefi.exceptions.BridgeError`: On contract call failure.
         """
         dst_eid = self._lz_eid(self.dst_chain_id)
-        to_bytes32 = self._address_to_bytes32(recipient)
-        min_amount = self._apply_slippage(amount, slippage_bps)
+        to_bytes32 = address_to_bytes32(recipient)
+        min_amount = apply_slippage(amount, slippage_bps)
 
-        send_param = (
-            dst_eid,
-            to_bytes32,
-            amount,
-            min_amount,
-            b"",  # extraOptions
-            b"",  # composeMsg
-            b"",  # oftCmd
+        send_param = OFTSendParam(
+            dstEid=dst_eid,
+            to=to_bytes32,
+            amountLD=amount,
+            minAmountLD=min_amount,
+            extraOptions=b"",
+            composeMsg=b"",
+            oftCmd=b"",
         )
 
         try:
-            result = await self._oft.fns.quoteSend(send_param, False).call(self.w3)
+            result = await LAYERZERO_OFT.fns.quoteSend(send_param, False).call(self.w3, to=self.oft_address)
             # quoteSend returns (nativeFee, lzTokenFee)
             native_fee: int = result[0] if isinstance(result, (list, tuple)) else result
         except Exception as exc:
@@ -216,9 +198,9 @@ class LayerZeroOFT(BaseBridge):
         token_in: Token,
         token_out: Token,
         amount_in: TokenAmount,
-        recipient: str,
+        recipient: Address,
         slippage_bps: int = 50,
-        refund_address: str | None = None,
+        refund_address: Address | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
         """Build a LayerZero OFT ``send`` transaction.
@@ -246,27 +228,27 @@ class LayerZeroOFT(BaseBridge):
         self._validate_tokens(token_in, token_out)
         _refund = refund_address or recipient
         dst_eid = self._lz_eid(self.dst_chain_id)
-        to_bytes32 = self._address_to_bytes32(recipient)
-        min_amount = self._apply_slippage(amount_in.amount, slippage_bps)
+        to_bytes32 = address_to_bytes32(recipient)
+        min_amount = apply_slippage(amount_in.amount, slippage_bps)
 
-        send_param = (
-            dst_eid,
-            to_bytes32,
-            amount_in.amount,
-            min_amount,
-            b"",  # extraOptions
-            b"",  # composeMsg
-            b"",  # oftCmd
+        send_param = OFTSendParam(
+            dstEid=dst_eid,
+            to=to_bytes32,
+            amountLD=amount_in.amount,
+            minAmountLD=min_amount,
+            extraOptions=b"",
+            composeMsg=b"",
+            oftCmd=b"",
         )
 
         native_fee = await self.quote_send_fee(amount_in.amount, recipient, slippage_bps)
-        messaging_fee = (native_fee, 0)  # (nativeFee, lzTokenFee)
+        messaging_fee = MessagingFee(nativeFee=native_fee, lzTokenFee=0)
 
-        call_data = self._oft.fns.send(send_param, messaging_fee, _refund).data
+        call_data = LAYERZERO_OFT.fns.send(send_param, messaging_fee, _refund).data
 
         return {
             "to": self.oft_address,
-            "data": "0x" + call_data.hex() if isinstance(call_data, bytes) else call_data,
+            "data": "0x" + call_data.hex(),
             "value": str(native_fee),
             "gas": str(300_000),
         }

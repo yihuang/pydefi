@@ -6,31 +6,18 @@ import pytest
 
 from pydefi.exceptions import PoolDataError
 from pydefi.pathfinder.graph import PoolEdge, V3PoolEdge
-from pydefi.pool_data.base import BasePoolDataProvider, PoolData
+from pydefi.pool_data.base import PoolData, build_graph
 from pydefi.pool_data.geckoterminal import GeckoTerminal
 from pydefi.pool_data.subgraph import UniswapV2Subgraph, UniswapV3Subgraph
-from pydefi.types import ChainId, Token
+from pydefi.types import Address, ChainId
+from tests.addrs import DAI, USDC, WETH, ZERO_ADDR
 
 # ---------------------------------------------------------------------------
 # Shared test tokens
 # ---------------------------------------------------------------------------
 
-WETH = Token(
-    chain_id=ChainId.ETHEREUM,
-    address="0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
-    symbol="WETH",
-    decimals=18,
-    name="Wrapped Ether",
-)
-USDC = Token(
-    chain_id=ChainId.ETHEREUM,
-    address="0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
-    symbol="USDC",
-    decimals=6,
-    name="USD Coin",
-)
 
-POOL_ADDR = "0x" + "ab" * 20
+POOL_ADDR: Address = Address("0x" + "ab" * 20)
 
 
 # ---------------------------------------------------------------------------
@@ -131,18 +118,21 @@ class TestPoolData:
             extra=extra,
         )
         edges = pool.to_pool_edges()
+        assert edges[0].extra["foo"] == "bar"
+        assert edges[0].extra["is_token0_in"] is True
+        assert edges[1].extra["foo"] == "bar"
+        assert edges[1].extra["is_token0_in"] is False
         for edge in edges:
-            assert edge.extra == extra
             assert edge.extra is not extra  # must be a copy
 
 
 # ---------------------------------------------------------------------------
-# BasePoolDataProvider.build_graph tests
+# build_graph tests — moved to module-level function
 # ---------------------------------------------------------------------------
 
 
-class ConcreteProvider(BasePoolDataProvider):
-    """Minimal concrete implementation for testing build_graph."""
+class ConcreteProvider:
+    """Minimal concrete implementation for testing."""
 
     @property
     def provider_name(self) -> str:
@@ -153,6 +143,10 @@ class ConcreteProvider(BasePoolDataProvider):
 
     async def get_top_pools(self, limit: int = 100) -> list[PoolData]:
         raise NotImplementedError
+
+    def build_graph(self, pools):
+        """Delegate to module-level build_graph."""
+        return build_graph(pools)
 
     async def get_pools_for_token(self, token_address: str, limit: int = 100) -> list[PoolData]:
         raise NotImplementedError
@@ -183,12 +177,6 @@ class TestBuildGraph:
     def test_build_graph_multiple_pools(self):
         provider = ConcreteProvider()
         POOL_ADDR2 = "0x" + "cd" * 20
-        DAI = Token(
-            chain_id=ChainId.ETHEREUM,
-            address="0x6B175474E89094C44Da98b954EedeAC495271d0F",
-            symbol="DAI",
-            decimals=18,
-        )
         pools = [
             PoolData(
                 pool_address=POOL_ADDR,
@@ -330,7 +318,7 @@ class TestGeckoTerminal:
             new=AsyncMock(side_effect=PoolDataError("Not found", status_code=404)),
         ):
             with pytest.raises(PoolDataError):
-                await client.get_pool("0x0000000000000000000000000000000000000000")
+                await client.get_pool(ZERO_ADDR)
 
     @pytest.mark.asyncio
     async def test_get_top_pools_returns_list(self):
@@ -381,8 +369,8 @@ class TestGeckoTerminal:
 
         # The endpoint path should contain both addresses comma-separated
         call_path = mock_get.call_args[0][0]
-        assert WETH.address.lower() in call_path
-        assert USDC.address.lower() in call_path
+        assert ("0x" + WETH.address.hex()) in call_path
+        assert ("0x" + USDC.address.hex()) in call_path
         assert "multi" in call_path
 
     @pytest.mark.asyncio
@@ -421,13 +409,13 @@ class TestGeckoTerminal:
         mock_get = AsyncMock(return_value=_MOCK_LIST_RESPONSE)
         with patch.object(client, "_get", new=mock_get):
             # Pass the same address twice (mixed case)
-            await client.get_pools_for_tokens([WETH.address, WETH.address.lower()], limit=5)
+            await client.get_pools_for_tokens([WETH.address, WETH.address], limit=5)
 
         # Only one unique address → one chunk → only one _get call per page
         assert mock_get.call_count == 1
         call_path = mock_get.call_args[0][0]
         # The comma-separated list should contain the address only once
-        assert call_path.count(WETH.address.lower()) == 1
+        assert call_path.count("0x" + WETH.address.hex()) == 1
 
     def test_parse_pool_missing_token_raises_pool_data_error(self):
         """_parse_pool should raise PoolDataError when token is missing from included."""
@@ -463,8 +451,7 @@ class TestGeckoTerminal:
             reserve0=1_000 * 10**18,
             reserve1=2_000_000 * 10**6,
         )
-        client = GeckoTerminal(chain_id=ChainId.ETHEREUM)
-        graph = client.build_graph([pool])
+        graph = build_graph([pool])
         assert len(graph.edges_from(WETH)) == 1
         assert len(graph.edges_from(USDC)) == 1
 
@@ -536,7 +523,7 @@ class TestUniswapV2Subgraph:
         client = UniswapV2Subgraph(chain_id=ChainId.ETHEREUM)
         with patch.object(client, "_query", new=AsyncMock(return_value={"pair": None})):
             with pytest.raises(PoolDataError, match="not found"):
-                await client.get_pool("0x0000000000000000000000000000000000000000")
+                await client.get_pool(ZERO_ADDR)
 
     @pytest.mark.asyncio
     async def test_get_top_pools(self):
@@ -630,7 +617,7 @@ class TestUniswapV3Subgraph:
         client = UniswapV3Subgraph(chain_id=ChainId.ETHEREUM)
         with patch.object(client, "_query", new=AsyncMock(return_value={"pool": None})):
             with pytest.raises(PoolDataError, match="not found"):
-                await client.get_pool("0x0000000000000000000000000000000000000000")
+                await client.get_pool(ZERO_ADDR)
 
     @pytest.mark.asyncio
     async def test_get_top_pools(self):

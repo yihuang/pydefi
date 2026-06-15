@@ -11,12 +11,13 @@ from typing import Any
 
 import aiohttp
 
-from pydefi.aggregator.base import AggregatorQuote, BaseAggregator
+from pydefi._math import apply_slippage
+from pydefi.aggregator.base import AggregatorQuote
 from pydefi.exceptions import AggregatorError
-from pydefi.types import SwapRoute, SwapStep, Token, TokenAmount
+from pydefi.types import SwapRoute, Token, TokenAmount
 
 
-class ParaSwap(BaseAggregator):
+class ParaSwap:
     """ParaSwap DEX aggregator API client.
 
     Args:
@@ -33,16 +34,15 @@ class ParaSwap(BaseAggregator):
         api_key: str | None = None,
         base_url: str | None = None,
     ) -> None:
-        super().__init__(chain_id, api_key)
+        self.chain_id = chain_id
+        self.api_key = api_key
         self._base_url = base_url or self._DEFAULT_BASE_URL
 
     @property
     def base_url(self) -> str:
         return self._base_url
 
-    @property
-    def protocol_name(self) -> str:
-        return "ParaSwap"
+    protocol_name: str = "ParaSwap"
 
     def _headers(self) -> dict[str, str]:
         headers: dict[str, str] = {"Accept": "application/json"}
@@ -90,9 +90,9 @@ class ParaSwap(BaseAggregator):
             Raw API response dict.
         """
         params: dict[str, Any] = {
-            "srcToken": amount_in.token.address,
+            "srcToken": amount_in.token.encoded_address,
             "srcDecimals": amount_in.token.decimals,
-            "destToken": token_out.address,
+            "destToken": token_out.encoded_address,
             "destDecimals": token_out.decimals,
             "amount": str(amount_in.amount),
             "network": self.chain_id,
@@ -121,17 +121,15 @@ class ParaSwap(BaseAggregator):
         price_route = data.get("priceRoute", {})
 
         dest_amount = int(price_route.get("destAmount", 0))
-        slippage_fraction = 10_000 - slippage_bps
-        min_amount_out_raw = dest_amount * slippage_fraction // 10_000
         gas_cost = int(price_route.get("gasCost", 0))
         price_impact_raw = price_route.get("percentChange", "0")
 
-        return AggregatorQuote(
+        return AggregatorQuote.from_quote(
             token_in=amount_in.token,
             token_out=token_out,
             amount_in=amount_in,
-            amount_out=TokenAmount(token=token_out, amount=dest_amount),
-            min_amount_out=TokenAmount(token=token_out, amount=min_amount_out_raw),
+            amount_out_raw=dest_amount,
+            slippage_bps=slippage_bps,
             gas_estimate=gas_cost,
             price_impact=Decimal(str(price_impact_raw)),
             protocol=self.protocol_name,
@@ -164,13 +162,12 @@ class ParaSwap(BaseAggregator):
         price_route = price_data.get("priceRoute", {})
         dest_amount = int(price_route.get("destAmount", 0))
 
-        slippage_fraction = 10_000 - slippage_bps
-        min_amount_out_raw = dest_amount * slippage_fraction // 10_000
+        min_amount_out_raw = apply_slippage(dest_amount, slippage_bps)
 
         body: dict[str, Any] = {
-            "srcToken": amount_in.token.address,
+            "srcToken": amount_in.token.encoded_address,
             "srcDecimals": amount_in.token.decimals,
-            "destToken": token_out.address,
+            "destToken": token_out.encoded_address,
             "destDecimals": token_out.decimals,
             "srcAmount": str(amount_in.amount),
             "destAmount": str(min_amount_out_raw),
@@ -181,12 +178,12 @@ class ParaSwap(BaseAggregator):
         }
         tx_data = await self._post(f"transactions/{self.chain_id}", body)
 
-        return AggregatorQuote(
+        return AggregatorQuote.from_quote(
             token_in=amount_in.token,
             token_out=token_out,
             amount_in=amount_in,
-            amount_out=TokenAmount(token=token_out, amount=dest_amount),
-            min_amount_out=TokenAmount(token=token_out, amount=min_amount_out_raw),
+            amount_out_raw=dest_amount,
+            slippage_bps=slippage_bps,
             gas_estimate=int(tx_data.get("gas", 0)),
             price_impact=Decimal(str(price_route.get("percentChange", "0"))),
             tx_data=tx_data,
@@ -200,29 +197,6 @@ class ParaSwap(BaseAggregator):
         slippage_bps: int = 50,
         **kwargs: Any,
     ) -> SwapRoute:
-        """Build a :class:`~pydefi.types.SwapRoute` from a ParaSwap quote.
-
-        Args:
-            amount_in: Exact input amount.
-            token_out: Desired output token.
-            slippage_bps: Maximum slippage in basis points.
-
-        Returns:
-            A :class:`~pydefi.types.SwapRoute`.
-        """
+        """Build a :class:`~pydefi.types.SwapRoute` from a ParaSwap quote."""
         quote = await self.get_quote(amount_in, token_out, slippage_bps, **kwargs)
-
-        step = SwapStep(
-            token_in=amount_in.token,
-            token_out=token_out,
-            pool_address="",
-            protocol=self.protocol_name,
-            fee=0,
-        )
-
-        return SwapRoute(
-            steps=[step],
-            amount_in=amount_in,
-            amount_out=quote.amount_out,
-            price_impact=quote.price_impact,
-        )
+        return quote.to_swap_route()

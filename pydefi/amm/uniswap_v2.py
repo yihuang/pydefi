@@ -13,39 +13,89 @@ from decimal import Decimal
 from eth_contract import Contract
 from web3 import AsyncWeb3
 
-from pydefi.amm.base import BaseAMM
+from pydefi.abi.amm import UNISWAP_V2_FACTORY, UNISWAP_V2_PAIR, UNISWAP_V2_ROUTER
 from pydefi.exceptions import InsufficientLiquidityError
-from pydefi.types import SwapRoute, SwapStep, Token, TokenAmount
+from pydefi.types import Address, SwapRoute, SwapStep, Token, TokenAmount
 
 # ---------------------------------------------------------------------------
-# ABI fragments (human-readable signatures)
+# Module-level pure math functions — importable without instantiating a client
 # ---------------------------------------------------------------------------
 
-_ROUTER_ABI = [
-    "function getAmountsOut(uint amountIn, address[] calldata path) external view returns (uint[] memory amounts)",
-    "function getAmountsIn(uint amountOut, address[] calldata path) external view returns (uint[] memory amounts)",
-    "function swapExactTokensForTokens(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline) external returns (uint[] memory amounts)",
-    "function swapTokensForExactTokens(uint amountOut, uint amountInMax, address[] calldata path, address to, uint deadline) external returns (uint[] memory amounts)",
-    "function swapExactETHForTokens(uint amountOutMin, address[] calldata path, address to, uint deadline) external payable returns (uint[] memory amounts)",
-    "function swapExactTokensForETH(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline) external returns (uint[] memory amounts)",
-    "function factory() external pure returns (address)",
-    "function WETH() external pure returns (address)",
-]
 
-_FACTORY_ABI = [
-    "function getPair(address tokenA, address tokenB) external view returns (address pair)",
-    "function allPairs(uint) external view returns (address pair)",
-    "function allPairsLength() external view returns (uint)",
-]
+def v2_get_amount_out(amount_in: int, reserve_in: int, reserve_out: int, fee_bps: int = 30) -> int:
+    """Calculate output amount using the constant-product formula.
 
-_PAIR_ABI = [
-    "function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast)",
-    "function token0() external view returns (address)",
-    "function token1() external view returns (address)",
-]
+    Args:
+        amount_in: Input amount (raw integer units).
+        reserve_in: Reserve of the input token in the pool.
+        reserve_out: Reserve of the output token in the pool.
+        fee_bps: Pool swap fee in basis points (default 30 = 0.3%).
+
+    Returns:
+        Output amount (raw integer units).
+
+    Raises:
+        InsufficientLiquidityError: If reserves are zero.
+    """
+    if reserve_in == 0 or reserve_out == 0:
+        raise InsufficientLiquidityError("Pool has no liquidity")
+    fee_factor = 10_000 - fee_bps
+    amount_in_with_fee = amount_in * fee_factor
+    numerator = amount_in_with_fee * reserve_out
+    denominator = reserve_in * 10_000 + amount_in_with_fee
+    return numerator // denominator
 
 
-class UniswapV2(BaseAMM):
+def v2_get_amount_in(amount_out: int, reserve_in: int, reserve_out: int, fee_bps: int = 30) -> int:
+    """Calculate required input amount to receive *amount_out*.
+
+    Args:
+        amount_out: Desired output amount.
+        reserve_in: Reserve of the input token.
+        reserve_out: Reserve of the output token.
+        fee_bps: Pool swap fee in basis points.
+
+    Returns:
+        Required input amount.
+
+    Raises:
+        InsufficientLiquidityError: If reserves are zero or insufficient.
+    """
+    if reserve_in == 0 or reserve_out == 0:
+        raise InsufficientLiquidityError("Pool has no liquidity")
+    if amount_out >= reserve_out:
+        raise InsufficientLiquidityError("Insufficient output reserve")
+    fee_factor = 10_000 - fee_bps
+    numerator = reserve_in * amount_out * 10_000
+    denominator = (reserve_out - amount_out) * fee_factor
+    return numerator // denominator + 1
+
+
+def v2_spot_price(reserve_in: int, reserve_out: int, decimals_in: int = 18, decimals_out: int = 18) -> Decimal:
+    """Return the spot price of token_out in terms of token_in.
+
+    Args:
+        reserve_in: Reserve of the input token.
+        reserve_out: Reserve of the output token.
+        decimals_in: Decimal places of the input token.
+        decimals_out: Decimal places of the output token.
+
+    Returns:
+        Price as a :class:`~decimal.Decimal`.
+    """
+    if reserve_in == 0:
+        return Decimal(0)
+    adj_in = Decimal(reserve_in) / Decimal(10**decimals_in)
+    adj_out = Decimal(reserve_out) / Decimal(10**decimals_out)
+    return adj_out / adj_in
+
+
+# ---------------------------------------------------------------------------
+# Client class
+# ---------------------------------------------------------------------------
+
+
+class UniswapV2:
     """Uniswap V2-compatible AMM integration.
 
     Works with any Uniswap V2 fork (SushiSwap, PancakeSwap, QuickSwap, …)
@@ -60,12 +110,12 @@ class UniswapV2(BaseAMM):
     def __init__(
         self,
         w3: AsyncWeb3,
-        router_address: str,
+        router_address: Address,
         protocol_name: str = "UniswapV2",
     ) -> None:
-        super().__init__(w3, router_address)
+        self.w3 = w3
+        self.router_address = router_address
         self._protocol_name = protocol_name
-        self._router = Contract.from_abi(_ROUTER_ABI, to=router_address)
 
     @property
     def protocol_name(self) -> str:
@@ -77,11 +127,11 @@ class UniswapV2(BaseAMM):
 
     def get_factory_contract(self, factory_address: str) -> Contract:
         """Return a :class:`~eth_contract.Contract` bound to a V2 factory."""
-        return Contract.from_abi(_FACTORY_ABI, to=factory_address)
+        return UNISWAP_V2_FACTORY(to=factory_address)
 
-    def get_pair_contract(self, pair_address: str) -> Contract:
+    def get_pair_contract(self, pair_address: Address) -> Contract:
         """Return a :class:`~eth_contract.Contract` bound to a V2 pair."""
-        return Contract.from_abi(_PAIR_ABI, to=pair_address)
+        return UNISWAP_V2_PAIR(to=pair_address)
 
     # ------------------------------------------------------------------
     # Price queries
@@ -108,7 +158,9 @@ class UniswapV2(BaseAMM):
 
         addresses = [t.address for t in path]
         try:
-            raw_amounts: list[int] = await self._router.fns.getAmountsOut(amount_in.amount, addresses).call(self.w3)
+            raw_amounts: list[int] = await UNISWAP_V2_ROUTER.fns.getAmountsOut(amount_in.amount, addresses).call(
+                self.w3, to=self.router_address
+            )
         except Exception as exc:
             raise InsufficientLiquidityError(f"getAmountsOut failed: {exc}") from exc
 
@@ -133,7 +185,9 @@ class UniswapV2(BaseAMM):
 
         addresses = [t.address for t in path]
         try:
-            raw_amounts: list[int] = await self._router.fns.getAmountsIn(amount_out.amount, addresses).call(self.w3)
+            raw_amounts: list[int] = await UNISWAP_V2_ROUTER.fns.getAmountsIn(amount_out.amount, addresses).call(
+                self.w3, to=self.router_address
+            )
         except Exception as exc:
             raise InsufficientLiquidityError(f"getAmountsIn failed: {exc}") from exc
 
@@ -178,73 +232,9 @@ class UniswapV2(BaseAMM):
         )
 
     # ------------------------------------------------------------------
-    # Constant-product math helpers (pure, no network calls)
+    # Constant-product math helpers — delegate to module-level pure functions
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def get_amount_out(amount_in: int, reserve_in: int, reserve_out: int, fee_bps: int = 30) -> int:
-        """Calculate output amount using the constant-product formula.
-
-        Args:
-            amount_in: Input amount (raw integer units).
-            reserve_in: Reserve of the input token in the pool.
-            reserve_out: Reserve of the output token in the pool.
-            fee_bps: Pool swap fee in basis points (default 30 = 0.3%).
-
-        Returns:
-            Output amount (raw integer units).
-
-        Raises:
-            InsufficientLiquidityError: If reserves are zero.
-        """
-        if reserve_in == 0 or reserve_out == 0:
-            raise InsufficientLiquidityError("Pool has no liquidity")
-        fee_factor = 10_000 - fee_bps
-        amount_in_with_fee = amount_in * fee_factor
-        numerator = amount_in_with_fee * reserve_out
-        denominator = reserve_in * 10_000 + amount_in_with_fee
-        return numerator // denominator
-
-    @staticmethod
-    def get_amount_in(amount_out: int, reserve_in: int, reserve_out: int, fee_bps: int = 30) -> int:
-        """Calculate required input amount to receive *amount_out*.
-
-        Args:
-            amount_out: Desired output amount.
-            reserve_in: Reserve of the input token.
-            reserve_out: Reserve of the output token.
-            fee_bps: Pool swap fee in basis points.
-
-        Returns:
-            Required input amount.
-
-        Raises:
-            InsufficientLiquidityError: If reserves are zero or insufficient.
-        """
-        if reserve_in == 0 or reserve_out == 0:
-            raise InsufficientLiquidityError("Pool has no liquidity")
-        if amount_out >= reserve_out:
-            raise InsufficientLiquidityError("Insufficient output reserve")
-        fee_factor = 10_000 - fee_bps
-        numerator = reserve_in * amount_out * 10_000
-        denominator = (reserve_out - amount_out) * fee_factor
-        return numerator // denominator + 1
-
-    @staticmethod
-    def spot_price(reserve_in: int, reserve_out: int, decimals_in: int = 18, decimals_out: int = 18) -> Decimal:
-        """Return the spot price of token_out in terms of token_in.
-
-        Args:
-            reserve_in: Reserve of the input token.
-            reserve_out: Reserve of the output token.
-            decimals_in: Decimal places of the input token.
-            decimals_out: Decimal places of the output token.
-
-        Returns:
-            Price as a :class:`~decimal.Decimal`.
-        """
-        if reserve_in == 0:
-            return Decimal(0)
-        adj_in = Decimal(reserve_in) / Decimal(10**decimals_in)
-        adj_out = Decimal(reserve_out) / Decimal(10**decimals_out)
-        return adj_out / adj_in
+    get_amount_out = staticmethod(v2_get_amount_out)
+    get_amount_in = staticmethod(v2_get_amount_in)
+    spot_price = staticmethod(v2_spot_price)

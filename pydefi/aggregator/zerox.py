@@ -11,9 +11,10 @@ from typing import Any
 
 import aiohttp
 
-from pydefi.aggregator.base import AggregatorQuote, BaseAggregator
+from pydefi._math import slippage_to_fraction
+from pydefi.aggregator.base import AggregatorQuote
 from pydefi.exceptions import AggregatorError
-from pydefi.types import SwapRoute, SwapStep, Token, TokenAmount
+from pydefi.types import Address, SwapRoute, Token, TokenAmount
 
 # Mapping from chain IDs to 0x API subdomain / base URLs
 _CHAIN_URLS: dict[int, str] = {
@@ -27,7 +28,7 @@ _CHAIN_URLS: dict[int, str] = {
 }
 
 
-class ZeroX(BaseAggregator):
+class ZeroX:
     """0x Protocol DEX aggregator API client.
 
     The 0x Swap API provides smart order routing across liquidity sources.
@@ -44,16 +45,15 @@ class ZeroX(BaseAggregator):
         api_key: str | None = None,
         base_url: str | None = None,
     ) -> None:
-        super().__init__(chain_id, api_key)
+        self.chain_id = chain_id
+        self.api_key = api_key
         self._base_url = base_url or _CHAIN_URLS.get(chain_id, "https://api.0x.org")
 
     @property
     def base_url(self) -> str:
         return self._base_url
 
-    @property
-    def protocol_name(self) -> str:
-        return "0x"
+    protocol_name: str = "0x"
 
     def _headers(self) -> dict[str, str]:
         headers: dict[str, str] = {"Content-Type": "application/json"}
@@ -116,14 +116,12 @@ class ZeroX(BaseAggregator):
             "sellToken": amount_in.token.address,
             "buyToken": token_out.address,
             "sellAmount": str(amount_in.amount),
-            "slippagePercentage": self._slippage_to_fraction(slippage_bps),
+            "slippagePercentage": slippage_to_fraction(slippage_bps),
             **kwargs,
         }
         data = await self._get("swap/v1/quote", params)
 
         buy_amount = int(data["buyAmount"])
-        slippage_factor = 10_000 - slippage_bps
-        min_amount_out_raw = buy_amount * slippage_factor // 10_000
         gas_estimate = int(data.get("estimatedGas", data.get("gas", 0)))
         price_impact_raw = float(data.get("estimatedPriceImpact", "0"))
 
@@ -135,12 +133,12 @@ class ZeroX(BaseAggregator):
             "gasPrice": data.get("gasPrice", ""),
         }
 
-        return AggregatorQuote(
+        return AggregatorQuote.from_quote(
             token_in=amount_in.token,
             token_out=token_out,
             amount_in=amount_in,
-            amount_out=TokenAmount(token=token_out, amount=buy_amount),
-            min_amount_out=TokenAmount(token=token_out, amount=min_amount_out_raw),
+            amount_out_raw=buy_amount,
+            slippage_bps=slippage_bps,
             gas_estimate=gas_estimate,
             price_impact=Decimal(str(price_impact_raw)),
             tx_data=tx_data,
@@ -155,29 +153,6 @@ class ZeroX(BaseAggregator):
         slippage_bps: int = 50,
         **kwargs: Any,
     ) -> SwapRoute:
-        """Build a :class:`~pydefi.types.SwapRoute` from a 0x quote.
-
-        Args:
-            amount_in: Exact input amount.
-            token_out: Desired output token.
-            slippage_bps: Maximum slippage in basis points.
-
-        Returns:
-            A :class:`~pydefi.types.SwapRoute`.
-        """
+        """Build a :class:`~pydefi.types.SwapRoute` from a 0x quote."""
         quote = await self.get_quote(amount_in, token_out, slippage_bps, **kwargs)
-
-        step = SwapStep(
-            token_in=amount_in.token,
-            token_out=token_out,
-            pool_address=quote.tx_data.get("to", ""),
-            protocol=self.protocol_name,
-            fee=0,
-        )
-
-        return SwapRoute(
-            steps=[step],
-            amount_in=amount_in,
-            amount_out=quote.amount_out,
-            price_impact=quote.price_impact,
-        )
+        return quote.to_swap_route(pool_address=Address(quote.tx_data["to"]) if quote.tx_data.get("to") else None)

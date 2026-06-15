@@ -20,26 +20,17 @@ from __future__ import annotations
 from typing import Any
 
 import aiohttp
-from eth_contract import Contract
 from web3 import AsyncWeb3
 
-from pydefi.bridge.base import BaseBridge
+from pydefi._math import apply_slippage
+from pydefi.abi.bridge import ACROSS_SPOKE_POOL
 from pydefi.exceptions import BridgeError
-from pydefi.types import BridgeQuote, Token, TokenAmount
-
-# ---------------------------------------------------------------------------
-# ABI fragments
-# ---------------------------------------------------------------------------
-
-_SPOKE_POOL_ABI = [
-    "function depositV3(address depositor, address recipient, address inputToken, address outputToken, uint256 inputAmount, uint256 outputAmount, uint256 destinationChainId, address exclusiveRelayer, uint32 quoteTimestamp, uint32 fillDeadline, uint32 exclusivityDeadline, bytes calldata message) external payable",
-    "function getCurrentTime() external view returns (uint256)",
-]
+from pydefi.types import ZERO_ADDRESS, Address, BridgeQuote, Token, TokenAmount
 
 _ACROSS_API_BASE = "https://app.across.to/api"
 
 
-class Across(BaseBridge):
+class Across:
     """Across Protocol cross-chain bridge integration.
 
     Args:
@@ -59,15 +50,13 @@ class Across(BaseBridge):
         spoke_pool_address: str,
         api_base_url: str = _ACROSS_API_BASE,
     ) -> None:
-        super().__init__(src_chain_id, dst_chain_id)
+        self.src_chain_id = src_chain_id
+        self.dst_chain_id = dst_chain_id
         self.w3 = w3
         self.spoke_pool_address = spoke_pool_address
         self._api_base = api_base_url.rstrip("/")
-        self._spoke_pool = Contract.from_abi(_SPOKE_POOL_ABI, to=spoke_pool_address)
 
-    @property
-    def protocol_name(self) -> str:
-        return "Across"
+    protocol_name: str = "Across"
 
     async def get_suggested_fees(
         self,
@@ -89,7 +78,7 @@ class Across(BaseBridge):
             :class:`~pydefi.exceptions.BridgeError`: On API error.
         """
         params: dict[str, Any] = {
-            "token": token.address,
+            "token": token.encoded_address,
             "inputChainId": self.src_chain_id,
             "outputChainId": self.dst_chain_id,
             "amount": str(amount),
@@ -144,9 +133,9 @@ class Across(BaseBridge):
         token_in: Token,
         token_out: Token,
         amount_in: TokenAmount,
-        recipient: str,
+        recipient: Address,
         slippage_bps: int = 50,
-        depositor: str | None = None,
+        depositor: Address | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
         """Build an Across ``depositV3`` transaction.
@@ -168,11 +157,11 @@ class Across(BaseBridge):
 
         total_relay_fee_pct = int(fees_data.get("totalRelayFee", {}).get("pct", "0"))
         fee_raw = amount_in.amount * total_relay_fee_pct // (10**18)
-        output_amount = self._apply_slippage(max(0, amount_in.amount - fee_raw), slippage_bps)
+        output_amount = apply_slippage(max(0, amount_in.amount - fee_raw), slippage_bps)
         quote_timestamp = int(fees_data.get("timestamp", 0))
         fill_deadline = quote_timestamp + 18_000  # 5 hours
 
-        call_data = self._spoke_pool.fns.depositV3(
+        call_data = ACROSS_SPOKE_POOL.fns.depositV3(
             depositor,
             recipient,
             token_in.address,
@@ -180,7 +169,7 @@ class Across(BaseBridge):
             amount_in.amount,
             output_amount,
             self.dst_chain_id,
-            "0x" + "00" * 20,  # exclusiveRelayer (none)
+            ZERO_ADDRESS,  # exclusiveRelayer (none)
             quote_timestamp,
             fill_deadline,
             0,  # exclusivityDeadline
@@ -191,7 +180,7 @@ class Across(BaseBridge):
 
         return {
             "to": self.spoke_pool_address,
-            "data": "0x" + call_data.hex() if isinstance(call_data, bytes) else call_data,
+            "data": "0x" + call_data.hex(),
             "value": value,
             "gas": str(300_000),
         }

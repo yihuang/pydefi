@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
+import "../vm/DEXCallbackRouter.sol";
+import "../vm/InterpreterRunner.sol";
+import "../vm/TransientReentrancyGuard.sol";
+
 /**
  * @title OFTComposer
  * @notice LayerZero OFT compose receiver that executes a DeFiVM program after
@@ -12,9 +16,9 @@ pragma solidity ^0.8.24;
  *    ``composeMsg`` in their OFT ``send`` call.
  * 2. After the OFT tokens arrive, the LayerZero EndpointV2 calls ``lzCompose``.
  * 3. ``lzCompose`` validates the caller (must be the authorised endpoint), then
- *    transfers the OFT tokens from the composer to DeFiVM, prepends two PUSH
- *    instructions for the OFT parameters and forwards the combined program to
- *    the DeFiVM contract for execution.
+ *    transfers the OFT tokens from the composer to DeFiVM and forwards the
+ *    program to DeFiVM, passing the OFT parameters via the transient-storage
+ *    parameter channel.
  *
  * Security notes
  * --------------
@@ -35,63 +39,38 @@ pragma solidity ^0.8.24;
  *
  * The custom payload (bytes 44+) is raw DeFiVM bytecode.
  *
- * Before executing, OFTComposer prepends two PUSH instructions so the DeFiVM
- * program starts with the OFT transfer parameters already on the stack::
+ * Execution model
+ * ---------------
+ * The composer DELEGATECALLs the EVM interpreter directly with the program
+ * as calldata, so the program runs in this composer's context.  OFT params
+ * are staged in this composer's transient slots before the DELEGATECALL::
  *
- *   PUSH32 <amountLD>   ; 0x7F opcode + 32B → stack[0] (bottom)
- *   PUSH20 <_from>      ; 0x73 opcode + 20B → stack[1] (top)
+ *   slot 0 = amountLD  (uint256 amount delivered by the OFT, in local decimals)
+ *   slot 1 = _from     (address of the OFT app contract, right-aligned in 32B)
  *
- * A typical program begins by saving these into registers::
+ * A Python program reads them via ``prog.builder.tload(IRLiteral(0))`` /
+ * ``tload(IRLiteral(1))``.  Build the LZ compose message as::
  *
- *   STORE_REG 0   ; R0 = _from    (OFT contract that delivered the tokens)
- *   STORE_REG 1   ; R1 = amountLD (tokens delivered, in local decimals)
- *   ; ... use R0 and R1 anywhere later with LOAD_REG ...
- *
- * Python helper (``pydefi.vm.program``)::
- *
- *   import struct
- *   from pydefi.vm.program import store_reg, ...
- *
- *   program = store_reg(0) + store_reg(1) + ...
  *   message = (
  *       struct.pack('>Q', nonce)        # 8 bytes  — uint64 nonce
  *       + struct.pack('>I', src_eid)    # 4 bytes  — uint32 srcEid
  *       + amount_ld.to_bytes(32, 'big') # 32 bytes — uint256 amountLD
- *       + program                       # DeFiVM bytecode
+ *       + prog.build(...)               # DeFiVM bytecode
  *   )
+ *
+ * Reentrancy
+ * ----------
+ * ``lzCompose`` is guarded by ``TransientReentrancyGuard`` — the limitation
+ * documented there still applies: the program runs in this composer's
+ * context and can ``TSTORE`` the lock slot, so the guard is defense-in-depth
+ * against external re-entry, not a sandbox against the program itself.
  */
-
-// ---------------------------------------------------------------------------
-// IOFT
-// ---------------------------------------------------------------------------
-
-/// @notice Minimal interface for querying the underlying ERC-20 token of an OFT.
-///
-/// For a native OFT (the OFT contract *is* the ERC-20), ``token()`` returns
-/// ``address(this)``.  For an OFT Adapter that wraps a pre-existing ERC-20,
-/// ``token()`` returns the address of that underlying ERC-20 contract.
-interface IOFT {
-    function token() external view returns (address);
-}
-
-// ---------------------------------------------------------------------------
-// IDeFiVM
-// ---------------------------------------------------------------------------
-
-/// @notice Minimal interface for calling DeFiVM.execute.
-interface IDeFiVM {
-    function execute(bytes calldata program) external payable;
-}
 
 // ---------------------------------------------------------------------------
 // OFTComposer
 // ---------------------------------------------------------------------------
 
-contract OFTComposer {
-    // DeFiVM PUSH opcodes — raw EVM bytecode opcodes used to build the prologue.
-    uint8 private constant OP_PUSH_U256 = 0x7F; // EVM PUSH32: opcode + 32-byte immediate
-    uint8 private constant OP_PUSH_ADDR = 0x73; // EVM PUSH20: opcode + 20-byte immediate
-
+contract OFTComposer is DEXCallbackRouter, TransientReentrancyGuard, InterpreterRunner {
     // -----------------------------------------------------------------------
     // Errors
     // -----------------------------------------------------------------------
@@ -116,9 +95,6 @@ contract OFTComposer {
     /// @notice The LayerZero v2 endpoint address authorised to call ``lzCompose``.
     address public immutable endpoint;
 
-    /// @notice The DeFiVM contract used to execute compose programs.
-    IDeFiVM public immutable vm;
-
     /// @notice Owner address — may rescue stuck funds and transfer ownership.
     address public owner;
 
@@ -127,13 +103,17 @@ contract OFTComposer {
     // -----------------------------------------------------------------------
 
     /**
-     * @param _endpoint  The LayerZero v2 EndpointV2 contract address.
-     * @param _vm        The DeFiVM contract address.
-     * @param _owner     Address that may call rescue functions and transfer ownership.
+     * @param _endpoint     The LayerZero v2 EndpointV2 contract address.
+     * @param _interpreter  EVM interpreter to DELEGATECALL (see
+     *                      :class:`InterpreterRunner`); pass ``address(0)``
+     *                      for the well-known pre-deployed Analog-Labs
+     *                      interpreter.
+     * @param _owner        Address that may call rescue functions and transfer ownership.
      */
-    constructor(address _endpoint, address _vm, address _owner) {
+    constructor(address _endpoint, address _interpreter, address _owner)
+        InterpreterRunner(_interpreter)
+    {
         endpoint = _endpoint;
-        vm = IDeFiVM(_vm);
         owner = _owner;
     }
 
@@ -210,7 +190,7 @@ contract OFTComposer {
         bytes calldata _message,
         address /* _executor */,
         bytes calldata /* _extraData */
-    ) external payable {
+    ) external payable nonReentrant {
         // Only the authorised endpoint may call this function.
         if (msg.sender != endpoint) revert UnauthorizedEndpoint(msg.sender);
 
@@ -223,40 +203,20 @@ contract OFTComposer {
         //   bytes 12–43 : uint256 amountLD
         //   bytes 44+   : DeFiVM program bytecode
         uint256 amountLD = uint256(bytes32(_message[12:44]));
+        bytes calldata program = _message[44:];
 
-        // Build a prologue that pushes the OFT parameters onto the DeFiVM stack
-        // before the user program runs:
-        //
-        //   PUSH32 <amountLD>  (0x7F opcode + 32B value = 33B)
-        //   PUSH20 <_from>     (0x73 opcode + 20B value = 21B)
-        //
-        // After the prologue, the initial stack layout is:
-        //   stack[0] = amountLD  (pushed first, bottom)
-        //   stack[1] = _from     (pushed second, top)
-        //
-        // The program typically starts with:
-        //   STORE_REG 0  ; R0 = _from
-        //   STORE_REG 1  ; R1 = amountLD
-        bytes memory program = bytes.concat(
-            abi.encodePacked(OP_PUSH_U256, bytes32(amountLD), OP_PUSH_ADDR, bytes20(_from)),
-            _message[44:]
-        );
-
-        // Transfer the received OFT tokens from this composer to DeFiVM so the
-        // program can use them (e.g. approve a DEX and swap).
-        // _from is the OFT *app* contract; call token() to get the underlying
-        // ERC-20 address (for a native OFT token() returns address(this),
-        // for an OFT Adapter it returns the wrapped ERC-20).
-        if (amountLD > 0) {
-            address token = IOFT(_from).token();
-            (bool ok, bytes memory ret) = token.call(
-                abi.encodeWithSignature("transfer(address,uint256)", address(vm), amountLD)
-            );
-            require(ok && (ret.length == 0 || abi.decode(ret, (bool))), "OFTComposer: token transfer failed");
+        // Tokens delivered by the OFT are already on this composer; the
+        // program (running in composer context via DELEGATECALL) operates
+        // on the held balance directly.
+        assembly {
+            tstore(0, amountLD)
+            tstore(1, _from)
         }
-
-        // Execute via DeFiVM, forwarding any ETH received with this compose call.
-        vm.execute{value: msg.value}(program);
+        _runProgram(program);
+        assembly {
+            tstore(0, 0)
+            tstore(1, 0)
+        }
 
         emit Composed(_from, _guid, amountLD);
     }

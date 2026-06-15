@@ -5,12 +5,13 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from pydefi._math import apply_slippage
+from pydefi._utils import decode_address
 from pydefi.aggregator.base import AggregatorQuote
 from pydefi.aggregator.jupiter import _JUPITER_API_BASE, _JUPITER_SWAP_V2_BASE, Jupiter, JupiterSwapV2
-from pydefi.amm.base import BaseSolanaAMM
 from pydefi.amm.raydium import _RAYDIUM_API_BASE, Raydium
 from pydefi.exceptions import AggregatorError, InsufficientLiquidityError
-from pydefi.types import ChainId, SwapRoute, Token, TokenAmount
+from pydefi.types import Address, ChainId, SwapRoute, Token, TokenAmount
 
 # ---------------------------------------------------------------------------
 # Solana token fixtures
@@ -20,9 +21,9 @@ SOL_MINT = "So11111111111111111111111111111111111111112"
 USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 USDT_MINT = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
 
-SOL = Token(chain_id=ChainId.SOLANA, address=SOL_MINT, symbol="SOL", decimals=9)
-USDC = Token(chain_id=ChainId.SOLANA, address=USDC_MINT, symbol="USDC", decimals=6)
-USDT = Token(chain_id=ChainId.SOLANA, address=USDT_MINT, symbol="USDT", decimals=6)
+SOL = Token(chain_id=ChainId.SOLANA, address=decode_address(SOL_MINT, ChainId.SOLANA), symbol="SOL", decimals=9)
+USDC = Token(chain_id=ChainId.SOLANA, address=decode_address(USDC_MINT, ChainId.SOLANA), symbol="USDC", decimals=6)
+USDT = Token(chain_id=ChainId.SOLANA, address=decode_address(USDT_MINT, ChainId.SOLANA), symbol="USDT", decimals=6)
 
 
 # ---------------------------------------------------------------------------
@@ -44,28 +45,21 @@ class TestChainIdSolana:
 
 
 # ---------------------------------------------------------------------------
-# BaseSolanaAMM abstract interface
+# BaseSolanaAMM was removed — concrete AMMs are duck-typed
 # ---------------------------------------------------------------------------
 
 
-class TestBaseSolanaAMM:
-    def test_cannot_instantiate_abstract(self):
-        with pytest.raises(TypeError):
-            BaseSolanaAMM()  # type: ignore[abstract]
-
+class TestSlippage:
     def test_apply_slippage(self):
-        # Test via a concrete subclass
-        raydium = Raydium()
-        assert raydium._apply_slippage(1_000_000, 50) == 995_000
-        assert raydium._apply_slippage(1_000_000, 0) == 1_000_000
-        assert raydium._apply_slippage(1_000_000, 10_000) == 0
+        assert apply_slippage(1_000_000, 50) == 995_000
+        assert apply_slippage(1_000_000, 0) == 1_000_000
+        assert apply_slippage(1_000_000, 10_000) == 0
 
     def test_apply_slippage_invalid(self):
-        raydium = Raydium()
         with pytest.raises(ValueError):
-            raydium._apply_slippage(1_000_000, -1)
+            apply_slippage(1_000_000, -1)
         with pytest.raises(ValueError):
-            raydium._apply_slippage(1_000_000, 10_001)
+            apply_slippage(1_000_000, 10_001)
 
 
 # ---------------------------------------------------------------------------
@@ -86,9 +80,9 @@ class TestRaydium:
         raydium = Raydium(api_url="https://my-raydium.example.com")
         assert raydium.api_url == "https://my-raydium.example.com"
 
-    def test_inherits_base_solana_amm(self):
+    def test_protocol_name_is_raydium(self):
         raydium = Raydium()
-        assert isinstance(raydium, BaseSolanaAMM)
+        assert raydium.protocol_name == "Raydium"
 
     @pytest.mark.asyncio
     async def test_get_quote_success(self):
@@ -148,7 +142,9 @@ class TestRaydium:
         assert route.token_out == USDC
         assert len(route.steps) == 1
         assert route.steps[0].protocol == "Raydium"
-        assert route.steps[0].pool_address == "58oQChx4yWmvKnami8n1LnxS7vQp5YCGLGjrQCZFdcxm"
+        assert route.steps[0].pool_address == decode_address(
+            "58oQChx4yWmvKnami8n1LnxS7vQp5YCGLGjrQCZFdcxm", ChainId.SOLANA
+        )
         assert route.amount_out.amount == 150_000_000
         assert route.price_impact == Decimal("0.0005")  # 0.05% / 100
 
@@ -171,7 +167,7 @@ class TestRaydium:
         with patch.object(raydium, "_get", new=AsyncMock(return_value=mock_response)):
             route = await raydium.build_swap_route(amount_in, USDC)
 
-        assert route.steps[0].pool_address == ""
+        assert route.steps[0].pool_address is None
 
     @pytest.mark.asyncio
     async def test_get_passes_slippage_bps(self):
@@ -313,10 +309,9 @@ class TestJupiter:
         headers = jupiter._headers()
         assert headers["Authorization"] == "Bearer test-key-123"
 
-    def test_inherits_base_aggregator(self):
-        from pydefi.aggregator.base import BaseAggregator
-
-        assert isinstance(Jupiter(), BaseAggregator)
+    def test_jupiter_is_callable(self):
+        j = Jupiter()
+        assert j.chain_id == ChainId.SOLANA
 
     @pytest.mark.asyncio
     async def test_get_quote_success(self):
@@ -383,7 +378,7 @@ class TestJupiter:
         assert route.token_out == USDC
         assert len(route.steps) == 1
         assert route.steps[0].protocol == "Jupiter"
-        assert route.steps[0].pool_address == ""
+        assert route.steps[0].pool_address is None
         assert route.amount_out.amount == 300_000_000
 
     @pytest.mark.asyncio
@@ -511,7 +506,7 @@ class TestStargateSolana:
             w3=None,
             src_chain_id=ChainId.ETHEREUM,
             dst_chain_id=ChainId.SOLANA,
-            router_address="0x8731d54E9D02c286767d56ac03e8037C07e01e98",
+            router_address=Address("0x8731d54E9D02c286767d56ac03e8037C07e01e98"),
         )
         assert sg._lz_chain_id(ChainId.SOLANA) == 30168
 
@@ -544,10 +539,9 @@ class TestJupiterSwapV2:
         headers = JupiterSwapV2(api_key="my-api-key")._headers()
         assert headers["x-api-key"] == "my-api-key"
 
-    def test_inherits_base_aggregator(self):
-        from pydefi.aggregator.base import BaseAggregator
-
-        assert isinstance(JupiterSwapV2(), BaseAggregator)
+    def test_jupiter_swap_v2_is_callable(self):
+        j = JupiterSwapV2()
+        assert j.chain_id == ChainId.SOLANA
 
     @pytest.mark.asyncio
     async def test_get_order_without_taker(self):

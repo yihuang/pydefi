@@ -6,8 +6,34 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import ROUND_DOWN, Decimal
-from enum import IntEnum
-from typing import ClassVar
+from enum import Enum, IntEnum
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pydefi.pathfinder.dag import RouteDAG  # noqa: F401
+
+from hexbytes import HexBytes
+
+# ---------------------------------------------------------------------------
+# Type aliases
+# ---------------------------------------------------------------------------
+
+#: Address as raw bytes (canonical intermediate representation), 20 bytes for EVM, 32 bytes for Solana.
+#: Use ``decode_address(addr_str, chain_id)`` to convert from a human-readable string at the periphery.
+Address = HexBytes
+ZERO_ADDRESS = Address(b"\x00" * 20)
+NATIVE_SENTINEL = Address(b"\xee" * 20)  # "0xEeee…", used by some protocols to represent native token
+
+NATIVE_ADDRESSES: frozenset[Address] = frozenset(
+    {
+        ZERO_ADDRESS,
+        NATIVE_SENTINEL,
+    }
+)
+#: 32-byte hash or log topic as raw bytes (canonical intermediate representation).
+#: Use ``HexBytes(hash_str)`` to convert a 0x-prefixed hex string to Hash.
+Hash = HexBytes
+ZERO_HASH = Hash(b"\x00" * 32)
 
 
 class ChainId(IntEnum):
@@ -21,15 +47,21 @@ class ChainId(IntEnum):
     WORLDCHAIN = 480
     BASE = 8453
     ARBITRUM = 42161
+    GNOSIS = 100
     AVALANCHE = 43114
     LINEA = 59144
     HYPERCORE = 1337  # Hyperliquid L1 (HyperCore); CCTP routes through HyperEVM (domain 19)
     HYPEREVM = 999
+    CELO = 42220
+    MANTRA = 5888
+    KITE = 2366
+    KITE_TESTNET = 2368
     BLAST = 81457
     SCROLL = 534352
     ZKSYNC = 324
     ZORA = 7777777
     SEPOLIA = 11155111
+    BASE_SEPOLIA = 84532
     # Solana – uses the Wormhole / cross-chain convention for its "chain ID"
     SOLANA = 1399811149
 
@@ -40,29 +72,37 @@ class Token:
 
     Attributes:
         chain_id: The chain this token lives on.
-        address: Checksum address of the ERC-20 contract.  Use the sentinel
-            value ``"0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"`` for the
-            native gas token (ETH, MATIC, BNB …).
+        address: Token contract address as raw bytes (:class:`~hexbytes.HexBytes`,
+            i.e. ``Address``).  For EVM chains this is 20 bytes; for Solana it is
+            32 bytes (public key).  Use
+            :func:`~pydefi._utils.decode_address` to convert a human-readable
+            string to ``Address`` at the periphery before constructing a
+            :class:`Token`.  Use
+            :func:`~pydefi._utils.encode_address` to format for external APIs.
         symbol: Human-readable ticker symbol (e.g. ``"USDC"``).
         decimals: Token precision (default 18).
         name: Optional long-form name.
     """
 
     chain_id: int
-    address: str
+    address: Address
     symbol: str
     decimals: int = 18
     name: str | None = None
 
-    # Sentinel for native currency (class variable, not an instance field)
-    NATIVE_ADDRESS: ClassVar[str] = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"
-
     def is_native(self) -> bool:
         """Return ``True`` if this token represents the native gas currency."""
-        return self.address.lower() == self.NATIVE_ADDRESS.lower()
+        return self.address in NATIVE_ADDRESSES
 
     def __str__(self) -> str:
         return f"{self.symbol}({self.chain_id})"
+
+    @property
+    def encoded_address(self) -> str:
+        """Return the chain-specific string representation of the token's address."""
+        from pydefi._utils import encode_address  # lazy import to avoid circular dependency
+
+        return encode_address(self.address, self.chain_id)
 
 
 @dataclass
@@ -104,16 +144,24 @@ class SwapStep:
     Attributes:
         token_in: Input token for this hop.
         token_out: Output token for this hop.
-        pool_address: Address of the liquidity pool used.
+        pool_address: Address of the liquidity pool used, or ``None`` when the
+            pool identity is unavailable (e.g. aggregator routes that do not
+            expose individual pool addresses).
         protocol: Human-readable protocol name (e.g. ``"UniswapV2"``).
-        fee: Fee tier in hundredths of a basis-point (e.g. ``3000`` = 0.3%).
+        fee: Swap fee in basis points (base 10000, e.g. ``30`` = 0.3%).
+        tick_spacing: V4 only — tick spacing for the pool key (e.g. ``60`` for
+            the 0.3 % fee tier).  ``0`` for V2/V3 pools.
+        hooks: V4 only — address of the hooks contract, or the zero address if
+            the pool has no hooks.  Ignored for V2/V3 pools.
     """
 
     token_in: Token
     token_out: Token
-    pool_address: str
+    pool_address: Address | None
     protocol: str
-    fee: int = 3000
+    fee: int = 30
+    tick_spacing: int = 0
+    hooks: Address = ZERO_ADDRESS
 
 
 @dataclass
@@ -133,6 +181,7 @@ class SwapRoute:
     amount_in: TokenAmount
     amount_out: TokenAmount
     price_impact: Decimal = Decimal(0)
+    dag: RouteDAG | None = None
 
     def __post_init__(self) -> None:
         if not self.steps:
@@ -151,20 +200,28 @@ class SwapRoute:
         return f"SwapRoute({path}, in={self.amount_in.human_amount}, out={self.amount_out.human_amount})"
 
 
-@dataclass
-class SwapTransaction:
-    """An encoded transaction ready to submit to the Uniswap Universal Router.
+class SwapProtocol(str, Enum):
+    """Supported DEX protocols for :class:`SwapHop`.
 
-    Attributes:
-        to: Target contract address (the Universal Router).
-        data: ABI-encoded calldata for the ``execute`` call.
-        value: Amount of native ETH (in wei) to attach to the transaction.
-            Typically non-zero only when wrapping ETH as part of the swap.
+    Both values use **direct pool/pair calls** — no router contract is involved.
     """
 
-    to: str
-    data: bytes
-    value: int = 0
+    UNISWAP_V2 = "uniswap_v2"
+    """Uniswap V2-compatible pair: pre-transfer tokenIn, then call ``pair.swap()``.
+
+    On-chain amountOut is computed from ``pair.getReserves()`` using the
+    constant-product formula, so no off-chain quote is required.
+    """
+
+    UNISWAP_V3 = "uniswap_v3"
+    """Uniswap V3-compatible pool: call ``pool.swap()`` directly.
+
+    The pool fires a flash-swap callback (``uniswapV3SwapCallback`` or a
+    compatible variant) which ``DeFiVM.fallback()`` handles automatically.
+    """
+
+    UNISWAP_V4 = "uniswap_v4"
+    """Uniswap V4 pool, traded via the singleton PoolManager."""
 
 
 @dataclass
@@ -176,7 +233,15 @@ class BridgeQuote:
         token_out: Destination token (on the destination chain).
         amount_in: Amount being sent.
         amount_out: Expected amount received after fees.
-        bridge_fee: Fee charged by the bridge (in *amount_in* token units).
+        bridge_fee: Fee charged by the bridge.  Most bridges deduct the fee
+            from ``amount_out`` and report it in ``token_in`` units, so
+            ``amount_in == amount_out + bridge_fee``.  Some bridges (notably
+            CCIP) charge the fee separately in a third token such as native
+            gas or LINK; in that case ``bridge_fee.token`` is neither
+            ``token_in`` nor ``token_out`` and ``amount_out`` is the gross
+            bridged amount.  Cross-bridge comparisons should go through
+            :func:`pydefi.bridge.rank_bridge_quotes`, which normalises both
+            shapes.
         estimated_time_seconds: Estimated bridge completion time.
         protocol: Bridge protocol name.
     """

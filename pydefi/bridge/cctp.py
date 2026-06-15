@@ -60,16 +60,18 @@ Docs: https://developers.circle.com/cctp/concepts/cctp-on-hypercore
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any
 
 import aiohttp
-from eth_contract import Contract
 from hexbytes import HexBytes
 from web3 import AsyncWeb3, Web3
 
-from pydefi.bridge.base import BaseBridge
+from pydefi._utils import address_to_bytes32
+from pydefi.abi.bridge import CCTP_TOKEN_MESSENGER_V2
 from pydefi.exceptions import BridgeError
-from pydefi.types import BridgeQuote, ChainId, Token, TokenAmount
+from pydefi.types import Address, BridgeQuote, ChainId, Token, TokenAmount
 
 # ---------------------------------------------------------------------------
 # Fast-finality threshold constant (CCTP v2)
@@ -99,81 +101,60 @@ HYPERCORE_DEX_SPOT: int = 0xFFFFFFFF  # uint32 max — spot balance on HyperCore
 _IRIS_API_BASE = "https://iris-api.circle.com"
 
 # ---------------------------------------------------------------------------
-# ABI fragments — TokenMessengerV2
-# ---------------------------------------------------------------------------
-
-_TOKEN_MESSENGER_V2_ABI = [
-    # depositForBurn — standard transfer (no compose hook)
-    "function depositForBurn(uint256 amount, uint32 destinationDomain, bytes32 mintRecipient, address burnToken, bytes32 destinationCaller, uint256 maxFee, uint32 minFinalityThreshold) external",
-    # depositForBurnWithHook — compose transfer; DeFiVM program passed as hookData
-    "function depositForBurnWithHook(uint256 amount, uint32 destinationDomain, bytes32 mintRecipient, address burnToken, bytes32 destinationCaller, uint256 maxFee, uint32 minFinalityThreshold, bytes calldata hookData) external",
-]
-
-# ---------------------------------------------------------------------------
 # Well-known CCTP v2 contract addresses
 # ---------------------------------------------------------------------------
+# Loaded from cctp.json.
 
-# Circle CCTP domain IDs (shared between v1 and v2, unchanged).
-# https://developers.circle.com/stablecoins/supported-domains
-_CCTP_DOMAIN: dict[int, int] = {
+_config_path = Path(__file__).resolve().parent.parent / "config" / "cctp.json"
+with open(_config_path) as _f:
+    _CCTP_CONFIG: dict[int, dict] = {int(k): v for k, v in json.load(_f).items()}
+
+# Hardcoded: chain ID → CCTP domain (stable mapping).
+# Source: https://developers.circle.com/cctp/concepts/supported-chains-and-domains
+_CHAINID_TO_DOMAIN: dict[int, int] = {
     1: 0,  # Ethereum
-    43114: 1,  # Avalanche
+    43114: 1,  # Avalanche C-Chain
     10: 2,  # OP Mainnet
-    42161: 3,  # Arbitrum
+    42161: 3,  # Arbitrum One
     8453: 6,  # Base
     137: 7,  # Polygon PoS
     130: 10,  # Unichain
     59144: 11,  # Linea
-    999: 19,  # HyperEVM (Hyperliquid)
-    # HyperCore is Hyperliquid's L1; CCTP physically mints on HyperEVM (domain 19)
-    # and Hyperliquid routes funds to HyperCore automatically.
-    1337: 19,  # HyperCore (Hyperliquid L1) — routes via HyperEVM
+    5115: 12,  # Codex
+    146: 13,  # Sonic
+    480: 14,  # World Chain
+    1329: 16,  # Sei
+    50: 18,  # XDC Network
+    999: 19,  # HyperEVM
+    998: 19,  # HyperEVM (older chain ID; alias)
+    57073: 21,  # Ink
+    98865: 22,  # Plume
+    3343: 28,  # EDGE
+    2525: 29,  # Injective
+    2818: 30,  # Morph
+    10182: 31,  # Pharos
+    # HyperCore (Hyperliquid L1) routes through HyperEVM
+    ChainId.HYPERCORE: 19,
 }
+_CCTP_DOMAIN: dict[int, int] = _CHAINID_TO_DOMAIN
 
-# CCTP v2 TokenMessengerV2 addresses.
-# CCTP v2 is deployed at deterministic CREATE2 addresses — the same address
-# on every supported EVM chain.
-# https://developers.circle.com/stablecoins/evm-smart-contracts
-_TOKEN_MESSENGER_V2: dict[int, str] = {
-    1: "0x28B5a0E9c621a5BAdaa536219b3a228c8168cF00",  # Ethereum
-    43114: "0x28B5a0E9c621a5BAdaa536219b3a228c8168cF00",  # Avalanche
-    10: "0x28B5a0E9c621a5BAdaa536219b3a228c8168cF00",  # OP Mainnet
-    42161: "0x28B5a0E9c621a5BAdaa536219b3a228c8168cF00",  # Arbitrum
-    8453: "0x28B5a0E9c621a5BAdaa536219b3a228c8168cF00",  # Base
-    137: "0x28B5a0E9c621a5BAdaa536219b3a228c8168cF00",  # Polygon PoS
-    130: "0x28B5a0E9c621a5BAdaa536219b3a228c8168cF00",  # Unichain
-    59144: "0x28B5a0E9c621a5BAdaa536219b3a228c8168cF00",  # Linea
-    999: "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d",  # HyperEVM (Hyperliquid)
-    1337: "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d",  # HyperCore (same contract on HyperEVM)
+# TokenMessengerV2, MessageTransmitterV2, and native USDC per chain
+_TOKEN_MESSENGER_V2: dict[int, Address] = {
+    cid: Address(HexBytes(c["TokenMessengerV2"])) for cid, c in _CCTP_CONFIG.items()
 }
+_MESSAGE_TRANSMITTER_V2: dict[int, Address] = {
+    cid: Address(HexBytes(c["MessageTransmitterV2"])) for cid, c in _CCTP_CONFIG.items()
+}
+_USDC: dict[int, Address] = {}
+for cid, c in _CCTP_CONFIG.items():
+    if "USDC" in c:
+        _USDC[cid] = Address(HexBytes(c["USDC"]))
 
-# CCTP v2 MessageTransmitterV2 addresses (same address on all supported chains).
-_MESSAGE_TRANSMITTER_V2: dict[int, str] = {
-    1: "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",  # Ethereum
-    43114: "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",  # Avalanche
-    10: "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",  # OP Mainnet
-    42161: "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",  # Arbitrum
-    8453: "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",  # Base
-    137: "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",  # Polygon PoS
-    130: "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",  # Unichain
-    59144: "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",  # Linea
-    999: "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",  # HyperEVM (Hyperliquid)
-    1337: "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",  # HyperCore (same contract on HyperEVM)
-}
-
-# Native USDC addresses per chain (Circle-issued, unchanged from v1).
-_USDC: dict[int, str] = {
-    1: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",  # Ethereum
-    43114: "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E",  # Avalanche
-    10: "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85",  # OP Mainnet
-    42161: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",  # Arbitrum
-    8453: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",  # Base
-    137: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",  # Polygon PoS
-    130: "0x078D888E40faAe0f32594342c85940AF3949E666",  # Unichain
-    59144: "0x176211869cA2b568f2A7D4EE941E073a821EE1ff",  # Linea
-    999: "0xb88339CB7199b77E23DB6E890353E22632Ba630f",  # HyperEVM (Hyperliquid)
-    1337: "0xb88339CB7199b77E23DB6E890353E22632Ba630f",  # HyperCore (minted on HyperEVM)
-}
+# HyperCore mirrors HyperEVM
+_TOKEN_MESSENGER_V2[ChainId.HYPERCORE] = _TOKEN_MESSENGER_V2[ChainId.HYPEREVM]
+_MESSAGE_TRANSMITTER_V2[ChainId.HYPERCORE] = _MESSAGE_TRANSMITTER_V2[ChainId.HYPEREVM]
+if ChainId.HYPEREVM in _USDC:
+    _USDC[ChainId.HYPERCORE] = _USDC[ChainId.HYPEREVM]
 
 # CctpForwarder contract addresses on HyperEVM (keyed by is_mainnet: bool).
 # The CctpForwarder receives USDC minted by CCTP on HyperEVM and forwards it
@@ -181,14 +162,14 @@ _USDC: dict[int, str] = {
 # Used as both mintRecipient and destinationCaller for HyperCore-bound transfers.
 # Mainnet address verified on-chain (tokenMessenger() == TokenMessengerV2).
 # Docs: https://developers.circle.com/cctp/concepts/cctp-on-hypercore
-_CCTP_FORWARDER: dict[bool, str] = {
-    True: "0xb21d281dedb17ae5b501f6aa8256fe38c4e45757",  # HyperEVM mainnet (verified)
-    False: "0x02e39ECb8368b41bF68FF99ff351aC9864e5E2a2",  # HyperEVM testnet
+_CCTP_FORWARDER: dict[bool, Address] = {
+    True: HexBytes("0xb21d281dedb17ae5b501f6aa8256fe38c4e45757"),  # HyperEVM mainnet (verified)
+    False: HexBytes("0x02e39ECb8368b41bF68FF99ff351aC9864e5E2a2"),  # HyperEVM testnet
 }
 
 
 def encode_cctp_forward_hook_data(
-    recipient: str | None = None,
+    recipient: Address | None = None,
     destination_dex: int = HYPERCORE_DEX_PERP,
 ) -> bytes:
     """Encode ``hookData`` for the HyperEVM ``CctpForwarder`` contract.
@@ -208,10 +189,10 @@ def encode_cctp_forward_hook_data(
         destinationDex         4       uint32    DEX: 0=perp, 0xFFFFFFFF=spot
 
     Args:
-        recipient: EVM-format HyperCore recipient address.  When ``None``
-            the hook data contains only the header (no recipient), and the
-            ``CctpForwarder`` will use the CCTP ``mintRecipient`` field as the
-            HyperCore recipient.
+        recipient: HyperCore recipient as a 20-byte :class:`~hexbytes.HexBytes`
+            (``Address``).  When ``None`` the hook data contains only the
+            header (no recipient), and the ``CctpForwarder`` will use the CCTP
+            ``mintRecipient`` field as the HyperCore recipient.
         destination_dex: HyperCore destination DEX.  Use
             :data:`HYPERCORE_DEX_PERP` (0, the default) to credit the perp
             balance, or :data:`HYPERCORE_DEX_SPOT` (``0xFFFFFFFF``) for spot.
@@ -229,15 +210,14 @@ def encode_cctp_forward_hook_data(
         return magic + version + data_length
 
     # With recipient: 20 bytes address + 4 bytes dex = 24 bytes of data
+    if len(recipient) != 20:
+        raise ValueError(f"recipient must be a 20-byte EVM address, got {len(recipient)} bytes")
     data_length = (24).to_bytes(4, "big")
-    addr_bytes = bytes.fromhex(recipient[2:] if recipient.startswith("0x") else recipient)
-    if len(addr_bytes) != 20:
-        raise ValueError(f"recipient must be a 20-byte EVM address, got {len(addr_bytes)} bytes")
     dex_bytes = (destination_dex & 0xFFFFFFFF).to_bytes(4, "big")
-    return magic + version + data_length + addr_bytes + dex_bytes
+    return magic + version + data_length + recipient + dex_bytes
 
 
-class CCTP(BaseBridge):
+class CCTP:
     """Circle CCTP v2 cross-chain USDC bridge integration.
 
     CCTP v2 burns USDC on the source chain and mints it on the destination chain
@@ -278,25 +258,26 @@ class CCTP(BaseBridge):
         w3: AsyncWeb3,
         src_chain_id: int,
         dst_chain_id: int,
-        token_messenger_address: str | None = None,
-        src_usdc_address: str | None = None,
+        token_messenger_address: Address | None = None,
+        src_usdc_address: Address | None = None,
         api_base_url: str = _IRIS_API_BASE,
-        cctp_forwarder_address: str | None = None,
+        cctp_forwarder_address: Address | None = None,
         is_mainnet: bool = True,
     ) -> None:
-        super().__init__(src_chain_id, dst_chain_id)
+        self.src_chain_id = src_chain_id
+        self.dst_chain_id = dst_chain_id
         self.w3 = w3
         self._api_base = api_base_url.rstrip("/")
         self.is_mainnet = is_mainnet
 
-        self.token_messenger_address = token_messenger_address or _TOKEN_MESSENGER_V2.get(src_chain_id, "")
+        self.token_messenger_address = token_messenger_address or _TOKEN_MESSENGER_V2.get(src_chain_id)
         if not self.token_messenger_address:
             raise BridgeError(
                 f"CCTP: no TokenMessengerV2 address known for chain {src_chain_id}. "
                 "Pass token_messenger_address explicitly."
             )
 
-        self.src_usdc_address = src_usdc_address or _USDC.get(src_chain_id, "")
+        self.src_usdc_address = src_usdc_address or _USDC.get(src_chain_id)
         if not self.src_usdc_address:
             raise BridgeError(
                 f"CCTP: no USDC address known for chain {src_chain_id}. Pass src_usdc_address explicitly."
@@ -304,11 +285,7 @@ class CCTP(BaseBridge):
 
         self.cctp_forwarder_address = cctp_forwarder_address or _CCTP_FORWARDER[is_mainnet]
 
-        self._token_messenger = Contract.from_abi(_TOKEN_MESSENGER_V2_ABI, to=self.token_messenger_address)
-
-    @property
-    def protocol_name(self) -> str:
-        return "CCTP"
+    protocol_name: str = "CCTP"
 
     # -----------------------------------------------------------------------
     # Helpers
@@ -320,11 +297,6 @@ class CCTP(BaseBridge):
         if domain is None:
             raise BridgeError(f"CCTP: unsupported chain ID {chain_id}. Provide domain ID explicitly.")
         return domain
-
-    @staticmethod
-    def _address_to_bytes32(address: str) -> bytes:
-        """Left-pad an EVM address to 32 bytes."""
-        return HexBytes(address).rjust(32, b"\x00")
 
     # -----------------------------------------------------------------------
     # Circle Iris v2 API
@@ -447,10 +419,10 @@ class CCTP(BaseBridge):
         token_in: Token,
         token_out: Token,
         amount_in: TokenAmount,
-        recipient: str,
+        recipient: Address,
         slippage_bps: int = 0,
         dst_domain: int | None = None,
-        destination_caller: str | None = None,
+        destination_caller: Address | None = None,
         max_fee: int = 0,
         min_finality_threshold: int = FINALITY_THRESHOLD_CONFIRMED,
         hypercore_dex: int = HYPERCORE_DEX_PERP,
@@ -507,12 +479,11 @@ class CCTP(BaseBridge):
         if self.dst_chain_id == ChainId.HYPERCORE:
             # For HyperCore: mint USDC on HyperEVM to the CctpForwarder, which
             # reads the hookData and deposits it into the recipient's HyperCore account.
-            forwarder = self.cctp_forwarder_address
-            mint_recipient = self._address_to_bytes32(forwarder)
-            dst_caller_bytes = self._address_to_bytes32(forwarder)
+            mint_recipient = address_to_bytes32(self.cctp_forwarder_address)
+            dst_caller_bytes = address_to_bytes32(self.cctp_forwarder_address)
             hook_data = encode_cctp_forward_hook_data(recipient, hypercore_dex)
 
-            call_data = self._token_messenger.fns.depositForBurnWithHook(
+            call_data = CCTP_TOKEN_MESSENGER_V2.fns.depositForBurnWithHook(
                 amount_in.amount,
                 _dst_domain,
                 mint_recipient,
@@ -523,10 +494,10 @@ class CCTP(BaseBridge):
                 hook_data,
             ).data
         else:
-            mint_recipient = self._address_to_bytes32(recipient)
-            dst_caller_bytes = self._address_to_bytes32(destination_caller) if destination_caller else b"\x00" * 32
+            mint_recipient = address_to_bytes32(recipient)
+            dst_caller_bytes = address_to_bytes32(destination_caller) if destination_caller else b"\x00" * 32
 
-            call_data = self._token_messenger.fns.depositForBurn(
+            call_data = CCTP_TOKEN_MESSENGER_V2.fns.depositForBurn(
                 amount_in.amount,
                 _dst_domain,
                 mint_recipient,
@@ -537,8 +508,8 @@ class CCTP(BaseBridge):
             ).data
 
         return {
-            "to": self.token_messenger_address,
-            "data": "0x" + call_data.hex() if isinstance(call_data, bytes) else call_data,
+            "to": Web3.to_checksum_address(self.token_messenger_address),
+            "data": "0x" + call_data.hex(),
             "value": "0",
             "gas": str(200_000),
         }
@@ -546,7 +517,7 @@ class CCTP(BaseBridge):
     async def build_bridge_compose_tx(
         self,
         amount_in: TokenAmount,
-        composer_address: str,
+        composer_address: Address,
         program: bytes,
         dst_domain: int | None = None,
         max_fee: int = 0,
@@ -590,10 +561,11 @@ class CCTP(BaseBridge):
             raise BridgeError("CCTP: program (hookData) must not be empty for compose transactions.")
 
         _dst_domain = dst_domain if dst_domain is not None else self._cctp_domain(self.dst_chain_id)
-        mint_recipient = self._address_to_bytes32(composer_address)
-        destination_caller = self._address_to_bytes32(composer_address)
 
-        call_data = self._token_messenger.fns.depositForBurnWithHook(
+        mint_recipient = address_to_bytes32(composer_address)
+        destination_caller = address_to_bytes32(composer_address)
+
+        call_data = CCTP_TOKEN_MESSENGER_V2.fns.depositForBurnWithHook(
             amount_in.amount,
             _dst_domain,
             mint_recipient,
@@ -605,8 +577,8 @@ class CCTP(BaseBridge):
         ).data
 
         return {
-            "to": self.token_messenger_address,
-            "data": "0x" + call_data.hex() if isinstance(call_data, bytes) else call_data,
+            "to": Web3.to_checksum_address(self.token_messenger_address),
+            "data": "0x" + call_data.hex(),
             "value": "0",
             "gas": str(220_000),
         }
@@ -616,7 +588,7 @@ class CCTP(BaseBridge):
     # -----------------------------------------------------------------------
 
     @classmethod
-    def message_transmitter_address(cls, chain_id: int) -> str:
+    def message_transmitter_address(cls, chain_id: int) -> Address:
         """Return the well-known CCTP v2 ``MessageTransmitterV2`` address for *chain_id*.
 
         Raises:
@@ -628,7 +600,7 @@ class CCTP(BaseBridge):
         return addr
 
     @classmethod
-    def usdc_address(cls, chain_id: int) -> str:
+    def usdc_address(cls, chain_id: int) -> Address:
         """Return the well-known native USDC address for *chain_id*.
 
         Raises:

@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
+import "../vm/DEXCallbackRouter.sol";
+import "../vm/InterpreterRunner.sol";
+import "../vm/TransientReentrancyGuard.sol";
+
 /**
  * @title CCTPComposer
  * @notice Circle CCTP v2 compose receiver that mints USDC via CCTP v2 and then
@@ -57,47 +61,47 @@ pragma solidity ^0.8.24;
  *
  * Minimum message length: 376 bytes (header=148 + fixed BurnMessageV2=228).
  *
- * DeFiVM stack layout after prologue
- * -----------------------------------
- * Before executing the user program, CCTPComposer prepends two PUSH
- * instructions so the bridged parameters are already on the stack::
+ * Execution model
+ * ---------------
+ * The composer DELEGATECALLs a pre-deployed EVM interpreter (Analog-Labs by
+ * default) directly with the program as calldata.  The program runs in this
+ * composer's context, so:
  *
- *   PUSH_U256 <amountReceived>  ; pushed first  → stack[0] (bottom)
- *   PUSH_U256 <sourceDomain>    ; pushed second → stack[1] (top)
+ *   • ``address(this)`` inside the program == this composer's address.
+ *   • External CALLs originate from this composer.
+ *   • Transient storage operations (TSTORE / TLOAD) read/write this
+ *     composer's transient namespace.
  *
- * where ``amountReceived = amount - feeExecuted`` (the actual USDC minted
- * to this contract after the relayer fee is deducted).
+ * Bridged parameters are staged in this composer's transient slots before
+ * the DELEGATECALL; the program reads them with ``TLOAD(slot)``::
  *
- * A typical program begins by saving these into registers::
+ *   slot 0 = amountReceived  (= amount - feeExecuted, USDC minted to this contract)
+ *   slot 1 = sourceDomain    (CCTP domain ID of the source chain)
  *
- *   STORE_REG 0   ; R0 = sourceDomain
- *   STORE_REG 1   ; R1 = amountReceived (USDC received, 6 decimals)
- *   ; ... use R0 and R1 anywhere later with LOAD_REG ...
+ * A Python program reads them via the Venom builder::
  *
- * Python helper (``pydefi.vm.program``)::
+ *   from pydefi.vm import Program
+ *   from vyper.venom.basicblock import IRLiteral
  *
- *   from pydefi.vm.program import store_reg, ...
+ *   prog = Program()
+ *   amount_received = prog.builder.tload(IRLiteral(0))
+ *   source_domain   = prog.builder.tload(IRLiteral(1))
+ *   ; ... use amount_received / source_domain anywhere later ...
  *
- *   program = store_reg(0) + store_reg(1) + ...
+ * Reentrancy
+ * ----------
+ * ``receiveAndExecute`` is guarded by ``TransientReentrancyGuard`` — the
+ * limitation documented there still applies: the program runs in this
+ * composer's context and can ``TSTORE`` the lock slot, so the guard is
+ * defense-in-depth against external re-entry, not a sandbox against the
+ * program itself.
  */
-
-// ---------------------------------------------------------------------------
-// IDeFiVM
-// ---------------------------------------------------------------------------
-
-/// @notice Minimal interface for calling DeFiVM.execute.
-interface IDeFiVM {
-    function execute(bytes calldata program) external payable;
-}
 
 // ---------------------------------------------------------------------------
 // CCTPComposer
 // ---------------------------------------------------------------------------
 
-contract CCTPComposer {
-    // DeFiVM PUSH opcode — raw EVM PUSH32: opcode + 32-byte immediate.
-    uint8 private constant OP_PUSH_U256 = 0x7F;
-
+contract CCTPComposer is DEXCallbackRouter, TransientReentrancyGuard, InterpreterRunner {
     // -----------------------------------------------------------------------
     // CCTP v2 message offsets
     // -----------------------------------------------------------------------
@@ -171,9 +175,6 @@ contract CCTPComposer {
     /// @notice The USDC token contract address on this chain.
     address public immutable usdc;
 
-    /// @notice The DeFiVM contract used to execute compose programs.
-    IDeFiVM public immutable vm;
-
     /// @notice Owner address — may rescue stuck funds and transfer ownership.
     address public owner;
 
@@ -184,13 +185,17 @@ contract CCTPComposer {
     /**
      * @param _messageTransmitter  The Circle CCTP v2 ``MessageTransmitterV2`` address.
      * @param _usdc                USDC token address on this chain.
-     * @param _vm                  The DeFiVM contract address.
+     * @param _interpreter         EVM interpreter to DELEGATECALL (see
+     *                             :class:`InterpreterRunner`); pass
+     *                             ``address(0)`` for the well-known
+     *                             pre-deployed Analog-Labs interpreter.
      * @param _owner               Address that may call rescue functions and transfer ownership.
      */
-    constructor(address _messageTransmitter, address _usdc, address _vm, address _owner) {
+    constructor(address _messageTransmitter, address _usdc, address _interpreter, address _owner)
+        InterpreterRunner(_interpreter)
+    {
         messageTransmitter = _messageTransmitter;
         usdc = _usdc;
-        vm = IDeFiVM(_vm);
         owner = _owner;
     }
 
@@ -255,21 +260,27 @@ contract CCTPComposer {
      *    ``hookData`` (= the DeFiVM program) from the CCTP v2 message.
      * 3. Call ``MessageTransmitterV2.receiveMessage(message, attestation)`` to
      *    mint ``amount - feeExecuted`` USDC to this contract.
-     * 4. Build a DeFiVM prologue that pushes the bridged parameters onto the
-     *    stack before the user program runs.
-     * 5. Transfer the minted USDC to the DeFiVM contract.
-     * 6. Execute the combined program via DeFiVM, forwarding any ETH supplied
-     *    with this call.
+     * 4. Stage bridged parameters in this composer's transient-storage slots
+     *    (slot 0 = amountReceived, slot 1 = sourceDomain).
+     * 5. DELEGATECALL the EVM interpreter with the program as calldata.  The
+     *    program runs in this composer's context — USDC stays here and the
+     *    program reads params via ``TLOAD`` from this contract's transient
+     *    namespace.
+     * 6. Clear the staged param slots so a subsequent compose call in the
+     *    same tx starts clean.
      *
-     * Stack layout after prologue (bottom to top):
-     *   stack[0] = amountReceived  (USDC received = amount - feeExecuted, 6 dec.)
-     *   stack[1] = sourceDomain    (CCTP domain ID of the source chain)
+     * Transient-storage layout exposed to the program:
+     *   slot 0 = amountReceived  (USDC received = amount - feeExecuted, 6 dec.)
+     *   slot 1 = sourceDomain    (CCTP domain ID of the source chain)
      *
      * @param message      Raw CCTP v2 message bytes (``MessageSent`` event data).
      * @param attestation  Circle attestation bytes for the message.
      */
-    function receiveAndExecute(bytes calldata message, bytes calldata attestation) external payable {
-        // Validate minimum message length.
+    function receiveAndExecute(bytes calldata message, bytes calldata attestation)
+        external
+        payable
+        nonReentrant
+    {
         require(message.length >= MIN_MESSAGE_LENGTH, "CCTPComposer: message too short");
 
         // Decode bridged parameters from the CCTP v2 message.
@@ -279,7 +290,7 @@ contract CCTPComposer {
         uint256 feeExecuted = uint256(bytes32(message[FEE_EXECUTED_OFFSET:FEE_EXECUTED_OFFSET + 32]));
 
         // The DeFiVM program is embedded as hookData in the BurnMessageV2 body.
-        bytes memory program = message[HOOK_DATA_OFFSET:];
+        bytes calldata program = message[HOOK_DATA_OFFSET:];
 
         // Mint USDC to this contract by processing the CCTP v2 message.
         // MessageTransmitterV2 enforces that mintRecipient == address(this)
@@ -292,30 +303,18 @@ contract CCTPComposer {
         // Actual USDC minted = amount - feeExecuted (relayer fee deducted).
         uint256 amountReceived = amount - feeExecuted;
 
-        // Build a prologue that pushes the CCTP transfer parameters onto the
-        // DeFiVM stack before the user program runs:
-        //
-        //   PUSH_U256 <amountReceived>  (1B opcode + 32B value = 33B)
-        //   PUSH_U256 <sourceDomain>    (1B opcode + 32B value = 33B)
-        //
-        // After the prologue the initial stack layout is:
-        //   stack[0] = amountReceived  (pushed first, bottom)
-        //   stack[1] = sourceDomain    (pushed second, top)
-        bytes memory fullProgram = bytes.concat(
-            abi.encodePacked(OP_PUSH_U256, bytes32(amountReceived), OP_PUSH_U256, bytes32(uint256(sourceDomain))),
-            program
-        );
-
-        // Transfer the minted USDC from this composer to DeFiVM.
-        if (amountReceived > 0) {
-            (bool tok, bytes memory ret) = usdc.call(
-                abi.encodeWithSignature("transfer(address,uint256)", address(vm), amountReceived)
-            );
-            require(tok && (ret.length == 0 || abi.decode(ret, (bool))), "CCTPComposer: usdc transfer failed");
+        // Stage bridged params in our own transient storage, then DELEGATECALL
+        // the interpreter so the program runs in this composer's context and
+        // reads them via TLOAD.
+        assembly {
+            tstore(0, amountReceived)
+            tstore(1, sourceDomain)
         }
-
-        // Execute via DeFiVM, forwarding any ETH received with this call.
-        vm.execute{value: msg.value}(fullProgram);
+        _runProgram(program);
+        assembly {
+            tstore(0, 0)
+            tstore(1, 0)
+        }
 
         emit Composed(sourceDomain, nonce, amountReceived);
     }

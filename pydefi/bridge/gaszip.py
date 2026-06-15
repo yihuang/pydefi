@@ -13,11 +13,10 @@ from __future__ import annotations
 from typing import Any
 
 import aiohttp
-from eth_contract import Contract
 
-from pydefi.bridge.base import BaseBridge
+from pydefi.abi.bridge import GASZIP
 from pydefi.exceptions import BridgeError
-from pydefi.types import BridgeQuote, Token, TokenAmount
+from pydefi.types import Address, BridgeQuote, Token, TokenAmount
 
 _GASZIP_API_BASE = "https://backend.gas.zip/v2"
 
@@ -39,13 +38,8 @@ _SUPPORTED_CHAINS: set[int] = {
     480,  # World Chain
 }
 
-# ABI fragment for the GasZip deposit function
-_GASZIP_ABI = [
-    "function deposit(uint256 to, uint256[] calldata chains) external payable",
-]
 
-
-class GasZip(BaseBridge):
+class GasZip:
     """GasZip cross-chain gas bridge integration.
 
     GasZip bridges native gas tokens from a source chain to one or more
@@ -66,14 +60,12 @@ class GasZip(BaseBridge):
         contract_address: str,
         api_base_url: str = _GASZIP_API_BASE,
     ) -> None:
-        super().__init__(src_chain_id, dst_chain_id)
+        self.src_chain_id = src_chain_id
+        self.dst_chain_id = dst_chain_id
         self.contract_address = contract_address
         self._api_base = api_base_url.rstrip("/")
-        self._contract = Contract.from_abi(_GASZIP_ABI, to=contract_address)
 
-    @property
-    def protocol_name(self) -> str:
-        return "GasZip"
+    protocol_name: str = "GasZip"
 
     def _check_chain(self, chain_id: int) -> None:
         """Raise :class:`~pydefi.exceptions.BridgeError` for unsupported chains."""
@@ -144,7 +136,7 @@ class GasZip(BaseBridge):
         token_in: Token,
         token_out: Token,
         amount_in: TokenAmount,
-        recipient: str,
+        recipient: Address,
         slippage_bps: int = 50,
         **kwargs: Any,
     ) -> dict[str, Any]:
@@ -172,15 +164,8 @@ class GasZip(BaseBridge):
             raise BridgeError("GasZip only supports native gas tokens for bridging")
 
         # Validate and encode recipient address as uint256
-        try:
-            normalized = recipient[2:] if recipient.startswith(("0x", "0X")) else recipient
-            if len(normalized) != 40:
-                raise ValueError("recipient must be 20 bytes (40 hex characters)")
-            to_uint256 = int(normalized, 16)
-        except ValueError as exc:
-            raise BridgeError(f"Invalid recipient address '{recipient}': {exc}") from exc
-
-        call_data: bytes = self._contract.fns.deposit(
+        to_uint256 = int.from_bytes(recipient, "big")
+        call_data: bytes = GASZIP.fns.deposit(
             to_uint256,
             [self.dst_chain_id],
         ).data

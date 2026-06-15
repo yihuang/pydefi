@@ -11,12 +11,13 @@ from typing import Any
 
 import aiohttp
 
-from pydefi.aggregator.base import AggregatorQuote, BaseAggregator
+from pydefi._math import slippage_to_percent
+from pydefi.aggregator.base import AggregatorQuote
 from pydefi.exceptions import AggregatorError
-from pydefi.types import SwapRoute, SwapStep, Token, TokenAmount
+from pydefi.types import SwapRoute, Token, TokenAmount
 
 
-class OneInch(BaseAggregator):
+class OneInch:
     """1inch Aggregation Protocol API client.
 
     Args:
@@ -33,16 +34,15 @@ class OneInch(BaseAggregator):
         api_key: str | None = None,
         base_url: str | None = None,
     ) -> None:
-        super().__init__(chain_id, api_key)
+        self.chain_id = chain_id
+        self.api_key = api_key
         self._base_url = base_url or self._DEFAULT_BASE_URL
 
     @property
     def base_url(self) -> str:
         return self._base_url
 
-    @property
-    def protocol_name(self) -> str:
-        return "1inch"
+    protocol_name: str = "1inch"
 
     def _headers(self) -> dict[str, str]:
         headers: dict[str, str] = {"Accept": "application/json"}
@@ -84,23 +84,21 @@ class OneInch(BaseAggregator):
             An :class:`~pydefi.aggregator.base.AggregatorQuote`.
         """
         params: dict[str, Any] = {
-            "src": amount_in.token.address,
-            "dst": token_out.address,
+            "src": amount_in.token.encoded_address,
+            "dst": token_out.encoded_address,
             "amount": str(amount_in.amount),
             **kwargs,
         }
         data = await self._get("quote", params)
 
         dst_amount = int(data["dstAmount"])
-        slippage_fraction = 10_000 - slippage_bps
-        min_amount_out_raw = dst_amount * slippage_fraction // 10_000
 
-        return AggregatorQuote(
+        return AggregatorQuote.from_quote(
             token_in=amount_in.token,
             token_out=token_out,
             amount_in=amount_in,
-            amount_out=TokenAmount(token=token_out, amount=dst_amount),
-            min_amount_out=TokenAmount(token=token_out, amount=min_amount_out_raw),
+            amount_out_raw=dst_amount,
+            slippage_bps=slippage_bps,
             gas_estimate=int(data.get("gas", 0)),
             price_impact=Decimal(str(data.get("estimatedPriceImpact", "0"))),
             protocol=self.protocol_name,
@@ -129,28 +127,25 @@ class OneInch(BaseAggregator):
             ``tx_data`` populated.
         """
         params: dict[str, Any] = {
-            "src": amount_in.token.address,
-            "dst": token_out.address,
+            "src": amount_in.token.encoded_address,
+            "dst": token_out.encoded_address,
             "amount": str(amount_in.amount),
             "from": from_address,
-            "slippage": self._slippage_to_percent(slippage_bps),
+            "slippage": slippage_to_percent(slippage_bps),
             **kwargs,
         }
         data = await self._get("swap", params)
 
         tx = data.get("tx", {})
         dst_amount = int(data["dstAmount"])
-        slippage_fraction = 10_000 - slippage_bps
-        min_amount_out_raw = dst_amount * slippage_fraction // 10_000
 
-        return AggregatorQuote(
+        return AggregatorQuote.from_quote(
             token_in=amount_in.token,
             token_out=token_out,
             amount_in=amount_in,
-            amount_out=TokenAmount(token=token_out, amount=dst_amount),
-            min_amount_out=TokenAmount(token=token_out, amount=min_amount_out_raw),
+            amount_out_raw=dst_amount,
+            slippage_bps=slippage_bps,
             gas_estimate=int(tx.get("gas", data.get("gas", 0))),
-            price_impact=Decimal(0),
             tx_data=tx,
             protocol=self.protocol_name,
             route_summary=str(data.get("protocols", "")),
@@ -163,29 +158,6 @@ class OneInch(BaseAggregator):
         slippage_bps: int = 50,
         **kwargs: Any,
     ) -> SwapRoute:
-        """Build a :class:`~pydefi.types.SwapRoute` from a 1inch quote.
-
-        Args:
-            amount_in: Exact input amount.
-            token_out: Desired output token.
-            slippage_bps: Maximum slippage in basis points.
-
-        Returns:
-            A :class:`~pydefi.types.SwapRoute`.
-        """
+        """Build a :class:`~pydefi.types.SwapRoute` from a 1inch quote."""
         quote = await self.get_quote(amount_in, token_out, slippage_bps, **kwargs)
-
-        step = SwapStep(
-            token_in=amount_in.token,
-            token_out=token_out,
-            pool_address="",  # 1inch routes through multiple pools
-            protocol=self.protocol_name,
-            fee=0,
-        )
-
-        return SwapRoute(
-            steps=[step],
-            amount_in=amount_in,
-            amount_out=quote.amount_out,
-            price_impact=quote.price_impact,
-        )
+        return quote.to_swap_route()

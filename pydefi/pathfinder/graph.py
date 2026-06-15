@@ -14,11 +14,25 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Callable, ClassVar, Iterator
 
-from pydefi.types import Token
+from pydefi.types import ZERO_ADDRESS, Address, SwapProtocol, Token
+
+
+class BasePool:
+    """Base class for pool descriptors used by RouteDAG actions.
+
+    Subclasses (e.g. :class:`PoolEdge`) must override :meth:`zero_for_one`.
+    """
+
+    pool_address: Address
+    protocol: SwapProtocol
+    fee_bps: int
+
+    def zero_for_one(self, token_out: Address) -> bool:
+        raise NotImplementedError("BasePool.zero_for_one() must be implemented by subclasses")
 
 
 @dataclass
-class PoolEdge:
+class PoolEdge(BasePool):
     """A directed edge in the liquidity pool graph.
 
     Represents one *direction* of a swap through a single pool.  For a
@@ -38,7 +52,7 @@ class PoolEdge:
 
     token_in: Token
     token_out: Token
-    pool_address: str
+    pool_address: Address
     protocol: str
     reserve_in: int = 0
     reserve_out: int = 0
@@ -76,6 +90,19 @@ class PoolEdge:
         if denominator == 0:
             return 0
         return numerator // denominator
+
+    def zero_for_one(self, token_out: Address) -> bool:
+        """Return ``True`` if this edge sends token0 into the pool (zeroForOne direction).
+
+        Reads ``extra['is_token0_in']``, which must be present for V2-style pools.
+
+        Raises:
+            ValueError: If ``extra['is_token0_in']`` is not set.
+        """
+        is_token0_in = self.extra.get("is_token0_in")
+        if is_token0_in is None:
+            raise ValueError("PoolEdge is missing extra['is_token0_in'] metadata")
+        return bool(is_token0_in)
 
     def estimate_price_impact(self, amount_in: int) -> Decimal:
         """Estimate the price impact of swapping *amount_in* through this pool.
@@ -201,6 +228,17 @@ class V3PoolEdge(PoolEdge):
 
     _Q96: ClassVar[int] = 2**96
 
+    def zero_for_one(self, token_out: Address) -> bool:
+        """Return ``True`` if this edge sends token0 into the V3 pool.
+
+        Uses the ``is_token0_in`` field directly.
+        """
+        return self.is_token0_in
+
+    def _net_amount_in(self, amount_in: int) -> int:
+        """Return *amount_in* after deducting the swap fee (``fee_bps``, base 10 000)."""
+        return amount_in * (10_000 - self.fee_bps) // 10_000
+
     @property
     def spot_price(self) -> Decimal:
         """Spot price of ``token_out`` denominated in ``token_in``, adjusted
@@ -254,8 +292,8 @@ class V3PoolEdge(PoolEdge):
         sqrtP = self.sqrt_price_x96
         L = self.liquidity
 
-        # Deduct fee from input (fee_bps is in basis points, e.g. 30 = 0.3%)
-        amount_in_net = amount_in * (10_000 - self.fee_bps) // 10_000
+        # Deduct the swap fee from the input
+        amount_in_net = self._net_amount_in(amount_in)
         if amount_in_net <= 0:
             return 0
 
@@ -323,6 +361,41 @@ class V3PoolEdge(PoolEdge):
         return Decimal(amount_in) / Decimal(depth + amount_in)
 
 
+@dataclass
+class V4PoolEdge(V3PoolEdge):
+    """A directed edge for a Uniswap V4 pool.
+
+    V4 math is identical to V3 concentrated liquidity, so this subclass
+    inherits :meth:`~V3PoolEdge.amount_out` and
+    :meth:`~V3PoolEdge.estimate_price_impact` unchanged. ``pool_address`` is
+    the singleton ``PoolManager`` (shared by every V4 pool on a chain); pools
+    are distinguished by the ``PoolKey`` fields below.
+
+    Attributes:
+        tick_spacing: Pool tick spacing (e.g. 10 / 60 / 200).
+        hooks: Hooks contract address, or the zero address for no hooks.
+        pool_id: keccak256 of the PoolKey, hex. Optional (display/indexing).
+        lp_fee_pips: Current LP fee in pips (1e-6, from ``slot0.lpFee``), used
+            for pricing. V4 fees need not be a multiple of 100, so the
+            basis-point ``fee_bps`` field alone would truncate (e.g. a 10-pip
+            fee would price as free).
+    """
+
+    tick_spacing: int = 0
+    hooks: Address = ZERO_ADDRESS
+    pool_id: str = ""
+    lp_fee_pips: int = 0
+
+    def _net_amount_in(self, amount_in: int) -> int:
+        """Return *amount_in* after deducting the LP fee (``lp_fee_pips``, base 1 000 000).
+
+        Falls back to ``fee_bps`` when ``lp_fee_pips`` is unset (e.g. edges
+        constructed without slot0 data).
+        """
+        fee_pips = self.lp_fee_pips if self.lp_fee_pips else self.fee_bps * 100
+        return amount_in * (1_000_000 - fee_pips) // 1_000_000
+
+
 class PoolGraph:
     """A directed multi-graph of token → token liquidity pools.
 
@@ -340,8 +413,8 @@ class PoolGraph:
 
     def __init__(self) -> None:
         # adjacency list: token_in_address -> list[PoolEdge]
-        self._adj: defaultdict[str, list[PoolEdge]] = defaultdict(list)
-        self._tokens: dict[str, Token] = {}
+        self._adj: defaultdict[Address, list[PoolEdge]] = defaultdict(list)
+        self._tokens: dict[Address, Token] = {}
 
     def find_best_route_gas_aware(
         self,
@@ -361,24 +434,24 @@ class PoolGraph:
         if amount_in <= 0:
             return []
 
-        src_addr = start.address.lower()
-        dst_addr = end.address.lower()
+        src_addr = start.address
+        dst_addr = end.address
         if src_addr == dst_addr:
             raise ValueError("token_in and token_out must be different")
 
         # state -> (cumulative_weight, current_amount, path)
-        best: dict[tuple[str, int], tuple[float, int, list[PoolEdge]]] = {(src_addr, 0): (0.0, amount_in, [])}
+        best: dict[tuple[bytes, int], tuple[float, int, list[PoolEdge]]] = {(src_addr, 0): (0.0, amount_in, [])}
 
         for hop in range(max_hops):
             current_states = [(k, v) for k, v in best.items() if k[1] == hop]
             for (token_addr, _), (cur_weight, cur_amount, path) in current_states:
-                visited_tokens: set[str] = {e.token_in.address.lower() for e in path}
+                visited_tokens: set[Address] = {e.token_in.address for e in path}
                 visited_tokens.add(token_addr)
 
                 token: Token = path[-1].token_out if path else start
 
                 for edge in self.edges_from(token):
-                    next_addr = edge.token_out.address.lower()
+                    next_addr = edge.token_out.address
                     if next_addr in visited_tokens:
                         continue
 
@@ -417,16 +490,16 @@ class PoolGraph:
         Args:
             edge: The :class:`PoolEdge` to add.
         """
-        key = edge.token_in.address.lower()
+        key = edge.token_in.address
         self._adj[key].append(edge)
-        self._tokens[edge.token_in.address.lower()] = edge.token_in
-        self._tokens[edge.token_out.address.lower()] = edge.token_out
+        self._tokens[edge.token_in.address] = edge.token_in
+        self._tokens[edge.token_out.address] = edge.token_out
 
     def add_bidirectional_pool(
         self,
         token_a: Token,
         token_b: Token,
-        pool_address: str,
+        pool_address: Address,
         protocol: str,
         reserve_a: int = 0,
         reserve_b: int = 0,
@@ -445,6 +518,8 @@ class PoolGraph:
             fee_bps: Swap fee in basis points.
             **extra: Extra metadata stored in ``PoolEdge.extra``.
         """
+        extra_forward = dict(extra)
+        extra_forward.setdefault("is_token0_in", True)
         self.add_pool(
             PoolEdge(
                 token_in=token_a,
@@ -454,9 +529,11 @@ class PoolGraph:
                 reserve_in=reserve_a,
                 reserve_out=reserve_b,
                 fee_bps=fee_bps,
-                extra=dict(extra),
+                extra=extra_forward,
             )
         )
+        extra_reverse = dict(extra)
+        extra_reverse.setdefault("is_token0_in", False)
         self.add_pool(
             PoolEdge(
                 token_in=token_b,
@@ -466,7 +543,7 @@ class PoolGraph:
                 reserve_in=reserve_b,
                 reserve_out=reserve_a,
                 fee_bps=fee_bps,
-                extra=dict(extra),
+                extra=extra_reverse,
             )
         )
 
@@ -479,7 +556,7 @@ class PoolGraph:
         Returns:
             List of :class:`PoolEdge` objects.
         """
-        return list(self._adj[token.address.lower()])
+        return list(self._adj[token.address])
 
     def edges_to(self, token: Token) -> list[PoolEdge]:
         """Return all edges that arrive at *token*.
@@ -493,7 +570,7 @@ class PoolGraph:
         result: list[PoolEdge] = []
         for edges in self._adj.values():
             for e in edges:
-                if e.token_out.address.lower() == token.address.lower():
+                if e.token_out.address == token.address:
                     result.append(e)
         return result
 

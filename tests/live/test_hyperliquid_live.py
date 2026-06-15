@@ -11,6 +11,7 @@ Run with::
 from __future__ import annotations
 
 import pytest
+from hexbytes import HexBytes
 from web3 import AsyncWeb3
 from web3.exceptions import ContractLogicError
 
@@ -18,17 +19,11 @@ from pydefi.bridge.cctp import CCTP, HYPERCORE_DEX_SPOT
 from pydefi.hyperliquid import HyperliquidClient
 from pydefi.rpc import get_w3
 from pydefi.types import ChainId, Token, TokenAmount
+from tests.addrs import ETH_WHALE, USDC
 
 # ---------------------------------------------------------------------------
 # Token definitions
 # ---------------------------------------------------------------------------
-
-USDC_ETH = Token(
-    chain_id=ChainId.ETHEREUM,
-    address="0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
-    symbol="USDC",
-    decimals=6,
-)
 
 # USDC on HyperCore (Hyperliquid L1); CCTP mints on HyperEVM and Hyperliquid
 # routes to HyperCore automatically — same ERC-20 address as HyperEVM.
@@ -50,7 +45,7 @@ USDC_HYPEREVM = Token(
 BRIDGE_AMOUNT_USDC = 1_000 * 10**6
 
 # A well-known address used as a mock recipient (no funds needed).
-MOCK_RECIPIENT = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"
+MOCK_RECIPIENT = ETH_WHALE
 
 
 # ---------------------------------------------------------------------------
@@ -223,11 +218,11 @@ class TestCCTPHyperCoreLive:
     async def test_get_quote_eth_to_hypercore(self, eth_w3):
         """CCTP: get_quote() returns a valid BridgeQuote for ETH → HyperCore."""
         bridge = self._bridge(eth_w3)
-        amount_in = TokenAmount(token=USDC_ETH, amount=BRIDGE_AMOUNT_USDC)
-        quote = await bridge.get_quote(USDC_ETH, USDC_HYPERCORE, amount_in)
+        amount_in = TokenAmount(token=USDC, amount=BRIDGE_AMOUNT_USDC)
+        quote = await bridge.get_quote(USDC, USDC_HYPERCORE, amount_in)
 
         assert quote.protocol == "CCTP"
-        assert quote.token_in == USDC_ETH
+        assert quote.token_in == USDC
         assert quote.token_out == USDC_HYPERCORE
         assert quote.amount_out.amount > 0
         assert quote.amount_out.amount <= BRIDGE_AMOUNT_USDC
@@ -236,15 +231,15 @@ class TestCCTPHyperCoreLive:
     async def test_build_bridge_tx_structure(self, eth_w3):
         """CCTP: build_bridge_tx() returns a well-formed tx dict for HyperCore."""
         bridge = self._bridge(eth_w3)
-        amount_in = TokenAmount(token=USDC_ETH, amount=BRIDGE_AMOUNT_USDC)
+        amount_in = TokenAmount(token=USDC, amount=BRIDGE_AMOUNT_USDC)
         tx = await bridge.build_bridge_tx(
-            token_in=USDC_ETH,
+            token_in=USDC,
             token_out=USDC_HYPERCORE,
             amount_in=amount_in,
             recipient=MOCK_RECIPIENT,
         )
 
-        assert tx.get("to") == bridge.token_messenger_address
+        assert HexBytes(tx["to"]) == bridge.token_messenger_address
         assert tx.get("data", "").startswith("0x")
         assert len(tx["data"]) > 2
         assert tx.get("value") == "0"
@@ -265,12 +260,12 @@ class TestCCTPHyperCoreLive:
     async def test_cctp_usdc_address_hypercore(self):
         """CCTP: USDC address is known for HyperCore."""
         addr = CCTP.usdc_address(ChainId.HYPERCORE)
-        assert addr.lower() == "0xb88339cb7199b77e23db6e890353e22632ba630f"
+        assert addr == HexBytes("0xb88339CB7199b77E23DB6E890353E22632Ba630f")
 
     async def test_cctp_message_transmitter_hypercore(self):
         """CCTP: MessageTransmitterV2 address is known for HyperCore."""
         addr = CCTP.message_transmitter_address(ChainId.HYPERCORE)
-        assert addr.lower() == "0x81d40f21f12a8f0e3252bccb954d722d4c464b64"
+        assert addr == HexBytes("0x81D40F21F12A8F0E3252Bccb954D722d4c464B64")
 
 
 # ---------------------------------------------------------------------------
@@ -303,11 +298,11 @@ class TestCCTPHyperEVMLive:
     async def test_get_quote_eth_to_hyperevm(self, eth_w3):
         """CCTP: get_quote() returns a valid BridgeQuote for ETH → HyperEVM."""
         bridge = self._bridge(eth_w3)
-        amount_in = TokenAmount(token=USDC_ETH, amount=BRIDGE_AMOUNT_USDC)
-        quote = await bridge.get_quote(USDC_ETH, USDC_HYPEREVM, amount_in)
+        amount_in = TokenAmount(token=USDC, amount=BRIDGE_AMOUNT_USDC)
+        quote = await bridge.get_quote(USDC, USDC_HYPEREVM, amount_in)
 
         assert quote.protocol == "CCTP"
-        assert quote.token_in == USDC_ETH
+        assert quote.token_in == USDC
         assert quote.token_out == USDC_HYPEREVM
         assert quote.amount_out.amount > 0
         assert quote.amount_out.amount <= BRIDGE_AMOUNT_USDC
@@ -322,12 +317,12 @@ class TestCCTPHyperEVMLive:
     async def test_cctp_usdc_address_hyperevm(self):
         """CCTP: USDC address is known for HyperEVM."""
         addr = CCTP.usdc_address(ChainId.HYPEREVM)
-        assert addr.lower() == "0xb88339cb7199b77e23db6e890353e22632ba630f"
+        assert addr == HexBytes("0xb88339CB7199b77E23DB6E890353E22632Ba630f")
 
     async def test_cctp_message_transmitter_hyperevm(self):
         """CCTP: MessageTransmitterV2 address is known for HyperEVM."""
         addr = CCTP.message_transmitter_address(ChainId.HYPEREVM)
-        assert addr.lower() == "0x81d40f21f12a8f0e3252bccb954d722d4c464b64"
+        assert addr == HexBytes("0x81D40F21F12A8F0E3252Bccb954D722d4c464B64")
 
 
 # ---------------------------------------------------------------------------
@@ -358,9 +353,9 @@ class TestCCTPBridgeTxEthCall:
             src_chain_id=ChainId.ETHEREUM,
             dst_chain_id=ChainId.HYPERCORE,
         )
-        amount_in = TokenAmount(token=USDC_ETH, amount=BRIDGE_AMOUNT_USDC)
+        amount_in = TokenAmount(token=USDC, amount=BRIDGE_AMOUNT_USDC)
         tx = await bridge.build_bridge_tx(
-            token_in=USDC_ETH,
+            token_in=USDC,
             token_out=USDC_HYPERCORE,
             amount_in=amount_in,
             recipient=MOCK_RECIPIENT,
@@ -392,9 +387,9 @@ class TestCCTPBridgeTxEthCall:
             src_chain_id=ChainId.ETHEREUM,
             dst_chain_id=ChainId.HYPERCORE,
         )
-        amount_in = TokenAmount(token=USDC_ETH, amount=BRIDGE_AMOUNT_USDC)
+        amount_in = TokenAmount(token=USDC, amount=BRIDGE_AMOUNT_USDC)
         tx = await bridge.build_bridge_tx(
-            token_in=USDC_ETH,
+            token_in=USDC,
             token_out=USDC_HYPERCORE,
             amount_in=amount_in,
             recipient=MOCK_RECIPIENT,
@@ -428,9 +423,9 @@ class TestCCTPBridgeTxEthCall:
             src_chain_id=ChainId.ETHEREUM,
             dst_chain_id=ChainId.HYPERCORE,
         )
-        amount_in = TokenAmount(token=USDC_ETH, amount=BRIDGE_AMOUNT_USDC)
+        amount_in = TokenAmount(token=USDC, amount=BRIDGE_AMOUNT_USDC)
         tx = await bridge.build_bridge_tx(
-            token_in=USDC_ETH,
+            token_in=USDC,
             token_out=USDC_HYPERCORE,
             amount_in=amount_in,
             recipient=MOCK_RECIPIENT,

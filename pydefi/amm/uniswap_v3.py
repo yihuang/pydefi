@@ -9,112 +9,74 @@ Uniswap V3 uses concentrated liquidity with discrete fee tiers:
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import NamedTuple
 
 from eth_contract import Contract
 from web3 import AsyncWeb3
 
-from pydefi.amm.base import BaseAMM
+from pydefi.abi.amm import (
+    UNISWAP_V3_FACTORY,
+    UNISWAP_V3_POOL,
+    UNISWAP_V3_QUOTER_V2,
+    QuoteExactInputSingleParams,
+    QuoteExactOutputSingleParams,
+)
 from pydefi.exceptions import InsufficientLiquidityError
-from pydefi.types import SwapRoute, SwapStep, Token, TokenAmount
+from pydefi.types import Address, SwapRoute, SwapStep, Token, TokenAmount
 
 # ---------------------------------------------------------------------------
-# ABI struct NamedTuples
-#
-# NamedTuple is a subclass of tuple, so eth_abi's TupleEncoder accepts these
-# directly while keeping fields readable by name.
+# Module-level pure functions
 # ---------------------------------------------------------------------------
 
 
-class QuoteExactInputSingleParams(NamedTuple):
-    """Params struct for ``QuoterV2.quoteExactInputSingle``."""
+def v3_sqrt_price_to_price(
+    sqrt_price_x96: int,
+    token0_decimals: int = 18,
+    token1_decimals: int = 18,
+) -> Decimal:
+    """Convert a V3 ``sqrtPriceX96`` value to a human-readable price.
 
-    tokenIn: str
-    tokenOut: str
-    amountIn: int
-    fee: int
-    sqrtPriceLimitX96: int
+    Args:
+        sqrt_price_x96: The raw ``sqrtPriceX96`` value from ``slot0()``.
+        token0_decimals: Decimals of token0.
+        token1_decimals: Decimals of token1.
 
-
-class QuoteExactOutputSingleParams(NamedTuple):
-    """Params struct for ``QuoterV2.quoteExactOutputSingle``."""
-
-    tokenIn: str
-    tokenOut: str
-    amount: int
-    fee: int
-    sqrtPriceLimitX96: int
-
-
-class ExactInputSingleParams(NamedTuple):
-    """Params struct for ``SwapRouter.exactInputSingle``."""
-
-    tokenIn: str
-    tokenOut: str
-    fee: int
-    recipient: str
-    deadline: int
-    amountIn: int
-    amountOutMinimum: int
-    sqrtPriceLimitX96: int
+    Returns:
+        Price of token0 denominated in token1.
+    """
+    sqrt_price = Decimal(sqrt_price_x96) / Decimal(2**96)
+    price_raw = sqrt_price**2
+    adj = Decimal(10**token0_decimals) / Decimal(10**token1_decimals)
+    return price_raw * adj
 
 
-class ExactInputParams(NamedTuple):
-    """Params struct for ``SwapRouter.exactInput``."""
+def v3_encode_path(tokens: list[Token], fees: list[int]) -> bytes:
+    """Encode a token path as ABI-packed bytes for V3 multi-hop calls.
 
-    path: bytes
-    recipient: str
-    deadline: int
-    amountIn: int
-    amountOutMinimum: int
+    Args:
+        tokens: Ordered list of tokens.
+        fees: Fee tier between each consecutive pair of tokens.
 
-
-class ExactOutputSingleParams(NamedTuple):
-    """Params struct for ``SwapRouter.exactOutputSingle``."""
-
-    tokenIn: str
-    tokenOut: str
-    fee: int
-    recipient: str
-    deadline: int
-    amountOut: int
-    amountInMaximum: int
-    sqrtPriceLimitX96: int
+    Returns:
+        ABI-packed bytes path.
+    """
+    if len(fees) != len(tokens) - 1:
+        raise ValueError("len(fees) must equal len(tokens) - 1")
+    result = tokens[0].address
+    for fee, token in zip(fees, tokens[1:]):
+        result += fee.to_bytes(3, "big")
+        result += token.address
+    return result
 
 
 # ---------------------------------------------------------------------------
-# ABI fragments
+# Client class
 # ---------------------------------------------------------------------------
-
-_QUOTER_V2_ABI = [
-    "function quoteExactInputSingle((address tokenIn, address tokenOut, uint256 amountIn, uint24 fee, uint160 sqrtPriceLimitX96) params) external returns (uint256 amountOut, uint160 sqrtPriceX96After, uint32 initializedTicksCrossed, uint256 gasEstimate)",
-    "function quoteExactOutputSingle((address tokenIn, address tokenOut, uint256 amount, uint24 fee, uint160 sqrtPriceLimitX96) params) external returns (uint256 amountIn, uint160 sqrtPriceX96After, uint32 initializedTicksCrossed, uint256 gasEstimate)",
-    "function quoteExactInput(bytes path, uint256 amountIn) external returns (uint256 amountOut, uint160[] sqrtPriceX96AfterList, uint32[] initializedTicksCrossedList, uint256 gasEstimate)",
-]
-
-_ROUTER_V3_ABI = [
-    "function exactInputSingle((address tokenIn, address tokenOut, uint24 fee, address recipient, uint256 deadline, uint256 amountIn, uint256 amountOutMinimum, uint160 sqrtPriceLimitX96) params) external payable returns (uint256 amountOut)",
-    "function exactInput((bytes path, address recipient, uint256 deadline, uint256 amountIn, uint256 amountOutMinimum) params) external payable returns (uint256 amountOut)",
-    "function exactOutputSingle((address tokenIn, address tokenOut, uint24 fee, address recipient, uint256 deadline, uint256 amountOut, uint256 amountInMaximum, uint160 sqrtPriceLimitX96) params) external payable returns (uint256 amountIn)",
-]
-
-_FACTORY_V3_ABI = [
-    "function getPool(address tokenA, address tokenB, uint24 fee) external view returns (address pool)",
-]
-
-_POOL_V3_ABI = [
-    "function slot0() external view returns (uint160 sqrtPriceX96, int24 tick, uint16 observationIndex, uint16 observationCardinality, uint16 observationCardinalityNext, uint8 feeProtocol, bool unlocked)",
-    "function liquidity() external view returns (uint128)",
-    "function fee() external view returns (uint24)",
-    "function token0() external view returns (address)",
-    "function token1() external view returns (address)",
-]
 
 # Canonical fee tiers (in hundredths of a basis point)
 FEE_TIERS: tuple[int, ...] = (100, 500, 3000, 10000)
 
 
-class UniswapV3(BaseAMM):
+class UniswapV3:
     """Uniswap V3 AMM integration.
 
     Args:
@@ -129,16 +91,16 @@ class UniswapV3(BaseAMM):
     def __init__(
         self,
         w3: AsyncWeb3,
-        router_address: str,
-        quoter_address: str,
+        router_address: Address,
+        quoter_address: Address,
         protocol_name: str = "UniswapV3",
         default_fee: int = 3000,
     ) -> None:
-        super().__init__(w3, router_address)
+        self.w3 = w3
+        self.router_address = router_address
         self._protocol_name = protocol_name
         self.default_fee = default_fee
-        self._router = Contract.from_abi(_ROUTER_V3_ABI, to=router_address)
-        self._quoter = Contract.from_abi(_QUOTER_V2_ABI, to=quoter_address)
+        self.quoter_address = quoter_address
 
     @property
     def protocol_name(self) -> str:
@@ -146,11 +108,11 @@ class UniswapV3(BaseAMM):
 
     def get_factory_contract(self, factory_address: str) -> Contract:
         """Return a contract bound to a V3 factory."""
-        return Contract.from_abi(_FACTORY_V3_ABI, to=factory_address)
+        return UNISWAP_V3_FACTORY(to=factory_address)
 
     def get_pool_contract(self, pool_address: str) -> Contract:
         """Return a contract bound to a V3 pool."""
-        return Contract.from_abi(_POOL_V3_ABI, to=pool_address)
+        return UNISWAP_V3_POOL(to=pool_address)
 
     # ------------------------------------------------------------------
     # Price queries (via QuoterV2)
@@ -185,7 +147,7 @@ class UniswapV3(BaseAMM):
             sqrtPriceLimitX96=0,
         )
         try:
-            result = await self._quoter.fns.quoteExactInputSingle(params).call(self.w3)
+            result = await UNISWAP_V3_QUOTER_V2.fns.quoteExactInputSingle(params).call(self.w3, to=self.quoter_address)
             amount_out = result[0] if isinstance(result, (list, tuple)) else result
         except Exception as exc:
             raise InsufficientLiquidityError(f"quoteExactInputSingle failed: {exc}") from exc
@@ -227,7 +189,9 @@ class UniswapV3(BaseAMM):
         # Multi-hop: encode path as bytes (tokenA + fee + tokenB + fee + tokenC …)
         encoded_path = self._encode_path(path, hop_fees)
         try:
-            result = await self._quoter.fns.quoteExactInput(encoded_path, amount_in.amount).call(self.w3)
+            result = await UNISWAP_V3_QUOTER_V2.fns.quoteExactInput(encoded_path, amount_in.amount).call(
+                self.w3, to=self.quoter_address
+            )
             final_amount_out = result[0] if isinstance(result, (list, tuple)) else result
         except Exception as exc:
             raise InsufficientLiquidityError(f"quoteExactInput failed: {exc}") from exc
@@ -261,7 +225,7 @@ class UniswapV3(BaseAMM):
             sqrtPriceLimitX96=0,
         )
         try:
-            result = await self._quoter.fns.quoteExactOutputSingle(params).call(self.w3)
+            result = await UNISWAP_V3_QUOTER_V2.fns.quoteExactOutputSingle(params).call(self.w3, to=self.quoter_address)
             amount_in_raw = result[0] if isinstance(result, (list, tuple)) else result
         except Exception as exc:
             raise InsufficientLiquidityError(f"quoteExactOutputSingle failed: {exc}") from exc
@@ -309,42 +273,5 @@ class UniswapV3(BaseAMM):
     # Math helpers
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def sqrt_price_to_price(
-        sqrt_price_x96: int,
-        token0_decimals: int = 18,
-        token1_decimals: int = 18,
-    ) -> Decimal:
-        """Convert a V3 ``sqrtPriceX96`` value to a human-readable price.
-
-        Args:
-            sqrt_price_x96: The raw ``sqrtPriceX96`` value from ``slot0()``.
-            token0_decimals: Decimals of token0.
-            token1_decimals: Decimals of token1.
-
-        Returns:
-            Price of token0 denominated in token1.
-        """
-        sqrt_price = Decimal(sqrt_price_x96) / Decimal(2**96)
-        price_raw = sqrt_price**2
-        adj = Decimal(10**token0_decimals) / Decimal(10**token1_decimals)
-        return price_raw * adj
-
-    @staticmethod
-    def _encode_path(tokens: list[Token], fees: list[int]) -> bytes:
-        """Encode a token path as ABI-packed bytes for V3 multi-hop calls.
-
-        Args:
-            tokens: Ordered list of tokens.
-            fees: Fee tier between each consecutive pair of tokens.
-
-        Returns:
-            ABI-packed bytes path.
-        """
-        if len(fees) != len(tokens) - 1:
-            raise ValueError("len(fees) must equal len(tokens) - 1")
-        result = bytes.fromhex(tokens[0].address[2:].lower().zfill(40))
-        for fee, token in zip(fees, tokens[1:]):
-            result += fee.to_bytes(3, "big")
-            result += bytes.fromhex(token.address[2:].lower().zfill(40))
-        return result
+    sqrt_price_to_price = staticmethod(v3_sqrt_price_to_price)
+    _encode_path = staticmethod(v3_encode_path)

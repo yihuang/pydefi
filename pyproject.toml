@@ -8,23 +8,31 @@ version = "0.1.0"
 description = "Modern Python library for DeFi: AMM DEXes, DEX aggregators, cross-chain bridges, and pathfinding"
 readme = "README.md"
 license = { file = "LICENSE" }
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
-    "eth-contract>=0.3.0",
+    "eth-contract @ git+https://github.com/yihuang/eth-contract.git@main",
+    "eth-abi @ git+https://github.com/yihuang/eth-abi.git@copilot/support-hooks-for-offset-detection",
     "web3>=7.0.0",
     "aiohttp>=3.9.0",
     "requests>=2.31.0",
     "pydantic>=2.0.0",
     "msgpack>=1.0.0",
+    "sqlmodel>=0.0.38",
+    "base58>=2.1.0",
+    "vyper @ git+https://github.com/vyperlang/vyper.git@bdf00d314d335565be40bd064975b514e19b7029",
 ]
 
 [project.optional-dependencies]
+indexer = [
+    "alembic>=1.12.0",
+]
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21",
     "pytest-rerunfailures>=14.0",
     "ruff>=0.4.0",
     "py-solc-x>=2.0.0",
+    "ethereum-execution>=2.19.0",
 ]
 
 [project.urls]
@@ -36,8 +44,13 @@ dev = [
 where = ["."]
 include = ["pydefi*"]
 
+[tool.setuptools.package-data]
+pydefi = ["config/*.json"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "module"
+asyncio_default_test_loop_scope = "module"
 testpaths = ["tests"]
 markers = [
     "live: marks tests as live integration tests that require network access (run with '-m live')",
@@ -45,7 +58,7 @@ markers = [
 ]
 
 [tool.ruff]
-target-version = "py310"
+target-version = "py311"
 line-length = 120
 
 [tool.ruff.lint]
