@@ -20,10 +20,12 @@ Run with::
 
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 
 import pytest
 import solcx
+from eth_abi.abi import decode as abi_decode
 from eth_contract.contract import ContractFunction
 from eth_contract.erc20 import ERC20
 from eth_contract.utils import send_transaction as eth_send_transaction
@@ -865,9 +867,7 @@ async def _execute_v4_swap(ctx, token_in: Token, edge: V4PoolEdge, amount_in: in
     ``receive()`` + the ``settle{value}`` path); an ERC-20 is wrapped and sent in.
     """
     w3, vm_address, deployer = ctx["w3"], ctx["vm_address"], ctx["deployer"]
-    swap_tx = build_swap_transaction(
-        RouteDAG().from_token(token_in).swap(USDC, edge), amount_in, vm_address, deployer
-    )
+    swap_tx = build_swap_transaction(RouteDAG().from_token(token_in).swap(USDC, edge), amount_in, vm_address, deployer)
 
     if token_in.address == ZERO_ADDRESS:
         await eth_send_transaction(w3, deployer, to=vm_address, value=Wei(amount_in))
@@ -959,3 +959,26 @@ class TestBuildSwapTransactionFork:
         assert edge.is_token0_in, "native ETH must be currency0 (zeroForOne=true path)"
         received = await _execute_v4_swap(ctx, eth, edge)
         assert received > 0, f"expected USDC out from native ETH V4 swap, got {received}"
+
+    async def test_v4_pool_key_fee_uses_exact_lp_fee(self, ctx) -> None:
+        """The V4 PoolKey fee must be the pool's exact lp_fee_pips, not the
+        truncated fee_bps*100 — which derives a non-existent poolId and reverts
+        for fees that are not a multiple of 100 pips.
+        """
+        edge = await _v4_pool_edge_or_skip(ctx["w3"], WETH)
+
+        def program_of(e: V4PoolEdge) -> bytes:
+            dag = RouteDAG().from_token(e.token_in).swap(e.token_out, e)
+            tx = build_swap_transaction(dag, 10**16, ctx["vm_address"], ctx["deployer"])
+            (program,) = abi_decode(["bytes"], tx.data[4:])
+            return program
+
+        # The real pool's exact on-chain fee is embedded in compiled program.
+        assert edge.lp_fee_pips.to_bytes(32, "big") in program_of(edge)
+
+        # Clone same pool with a non-100-multiple fee: exact value must be encoded.
+        odd = edge.lp_fee_pips + 50
+        odd_edge = dataclasses.replace(edge, lp_fee_pips=odd, fee_bps=odd // 100)
+        program = program_of(odd_edge)
+        assert odd.to_bytes(32, "big") in program
+        assert (odd_edge.fee_bps * 100).to_bytes(32, "big") not in program

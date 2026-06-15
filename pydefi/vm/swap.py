@@ -135,6 +135,10 @@ class SwapHop:
     recipient: Address
     zero_for_one: bool
     sqrt_price_limit_x96: int = field(default=0)
+    #: V4 only — the exact PoolKey fee in pips (1e-6).  ``fee_bps`` truncates
+    #: sub-bps / non-100-multiple fees, which would select the wrong PoolKey
+    #: (and a non-existent pool) at execution; this carries the unrounded value.
+    fee_pips: int = field(default=0)
     #: V4 only — tick spacing from the pool key (e.g. ``60`` for 0.3 % fee).
     tick_spacing: int = field(default=0)
     #: V4 only — hooks contract address, or zero address for hookless pools.
@@ -277,13 +281,15 @@ def _build_v4_swap(prog: Program, amount_in: Operand, hop: SwapHop) -> Operand:
     #   c0(0), c1(1), fee(2), tickSpacing(3), hooks(4),
     #   zeroForOne(5), amountSpecified(6), sqrtPriceLimitX96(7),
     #   tokenIn(8), recipient(9)
-    # V4 PoolKey fee is uint24 in pips (1/1_000_000), e.g. 3000 = 0.3 %.
+    # V4 PoolKey fee is uint24 in pips (1/1_000_000), e.g. 3000 = 0.3 %.  Use the
+    # exact ``fee_pips`` — ``fee_bps * 100`` would truncate non-100-multiple fees
+    # and address a non-existent PoolKey.
     data_bytes = encode(
         V4_UNLOCK_DATA_TYPES,
         [
             c0,
             c1,
-            hop.fee_bps * 100,
+            hop.fee_pips,
             hop.tick_spacing,
             hop.hooks,
             hop.zero_for_one,
@@ -338,6 +344,9 @@ def _swap_hop_from_route_swap(swap_action: RouteSwap, *, recipient: Address) -> 
         fee_bps=pool.fee_bps,
         recipient=recipient,
         zero_for_one=swap_action.zero_for_one(),
+        # V4 PoolKey fee in pips: prefer the edge's exact lp_fee_pips, falling
+        # back to fee_bps*100 for edges built without slot0 (and for V2/V3).
+        fee_pips=getattr(pool, "lp_fee_pips", 0) or pool.fee_bps * 100,
         tick_spacing=getattr(pool, "tick_spacing", 0),
         hooks=getattr(pool, "hooks", ZERO_ADDRESS),
     )
@@ -413,6 +422,8 @@ def swap_route_to_hops(route: SwapRoute, vm_address: str, recipient: str) -> lis
                 fee_bps=step.fee,
                 recipient=Address(hop_recipient),
                 zero_for_one=zero_for_one,
+                # V4 SwapStep.fee is already the PoolKey fee in pips.
+                fee_pips=step.fee,
                 tick_spacing=getattr(step, "tick_spacing", 0),
                 hooks=getattr(step, "hooks", ZERO_ADDRESS),
             )
