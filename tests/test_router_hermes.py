@@ -129,9 +129,17 @@ def test_hermes_candidates_deduplicated_by_first_hop_pool():
         g.add_bidirectional_pool(a, b, Address("0x" + format(i, "040x")), "UniswapV2", 10**22, 10**22)
 
     router = Router(g, max_hops=4, candidate_solver="hermes")
+    # Precondition: several simple candidates all start through the one WETH->T1
+    # pool, so the dedup has work to do (else the assertion below is vacuous).
+    hermes = router._ensure_hermes()
+    raw = [p for p in hermes.top_k_paths(weth.address, dst.address, 10) if len(set(p)) == len(p) and len(p) - 1 <= 4]
+    assert sum(1 for p in raw if len(p) > 1 and p[1] == t1.address) >= 2
+
     routes = router._find_top_routes_hermes(TokenAmount(weth, 10**18), dst, top_n=5)
     first_pools = [r.steps[0].pool_address for r in routes]
     assert len(first_pools) == len(set(first_pools)), f"duplicate first-hop pools: {first_pools}"
+    # The several same-first-hop candidates collapsed to exactly one route.
+    assert len(routes) == 1
 
 
 # ---------------------------------------------------------------------------

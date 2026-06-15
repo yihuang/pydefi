@@ -366,11 +366,12 @@ class TestFromPoolGraph:
     def test_amount_out_mode_quotes_via_probe(self):
         pool_g, weth, usdc, _pa, _pb = _two_pool_v2_graph()
         nx_g = from_pool_graph(pool_g, weight="amount_out", probe_amount=10**18)
-        # 1 WETH probe — edge weight = -log(amount_out/probe) ≈ -log(1994).
+        # 1 WETH probe — edge weight = -log(decimal-adjusted amount_out / probe).
         edge_data = nx_g.get_edge_data(weth.address, usdc.address)
-        # USDC is 6-dec, WETH is 18-dec; rate is per-wei so the weight
-        # encodes the cross-decimal ratio directly.
-        assert math.isfinite(edge_data["weight"])
+        # USDC 6-dec vs WETH 18-dec, ~1994 USDC/WETH ⇒ weight must be negative
+        # and ≈ -log(1994). Pins sign + decimal adjustment; isfinite misses both.
+        assert edge_data["weight"] < 0
+        assert edge_data["weight"] == pytest.approx(-math.log(1994), abs=0.5)
 
     def test_amount_out_mode_requires_positive_probe(self):
         pool_g, *_ = _two_pool_v2_graph()

@@ -63,7 +63,6 @@ _HERMES_CAP_WARNING_TEXT = (
     "Hermes candidate widening hit max_k before gathering top_n hop-valid paths; "
     "results may be conservative under the current search budget"
 )
-_HERMES_CAP_WARNING_EMITTED = False
 
 
 class Router:
@@ -248,18 +247,7 @@ class Router:
             )
 
         final_amount, final_path = best_result
-        steps = [
-            SwapStep(
-                token_in=edge.token_in,
-                token_out=edge.token_out,
-                pool_address=edge.pool_address,
-                protocol=edge.protocol,
-                fee=edge.fee_bps,
-                tick_spacing=getattr(edge, "tick_spacing", 0),
-                hooks=getattr(edge, "hooks", ZERO_ADDRESS),
-            )
-            for edge in final_path
-        ]
+        steps = self._steps_from_edges(final_path)
         return SwapRoute(
             steps=steps,
             amount_in=amount_in,
@@ -302,18 +290,7 @@ class Router:
             final_amount = edge.amount_out(final_amount)
 
         return SwapRoute(
-            steps=[
-                SwapStep(
-                    token_in=edge.token_in,
-                    token_out=edge.token_out,
-                    pool_address=edge.pool_address,
-                    protocol=edge.protocol,
-                    fee=edge.fee_bps,
-                    tick_spacing=getattr(edge, "tick_spacing", 0),
-                    hooks=getattr(edge, "hooks", ZERO_ADDRESS),
-                )
-                for edge in path
-            ],
+            steps=self._steps_from_edges(path),
             amount_in=amount_in,
             amount_out=TokenAmount(token=token_out, amount=final_amount),
             price_impact=self._estimate_price_impact(path, amount_in.amount),
@@ -383,18 +360,7 @@ class Router:
             best_at[(tok_addr, depth)] = current_amount
 
             if tok_addr == dst_addr:
-                steps = [
-                    SwapStep(
-                        token_in=e.token_in,
-                        token_out=e.token_out,
-                        pool_address=e.pool_address,
-                        protocol=e.protocol,
-                        fee=e.fee_bps,
-                        tick_spacing=getattr(e, "tick_spacing", 0),
-                        hooks=getattr(e, "hooks", ZERO_ADDRESS),
-                    )
-                    for e in path
-                ]
+                steps = self._steps_from_edges(path)
                 routes.append(
                     SwapRoute(
                         steps=steps,
@@ -651,18 +617,7 @@ class Router:
 
         routes: list[SwapRoute] = []
         for final_amount, final_path in diverse:
-            steps = [
-                SwapStep(
-                    token_in=edge.token_in,
-                    token_out=edge.token_out,
-                    pool_address=edge.pool_address,
-                    protocol=edge.protocol,
-                    fee=edge.fee_bps,
-                    tick_spacing=getattr(edge, "tick_spacing", 0),
-                    hooks=getattr(edge, "hooks", ZERO_ADDRESS),
-                )
-                for edge in final_path
-            ]
+            steps = self._steps_from_edges(final_path)
             routes.append(
                 SwapRoute(
                     steps=steps,
@@ -703,7 +658,6 @@ class Router:
 
         effective_max_hops = self.max_hops if max_hops is None else max_hops
         hermes = self._ensure_hermes()
-        global _HERMES_CAP_WARNING_EMITTED
         # Iteratively double ``k`` until top_n hop-valid candidates exist or
         # Yen exhausts (returns fewer than asked). Bound keeps Yen's worst
         # case O(k²·|E|·|V|) cost finite on pathological graphs.
@@ -723,9 +677,10 @@ class Router:
                 hit_sampling_cap = k >= max_k and len(candidates) >= k
                 break
             k *= 2
-        if hit_sampling_cap and not _HERMES_CAP_WARNING_EMITTED:
+        if hit_sampling_cap:
+            # Python's default filter de-dups per call site, so warn freely:
+            # no module-global latch to race on or to suppress later cap hits.
             warnings.warn(_HERMES_CAP_WARNING_TEXT, RuntimeWarning, stacklevel=2)
-            _HERMES_CAP_WARNING_EMITTED = True
         if not node_paths:
             raise NoRouteFoundError(f"No route found from {src.symbol} to {token_out.symbol}")
 
@@ -737,12 +692,14 @@ class Router:
         # iterations run on masked subgraphs — but every path returned uses
         # only edges present in the *original* graph, so re-walk via self.graph.
         for path in node_paths:
+            # Hermes can emit non-simple walks on negative-weight graphs (spot
+            # weights are -log(rate)); a token-revisiting route is not valid.
+            if len(set(path)) != len(path):
+                continue
             edges_along: list[PoolEdge] = []
             cur_amount = amount_in.amount
             ok = True
             for u_addr, v_addr in zip(path, path[1:]):
-                u_token = hermes.graph.nodes[u_addr]
-                v_token = hermes.graph.nodes[v_addr]
                 # The chosen PoolEdge for (u, v) was stashed at adapter time.
                 edge_data = hermes.graph.get_edge_data(u_addr, v_addr)
                 if edge_data is None or "edge" not in edge_data:
@@ -754,22 +711,9 @@ class Router:
                 if cur_amount <= 0:
                     ok = False
                     break
-                # Suppress unused-var lint.
-                del u_token, v_token
             if not ok or not edges_along:
                 continue
-            steps = [
-                SwapStep(
-                    token_in=e.token_in,
-                    token_out=e.token_out,
-                    pool_address=e.pool_address,
-                    protocol=e.protocol,
-                    fee=e.fee_bps,
-                    tick_spacing=getattr(e, "tick_spacing", 0),
-                    hooks=getattr(e, "hooks", ZERO_ADDRESS),
-                )
-                for e in edges_along
-            ]
+            steps = self._steps_from_edges(edges_along)
             routes.append(
                 SwapRoute(
                     steps=steps,
@@ -833,6 +777,24 @@ class Router:
         if payload["actions"] and isinstance(payload["actions"][0], RouteSplit):
             return [leg.fraction_bps for leg in payload["actions"][0].legs]
         return [MAX_BPS]
+
+    @staticmethod
+    def _steps_from_edges(edges: list[PoolEdge]) -> list[SwapStep]:
+        """Build the :class:`SwapStep` list for *edges*, carrying each edge's V4
+        PoolKey fields (``tick_spacing`` / ``hooks``) so a step round-trips to its pool.
+        """
+        return [
+            SwapStep(
+                token_in=edge.token_in,
+                token_out=edge.token_out,
+                pool_address=edge.pool_address,
+                protocol=edge.protocol,
+                fee=edge.fee_bps,
+                tick_spacing=getattr(edge, "tick_spacing", 0),
+                hooks=getattr(edge, "hooks", ZERO_ADDRESS),
+            )
+            for edge in edges
+        ]
 
     @staticmethod
     def _edges_to_dag(token_in: Token, edges: list[PoolEdge]) -> RouteDAG:

@@ -1310,10 +1310,11 @@ class TestASGM:
         # All path_weights still on the simplex.
         total_w = sum(w.path_weight for w in ws)
         assert abs(total_w - 1.0) < 1e-6
-        # Total output should be positive — 2 wei distributed via largest-
-        # remainder lands at least 1 wei on one path that yields nonzero.
-        total_out = sum(p.amount_out(int(round(w.path_weight * 2)), w) for p, w in zip([p1, p2, p3], ws))
-        assert total_out > 0 or all(p.amount_out(2, PathWeights(1.0, [[1.0]])) == 0 for p in [p1, p2, p3])
+        # The 2 wei must be distributed, not dropped to [0, 0, 0] by rounding.
+        # (Output stays 0 only because the pools are too deep to yield on 1 wei.)
+        inputs = _distribute_int(2, [w.path_weight for w in ws])
+        assert sum(inputs) == 2
+        assert any(a > 0 for a in inputs)
 
     def test_intra_hop_weights_optimised_for_bundle(self):
         """A path with a multi-edge bundle should allocate non-trivially across edges."""
