@@ -18,13 +18,12 @@ from pydefi.crosschain.compose import (
     build_supply_template,
 )
 from pydefi.crosschain.route import (
+    ComposeBridge,
     CrossChainLeg,
     CrossChainRoute,
-    build_ccip_compose_route,
-    build_ccip_deposit_route,
-    build_cctp_compose_route,
-    build_cctp_deposit_route,
     build_cctp_swap_deposit_route,
+    build_compose_route,
+    build_deposit_route,
     estimate_cctp_delivered,
 )
 
@@ -34,12 +33,11 @@ __all__ = [
     "build_source_swap_bridge_program",
     "SupplyTemplate",
     "build_supply_template",
+    "ComposeBridge",
     "CrossChainLeg",
     "CrossChainRoute",
-    "build_cctp_compose_route",
-    "build_cctp_deposit_route",
+    "build_compose_route",
+    "build_deposit_route",
     "build_cctp_swap_deposit_route",
-    "build_ccip_compose_route",
-    "build_ccip_deposit_route",
     "estimate_cctp_delivered",
 ]
