@@ -14,12 +14,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from eth_contract.erc20 import ERC20
-
 from pydefi.abi.bridge import EUREKA_COMPOSER
 from pydefi.bridge.eureka import ICS20_DEFAULT_PORT, encode_send_transfer_calldata
 from pydefi.types import Address
 from pydefi.vm.context import Operand, Program, ValueLike
+from pydefi.vm.erc20 import emit_approve
 
 
 def encode_send_and_compose_calldata(
@@ -167,8 +166,7 @@ def approve_then_send_transfer(
     operand. ``approve_amount`` defaults to ``amount`` — pass e.g.
     ``2**256 - 1`` for an unlimited allowance."""
     approve_val: ValueLike = approve_amount if approve_amount is not None else amount
-    approve_ok = prog.call_contract(denom, ERC20.fns.approve, transfer_addr, approve_val)
-    prog.assert_(approve_ok, "approve failed")
+    emit_approve(prog, denom, transfer_addr, approve_val)
     return send_transfer(
         prog,
         transfer_addr=transfer_addr,

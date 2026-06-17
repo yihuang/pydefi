@@ -19,7 +19,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from eth_contract.erc20 import ERC20
 from vyper.venom.basicblock import IRLiteral
 from web3 import AsyncWeb3
 
@@ -30,6 +29,7 @@ from pydefi.pathfinder.dag import RouteDAG
 from pydefi.types import Address, TokenAmount
 from pydefi.vm.context import Program
 from pydefi.vm.dag import _build_dag_actions
+from pydefi.vm.erc20 import emit_approve
 from pydefi.vm.yield_deposit import AMOUNT_SENTINEL, find_amount_offset
 from pydefi.yields.router import YieldMarket, morpho_params
 
@@ -164,15 +164,7 @@ def build_compose_deposit_program(
     if min_out > 0:
         prog.assert_ge(deposit_amount, min_out, "compose: out too low")
 
-    if approve_reset:
-        prog.assert_(
-            prog.call_contract(bytes(target_token), ERC20.fns.approve, bytes(protocol), 0),
-            "approve reset failed",
-        )
-    prog.assert_(
-        prog.call_contract(bytes(target_token), ERC20.fns.approve, bytes(protocol), deposit_amount),
-        "approve failed",
-    )
+    emit_approve(prog, target_token, protocol, deposit_amount, reset=approve_reset)
     prog.assert_(
         prog.call_raw(bytes(protocol), supply_template, patches={amount_offset: deposit_amount}),
         "supply failed",
@@ -222,15 +214,7 @@ def build_source_swap_bridge_program(
     if min_usdc_out > 0:
         prog.assert_ge(usdc_out, min_usdc_out, "source swap: usdc out too low")
 
-    if approve_reset:
-        prog.assert_(
-            prog.call_contract(bytes(usdc), ERC20.fns.approve, bytes(token_messenger), 0),
-            "approve reset failed",
-        )
-    prog.assert_(
-        prog.call_contract(bytes(usdc), ERC20.fns.approve, bytes(token_messenger), usdc_out),
-        "approve failed",
-    )
+    emit_approve(prog, usdc, token_messenger, usdc_out, reset=approve_reset)
     prog.assert_(
         prog.call_raw(bytes(token_messenger), burn_template, patches={burn_amount_offset: usdc_out}),
         "burn failed",
