@@ -50,6 +50,8 @@ _TOKENS: dict[str, dict] = {
         "decimals": 6,
         "addresses": {
             ChainId.KITE: "0x7aB6f3ed87C42eF0aDb67Ed95090f8bF5240149e",
+            # Bridged USDC.e on Polygon — Polymarket's CTF collateral token.
+            ChainId.POLYGON: "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
         },
     },
     "DAI": {
@@ -146,15 +148,18 @@ _CONTRACTS: dict[str, dict[int, str]] = {
     "LUCID_LAYERZERO_ADAPTER": {ChainId.KITE: "0x5ef37628D45C80740Fb6Db7Ed9C0A753B4f85263"},
     # https://blockscout.mantrascan.io/address/0xA9bD5559531fe372E866AD4337599962d5810E01
     "LUCID_HYPERLANE_ADAPTER": {ChainId.MANTRA: "0xA9bD5559531fe372E866AD4337599962d5810E01"},
+    # Polymarket on-chain CTF + neg-risk contracts (POLYMARKET_*) are merged
+    # from config/polymarket.json, synced from Polymarket/neg-risk-ctf-adapter
+    # by config/update.sh. The USDC.e collateral lives in _TOKENS.
 }
 
 
 def _merge_generated(contracts: dict[str, dict[int, str]], filename: str) -> None:
     """Merge a generated address file (config/<filename>) into *contracts*.
 
-    aave.json, aave_v4.json, compound.json, morpho.json and uniswap.json are
-    produced from upstream registries by config/update.sh. Regenerate with
-    ``bash config/update.sh`` if a file is missing/empty/corrupt."""
+    aave.json, aave_v4.json, compound.json, morpho.json, uniswap.json and
+    polymarket.json are produced from upstream registries by config/update.sh.
+    Regenerate with ``bash config/update.sh`` if a file is missing/empty/corrupt."""
     path = Path(__file__).resolve().parent / "config" / filename
     hint = "run config/update.sh to (re)generate it"
     if not path.exists():
@@ -175,6 +180,7 @@ _merge_generated(_CONTRACTS, "aave_v4.json")
 _merge_generated(_CONTRACTS, "compound.json")
 _merge_generated(_CONTRACTS, "morpho.json")
 _merge_generated(_CONTRACTS, "uniswap.json")
+_merge_generated(_CONTRACTS, "polymarket.json")
 
 
 def get_address(name: str, chain_id: int) -> Address:
