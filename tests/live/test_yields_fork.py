@@ -22,6 +22,7 @@ from decimal import Decimal
 import pytest
 from eth_contract.erc20 import ERC20
 
+from pydefi._utils import erc20_approve_tx
 from pydefi.lending import AaveV3, CompoundV3
 from pydefi.types import ChainId, TokenAmount
 from pydefi.yields import YieldMarket, YieldRoute, build_yield_route
@@ -64,13 +65,7 @@ async def _seed_whale_with_usdc(fork_w3, amount: int) -> None:
 async def _seed_aave_position(fork_w3, amount: int) -> None:
     """Set up a pre-existing aUSDC position on Aave for rebalance scenarios."""
     aave = await AaveV3.from_chain(fork_w3, ChainId.ETHEREUM)
-    approve_tx = {
-        "to": USDC.address,
-        "data": "0x" + ERC20.fns.approve(bytes(aave.pool_address), amount).data.hex(),
-        "value": "0",
-        "gas": "100000",
-    }
-    r = await send_tx(fork_w3, ETH_WHALE, approve_tx)
+    r = await send_tx(fork_w3, ETH_WHALE, erc20_approve_tx(USDC.address, aave.pool_address, amount))
     assert r["status"] == 1, "USDC approve to Aave reverted"
     r = await send_tx(fork_w3, ETH_WHALE, aave.build_supply_tx(ETH_WHALE, TokenAmount(USDC, amount)))
     assert r["status"] == 1, "Aave supply reverted"

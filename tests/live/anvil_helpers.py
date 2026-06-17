@@ -13,6 +13,7 @@ from eth_contract import Contract
 from eth_contract.erc20 import ERC20
 from web3 import AsyncWeb3, Web3
 
+from pydefi._utils import erc20_approve_tx
 from pydefi.types import Address
 from tests.addrs import USDC_WHALE
 
@@ -46,12 +47,11 @@ async def wrap_eth(w3: AsyncWeb3, sender: Address, weth: Address, amount: int) -
 
 async def erc20_approve(w3: AsyncWeb3, token: Address, owner: Address, spender: Address, amount: int) -> None:
     """``IERC20(token).approve(spender, amount)`` sent from *owner*."""
-    call = ERC20.fns.approve(spender, amount).data
     tx_hash = await w3.eth.send_transaction(
         {
             "to": Web3.to_checksum_address(token),
             "from": Web3.to_checksum_address(owner),
-            "data": "0x" + call.hex(),
+            "data": erc20_approve_tx(token, spender, amount)["data"],
         }
     )
     receipt = await w3.eth.wait_for_transaction_receipt(tx_hash)

@@ -834,7 +834,7 @@ class TestLayerZeroOFT:
         amount_in = TokenAmount.from_human(OFT_TOKEN_ETH, "1000")
         recipient: Address = Address("0x" + "AA" * 20)
 
-        with patch.object(oft, "quote_send_fee", new=AsyncMock(return_value=5 * 10**15)):
+        with patch.object(oft, "_quote_native_fee", new=AsyncMock(return_value=5 * 10**15)):
             tx = await oft.build_bridge_tx(OFT_TOKEN_ETH, OFT_TOKEN_ARB, amount_in, recipient)
 
         assert tx["to"] == OFT_ADDRESS
@@ -854,7 +854,7 @@ class TestLayerZeroOFT:
         recipient: Address = Address("0x" + "AA" * 20)
         refund: Address = Address("0x" + "BB" * 20)
 
-        with patch.object(oft, "quote_send_fee", new=AsyncMock(return_value=10**15)):
+        with patch.object(oft, "_quote_native_fee", new=AsyncMock(return_value=10**15)):
             tx = await oft.build_bridge_tx(OFT_TOKEN_ETH, OFT_TOKEN_ARB, amount_in, recipient, refund_address=refund)
 
         assert tx["to"] == OFT_ADDRESS

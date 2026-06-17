@@ -28,6 +28,7 @@ from pydefi.abi.vm import DeFiVM
 from pydefi.deployments import get_address
 from pydefi.types import ZERO_ADDRESS, Address, ChainId
 from pydefi.vm.context import Program
+from pydefi.vm.erc20 import emit_approve
 
 #: Safe v1.4.1 canonical deployments — one address on every supported chain;
 #: see ``chains_for("SAFE_PROXY_FACTORY")`` in :mod:`pydefi.deployments`.
@@ -74,9 +75,7 @@ def build_deposit_program(
     if execution_fee:
         origin = prog.builder.origin()
         prog.assert_(prog.call_contract(bytes(token), ERC20.fns.transfer, origin, execution_fee), "fee failed")
-    if approve_reset:
-        prog.assert_(prog.call_contract(bytes(token), ERC20.fns.approve, bytes(protocol), 0), "approve reset failed")
-    prog.assert_(prog.call_contract(bytes(token), ERC20.fns.approve, bytes(protocol), amount), "approve failed")
+    emit_approve(prog, token, protocol, amount, reset=approve_reset)
     prog.assert_(prog.call_raw(bytes(protocol), supply_template, patches={amount_offset: amount}), "supply failed")
     prog.builder.stop()
     return prog.build()
