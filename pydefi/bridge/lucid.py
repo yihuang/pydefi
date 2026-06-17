@@ -150,6 +150,11 @@ class LucidBridge:
 
     protocol_name: str = "Lucid"
 
+    @property
+    def spender(self) -> Address:
+        """The Lucid controller — the contract that pulls ``token_in``."""
+        return self.controller_address
+
     def _encode_bridge_options(self, refund_address: Address, gas_limit: int) -> bytes:
         # LayerZero uses uint128 gasLimit, Hyperlane uses uint256 — only field
         # that differs between the two adapter Options structs.
@@ -259,7 +264,7 @@ class LucidBridge:
         to ``recipient``). ``fee_buffer_bps`` bumps msg.value above the live quote
         for cases where broadcast lags the quote and adapter pricing drifts.
 
-        ``slippage_bps`` and ``token_out`` are accepted for ``BaseBridge``
+        ``slippage_bps`` and ``token_out`` are accepted for :class:`~pydefi.bridge.Bridge`
         compatibility and ignored: Lucid is 1:1, and the destination token is
         implicit from the controller — neither value can change the outcome.
         """

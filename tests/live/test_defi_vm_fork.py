@@ -20,6 +20,7 @@ Run with::
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 from pathlib import Path
 
@@ -39,7 +40,7 @@ from pydefi.amm.uniswap_v4 import UniswapV4
 from pydefi.exceptions import InsufficientLiquidityError
 from pydefi.pathfinder.dag import RouteDAG
 from pydefi.pathfinder.graph import PoolGraph, V3PoolEdge, V4PoolEdge
-from pydefi.pathfinder.router import Router, _dag_leg_weights
+from pydefi.pathfinder.router import Router
 from pydefi.types import ZERO_ADDRESS, Address, Token, TokenAmount
 from pydefi.vm import Program
 from pydefi.vm.swap import build_swap_transaction
@@ -821,11 +822,12 @@ class TestApproveProxyFork:
 
 
 async def _v3_pool_edge(w3, pool_address: Address, token_in, token_out) -> V3PoolEdge:
-    pool = UNISWAP_V3_POOL(to=POOL_WETH_USDC_500)
-    token0_addr = await pool.fns.token0().call(w3)
-    slot0 = await pool.fns.slot0().call(w3)
-    liquidity = await pool.fns.liquidity().call(w3)
-    fee = await pool.fns.fee().call(w3)
+    token0_addr, slot0, liquidity, fee = await asyncio.gather(
+        UNISWAP_V3_POOL.fns.token0().call(w3, to=pool_address),
+        UNISWAP_V3_POOL.fns.slot0().call(w3, to=pool_address),
+        UNISWAP_V3_POOL.fns.liquidity().call(w3, to=pool_address),
+        UNISWAP_V3_POOL.fns.fee().call(w3, to=pool_address),
+    )
     return V3PoolEdge(
         token_in=token_in,
         token_out=token_out,
@@ -885,7 +887,7 @@ async def _execute_v4_swap(ctx, token_in: Token, edge: V4PoolEdge, amount_in: in
 class TestBuildSwapTransactionFork:
     """Fork tests for build_swap_transaction(RouteDAG) end-to-end.
 
-    Exercises the full path: find_best_split → RouteDAG →
+    Exercises the full path: find_optimal_split → RouteDAG →
     build_swap_transaction → vm.execute() on a mainnet fork with real V3 pools.
     Unlike TestQuoteFork (which quotes each leg via QuoterV2), these tests
     execute the compiled swap program and verify non-zero token output.
@@ -894,8 +896,8 @@ class TestBuildSwapTransactionFork:
     async def test_split_route_build_and_execute(self, ctx) -> None:
         """build_swap_transaction(RouteDAG) executes a 2-leg split on a mainnet fork.
 
-        Uses fee-equalized synthetic liquidity to force find_best_split into a
-        2-leg split DAG, compiles it via build_swap_transaction, and executes
+        Uses fee-equalized synthetic liquidity to force find_optimal_split into
+        a 2-leg split DAG, compiles it via build_swap_transaction, and executes
         against real V3 pools, verifying the deployer receives non-zero USDC.
         """
         w3 = ctx["w3"]
@@ -921,8 +923,8 @@ class TestBuildSwapTransactionFork:
                 )
             )
 
-        dag = Router(graph).find_best_split(TokenAmount(WETH, amount_in), USDC, step_bps=1000)
-        assert len(_dag_leg_weights(dag)) >= 1, "expected at least one leg in split DAG"
+        dag = Router(graph).find_optimal_split(TokenAmount(WETH, amount_in), USDC)
+        assert len(Router.dag_leg_weights(dag)) >= 1, "expected at least one leg in split DAG"
 
         # min_final_out=0: actual output verified by balance check below.
         swap_tx = build_swap_transaction(dag, amount_in, vm_address, deployer)

@@ -238,13 +238,41 @@ V4_UNLOCK_AMOUNT_OUT_OFFSET: int = 64
 CURVE_POOL = Contract.from_abi(
     [
         "function get_dy(int128 i, int128 j, uint256 dx) external view returns (uint256)",
+        "function get_dx(int128 i, int128 j, uint256 dy) external view returns (uint256)",
         "function get_dy_underlying(int128 i, int128 j, uint256 dx) external view returns (uint256)",
         "function exchange(int128 i, int128 j, uint256 dx, uint256 min_dy) external returns (uint256)",
         "function exchange_underlying(int128 i, int128 j, uint256 dx, uint256 min_dy) external returns (uint256)",
         "function coins(uint256 i) external view returns (address)",
         "function balances(uint256 i) external view returns (uint256)",
         "function A() external view returns (uint256)",
+        "function A_precise() external view returns (uint256)",
         "function fee() external view returns (uint256)",
+        "function get_virtual_price() external view returns (uint256)",
+        "function totalSupply() external view returns (uint256)",
+        # Stable-NG / rate-stabilised pools
+        "function N_COINS() external view returns (uint256)",
+        "function stored_rates() external view returns (uint256[])",
+        "function offpeg_fee_multiplier() external view returns (uint256)",
+    ]
+)
+
+# Curve V2 (cryptoswap: Twocrypto / Tricrypto) view interface used to snapshot
+# pool state for local pricing via :mod:`pydefi.amm.curve_math`.
+CURVE_V2_POOL = Contract.from_abi(
+    [
+        "function get_dy(uint256 i, uint256 j, uint256 dx) external view returns (uint256)",
+        "function exchange(uint256 i, uint256 j, uint256 dx, uint256 min_dy) external returns (uint256)",
+        "function coins(uint256 i) external view returns (address)",
+        "function balances(uint256 i) external view returns (uint256)",
+        "function A() external view returns (uint256)",
+        "function gamma() external view returns (uint256)",
+        "function D() external view returns (uint256)",
+        "function fee() external view returns (uint256)",
+        "function mid_fee() external view returns (uint256)",
+        "function out_fee() external view returns (uint256)",
+        "function fee_gamma() external view returns (uint256)",
+        "function price_scale() external view returns (uint256)",
+        "function price_scale(uint256 k) external view returns (uint256)",
     ]
 )
 
@@ -254,5 +282,15 @@ CURVE_REGISTRY = Contract.from_abi(
         "function find_pool_for_coins(address from, address to, uint256 i) external view returns (address)",
         "function get_coin_indices(address pool, address from, address to) external view returns (int128, int128, bool)",
         "function get_best_rate(address from, address to, uint256 amount) external view returns (address, uint256)",
+    ]
+)
+
+# Curve MetaRegistry aggregates every Curve registry/factory on a chain and is
+# used for pool discovery.  Mainnet: 0xF98B45FA17DE75FB1aD0e7aFD971b0ca00e379fC
+CURVE_METAREGISTRY = Contract.from_abi(
+    [
+        "function find_pools_for_coins(address from, address to) external view returns (address[])",
+        "function get_n_coins(address pool) external view returns (uint256)",
+        "function is_meta(address pool) external view returns (bool)",
     ]
 )

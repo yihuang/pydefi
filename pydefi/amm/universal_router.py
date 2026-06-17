@@ -34,7 +34,7 @@ from eth_abi import encode as abi_encode
 from pydefi.amm.uniswap_v3 import UniswapV3
 from pydefi.amm.v4_pool_key import sort_currencies
 from pydefi.deployments import chains_for, get_address
-from pydefi.types import Address, Token, TokenAmount
+from pydefi.types import ZERO_ADDRESS, Address, Token, TokenAmount
 from pydefi.vm.swap import SwapTransaction
 
 #: Chain ID -> newest (>= 2.1.1) UniversalRouter deployment, from the registry
@@ -49,23 +49,24 @@ UNIVERSAL_ROUTER_ADDRESSES: dict[int, Address] = {
 # ---------------------------------------------------------------------------
 
 #: Use as ``recipient`` to send output tokens to the transaction sender.
-MSG_SENDER: str = "0x0000000000000000000000000000000000000001"
+MSG_SENDER: Address = Address("0x0000000000000000000000000000000000000001")
 
 #: Use as ``recipient`` to keep output tokens inside the router
 #: (useful as an intermediate step in multi-command transactions).
-ADDRESS_THIS: str = "0x0000000000000000000000000000000000000002"
+ADDRESS_THIS: Address = Address("0x0000000000000000000000000000000000000002")
 
 # ---------------------------------------------------------------------------
-# Intermediate-hop sentinel amounts
+# Intermediate-hop sentinel amounts (v4-periphery ActionConstants)
 # ---------------------------------------------------------------------------
 
-#: Pass as ``amount_in`` for a V2 or V3 intermediate hop to instruct the router
-#: to spend its entire ERC-20 balance of the input token (``type(uint256).max``).
-CONTRACT_BALANCE_V3: int = (1 << 256) - 1
+#: ``ActionConstants.CONTRACT_BALANCE``: as a V2/V3 ``amount_in`` the router
+#: spends its entire ERC-20 balance; as a V4 ``SETTLE`` amount it settles its
+#: entire currency balance into the PoolManager.
+CONTRACT_BALANCE: int = 1 << 255
 
-#: Pass as ``amount_in`` for a V4 intermediate hop (``type(uint128).max``).
-#: The V4 router replaces this with the router's full currency balance.
-CONTRACT_BALANCE_V4: int = (1 << 128) - 1
+#: ``ActionConstants.OPEN_DELTA``: as a V4 swap amount, consume the open
+#: PoolManager delta (e.g. the credit created by a preceding ``SETTLE``).
+OPEN_DELTA: int = 0
 
 # ---------------------------------------------------------------------------
 # Pool hop descriptors
@@ -119,7 +120,7 @@ class V4Hop:
     token_out: Token
     fee: int
     tick_spacing: int
-    hooks: str = "0x0000000000000000000000000000000000000000"
+    hooks: Address = ZERO_ADDRESS
     hook_data: bytes = field(default_factory=bytes)
 
 
@@ -257,17 +258,17 @@ class UniversalRouter:
     Example::
 
         from pydefi.amm.universal_router import UniversalRouter
-        from pydefi.types import Token, TokenAmount, ChainId
+        from pydefi.types import Address, Token, TokenAmount, ChainId
 
-        WETH = Token(ChainId.ETHEREUM, "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2", "WETH")
-        USDC = Token(ChainId.ETHEREUM, "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", "USDC", 6)
+        WETH = Token(ChainId.ETHEREUM, Address("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"), "WETH")
+        USDC = Token(ChainId.ETHEREUM, Address("0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"), "USDC", 6)
 
         router = UniversalRouter(UniversalRouter.KNOWN_ADDRESSES[1])
         # V3 single-hop
         tx = router.build_v3_exact_in_transaction(
             amount_in=TokenAmount.from_human(WETH, "1"),
             token_out=USDC,
-            recipient="0xYourAddress",
+            recipient=Address("0xYourAddress…"),
             amount_out_minimum=1900_000_000,
             fee=500,
             deadline=1_700_000_000,
@@ -278,7 +279,7 @@ class UniversalRouter:
             token_out=USDC,
             fee=500,
             tick_spacing=10,
-            recipient="0xYourAddress",
+            recipient=Address("0xYourAddress…"),
             amount_out_minimum=1900_000_000,
         )
         # tx.to, tx.data, tx.value are ready to use
@@ -296,7 +297,7 @@ class UniversalRouter:
 
     @staticmethod
     def encode_v3_swap_exact_in(
-        recipient: str,
+        recipient: Address,
         amount_in: int,
         amount_out_minimum: int,
         path: bytes,
@@ -328,7 +329,7 @@ class UniversalRouter:
 
     @staticmethod
     def encode_v3_swap_exact_out(
-        recipient: str,
+        recipient: Address,
         amount_out: int,
         amount_in_maximum: int,
         path: bytes,
@@ -357,10 +358,10 @@ class UniversalRouter:
 
     @staticmethod
     def encode_v2_swap_exact_in(
-        recipient: str,
+        recipient: Address,
         amount_in: int,
         amount_out_minimum: int,
-        path: list[str],
+        path: list[Address],
         payer_is_user: bool = True,
     ) -> bytes:
         """Encode the ABI input bytes for a ``V2_SWAP_EXACT_IN`` command.
@@ -384,10 +385,10 @@ class UniversalRouter:
 
     @staticmethod
     def encode_v2_swap_exact_out(
-        recipient: str,
+        recipient: Address,
         amount_out: int,
         amount_in_maximum: int,
-        path: list[str],
+        path: list[Address],
         payer_is_user: bool = True,
     ) -> bytes:
         """Encode the ABI input bytes for a ``V2_SWAP_EXACT_OUT`` command.
@@ -410,7 +411,7 @@ class UniversalRouter:
         )
 
     @staticmethod
-    def encode_wrap_eth(recipient: str, amount_min: int) -> bytes:
+    def encode_wrap_eth(recipient: Address, amount_min: int) -> bytes:
         """Encode the ABI input bytes for a ``WRAP_ETH`` command.
 
         Args:
@@ -424,7 +425,7 @@ class UniversalRouter:
         return abi_encode(["address", "uint256"], [recipient, amount_min])
 
     @staticmethod
-    def encode_unwrap_weth(recipient: str, amount_min: int) -> bytes:
+    def encode_unwrap_weth(recipient: Address, amount_min: int) -> bytes:
         """Encode the ABI input bytes for an ``UNWRAP_WETH`` command.
 
         Args:
@@ -438,7 +439,7 @@ class UniversalRouter:
         return abi_encode(["address", "uint256"], [recipient, amount_min])
 
     @staticmethod
-    def encode_sweep(token: str, recipient: str, amount_min: int) -> bytes:
+    def encode_sweep(token: Address, recipient: Address, amount_min: int) -> bytes:
         """Encode the ABI input bytes for a ``SWEEP`` command.
 
         Sweeps the entire ERC-20 (or native ETH) balance held by the router
@@ -512,7 +513,7 @@ class UniversalRouter:
         self,
         amount_in: TokenAmount,
         token_out: Token,
-        recipient: str,
+        recipient: Address,
         amount_out_minimum: int,
         fee: int = 3000,
         deadline: int | None = None,
@@ -545,7 +546,7 @@ class UniversalRouter:
         amount_in: TokenAmount,
         path: list[Token],
         fees: list[int],
-        recipient: str,
+        recipient: Address,
         amount_out_minimum: int,
         deadline: int | None = None,
         payer_is_user: bool = True,
@@ -576,7 +577,7 @@ class UniversalRouter:
         self,
         amount_out: TokenAmount,
         token_in: Token,
-        recipient: str,
+        recipient: Address,
         amount_in_maximum: int,
         fee: int = 3000,
         deadline: int | None = None,
@@ -610,7 +611,7 @@ class UniversalRouter:
         self,
         amount_in: TokenAmount,
         path: list[Token],
-        recipient: str,
+        recipient: Address,
         amount_out_minimum: int,
         deadline: int | None = None,
         payer_is_user: bool = True,
@@ -640,7 +641,7 @@ class UniversalRouter:
         self,
         amount_out: TokenAmount,
         path: list[Token],
-        recipient: str,
+        recipient: Address,
         amount_in_maximum: int,
         deadline: int | None = None,
         payer_is_user: bool = True,
@@ -670,7 +671,7 @@ class UniversalRouter:
         eth_amount: int,
         weth_token: Token,
         token_out: Token,
-        recipient: str,
+        recipient: Address,
         amount_out_minimum: int,
         fee: int = 3000,
         deadline: int | None = None,
@@ -756,7 +757,7 @@ class UniversalRouter:
         currency1: Address,
         fee: int,
         tick_spacing: int,
-        hooks: str,
+        hooks: Address,
         zero_for_one: bool,
         amount_in: int,
         amount_out_minimum: int,
@@ -814,7 +815,7 @@ class UniversalRouter:
         currency1: Address,
         fee: int,
         tick_spacing: int,
-        hooks: str,
+        hooks: Address,
         zero_for_one: bool,
         amount_out: int,
         amount_in_maximum: int,
@@ -861,7 +862,7 @@ class UniversalRouter:
         )
 
     @staticmethod
-    def encode_v4_settle_all_params(currency: str, max_amount: int) -> bytes:
+    def encode_v4_settle_all_params(currency: Address, max_amount: int) -> bytes:
         """Encode ABI params for a ``SETTLE_ALL`` V4 action.
 
         ``SETTLE_ALL`` pays the full owed balance for *currency* from
@@ -879,7 +880,7 @@ class UniversalRouter:
         return abi_encode(["address", "uint256"], [currency, max_amount])
 
     @staticmethod
-    def encode_v4_settle_params(currency: str, amount: int, payer_is_user: bool) -> bytes:
+    def encode_v4_settle_params(currency: Address, amount: int, payer_is_user: bool) -> bytes:
         """Encode ABI params for a ``SETTLE`` V4 action.
 
         ``SETTLE`` pays *amount* of *currency* from either ``msgSender()``
@@ -902,7 +903,7 @@ class UniversalRouter:
         return abi_encode(["address", "uint256", "bool"], [currency, amount, payer_is_user])
 
     @staticmethod
-    def encode_v4_take_all_params(currency: str, min_amount: int) -> bytes:
+    def encode_v4_take_all_params(currency: Address, min_amount: int) -> bytes:
         """Encode ABI params for a ``TAKE_ALL`` V4 action.
 
         ``TAKE_ALL`` transfers the entire positive delta for *currency* to
@@ -918,7 +919,7 @@ class UniversalRouter:
         return abi_encode(["address", "uint256"], [currency, min_amount])
 
     @staticmethod
-    def encode_v4_take_params(currency: str, recipient: str, amount: int) -> bytes:
+    def encode_v4_take_params(currency: Address, recipient: Address, amount: int) -> bytes:
         """Encode ABI params for a ``TAKE`` V4 action.
 
         ``TAKE`` transfers *amount* of *currency* to an explicit *recipient*.
@@ -940,7 +941,7 @@ class UniversalRouter:
     @staticmethod
     def encode_v4_exact_in_params(
         currency_in: Address,
-        path: list[tuple[Address, int, int, str, bytes]],
+        path: list[tuple[Address, int, int, Address, bytes]],
         amount_in: int,
         amount_out_minimum: int,
     ) -> bytes:
@@ -980,8 +981,8 @@ class UniversalRouter:
                 hooks, hookData)`` tuples — one per hop.  The last entry's
                 *intermediateCurrency* is the final output token.
             amount_in: Exact input amount (raw units).  Pass
-                :data:`CONTRACT_BALANCE_V4` for intermediate segments where
-                the router should spend its entire balance.
+                :data:`OPEN_DELTA` for intermediate segments to consume the
+                input-currency credit created by a preceding ``SETTLE``.
             amount_out_minimum: Minimum acceptable output amount (raw units).
 
         Returns:
@@ -998,7 +999,7 @@ class UniversalRouter:
     @staticmethod
     def encode_v4_exact_out_params(
         currency_out: Address,
-        path: list[tuple[Address, int, int, str, bytes]],
+        path: list[tuple[Address, int, int, Address, bytes]],
         amount_out: int,
         amount_in_maximum: int,
     ) -> bytes:
@@ -1051,9 +1052,9 @@ class UniversalRouter:
         token_out: Token,
         fee: int,
         tick_spacing: int,
-        recipient: str,
+        recipient: Address,
         amount_out_minimum: int,
-        hooks: str = "0x0000000000000000000000000000000000000000",
+        hooks: Address = ZERO_ADDRESS,
         hook_data: bytes = b"",
         deadline: int | None = None,
     ) -> SwapTransaction:
@@ -1124,9 +1125,9 @@ class UniversalRouter:
         amount_out: TokenAmount,
         fee: int,
         tick_spacing: int,
-        recipient: str,
+        recipient: Address,
         amount_in_maximum: int,
-        hooks: str = "0x0000000000000000000000000000000000000000",
+        hooks: Address = ZERO_ADDRESS,
         hook_data: bytes = b"",
         deadline: int | None = None,
     ) -> SwapTransaction:
@@ -1199,9 +1200,9 @@ class UniversalRouter:
         token_out: Token,
         fee: int,
         tick_spacing: int,
-        recipient: str,
+        recipient: Address,
         amount_out_minimum: int,
-        hooks: str = "0x0000000000000000000000000000000000000000",
+        hooks: Address = ZERO_ADDRESS,
         hook_data: bytes = b"",
         deadline: int | None = None,
     ) -> SwapTransaction:
@@ -1276,7 +1277,7 @@ class UniversalRouter:
         self,
         amount_in: TokenAmount,
         hops: list[V4Hop],
-        recipient: str,
+        recipient: Address,
         amount_out_minimum: int,
         payer_is_user: bool = True,
         deadline: int | None = None,
@@ -1339,7 +1340,7 @@ class UniversalRouter:
         self,
         amount_out: TokenAmount,
         hops: list[V4Hop],
-        recipient: str,
+        recipient: Address,
         amount_in_maximum: int,
         payer_is_user: bool = True,
         deadline: int | None = None,
@@ -1408,7 +1409,7 @@ class UniversalRouter:
         eth_amount: int,
         weth_token: Token,
         hops: list[V4Hop],
-        recipient: str,
+        recipient: Address,
         amount_out_minimum: int,
         deadline: int | None = None,
     ) -> SwapTransaction:
@@ -1476,7 +1477,7 @@ class UniversalRouter:
         self,
         amount_in: TokenAmount,
         hops: list[PoolHop],
-        recipient: str,
+        recipient: Address,
         amount_out_minimum: int,
         payer_is_user: bool = True,
     ) -> tuple[list[RouterCommand | int], list[bytes]]:
@@ -1533,7 +1534,7 @@ class UniversalRouter:
             if isinstance(first_hop, V2Hop):
                 v2_segment: list[V2Hop] = [h for h in segment if isinstance(h, V2Hop)]
                 seg_path = [v2_segment[0].token_in] + [h.token_out for h in v2_segment]
-                seg_amount_in = amount_in.amount if is_first else CONTRACT_BALANCE_V3
+                seg_amount_in = amount_in.amount if is_first else CONTRACT_BALANCE
                 input_data = self.encode_v2_swap_exact_in(
                     seg_recipient,
                     seg_amount_in,
@@ -1548,7 +1549,7 @@ class UniversalRouter:
                 v3_segment: list[V3Hop] = [h for h in segment if isinstance(h, V3Hop)]
                 seg_tokens = [v3_segment[0].token_in] + [h.token_out for h in v3_segment]
                 seg_fees = [h.fee for h in v3_segment]
-                seg_amount_in = amount_in.amount if is_first else CONTRACT_BALANCE_V3
+                seg_amount_in = amount_in.amount if is_first else CONTRACT_BALANCE
                 encoded_path = UniswapV3._encode_path(seg_tokens, seg_fees)
                 input_data = self.encode_v3_swap_exact_in(
                     seg_recipient,
@@ -1564,27 +1565,40 @@ class UniversalRouter:
                 v4_segment: list[V4Hop] = [h for h in segment if isinstance(h, V4Hop)]
                 seg_currency_in = v4_segment[0].token_in.address
                 path_keys = [(h.token_out.address, h.fee, h.tick_spacing, h.hooks, h.hook_data) for h in v4_segment]
-                seg_amount_in = amount_in.amount if is_first else CONTRACT_BALANCE_V4
                 seg_addr_out = v4_segment[-1].token_out.address
-
-                swap_params = self.encode_v4_exact_in_params(
-                    currency_in=seg_currency_in,
-                    path=path_keys,
-                    amount_in=seg_amount_in,
-                    amount_out_minimum=seg_amount_out_min,
-                )
-                if seg_payer_is_user:
-                    settle_action = V4Action.SETTLE_ALL
-                    settle_params = self.encode_v4_settle_all_params(seg_currency_in, amount_in.amount)
-                else:
-                    settle_action = V4Action.SETTLE
-                    settle_params = self.encode_v4_settle_params(seg_currency_in, 0, payer_is_user=False)
                 take_params = self.encode_v4_take_params(seg_addr_out, seg_recipient, 0)
 
-                v4_input = self.encode_v4_swap_actions(
-                    [V4Action.SWAP_EXACT_IN, settle_action, V4Action.TAKE],
-                    [swap_params, settle_params, take_params],
-                )
+                if is_first:
+                    swap_params = self.encode_v4_exact_in_params(
+                        currency_in=seg_currency_in,
+                        path=path_keys,
+                        amount_in=amount_in.amount,
+                        amount_out_minimum=seg_amount_out_min,
+                    )
+                    if seg_payer_is_user:
+                        settle_action = V4Action.SETTLE_ALL
+                        settle_params = self.encode_v4_settle_all_params(seg_currency_in, amount_in.amount)
+                    else:
+                        settle_action = V4Action.SETTLE
+                        settle_params = self.encode_v4_settle_params(seg_currency_in, 0, payer_is_user=False)
+                    v4_actions = [V4Action.SWAP_EXACT_IN, settle_action, V4Action.TAKE]
+                    v4_params = [swap_params, settle_params, take_params]
+                else:
+                    # Mid-route: a V4 swap can't see the ERC-20 the previous
+                    # command left in the router, so SETTLE(CONTRACT_BALANCE)
+                    # moves it into the PoolManager first and the swap consumes
+                    # that credit via OPEN_DELTA (router-sdk action order).
+                    settle_params = self.encode_v4_settle_params(seg_currency_in, CONTRACT_BALANCE, payer_is_user=False)
+                    swap_params = self.encode_v4_exact_in_params(
+                        currency_in=seg_currency_in,
+                        path=path_keys,
+                        amount_in=OPEN_DELTA,
+                        amount_out_minimum=seg_amount_out_min,
+                    )
+                    v4_actions = [V4Action.SETTLE, V4Action.SWAP_EXACT_IN, V4Action.TAKE]
+                    v4_params = [settle_params, swap_params, take_params]
+
+                v4_input = self.encode_v4_swap_actions(v4_actions, v4_params)
                 commands.append(RouterCommand.V4_SWAP)
                 inputs.append(v4_input)
 
@@ -1594,7 +1608,7 @@ class UniversalRouter:
         self,
         amount_in: TokenAmount,
         hops: list[PoolHop],
-        recipient: str,
+        recipient: Address,
         amount_out_minimum: int,
         deadline: int | None = None,
     ) -> SwapTransaction:
@@ -1648,7 +1662,7 @@ class UniversalRouter:
         eth_amount: int,
         weth_token: Token,
         hops: list[PoolHop],
-        recipient: str,
+        recipient: Address,
         amount_out_minimum: int,
         deadline: int | None = None,
     ) -> SwapTransaction:

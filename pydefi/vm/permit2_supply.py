@@ -12,13 +12,13 @@ import secrets
 from typing import Any
 
 from eth_contract import Contract
-from eth_contract.erc20 import ERC20
 from eth_utils import keccak
 
 from pydefi._utils import UINT256_MAX, to_tx
 from pydefi.abi.vm import DeFiVM
 from pydefi.types import Address
 from pydefi.vm.context import Program
+from pydefi.vm.erc20 import emit_approve
 
 PERMIT2 = "0x000000000022D473030F116dDEE9F6B43aC78BA3"
 _PERMIT2 = Contract.from_abi(["function nonceBitmap(address owner, uint256 wordPos) view returns (uint256)"])
@@ -61,12 +61,10 @@ def build_supply_program(
     for USDT-style tokens that forbid a nonzero→nonzero change — only needed
     when a nonzero-but-insufficient allowance is standing."""
     prog = Program()
-    if reset:
-        prog.assert_(prog.call_contract(bytes(token), ERC20.fns.approve, bytes(protocol), 0), "approve reset failed")
     if approve:
-        prog.assert_(
-            prog.call_contract(bytes(token), ERC20.fns.approve, bytes(protocol), UINT256_MAX), "approve failed"
-        )
+        emit_approve(prog, token, protocol, UINT256_MAX, reset=reset)
+    elif reset:
+        emit_approve(prog, token, protocol, 0)
     prog.assert_(prog.call_raw(bytes(protocol), supply_data), "supply failed")
     prog.builder.stop()
     return prog.build()

@@ -61,26 +61,30 @@ from __future__ import annotations
 
 from pydefi import Token
 from pydefi._math import MAX_BPS
-from pydefi.abi.dex_aggregator import OKX_DEX_ROUTER, BaseRequest, RouterPath
+from pydefi.abi.dex_aggregator import (
+    ADDRESS_MASK as _ADDRESS_MASK,
+)
+from pydefi.abi.dex_aggregator import (
+    INPUT_INDEX_SHIFT as _INPUT_INDEX_OFFSET,
+)
+from pydefi.abi.dex_aggregator import (
+    OKX_DEX_ROUTER,
+    BaseRequest,
+    RouterPath,
+)
+from pydefi.abi.dex_aggregator import (
+    OUTPUT_INDEX_SHIFT as _OUTPUT_INDEX_OFFSET,
+)
+from pydefi.abi.dex_aggregator import (
+    REVERSE_MASK as _REVERSE_MASK,
+)
+from pydefi.abi.dex_aggregator import (
+    WEIGHT_SHIFT as _WEIGHT_OFFSET,
+)
 from pydefi.pathfinder.dag import RouteAction, RouteDAG, RouteSplit, RouteSwap
 from pydefi.types import Address, SwapProtocol
 
 # ---------------------------------------------------------------------------
-# DexRouter bit-mask constants (from CommonUtils.sol)
-# ---------------------------------------------------------------------------
-
-_REVERSE_MASK: int = 1 << 255
-_ADDRESS_MASK: int = (1 << 160) - 1
-
-# Weight occupies bytes 12-13 of the uint256 word (bits 160-175)
-_WEIGHT_OFFSET: int = 160
-
-# Output index bytes 10-11 (bits 176-183)
-_OUTPUT_INDEX_OFFSET: int = 176
-
-# Input index bytes 8-9 (bits 184-191)
-_INPUT_INDEX_OFFSET: int = 184
-
 # Transfer mode masks — packed into the high bits of fromToken
 _MODE_LEGACY: int = 0
 _MODE_NO_TRANSFER: int = 1 << 251

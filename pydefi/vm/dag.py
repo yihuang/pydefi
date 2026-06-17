@@ -58,12 +58,20 @@ def build_quote_program_for_dag(
     dag: RouteDAG,
     *,
     amount_in: int,
-    quoter_address: str | None = None,
+    min_final_out: int = 0,
+    quoter_address: Address | None = None,
 ) -> Program:
     """Build a quote/simulation program from a :class:`RouteDAG`.
 
     Returns ``amountOut`` via ``RETURN(0, 32)`` so callers reading from
     ``eth_call`` returndata see the final output amount.
+
+    Args:
+        dag: Route DAG to simulate.
+        amount_in: Input amount for the first hop.
+        min_final_out: If > 0, revert when ``amountOut < min_final_out``.
+        quoter_address: Uniswap V3-compatible quoter address.  Required when
+            the DAG contains V3 hops; ignored for V2-only routes.
     """
     if not dag.actions:
         raise ValueError("build_quote_program_for_dag: route DAG must contain at least one action")
@@ -75,6 +83,8 @@ def build_quote_program_for_dag(
         dag.actions,
         quoter_address=quoter_address,
     )
+    if min_final_out > 0:
+        prog.assert_ge(final_out, min_final_out, "slippage: out too low")
     prog.return_word(final_out)
     return prog
 
@@ -148,7 +158,7 @@ def _build_dag_quote_actions(
     amount_in: Operand,
     actions: Sequence[RouteAction],
     *,
-    quoter_address: str | None,
+    quoter_address: Address | None,
 ) -> Operand:
     current = amount_in
     for action in actions:

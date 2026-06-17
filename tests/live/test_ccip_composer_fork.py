@@ -586,11 +586,29 @@ class TestCCIPComposerFork:
             await getattr(ctx["composer"].fns, fn_name)(*args).transact(ctx["w3"], non_owner)
 
     async def test_transfer_ownership(self, ctx):
-        """transferOwnership updates owner and emits OwnershipTransferred."""
-        composer = ctx["composer"]
+        """transferOwnership updates owner and emits OwnershipTransferred.
+
+        Deploys a dedicated composer rather than reusing the module-scoped
+        fixture: the ownership mutation must not leak into later tests if an
+        assertion below fails partway, which (combined with ``--reruns``) would
+        otherwise cascade ``CCIPComposer: not owner`` into every owner-gated
+        test that follows.
+        """
         w3 = ctx["w3"]
         deployer = ctx["deployer"]
         new_owner = ctx["accounts"][3]
+
+        compiled = _compile_ccip_composer()
+        composer_address = await deploy(
+            w3,
+            compiled,
+            deployer,
+            Web3.to_checksum_address(ctx["router_address"]),
+            Web3.to_checksum_address(ctx["interpreter_addr"]),
+            deployer,  # _owner
+            False,  # _allowlistEnabled
+        )
+        composer = Contract(abi=compiled["abi"], tx={"to": Web3.to_checksum_address(composer_address)})
 
         old_owner = await composer.fns.owner().call(w3)
         receipt = await composer.fns.transferOwnership(new_owner).transact(w3, deployer)
@@ -601,9 +619,6 @@ class TestCCIPComposerFork:
         assert len(events) == 1
         assert HexBytes(events[0]["args"]["previousOwner"]) == HexBytes(old_owner)
         assert HexBytes(events[0]["args"]["newOwner"]) == HexBytes(new_owner)
-
-        # Restore ownership so subsequent tests in this module still pass.
-        await composer.fns.transferOwnership(deployer).transact(w3, new_owner)
 
     # ------------------------------------------------------------------
     # Constructor guards

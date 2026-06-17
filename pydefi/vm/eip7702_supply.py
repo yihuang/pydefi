@@ -47,7 +47,7 @@ def _data_bytes(call: dict[str, Any]) -> bytes:
 
 
 def _to_hex(call: dict[str, Any]) -> str:
-    # build_approve_tx emits "to" as Address bytes; the lending builders as hex str.
+    # erc20_approve_tx emits "to" as Address bytes; the lending builders as hex str.
     to = call["to"]
     return to if isinstance(to, str) else Address(to).to_0x_hex()
 

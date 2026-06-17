@@ -28,6 +28,20 @@ from typing import Annotated
 from eth_contract import ABIStruct, Contract
 
 # ---------------------------------------------------------------------------
+# Bit-mask constants (from CommonUtils.sol / DagRouter.sol)
+# ---------------------------------------------------------------------------
+
+ADDRESS_MASK: int = (1 << 160) - 1
+ONE_FOR_ZERO_MASK: int = 1 << 255
+REVERSE_MASK: int = 1 << 255
+WEIGHT_SHIFT: int = 160
+WEIGHT_MASK: int = 0xFFFF << 160
+OUTPUT_INDEX_SHIFT: int = 176
+OUTPUT_INDEX_MASK: int = 0xFF << 176
+INPUT_INDEX_SHIFT: int = 184
+INPUT_INDEX_MASK: int = 0xFF << 184
+
+# ---------------------------------------------------------------------------
 # Struct definitions
 # ---------------------------------------------------------------------------
 
@@ -77,17 +91,33 @@ class RouterPath(ABIStruct):
     """Packed source token for this node."""
 
 
+class PMMSwapRequest(ABIStruct):
+    """PMM order struct — pass an empty array when unused."""
+
+    pathIndex: Annotated[int, "uint256"]
+    payer: Annotated[str, "address"]
+    fromToken: Annotated[str, "address"]
+    toToken: Annotated[str, "address"]
+    fromTokenAmountMax: Annotated[int, "uint256"]
+    toTokenAmountMax: Annotated[int, "uint256"]
+    salt: Annotated[int, "uint256"]
+    deadLine: Annotated[int, "uint256"]
+    isPushOrder: Annotated[bool, "bool"]
+    extension: Annotated[bytes, "bytes"]
+
+
 # ---------------------------------------------------------------------------
-# Contract object
+# Contract objects
 # ---------------------------------------------------------------------------
 
 OKX_DEX_ROUTER = Contract.from_abi(
     BaseRequest.human_readable_abi()
     + RouterPath.human_readable_abi()
+    + PMMSwapRequest.human_readable_abi()
     + [
-        # dagSwapTo — the core DAG execution entry point
+        "function uniswapV3SwapTo(uint256 receiver, uint256 amount, uint256 minReturn, uint256[] pools) external payable returns (uint256 returnAmount)",
+        "function smartSwapTo(uint256 orderId, address receiver, BaseRequest baseRequest, uint256[] batchesAmount, RouterPath[][] batches, PMMSwapRequest[] extraData) external payable returns (uint256 returnAmount)",
         "function dagSwapTo(uint256 orderId, address receiver, BaseRequest baseRequest, RouterPath[] paths) external payable returns (uint256 returnAmount)",
-        # dagSwapByOrderId — convenience wrapper that sends output to msg.sender
         "function dagSwapByOrderId(uint256 orderId, BaseRequest baseRequest, RouterPath[] paths) external payable returns (uint256 returnAmount)",
     ]
 )

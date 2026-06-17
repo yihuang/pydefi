@@ -392,6 +392,46 @@ def build_swap_transaction(
     return SwapTransaction(to=vm_address, data=calldata)
 
 
+async def quote_dag(
+    dag: RouteDAG,
+    *,
+    amount_in: int,
+    w3,
+    vm_address: Address,
+    quoter_address: Address | None = None,
+    min_final_out: int = 0,
+) -> int:
+    """View-only DeFiVM quote of *dag* via ``eth_call``; returns ``amountOut``.
+
+    Returns ``0`` on empty returndata (degenerate liquidity).
+
+    Args:
+        dag: Route DAG to simulate.
+        amount_in: Input amount for the first hop in raw units.
+        w3: Connected ``AsyncWeb3``.
+        vm_address: Deployed DeFiVM contract.
+        quoter_address: Uniswap V3-compatible quoter; required for V3 hops.
+        min_final_out: Revert when ``amountOut < min_final_out`` (0 disables).
+    """
+    from eth_abi import decode as abi_decode
+
+    from pydefi.abi import DeFiVM
+    from pydefi.vm.dag import build_quote_program_for_dag
+
+    program = build_quote_program_for_dag(
+        dag,
+        amount_in=amount_in,
+        quoter_address=quoter_address,
+        min_final_out=min_final_out,
+    )
+    calldata = DeFiVM.fns.execute(program.build()).data
+    raw = await w3.eth.call({"to": vm_address, "data": calldata})
+    if not raw:
+        return 0
+    (amount_out,) = abi_decode(["uint256"], raw)
+    return int(amount_out)
+
+
 def swap_route_to_hops(route: SwapRoute, vm_address: str, recipient: str) -> list[SwapHop]:
     """Convert a :class:`~pydefi.types.SwapRoute` into :class:`SwapHop` descriptors."""
     hops: list[SwapHop] = []

@@ -141,7 +141,8 @@ def _free_port() -> int:
 
 
 def _terminate(proc: subprocess.Popen) -> None:
-    """Terminate *proc*, escalating to ``kill`` if it doesn't exit promptly."""
+    """Stop a local-node subprocess (Anvil or surfpool), escalating to
+    SIGKILL if it does not exit on SIGTERM."""
     proc.terminate()
     try:
         proc.wait(timeout=10)
@@ -152,10 +153,11 @@ def _terminate(proc: subprocess.Popen) -> None:
 
 
 @contextlib.asynccontextmanager
-async def _anvil_fork(fork_url: str):
-    """Spawn an Anvil fork of *fork_url*, yield a connected AsyncWeb3, tear down.
+async def _anvil_node(extra_args: list[str]):
+    """Spawn an Anvil node with *extra_args*, yield a connected AsyncWeb3, tear down.
 
-    Finds a free port, launches ``anvil --fork-url <fork_url>``, polls the
+    Finds a free port, launches ``anvil`` with *extra_args* (a ``--fork-url``
+    for the mainnet forks, nothing for a plain second chain), polls the
     JSON-RPC endpoint until the node is ready (up to 30 s), then terminates the
     process on exit.  The connection actively fails until anvil is fully
     started, so startup exceptions are intentionally swallowed.
@@ -169,7 +171,7 @@ async def _anvil_fork(fork_url: str):
     port = _free_port()
     url = f"http://127.0.0.1:{port}"
     proc = subprocess.Popen(
-        ["anvil", "--fork-url", fork_url, "--port", str(port), "--silent"],
+        ["anvil", "--port", str(port), "--silent", *extra_args],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
@@ -193,7 +195,15 @@ async def _anvil_fork(fork_url: str):
 @pytest.fixture
 async def fork_w3():
     """Function-scoped Anvil fork of Ethereum mainnet (forks ``ETH_RPC_URL``)."""
-    async with _anvil_fork(ETH_RPC_URL) as w3:
+    async with _anvil_node(["--fork-url", ETH_RPC_URL]) as w3:
+        yield w3
+
+
+@pytest.fixture
+async def plain_anvil_w3():
+    """A plain (non-forked) Anvil node — a fast, empty second chain for tests
+    that need a source chain alongside ``fork_w3``."""
+    async with _anvil_node([]) as w3:
         yield w3
 
 
@@ -201,7 +211,7 @@ async def fork_w3():
 async def fork_w3_module():
     """Module-scoped Anvil fork of Ethereum mainnet, shared across a module to
     avoid per-test process startup costs."""
-    async with _anvil_fork(ETH_RPC_URL) as w3:
+    async with _anvil_node(["--fork-url", ETH_RPC_URL]) as w3:
         yield w3
 
 
@@ -213,7 +223,7 @@ async def polygon_fork_w3():
     Polygon fork rather than the Ethereum :func:`fork_w3`.  Polygon is a PoA
     chain with oversized block ``extraData``, so the POA middleware is injected
     to keep ``eth_sendTransaction`` (which fetches the latest block) working."""
-    async with _anvil_fork(POLYGON_RPC_URL) as w3:
+    async with _anvil_node(["--fork-url", POLYGON_RPC_URL]) as w3:
         w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
         yield w3
 
@@ -273,5 +283,4 @@ async def surfpool_rpc():
         pytest.fail("surfpool did not start within 60 seconds")
 
     yield url
-
     _terminate(proc)

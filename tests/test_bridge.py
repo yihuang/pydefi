@@ -834,7 +834,7 @@ class TestLayerZeroOFT:
         amount_in = TokenAmount.from_human(OFT_TOKEN_ETH, "1000")
         recipient: Address = Address("0x" + "AA" * 20)
 
-        with patch.object(oft, "quote_send_fee", new=AsyncMock(return_value=5 * 10**15)):
+        with patch.object(oft, "_quote_native_fee", new=AsyncMock(return_value=5 * 10**15)):
             tx = await oft.build_bridge_tx(OFT_TOKEN_ETH, OFT_TOKEN_ARB, amount_in, recipient)
 
         assert tx["to"] == OFT_ADDRESS
@@ -854,7 +854,7 @@ class TestLayerZeroOFT:
         recipient: Address = Address("0x" + "AA" * 20)
         refund: Address = Address("0x" + "BB" * 20)
 
-        with patch.object(oft, "quote_send_fee", new=AsyncMock(return_value=10**15)):
+        with patch.object(oft, "_quote_native_fee", new=AsyncMock(return_value=10**15)):
             tx = await oft.build_bridge_tx(OFT_TOKEN_ETH, OFT_TOKEN_ARB, amount_in, recipient, refund_address=refund)
 
         assert tx["to"] == OFT_ADDRESS
@@ -1041,11 +1041,16 @@ class TestCCIP:
         assert ccip.protocol_name == "CCIP"
 
     def test_router_address_defaults_to_registry(self, ccip):
-        assert ccip.router_address == _CCIP_ROUTER[1]
+        assert ccip.router_address == Address(_CCIP_ROUTER[1])
+
+    def test_spender_is_the_router(self, ccip):
+        assert ccip.spender == ccip.router_address
 
     def test_router_address_override(self):
         custom = "0x" + "11" * 20
-        assert CCIP(w3=None, src_chain_id=1, dst_chain_id=42161, router_address=custom).router_address == custom
+        assert CCIP(w3=None, src_chain_id=1, dst_chain_id=42161, router_address=custom).router_address == Address(
+            custom
+        )
 
     def test_unknown_src_chain_raises(self):
         with pytest.raises(BridgeError, match="Router"):
@@ -1156,7 +1161,7 @@ class TestCCIP:
         """Native fee → tx.value carries the fee, tx.to is the Router."""
         with _patched_quote_fee(ccip, 5 * 10**15):
             tx = await ccip.build_bridge_tx(CCIP_USDC_ETH, CCIP_USDC_ARB, amount_in, _CCIP_RECIPIENT)
-        assert tx["to"] == _CCIP_ROUTER[1]
+        assert tx["to"] == Address(_CCIP_ROUTER[1])
         assert tx["data"].startswith("0x" + _CCIP_SEND_SELECTOR)
         assert tx["value"] == str(5 * 10**15)
         assert int(tx["gas"]) > 0
@@ -1274,26 +1279,21 @@ class TestCCIPCompose:
     async def test_rejects_empty_program(self, ccip, amount_in):
         with _patched_quote_fee(ccip, 10**15):
             with pytest.raises(BridgeError, match="program"):
-                await ccip.build_bridge_compose_tx(CCIP_USDC_ETH, amount_in, _CCIP_COMPOSER, program=b"")
+                await ccip.build_bridge_compose_tx(amount_in, _CCIP_COMPOSER, program=b"")
 
     @pytest.mark.asyncio
     async def test_embeds_program_in_data(self, ccip, amount_in):
         """The DeFiVM bytecode appears verbatim inside the ccipSend calldata."""
         program = b"\xde\xad\xbe\xef" * 16
         with _patched_quote_fee(ccip, 10**15):
-            tx = await ccip.build_bridge_compose_tx(CCIP_USDC_ETH, amount_in, _CCIP_COMPOSER, program)
+            tx = await ccip.build_bridge_compose_tx(amount_in, _CCIP_COMPOSER, program)
         assert tx["data"].startswith("0x" + _CCIP_SEND_SELECTOR)
         assert program.hex() in tx["data"].lower()
 
     @pytest.mark.asyncio
     async def test_receiver_is_composer(self, ccip, amount_in):
         with _patched_quote_fee(ccip, 10**15):
-            tx = await ccip.build_bridge_compose_tx(
-                CCIP_USDC_ETH,
-                amount_in,
-                _CCIP_COMPOSER,
-                program=b"\x01\x02\x03\x04",
-            )
+            tx = await ccip.build_bridge_compose_tx(amount_in, _CCIP_COMPOSER, program=b"\x01\x02\x03\x04")
         assert _CCIP_COMPOSER.hex().lower() in tx["data"].lower()
 
     @pytest.mark.asyncio
@@ -1302,13 +1302,7 @@ class TestCCIPCompose:
         program = b"\xaa" * 64
         spy = AsyncMock(return_value=10**15)
         with patch.object(ccip, "quote_fee", new=spy):
-            await ccip.build_bridge_compose_tx(
-                CCIP_USDC_ETH,
-                amount_in,
-                _CCIP_COMPOSER,
-                program,
-                gas_limit=1_500_000,
-            )
+            await ccip.build_bridge_compose_tx(amount_in, _CCIP_COMPOSER, program, gas_limit=1_500_000)
         spy.assert_called_once()
         assert spy.call_args.kwargs["data"] == program
         assert spy.call_args.kwargs["gas_limit"] == 1_500_000
@@ -1316,12 +1310,7 @@ class TestCCIPCompose:
     @pytest.mark.asyncio
     async def test_native_fee_attaches_value(self, ccip, amount_in):
         with _patched_quote_fee(ccip, 7 * 10**15):
-            tx = await ccip.build_bridge_compose_tx(
-                CCIP_USDC_ETH,
-                amount_in,
-                _CCIP_COMPOSER,
-                program=b"\xff" * 32,
-            )
+            tx = await ccip.build_bridge_compose_tx(amount_in, _CCIP_COMPOSER, program=b"\xff" * 32)
         assert tx["value"] == str(7 * 10**15)
 
     @pytest.mark.asyncio
@@ -1330,12 +1319,7 @@ class TestCCIPCompose:
         link = Address("0x" + "DD" * 20)
         c = CCIP(w3=None, src_chain_id=1, dst_chain_id=42161, fee_token=link)
         with _patched_quote_fee(c, 20 * 10**18):
-            tx = await c.build_bridge_compose_tx(
-                CCIP_USDC_ETH,
-                amount_in,
-                _CCIP_COMPOSER,
-                program=b"\xff" * 32,
-            )
+            tx = await c.build_bridge_compose_tx(amount_in, _CCIP_COMPOSER, program=b"\xff" * 32)
         assert tx["value"] == "0"
         assert link.hex().lower() in tx["data"].lower()
 
@@ -1575,6 +1559,9 @@ class TestLucidBridge:
         assert b.dst_chain_id == lucid.dst
         assert b.controller_address == lucid.ctrl
         assert b.adapter_address == lucid.adapter
+
+    def test_spender_is_the_controller(self, lucid):
+        assert lucid.bridge.spender == lucid.ctrl
 
     def test_encode_bridge_options_shape(self, lucid):
         # 64 bytes total; gasLimit lives in the low bytes of the second word
