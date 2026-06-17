@@ -50,7 +50,10 @@ interface ISignatureTransfer {
  *  - ``address(this)`` inside the program is DeFiVM's address.
  *  - External ``CALL``s originate from DeFiVM (msg.sender to sub-calls is DeFiVM).
  *  - ETH held by DeFiVM is forwarded via ``callvalue()`` and available to ``CALL``.
- *  - No contract deployment (CREATE) required — no nonce increase.
+ *  - Running a program requires no contract deployment, so the common path
+ *    leaves DeFiVM's nonce untouched.  ``CREATE``/``CREATE2`` remain legal
+ *    *inside* programs (a child contract runs in its own context and cannot
+ *    touch DeFiVM's storage); a program that deploys does bump the nonce.
  *
  *  The patched interpreter (see ``PatchedInterpreterConstants.sol``)
  *  rejects ``SLOAD`` / ``SSTORE`` / ``CALLCODE`` / ``DELEGATECALL`` /

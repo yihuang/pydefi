@@ -6,9 +6,11 @@ Five opcodes — ``SLOAD``, ``SSTORE``, ``CALLCODE``, ``DELEGATECALL``,
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
+from eth_utils import keccak
 from web3.exceptions import ContractLogicError, Web3RPCError
 
 from pydefi.vm import Program
@@ -18,6 +20,7 @@ from tests.live.sol_utils import compile_sol_file, deploy
 _REVERT = (ContractLogicError, Web3RPCError)
 
 _DEFI_VM_SOL = Path(__file__).resolve().parents[2] / "pydefi" / "vm" / "DeFiVM.sol"
+_VENDOR_CONSTANTS = Path(__file__).resolve().parents[2] / "vendor" / "evm-interpreter" / "Constants.sol"
 _FAKE_TARGET = b"\xde" * 20
 
 
@@ -179,4 +182,16 @@ class TestPatchedInterpreter:
         assert bytes(INTERPRETER_ADDR) in runtime, (
             f"expected {INTERPRETER_ADDR} (raw 20 bytes) embedded in DeFiVM runtime "
             f"via immutable INTERPRETER, but not found"
+        )
+
+    async def test_vendored_upstream_matches_onchain_deployment(self, ctx):
+        src = _VENDOR_CONSTANTS.read_text()
+        upstream_addr = re.search(r"constant INTERPRETER_ADDRESS = (0x[0-9a-fA-F]{40})", src).group(1)
+        upstream_codehash = re.search(r"constant INTERPRETER_CODEHASH =\s*\n?\s*(0x[0-9a-fA-F]{64})", src).group(1)
+
+        code = bytes(await ctx["w3"].eth.get_code(upstream_addr))
+        if len(code) <= 1:
+            pytest.skip("upstream Analog-Labs interpreter not deployed on this fork")
+        assert keccak(code) == bytes.fromhex(upstream_codehash[2:]), (
+            "vendored Constants.sol does not match the on-chain upstream interpreter"
         )
