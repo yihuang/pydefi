@@ -10,14 +10,26 @@ Python instead of via an implicit EVM stack contract.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from eth_abi import encode
 from eth_contract.erc20 import ERC20
 from eth_utils import keccak
 
-from pydefi.abi.amm import UNISWAP_V2_PAIR, UNISWAP_V3_POOL, UNISWAP_V3_QUOTER_V2
+if TYPE_CHECKING:
+    from web3 import AsyncWeb3
+
+from pydefi.abi.amm import (
+    UNISWAP_V2_PAIR,
+    UNISWAP_V3_POOL,
+    UNISWAP_V3_QUOTER_V2,
+    UNISWAP_V4_POOL_MANAGER,
+    V4_UNLOCK_AMOUNT_OUT_OFFSET,
+    V4_UNLOCK_AMOUNT_SPEC_OFFSET,
+    V4UnlockData,
+)
 from pydefi.pathfinder.dag import RouteDAG, RouteSwap
-from pydefi.types import Address, SwapProtocol, SwapRoute
+from pydefi.types import ZERO_ADDRESS, Address, SwapProtocol, SwapRoute, TokenAmount
 from pydefi.vm.context import Operand, Program
 
 
@@ -45,6 +57,7 @@ _V3_POOL_SWAP_FN = UNISWAP_V3_POOL.fns.swap
 _V2_PAIR_SWAP_FN = UNISWAP_V2_PAIR.fns.swap
 _V2_PAIR_GET_RESERVES_FN = UNISWAP_V2_PAIR.fns.getReserves
 _V3_QUOTER_QUOTE_EXACT_INPUT_FN = UNISWAP_V3_QUOTER_V2.fns.quoteExactInput
+_V4_PM_UNLOCK_FN = UNISWAP_V4_POOL_MANAGER.fns.unlock
 _ERC20_TRANSFER_FN = ERC20.fns.transfer
 
 # V3 sqrtPriceLimitX96 boundaries (TickMath.MIN/MAX_SQRT_RATIO ± 1)
@@ -122,6 +135,14 @@ class SwapHop:
     recipient: Address
     zero_for_one: bool
     sqrt_price_limit_x96: int = field(default=0)
+    #: V4 only — the exact PoolKey fee in pips (1e-6).  ``fee_bps`` truncates
+    #: sub-bps / non-100-multiple fees, which would select the wrong PoolKey
+    #: (and a non-existent pool) at execution; this carries the unrounded value.
+    fee_pips: int = field(default=0)
+    #: V4 only — tick spacing from the pool key (e.g. ``60`` for 0.3 % fee).
+    tick_spacing: int = field(default=0)
+    #: V4 only — hooks contract address, or zero address for hookless pools.
+    hooks: Address = ZERO_ADDRESS
 
 
 # ---------------------------------------------------------------------------
@@ -235,6 +256,53 @@ def _build_v2_direct_swap(prog: Program, amount_in: Operand, hop: SwapHop) -> Op
     return amount_out
 
 
+def _v4_pool_key_currencies(hop: SwapHop) -> tuple[Address, Address]:
+    """Return ``(currency0, currency1)`` for the V4 PoolKey, sorted by address."""
+    if hop.token_in.lower() < hop.token_out.lower():
+        return hop.token_in, hop.token_out
+    return hop.token_out, hop.token_in
+
+
+def _build_v4_swap(prog: Program, amount_in: Operand, hop: SwapHop) -> Operand:
+    """V4 pool direct swap via ``PoolManager.unlock()``.
+
+    Builds calldata for ``unlock(bytes data)`` where *data* encodes the PoolKey
+    and SwapParams as 10 packed words.  ``amountSpecified`` (word 6) is set to
+    ``0`` in the static template and overlaid at runtime with the two's-complement
+    negation of *amount_in* (V4 exactInput uses negative ``amountSpecified``).
+    The PoolManager fires ``unlockCallback(bytes)`` back into the VM's
+    ``DEXCallbackRouter.unlockCallback`` handler, which performs
+    sync→transfer→settle→take and returns ``abi.encode(amountOut)``.
+    """
+    sqrt_price_limit = hop.sqrt_price_limit_x96 or (_SQRT_PRICE_MIN if hop.zero_for_one else _SQRT_PRICE_MAX)
+    c0, c1 = _v4_pool_key_currencies(hop)
+
+    # Decoded by the unlockCallback in DEXCallbackRouter.sol.  amountSpecified is
+    # a 0 placeholder, patched at runtime (word 6).  ``fee`` is the exact PoolKey
+    # fee in pips — ``fee_bps * 100`` would truncate non-100-multiple fees and
+    # address a non-existent PoolKey.
+    data_bytes = V4UnlockData(
+        currency0=c0,
+        currency1=c1,
+        fee=hop.fee_pips,
+        tickSpacing=hop.tick_spacing,
+        hooks=hop.hooks,
+        zeroForOne=hop.zero_for_one,
+        amountSpecified=0,
+        sqrtPriceLimitX96=sqrt_price_limit,
+        tokenIn=hop.token_in,
+        recipient=hop.recipient,
+    ).encode()
+    calldata = bytes(_V4_PM_UNLOCK_FN(data_bytes).data)
+
+    # Patch amountSpecified with -amount_in (two's-complement negation: NOT(x) + 1).
+    negated_amount = prog.add(prog.bit_not(amount_in), 1)
+    success = prog.call_raw(hop.pool, calldata, patches={V4_UNLOCK_AMOUNT_SPEC_OFFSET: negated_amount})
+    prog.assert_(success)
+
+    return prog.returndata_word(V4_UNLOCK_AMOUNT_OUT_OFFSET)
+
+
 # ---------------------------------------------------------------------------
 # Protocol resolution
 # ---------------------------------------------------------------------------
@@ -270,17 +338,20 @@ def _swap_hop_from_route_swap(swap_action: RouteSwap, *, recipient: Address) -> 
         fee_bps=pool.fee_bps,
         recipient=recipient,
         zero_for_one=swap_action.zero_for_one(),
+        # V4 PoolKey fee in pips: prefer the edge's exact lp_fee_pips, falling
+        # back to fee_bps*100 for edges built without slot0 (and for V2/V3).
+        fee_pips=getattr(pool, "lp_fee_pips", 0) or pool.fee_bps * 100,
+        tick_spacing=getattr(pool, "tick_spacing", 0),
+        hooks=getattr(pool, "hooks", ZERO_ADDRESS),
     )
 
 
 def _build_route_swap(prog: Program, amount_in: Operand, action: RouteSwap, recipient: Address) -> Operand:
     hop = _swap_hop_from_route_swap(action, recipient=recipient)
-    if hop.protocol == SwapProtocol.UNISWAP_V4:
-        raise NotImplementedError(
-            "Uniswap V4 execution is not supported by DeFiVM; build the swap via UniversalRouter (V4_SWAP) instead"
-        )
     if hop.protocol == SwapProtocol.UNISWAP_V3:
         return _build_v3_pool_swap(prog, amount_in, hop)
+    if hop.protocol == SwapProtocol.UNISWAP_V4:
+        return _build_v4_swap(prog, amount_in, hop)
     return _build_v2_direct_swap(prog, amount_in, hop)
 
 
@@ -385,6 +456,41 @@ def swap_route_to_hops(route: SwapRoute, vm_address: str, recipient: str) -> lis
                 fee_bps=step.fee,
                 recipient=Address(hop_recipient),
                 zero_for_one=zero_for_one,
+                # V4 SwapStep.fee is already the PoolKey fee in pips.
+                fee_pips=step.fee,
+                tick_spacing=getattr(step, "tick_spacing", 0),
+                hooks=getattr(step, "hooks", ZERO_ADDRESS),
             )
         )
     return hops
+
+
+async def quote_swap_transaction(
+    w3: "AsyncWeb3",
+    dag: RouteDAG,
+    *,
+    amount_in: int,
+    vm_address: Address,
+    quoter_address: Address | None = None,
+) -> TokenAmount:
+    """Simulate a swap via ``eth_call`` on the DeFiVM contract — V2 and V3 only.
+
+    Composes a DeFiVM quote program from *dag* via
+    :func:`~pydefi.vm.dag.build_quote_program_for_dag` and executes it against
+    *vm_address*.  No tokens are transferred; the program reads pool state
+    on-chain and returns the estimated output amount.
+
+    *quoter_address* (the QuoterV2 address) is required when the DAG contains V3
+    hops.  In-VM V4 quoting is not supported — ``build_quote_program_for_dag``
+    raises for V4 hops; quote a V4 leg off-chain via
+    :meth:`pydefi.amm.uniswap_v4.UniswapV4.quote_exact_input_single` instead.
+    """
+    from pydefi.vm.dag import build_quote_program_for_dag
+
+    if not dag.actions:
+        raise ValueError("quote_swap_transaction: route DAG must contain at least one action")
+
+    program = build_quote_program_for_dag(dag, amount_in=amount_in, quoter_address=quoter_address)
+    calldata = _EXECUTE_SELECTOR + encode(["bytes"], [bytes(program.build())])
+    result = await w3.eth.call({"to": vm_address, "data": calldata})
+    return TokenAmount(token=dag.actions[-1].token_out, amount=int.from_bytes(result[:32], "big"))

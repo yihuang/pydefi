@@ -27,7 +27,9 @@ Run fork tests with::
 """
 
 import asyncio
+import contextlib
 import os
+import shutil
 import socket
 import subprocess
 import time
@@ -35,6 +37,7 @@ import time
 import aiohttp
 import pytest
 from web3 import AsyncWeb3
+from web3.middleware import ExtraDataToPOAMiddleware
 
 from pydefi.abi.codec import codec
 from pydefi.rpc import get_w3
@@ -47,6 +50,10 @@ from tests.live.sol_utils import compile_interpreter_sync
 # ---------------------------------------------------------------------------
 
 ETH_RPC_URL = os.environ.get("ETH_RPC_URL") or "https://eth.drpc.org"
+
+# Polymarket's Conditional Tokens live on Polygon, so its fork tests fork
+# Polygon mainnet rather than Ethereum.  Override with ``POLYGON_RPC_URL``.
+POLYGON_RPC_URL = os.environ.get("POLYGON_RPC_URL") or "https://polygon.drpc.org"
 
 # ---------------------------------------------------------------------------
 # Solana public RPC (used for simulation and as the surfpool upstream)
@@ -107,6 +114,18 @@ async def eth_w3() -> AsyncWeb3:
     return await get_w3(ChainId.ETHEREUM)
 
 
+@pytest.fixture
+async def polygon_w3() -> AsyncWeb3:
+    """Return an :class:`~web3.AsyncWeb3` backed by a public Polygon RPC.
+
+    Chainlist auto-discovery often lands on gated Polygon endpoints, so this
+    pins ``POLYGON_RPC_URL`` directly.  Polygon is a PoA chain, so the POA
+    middleware is injected to keep block-fetching calls working."""
+    w3 = AsyncWeb3(AsyncWeb3.AsyncHTTPProvider(POLYGON_RPC_URL))
+    w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
+    return w3
+
+
 @pytest.fixture(autouse=True)
 def _throttle_live_requests(request: pytest.FixtureRequest) -> None:
     """Insert a small delay before each live test to avoid rate-limiting on free RPCs."""
@@ -121,138 +140,92 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
-@pytest.fixture
-async def fork_w3(request: pytest.FixtureRequest):
-    """Start a temporary Anvil fork of Ethereum mainnet and return an AsyncWeb3 client.
-
-    The fixture:
-
-    1. Finds a free local TCP port.
-    2. Launches ``anvil --fork-url <ETH_RPC_URL>`` as a subprocess.
-    3. Polls the JSON-RPC endpoint until the node is ready (up to 30 s).
-    4. Yields an :class:`~web3.AsyncWeb3` instance connected to the fork.
-    5. Terminates the Anvil process on fixture teardown.
-
-    The fixture is automatically skipped when the ``anvil`` binary is not
-    found on ``$PATH`` so that the test suite can still run in environments
-    where Foundry is not installed.
-    """
-    import shutil
-
-    if shutil.which("anvil") is None:
-        pytest.skip("anvil not found on PATH — install Foundry to run fork tests")
-
-    port = _free_port()
-    url = f"http://127.0.0.1:{port}"
-
-    proc = subprocess.Popen(
-        [
-            "anvil",
-            "--fork-url",
-            ETH_RPC_URL,
-            "--port",
-            str(port),
-            "--silent",
-        ],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-
-    # Poll until anvil is ready (up to 30 seconds).  The connection will
-    # actively fail (ConnectionRefusedError, HTTP errors, web3 wrapping
-    # exceptions) until the process is fully started, so we intentionally
-    # swallow all exceptions here.
-    w3 = AsyncWeb3(AsyncWeb3.AsyncHTTPProvider(url))
-    deadline = time.monotonic() + 30
-    while time.monotonic() < deadline:
-        try:
-            await w3.eth.chain_id
-            break
-        except Exception:  # noqa: BLE001 — expected during startup
-            await asyncio.sleep(0.25)
-    else:
-        proc.terminate()
-        try:
-            proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                pass
-        pytest.fail("Anvil did not start within 30 seconds")
-
-    w3.codec = codec
-    yield w3
-
+def _terminate(proc: subprocess.Popen) -> None:
+    """Stop a local-node subprocess (Anvil or surfpool), escalating to
+    SIGKILL if it does not exit on SIGTERM."""
     proc.terminate()
     try:
         proc.wait(timeout=10)
     except subprocess.TimeoutExpired:
         proc.kill()
-        try:
+        with contextlib.suppress(subprocess.TimeoutExpired):
             proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            pass
+
+
+@contextlib.asynccontextmanager
+async def _anvil_node(extra_args: list[str]):
+    """Spawn an Anvil node with *extra_args*, yield a connected AsyncWeb3, tear down.
+
+    Finds a free port, launches ``anvil`` with *extra_args* (a ``--fork-url``
+    for the mainnet forks, nothing for a plain second chain), polls the
+    JSON-RPC endpoint until the node is ready (up to 30 s), then terminates the
+    process on exit.  The connection actively fails until anvil is fully
+    started, so startup exceptions are intentionally swallowed.
+
+    Skips the test when the ``anvil`` binary is not on ``$PATH`` so the suite
+    still runs where Foundry is not installed.
+    """
+    if shutil.which("anvil") is None:
+        pytest.skip("anvil not found on PATH — install Foundry to run fork tests")
+
+    port = _free_port()
+    url = f"http://127.0.0.1:{port}"
+    proc = subprocess.Popen(
+        ["anvil", "--port", str(port), "--silent", *extra_args],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        w3 = AsyncWeb3(AsyncWeb3.AsyncHTTPProvider(url))
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            try:
+                await w3.eth.chain_id
+                break
+            except Exception:  # noqa: BLE001 — expected during startup
+                await asyncio.sleep(0.25)
+        else:
+            pytest.fail("Anvil did not start within 30 seconds")
+        w3.codec = codec
+        yield w3
+    finally:
+        _terminate(proc)
+
+
+@pytest.fixture
+async def fork_w3():
+    """Function-scoped Anvil fork of Ethereum mainnet (forks ``ETH_RPC_URL``)."""
+    async with _anvil_node(["--fork-url", ETH_RPC_URL]) as w3:
+        yield w3
+
+
+@pytest.fixture
+async def plain_anvil_w3():
+    """A plain (non-forked) Anvil node — a fast, empty second chain for tests
+    that need a source chain alongside ``fork_w3``."""
+    async with _anvil_node([]) as w3:
+        yield w3
 
 
 @pytest.fixture(scope="module")
 async def fork_w3_module():
-    """Module-scoped Anvil mainnet fork.  Same as ``fork_w3`` but shared across
-    an entire test module to avoid per-test process startup costs."""
-    import shutil
+    """Module-scoped Anvil fork of Ethereum mainnet, shared across a module to
+    avoid per-test process startup costs."""
+    async with _anvil_node(["--fork-url", ETH_RPC_URL]) as w3:
+        yield w3
 
-    if shutil.which("anvil") is None:
-        pytest.skip("anvil not found on PATH — install Foundry to run fork tests")
 
-    port = _free_port()
-    url = f"http://127.0.0.1:{port}"
+@pytest.fixture
+async def polygon_fork_w3():
+    """Function-scoped Anvil fork of Polygon mainnet (forks ``POLYGON_RPC_URL``).
 
-    proc = subprocess.Popen(
-        [
-            "anvil",
-            "--fork-url",
-            ETH_RPC_URL,
-            "--port",
-            str(port),
-            "--silent",
-        ],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-
-    w3 = AsyncWeb3(AsyncWeb3.AsyncHTTPProvider(url))
-    deadline = time.monotonic() + 30
-    while time.monotonic() < deadline:
-        try:
-            await w3.eth.chain_id
-            break
-        except Exception:  # noqa: BLE001 — expected during startup
-            await asyncio.sleep(0.25)
-    else:
-        proc.terminate()
-        try:
-            proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                pass
-        pytest.fail("Anvil did not start within 60 seconds")
-
-    w3.codec = codec
-    yield w3
-
-    proc.terminate()
-    try:
-        proc.wait(timeout=10)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            pass
+    Polymarket's Conditional Tokens live on Polygon, so its fork tests need a
+    Polygon fork rather than the Ethereum :func:`fork_w3`.  Polygon is a PoA
+    chain with oversized block ``extraData``, so the POA middleware is injected
+    to keep ``eth_sendTransaction`` (which fetches the latest block) working."""
+    async with _anvil_node(["--fork-url", POLYGON_RPC_URL]) as w3:
+        w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
+        yield w3
 
 
 @pytest.fixture
@@ -306,25 +279,8 @@ async def surfpool_rpc():
         await asyncio.sleep(1)
 
     if not ready:
-        proc.terminate()
-        try:
-            proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                pass
+        _terminate(proc)
         pytest.fail("surfpool did not start within 60 seconds")
 
     yield url
-
-    proc.terminate()
-    try:
-        proc.wait(timeout=10)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            pass
+    _terminate(proc)

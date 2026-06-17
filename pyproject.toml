@@ -56,6 +56,7 @@ testpaths = ["tests"]
 markers = [
     "live: marks tests as live integration tests that require network access (run with '-m live')",
     "fork: marks tests that require a local fork of mainnet — EVM via Anvil or Solana via surfpool (run with '-m fork')",
+    "bench: gas-aggregation benchmark on a mainnet fork — produces a comparison table (run with '-m bench')",
 ]
 
 [tool.ruff]

@@ -184,6 +184,53 @@ UNISWAP_V4_QUOTER = Contract.from_abi(
     ]
 )
 
+UNISWAP_V4_POOL_MANAGER = Contract.from_abi(
+    [
+        "function unlock(bytes data) external returns (bytes memory)",
+    ]
+)
+
+# ---------------------------------------------------------------------------
+# Uniswap V4 — DeFiVM swap composer constants
+#
+# Layout offsets and the ABI fragment used by the SSA composer in
+# :mod:`pydefi.vm.swap` to build calldata for V4 swaps.
+# ---------------------------------------------------------------------------
+
+
+class V4UnlockData(ABIStruct):
+    """The 10-word payload passed inside ``PoolManager.unlock(data)``.
+
+    Flattens v4-core ``PoolKey`` (currency0, currency1, fee, tickSpacing,
+    hooks) and ``SwapParams`` (zeroForOne, amountSpecified, sqrtPriceLimitX96)
+    plus ``tokenIn`` / ``recipient`` the callback settles and pays out.
+    Every field is static, so this encodes byte-identically to the
+    ``(PoolKey, SwapParams, address, address)`` tuple that
+    ``DEXCallbackRouter.unlockCallback`` decodes.
+    """
+
+    currency0: Annotated[str, "address"]
+    currency1: Annotated[str, "address"]
+    fee: Annotated[int, "uint24"]  # pips
+    tickSpacing: Annotated[int, "int24"]
+    hooks: Annotated[str, "address"]
+    zeroForOne: Annotated[bool, "bool"]
+    amountSpecified: Annotated[int, "int256"]  # negative for exactInput
+    sqrtPriceLimitX96: Annotated[int, "uint160"]
+    tokenIn: Annotated[str, "address"]
+    recipient: Annotated[str, "address"]
+
+
+#: Calldata byte offset of ``amountSpecified`` (word 6 of the unlock data) in
+#: the full ``unlock(bytes)`` calldata.
+#: ``4 (selector) + 32 (bytes-arg offset) + 32 (bytes-arg length) + 6*32 = 260``.
+V4_UNLOCK_AMOUNT_SPEC_OFFSET: int = 260
+
+#: Byte offset of ``amountOut`` in the returndata of ``unlock()``.  The
+#: PoolManager wraps DeFiVM's ``abi.encode(amountOut)`` as ``bytes memory``:
+#: ``[0..32) offset, [32..64) length, [64..96) amountOut``.
+V4_UNLOCK_AMOUNT_OUT_OFFSET: int = 64
+
 # ---------------------------------------------------------------------------
 # Curve Finance
 # ---------------------------------------------------------------------------
@@ -191,13 +238,41 @@ UNISWAP_V4_QUOTER = Contract.from_abi(
 CURVE_POOL = Contract.from_abi(
     [
         "function get_dy(int128 i, int128 j, uint256 dx) external view returns (uint256)",
+        "function get_dx(int128 i, int128 j, uint256 dy) external view returns (uint256)",
         "function get_dy_underlying(int128 i, int128 j, uint256 dx) external view returns (uint256)",
         "function exchange(int128 i, int128 j, uint256 dx, uint256 min_dy) external returns (uint256)",
         "function exchange_underlying(int128 i, int128 j, uint256 dx, uint256 min_dy) external returns (uint256)",
         "function coins(uint256 i) external view returns (address)",
         "function balances(uint256 i) external view returns (uint256)",
         "function A() external view returns (uint256)",
+        "function A_precise() external view returns (uint256)",
         "function fee() external view returns (uint256)",
+        "function get_virtual_price() external view returns (uint256)",
+        "function totalSupply() external view returns (uint256)",
+        # Stable-NG / rate-stabilised pools
+        "function N_COINS() external view returns (uint256)",
+        "function stored_rates() external view returns (uint256[])",
+        "function offpeg_fee_multiplier() external view returns (uint256)",
+    ]
+)
+
+# Curve V2 (cryptoswap: Twocrypto / Tricrypto) view interface used to snapshot
+# pool state for local pricing via :mod:`pydefi.amm.curve_math`.
+CURVE_V2_POOL = Contract.from_abi(
+    [
+        "function get_dy(uint256 i, uint256 j, uint256 dx) external view returns (uint256)",
+        "function exchange(uint256 i, uint256 j, uint256 dx, uint256 min_dy) external returns (uint256)",
+        "function coins(uint256 i) external view returns (address)",
+        "function balances(uint256 i) external view returns (uint256)",
+        "function A() external view returns (uint256)",
+        "function gamma() external view returns (uint256)",
+        "function D() external view returns (uint256)",
+        "function fee() external view returns (uint256)",
+        "function mid_fee() external view returns (uint256)",
+        "function out_fee() external view returns (uint256)",
+        "function fee_gamma() external view returns (uint256)",
+        "function price_scale() external view returns (uint256)",
+        "function price_scale(uint256 k) external view returns (uint256)",
     ]
 )
 
@@ -207,5 +282,15 @@ CURVE_REGISTRY = Contract.from_abi(
         "function find_pool_for_coins(address from, address to, uint256 i) external view returns (address)",
         "function get_coin_indices(address pool, address from, address to) external view returns (int128, int128, bool)",
         "function get_best_rate(address from, address to, uint256 amount) external view returns (address, uint256)",
+    ]
+)
+
+# Curve MetaRegistry aggregates every Curve registry/factory on a chain and is
+# used for pool discovery.  Mainnet: 0xF98B45FA17DE75FB1aD0e7aFD971b0ca00e379fC
+CURVE_METAREGISTRY = Contract.from_abi(
+    [
+        "function find_pools_for_coins(address from, address to) external view returns (address[])",
+        "function get_n_coins(address pool) external view returns (uint256)",
+        "function is_meta(address pool) external view returns (bool)",
     ]
 )

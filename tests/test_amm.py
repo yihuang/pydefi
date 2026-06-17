@@ -1,18 +1,21 @@
 """Tests for pydefi.amm (no live node required)."""
 
+from dataclasses import replace
 from decimal import Decimal
 
 import pytest
 from eth_abi import decode as abi_decode
 
 from pydefi._math import apply_slippage
+from pydefi.amm import v4_hooks
 from pydefi.amm.uniswap_v2 import UniswapV2
 from pydefi.amm.uniswap_v3 import UniswapV3
+from pydefi.amm.uniswap_v4 import UniswapV4
 from pydefi.amm.universal_router import (
     ADDRESS_THIS,
-    CONTRACT_BALANCE_V3,
-    CONTRACT_BALANCE_V4,
+    CONTRACT_BALANCE,
     MSG_SENDER,
+    OPEN_DELTA,
     UNIVERSAL_ROUTER_ADDRESSES,
     RouterCommand,
     UniversalRouter,
@@ -22,6 +25,7 @@ from pydefi.amm.universal_router import (
     V4Hop,
 )
 from pydefi.exceptions import InsufficientLiquidityError
+from pydefi.pathfinder.graph import V4PoolEdge
 from pydefi.types import Address, TokenAmount
 from pydefi.vm.swap import SwapTransaction
 from tests.addrs import (
@@ -260,8 +264,11 @@ def test_v4_action_values():
 
 
 def test_contract_balance_sentinels():
-    assert CONTRACT_BALANCE_V3 == (1 << 256) - 1
-    assert CONTRACT_BALANCE_V4 == (1 << 128) - 1
+    # v4-periphery ActionConstants: one CONTRACT_BALANCE sentinel (1 << 255)
+    # shared by V2/V3 swap amounts and V4 SETTLE amounts; OPEN_DELTA (0) is
+    # the V4 swap-amount sentinel.
+    assert CONTRACT_BALANCE == 1 << 255
+    assert OPEN_DELTA == 0
 
 
 class TestUniversalRouterConstants:
@@ -271,8 +278,8 @@ class TestUniversalRouterConstants:
         assert 42161 in UNIVERSAL_ROUTER_ADDRESSES
 
     def test_sentinels(self):
-        assert MSG_SENDER == "0x0000000000000000000000000000000000000001"
-        assert ADDRESS_THIS == "0x0000000000000000000000000000000000000002"
+        assert MSG_SENDER == Address("0x0000000000000000000000000000000000000001")
+        assert ADDRESS_THIS == Address("0x0000000000000000000000000000000000000002")
 
     def test_class_known_addresses(self, router):
         assert router.KNOWN_ADDRESSES[1] == UNIVERSAL_ROUTER_ADDRESSES[1]
@@ -288,9 +295,9 @@ class TestHopDataclasses:
         assert V3_WETH_USDC.fee == 500
 
     def test_v4_hop_defaults_and_custom_hooks(self):
-        assert V4_WETH_USDC.hooks == ZERO_ADDR.to_0x_hex()
+        assert V4_WETH_USDC.hooks == ZERO_ADDR
         assert V4_WETH_USDC.hook_data == b""
-        hooks = "0x1234567890abcdef1234567890abcdef12345678"
+        hooks = Address("0x1234567890abcdef1234567890abcdef12345678")
         hop = V4Hop(token_in=WETH, token_out=USDC, fee=500, tick_spacing=10, hooks=hooks)
         assert hop.hooks == hooks
 
@@ -372,6 +379,181 @@ class TestCommandEncoders:
 
 
 # ---------------------------------------------------------------------------
+# V4 hook-permission classification
+# ---------------------------------------------------------------------------
+
+HookFlag = v4_hooks.HookFlag
+
+
+def _nonlinear_fee(amount: int) -> int:
+    """Size-dependent fake-quoter fee: jumps between the 1x probe (1e20 at the
+    standard test edge) and the 4x probe, so calibration must reject it."""
+    return 700 if amount <= 10**20 else 1_500
+
+
+def _hook_addr(flags: int) -> Address:
+    """Synthetic hook address with the given permission bits."""
+    return Address(int(flags).to_bytes(20, "big"))
+
+
+def _hooked_edge(lp_fee_pips: int = 500) -> V4PoolEdge:
+    """Edge for a delta-hook pool at price 1.0 with plenty of liquidity."""
+    return V4PoolEdge(
+        token_in=WETH,
+        token_out=USDC,
+        pool_address=UNIVERSAL_ROUTER_ADDR,
+        protocol="UniswapV4",
+        fee_bps=lp_fee_pips // 100,
+        sqrt_price_x96=2**96,
+        liquidity=10**24,
+        is_token0_in=True,
+        tick_spacing=10,
+        hooks=_hook_addr(HookFlag.AFTER_SWAP_RETURNS_DELTA),
+        lp_fee_pips=lp_fee_pips,
+        key_fee_pips=lp_fee_pips,
+        hook_affects_pricing=True,
+    )
+
+
+class TestV4Hooks:
+    def test_flags_read_low_14_address_bits(self):
+        assert v4_hooks.hook_flags(ZERO_ADDR) == 0
+        addr = Address(bytes.fromhex("ff" * 18 + "0088"))  # high bits are identity, not permissions
+        assert v4_hooks.hook_flags(addr) == HookFlag.BEFORE_SWAP | HookFlag.BEFORE_SWAP_RETURNS_DELTA
+
+    def test_swap_hook_detection(self):
+        assert v4_hooks.has_swap_hook(_hook_addr(HookFlag.BEFORE_SWAP))
+        assert v4_hooks.has_swap_hook(_hook_addr(HookFlag.AFTER_SWAP))
+        assert not v4_hooks.has_swap_hook(_hook_addr(HookFlag.BEFORE_ADD_LIQUIDITY))
+
+    @pytest.mark.parametrize(
+        "flags,dynamic,expected",
+        [
+            pytest.param(0, False, False, id="no-hook"),
+            pytest.param(HookFlag.BEFORE_SWAP_RETURNS_DELTA, False, True, id="before-swap-delta"),
+            pytest.param(HookFlag.AFTER_SWAP_RETURNS_DELTA, False, True, id="after-swap-delta"),
+            # beforeSwap alone can veto but not re-price — unless the pool fee
+            # is dynamic, where it may override lpFee per swap
+            pytest.param(HookFlag.BEFORE_SWAP, False, False, id="veto-only-static"),
+            pytest.param(HookFlag.BEFORE_SWAP, True, True, id="fee-override-dynamic"),
+            # liquidity/initialize permissions never touch swap amounts
+            pytest.param(
+                HookFlag.BEFORE_ADD_LIQUIDITY
+                | HookFlag.AFTER_REMOVE_LIQUIDITY_RETURNS_DELTA
+                | HookFlag.BEFORE_INITIALIZE,
+                True,
+                False,
+                id="liquidity-hooks",
+            ),
+        ],
+    )
+    def test_affects_swap_pricing(self, flags, dynamic, expected):
+        assert v4_hooks.affects_swap_pricing(_hook_addr(flags), is_dynamic_fee=dynamic) is expected
+
+    def test_edge_carries_hook_classification(self):
+        edge = _hooked_edge()
+        assert edge.hook_affects_pricing
+        # local math still produces a (hook-blind) estimate for ranking
+        assert edge.amount_out(10**15) > 0
+
+
+# ---------------------------------------------------------------------------
+# V4 hook-fee calibration (faked quoter, no network)
+# ---------------------------------------------------------------------------
+
+
+def _fake_quoter(v4: UniswapV4, edge: V4PoolEdge, fee_pips_for_amount):
+    """Patch v4.quote_exact_input_single to apply fee_pips_for_amount(amount) to the raw curve.
+
+    Records every ``fee`` kwarg passed by the caller in ``v4.quoted_key_fees``.
+    """
+    raw_curve = replace(edge, lp_fee_pips=0, fee_bps=0, hook_fee_calibrated=False)
+    v4.quoted_key_fees = []
+
+    async def fake(amount_in, token_out, **kwargs):
+        v4.quoted_key_fees.append(kwargs.get("fee"))
+        out = raw_curve.amount_out(amount_in.amount) * (1_000_000 - fee_pips_for_amount(amount_in.amount))
+        return TokenAmount(token=token_out, amount=out // 1_000_000)
+
+    v4.quote_exact_input_single = fake
+    return v4
+
+
+class TestHookFeeCalibration:
+    def _v4(self) -> UniswapV4:
+        return UniswapV4(
+            w3=None,
+            pool_manager_address=UNIVERSAL_ROUTER_ADDR,
+            state_view_address=UNIVERSAL_ROUTER_ADDR,
+            quoter_address=UNIVERSAL_ROUTER_ADDR,
+        )
+
+    @pytest.mark.parametrize("lp_fee,effective", [(500, 700), (0, 10_000)], ids=["hook-take", "zero-fee-key"])
+    async def test_linear_hook_fee_folded_into_edge(self, lp_fee, effective):
+        edge = _hooked_edge(lp_fee_pips=lp_fee)
+        v4 = _fake_quoter(self._v4(), edge, lambda _amount: effective)
+
+        result = await v4.calibrate_hook_fee(edge)
+
+        assert result.linear
+        assert abs(result.implied_fee_pips - effective) <= 1
+        assert edge.hook_fee_calibrated
+        assert abs(edge.lp_fee_pips - effective) <= 1
+        # repeat call re-quotes the same pool key, never the mutated lp_fee_pips
+        assert (await v4.calibrate_hook_fee(edge)).linear
+        assert v4.quoted_key_fees == [lp_fee] * 4
+
+    async def test_nonlinear_hook_stays_estimate_only(self):
+        edge = _hooked_edge(lp_fee_pips=500)
+        v4 = _fake_quoter(self._v4(), edge, _nonlinear_fee)
+
+        result = await v4.calibrate_hook_fee(edge)
+
+        assert not result.linear
+        assert result.deviation_pips > 20
+        assert not edge.hook_fee_calibrated
+        assert edge.lp_fee_pips == 500  # pricing fee unchanged
+
+    async def test_handbuilt_edge_backfills_key_fee(self):
+        # without key_fee_pips the fallback uses lp_fee_pips once, then pins it
+        # so recalibration keys the same pool after lp_fee_pips is mutated
+        edge = _hooked_edge(lp_fee_pips=500)
+        edge.key_fee_pips = 0
+        v4 = _fake_quoter(self._v4(), edge, lambda _amount: 700)
+
+        await v4.calibrate_hook_fee(edge)
+        assert edge.key_fee_pips == 500
+        await v4.calibrate_hook_fee(edge)
+        assert v4.quoted_key_fees == [500] * 4
+
+    async def test_nonlinear_recalibration_revokes_stale_trust(self):
+        edge = _hooked_edge(lp_fee_pips=500)
+        v4 = _fake_quoter(self._v4(), edge, lambda _amount: 700)
+        await v4.calibrate_hook_fee(edge)
+        assert edge.hook_fee_calibrated
+
+        _fake_quoter(v4, edge, _nonlinear_fee)  # hook behaviour changes
+        assert not (await v4.calibrate_hook_fee(edge)).linear
+        assert not edge.hook_fee_calibrated
+
+    async def test_calibrated_zero_fee_is_not_treated_as_unset(self):
+        edge = _hooked_edge(lp_fee_pips=500)
+        v4 = _fake_quoter(self._v4(), edge, lambda _amount: 0)  # hook refunds the lpFee
+
+        assert (await v4.calibrate_hook_fee(edge)).linear
+        assert edge.lp_fee_pips == 0
+        # pricing must use the calibrated 0, not fall back to fee_bps
+        assert edge.amount_out(10**18) == replace(edge, lp_fee_pips=0, fee_bps=0).amount_out(10**18)
+
+    def test_probe_amount_scales_with_liquidity(self):
+        edge = _hooked_edge()
+        # price 1.0 (sqrtP = 2^96) → probe ≈ L * 1e-4 for either direction
+        assert UniswapV4._probe_amount(edge) == edge.liquidity // 10_000
+        edge.is_token0_in = False
+        assert UniswapV4._probe_amount(edge) == edge.liquidity // 10_000
+
+
+# ---------------------------------------------------------------------------
 # V4 swap-params encoders — decode round-trips against the deployed structs
 # ---------------------------------------------------------------------------
 
@@ -389,7 +571,7 @@ class TestV4SwapParamsEncoders:
             currency1=c1,
             fee=500,
             tick_spacing=10,
-            hooks=ZERO_ADDR.to_0x_hex(),
+            hooks=ZERO_ADDR,
             zero_for_one=False,
             amount_in=10**18,
             amount_out_minimum=1_800 * 10**6,
@@ -412,7 +594,7 @@ class TestV4SwapParamsEncoders:
             currency1=c1,
             fee=500,
             tick_spacing=10,
-            hooks=ZERO_ADDR.to_0x_hex(),
+            hooks=ZERO_ADDR,
             zero_for_one=False,
             amount_out=2_000 * 10**6,
             amount_in_maximum=2 * 10**18,
@@ -706,7 +888,7 @@ class TestTransactionBuilders:
         assert decoded_commands == commands
 
     def test_v4_exact_in_single_with_hooks(self, router):
-        custom_hooks = "0x1234567890abcdef1234567890abcdef12345678"
+        custom_hooks = Address("0x1234567890abcdef1234567890abcdef12345678")
         tx = router.build_v4_exact_in_single_transaction(
             amount_in=WETH_1,
             token_out=USDC,
@@ -718,7 +900,7 @@ class TestTransactionBuilders:
             hook_data=b"\x01\x02\x03",
         )
         assert isinstance(tx, SwapTransaction)
-        assert bytes.fromhex(custom_hooks[2:]) in tx.data
+        assert custom_hooks in tx.data
         assert b"\x01\x02\x03" in tx.data
 
 

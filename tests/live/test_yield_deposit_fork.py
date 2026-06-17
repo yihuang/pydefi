@@ -17,9 +17,10 @@ from pydefi.vm.yield_deposit import (
     build_sweep_tx,
     deposit_address,
 )
+from pydefi.yields import build_yield_deposit
 from tests.addrs import USDC
 from tests.live.anvil_helpers import fund_usdc, send_tx
-from tests.live.gasless_common import AMT, COMET_USDC, assert_compound_credited
+from tests.live.gasless_common import AMT, COMET_USDC, assert_compound_credited, market
 from tests.live.sol_utils import compile_sol_file, deploy
 
 DEFI_VM_SOL = Path(__file__).resolve().parents[2] / "pydefi" / "vm" / "DeFiVM.sol"
@@ -95,3 +96,24 @@ class TestYieldDepositFork:
                     "data": tx["data"],
                 }
             )
+
+    async def test_build_yield_deposit_market_wrapper(self, fork_w3):
+        """The YieldMarket-aware wrapper end to end: build_yield_deposit gives
+        out an address; a plain transfer + the returned sweep_tx credits the
+        owner's Compound position and pays the relayer the committed fee."""
+        relayer = (await fork_w3.eth.accounts)[0]
+        defivm = await deploy(fork_w3, compile_sol_file(DEFI_VM_SOL, "DeFiVM"), relayer, ZERO)
+        owner = Address(Account.create().address)
+
+        dep = await build_yield_deposit(owner, market("compound_v3", "compound_v3:1:USDC"), defivm, fork_w3, FEE)
+        assert not bytes(await fork_w3.eth.get_code(Web3.to_checksum_address(bytes(dep.address))))
+
+        await fund_usdc(fork_w3, USDC.address, dep.address, AMT + FEE)
+        fee_before = await _usdc_balance(fork_w3, relayer)
+
+        async def sweep():
+            rc = await send_tx(fork_w3, relayer, dep.sweep_tx)
+            assert rc["status"] == 1, "sweep reverted"
+
+        await assert_compound_credited(fork_w3, owner, sweep)
+        assert await _usdc_balance(fork_w3, relayer) - fee_before == FEE

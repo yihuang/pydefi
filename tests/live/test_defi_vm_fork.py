@@ -21,10 +21,12 @@ Run with::
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from pathlib import Path
 
 import pytest
 import solcx
+from eth_abi.abi import decode as abi_decode
 from eth_contract.contract import ContractFunction
 from eth_contract.erc20 import ERC20
 from eth_contract.utils import send_transaction as eth_send_transaction
@@ -34,12 +36,21 @@ from web3.exceptions import ContractLogicError, Web3RPCError
 from web3.types import Wei
 
 from pydefi.abi.amm import UNISWAP_V3_POOL
-from pydefi.pathfinder.graph import PoolGraph, V3PoolEdge
+from pydefi.amm.uniswap_v4 import UniswapV4
+from pydefi.exceptions import InsufficientLiquidityError
+from pydefi.pathfinder.dag import RouteDAG
+from pydefi.pathfinder.graph import PoolGraph, V3PoolEdge, V4PoolEdge
 from pydefi.pathfinder.router import Router
-from pydefi.types import Address, TokenAmount
+from pydefi.types import ZERO_ADDRESS, Address, Token, TokenAmount
 from pydefi.vm import Program
 from pydefi.vm.swap import build_swap_transaction
-from tests.addrs import POOL_WETH_USDC_500, POOL_WETH_USDC_3000
+from tests.addrs import (
+    POOL_WETH_USDC_500,
+    POOL_WETH_USDC_3000,
+    UNISWAP_V4_POOL_MANAGER,
+    UNISWAP_V4_QUOTER,
+    UNISWAP_V4_STATE_VIEW,
+)
 from tests.live.sol_utils import (
     MOCK_TOKEN_SOL,
     compile_sol_file,
@@ -831,6 +842,46 @@ async def _v3_pool_edge(w3, pool_address: Address, token_in, token_out) -> V3Poo
 
 _WETH_DEPOSIT = ContractFunction.from_abi("function deposit() external payable")
 
+# V4 fee tiers probed in order of popularity: 0.05% / 0.3% / 0.01% / 1%.
+_V4_FEE_TIERS = ((500, 10), (3000, 60), (100, 1), (10000, 200))
+
+
+async def _v4_pool_edge_or_skip(w3, token_in: Token, tiers=_V4_FEE_TIERS) -> V4PoolEdge:
+    """Return the first initialised *token_in*->USDC V4 pool edge, or skip."""
+    v4 = UniswapV4(
+        w3=w3,
+        pool_manager_address=UNISWAP_V4_POOL_MANAGER,
+        state_view_address=UNISWAP_V4_STATE_VIEW,
+        quoter_address=UNISWAP_V4_QUOTER,
+    )
+    for fee, tick in tiers:
+        try:
+            return await v4.get_pool_edge(token_in, USDC, fee=fee, tick_spacing=tick)
+        except InsufficientLiquidityError:
+            continue
+    pytest.skip(f"no initialised {token_in.symbol}/USDC V4 pool on this fork")
+
+
+async def _execute_v4_swap(ctx, token_in: Token, edge: V4PoolEdge, amount_in: int = 10**16) -> int:
+    """Fund the VM, broadcast a *token_in*->USDC V4 swap, and return the USDC delta.
+
+    Native ETH (``address(0)``) is pre-funded with a bare transfer (exercising
+    ``receive()`` + the ``settle{value}`` path); an ERC-20 is wrapped and sent in.
+    """
+    w3, vm_address, deployer = ctx["w3"], ctx["vm_address"], ctx["deployer"]
+    swap_tx = build_swap_transaction(RouteDAG().from_token(token_in).swap(USDC, edge), amount_in, vm_address, deployer)
+
+    if token_in.address == ZERO_ADDRESS:
+        await eth_send_transaction(w3, deployer, to=vm_address, value=Wei(amount_in))
+    else:
+        await _WETH_DEPOSIT().transact(w3, deployer, to=token_in.address, value=Wei(amount_in))
+        await ERC20.fns.transfer(vm_address, amount_in).transact(w3, deployer, to=token_in.address)
+
+    bal_before = await ERC20.fns.balanceOf(deployer).call(w3, to=USDC.address)
+    await eth_send_transaction(w3, deployer, to=swap_tx.to, data=swap_tx.data)
+    bal_after = await ERC20.fns.balanceOf(deployer).call(w3, to=USDC.address)
+    return bal_after - bal_before
+
 
 @pytest.mark.fork
 class TestBuildSwapTransactionFork:
@@ -886,3 +937,50 @@ class TestBuildSwapTransactionFork:
         bal_after = await ERC20.fns.balanceOf(deployer).call(w3, to=USDC.address)
 
         assert bal_after > bal_before, f"Expected USDC > 0 after split swap, got {bal_after - bal_before}"
+
+    async def test_v4_swap_build_and_execute(self, ctx) -> None:
+        """WETH->USDC V4 swap via DeFiVM's ``unlockCallback``.
+
+        The VM calls ``PoolManager.unlock()``; the callback performs the swap,
+        settles WETH from the VM's balance (sync→transfer→settle), and ``take``s
+        USDC to the deployer.
+        """
+        edge = await _v4_pool_edge_or_skip(ctx["w3"], WETH)
+        received = await _execute_v4_swap(ctx, WETH, edge)
+        assert received > 0, f"expected USDC out from V4 swap, got {received}"
+
+    async def test_v4_native_eth_swap_build_and_execute(self, ctx) -> None:
+        """Native ETH->USDC V4 swap: exercises the ``settle{value}`` branch.
+
+        Native ETH is ``address(0)`` (currency0), driving ``zeroForOne=true`` and
+        the native-settle path the WETH test does not; the bare ETH pre-fund also
+        exercises ``receive()``.
+        """
+        eth = Token(chain_id=1, address=ZERO_ADDRESS, symbol="ETH", decimals=18)
+        edge = await _v4_pool_edge_or_skip(ctx["w3"], eth)
+        assert edge.is_token0_in, "native ETH must be currency0 (zeroForOne=true path)"
+        received = await _execute_v4_swap(ctx, eth, edge)
+        assert received > 0, f"expected USDC out from native ETH V4 swap, got {received}"
+
+    async def test_v4_pool_key_fee_uses_exact_lp_fee(self, ctx) -> None:
+        """The V4 PoolKey fee must be the pool's exact lp_fee_pips, not the
+        truncated fee_bps*100 — which derives a non-existent poolId and reverts
+        for fees that are not a multiple of 100 pips.
+        """
+        edge = await _v4_pool_edge_or_skip(ctx["w3"], WETH)
+
+        def program_of(e: V4PoolEdge) -> bytes:
+            dag = RouteDAG().from_token(e.token_in).swap(e.token_out, e)
+            tx = build_swap_transaction(dag, 10**16, ctx["vm_address"], ctx["deployer"])
+            (program,) = abi_decode(["bytes"], tx.data[4:])
+            return program
+
+        # The real pool's exact on-chain fee is embedded in compiled program.
+        assert edge.lp_fee_pips.to_bytes(32, "big") in program_of(edge)
+
+        # Clone same pool with a non-100-multiple fee: exact value must be encoded.
+        odd = edge.lp_fee_pips + 50
+        odd_edge = dataclasses.replace(edge, lp_fee_pips=odd, fee_bps=odd // 100)
+        program = program_of(odd_edge)
+        assert odd.to_bytes(32, "big") in program
+        assert (odd_edge.fee_bps * 100).to_bytes(32, "big") not in program

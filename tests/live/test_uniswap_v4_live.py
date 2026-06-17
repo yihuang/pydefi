@@ -90,3 +90,19 @@ class TestUniswapV4Live:
         assert len(route.steps) == 1
         assert route.steps[0].protocol == v4.protocol_name
         assert route.amount_out.amount > 0
+
+    async def test_calibration_recovers_static_fee(self, v4: UniswapV4):
+        """calibrate_hook_fee against the real quoter recovers the static 500-pip fee.
+
+        The WETH/USDC pool is hookless, so the hook-inclusive effective fee is
+        exactly the lpFee: the two probes must agree (linear) and imply ~500.
+        """
+        edge = await v4.get_pool_edge(WETH, USDC)
+        assert not edge.hook_affects_pricing  # hookless pool
+
+        result = await v4.calibrate_hook_fee(edge)
+
+        assert result.linear, f"deviation {result.deviation_pips} pips between probes"
+        assert abs(result.implied_fee_pips - 500) <= 5, f"implied {result.implied_fee_pips} pips"
+        assert edge.hook_fee_calibrated
+        assert abs(edge.lp_fee_pips - 500) <= 5

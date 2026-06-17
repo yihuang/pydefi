@@ -30,8 +30,9 @@ from pydefi.types import ZERO_ADDRESS, Address, SwapRoute, SwapStep, Token, Toke
 #: Full pool identity: ``(pool_address, token_in, fee, tick_spacing, hooks)``.
 #: ``pool_address`` alone is not unique — every Uniswap V4 pool on a chain
 #: shares the singleton PoolManager address, so the PoolKey fields are needed
-#: to tell pools apart.
-EdgeKey = tuple[Address, Address, int, int, Address]
+#: to tell pools apart.  ``token_out`` is needed too: a 3+-coin Curve pool
+#: yields several edges with the same (pool, token_in) but different outputs.
+EdgeKey = tuple[Address, Address, Address, int, int, Address]
 
 
 def _edge_key(edge: PoolEdge) -> EdgeKey:
@@ -39,6 +40,7 @@ def _edge_key(edge: PoolEdge) -> EdgeKey:
     return (
         edge.pool_address,
         edge.token_in.address,
+        edge.token_out.address,
         edge.fee_bps,
         getattr(edge, "tick_spacing", 0),
         getattr(edge, "hooks", ZERO_ADDRESS),
@@ -47,7 +49,7 @@ def _edge_key(edge: PoolEdge) -> EdgeKey:
 
 def _step_key(step: SwapStep) -> EdgeKey:
     """Return the :data:`EdgeKey` for a :class:`~pydefi.types.SwapStep` (round-trips :func:`_edge_key`)."""
-    return (step.pool_address, step.token_in.address, step.fee, step.tick_spacing, step.hooks)
+    return (step.pool_address, step.token_in.address, step.token_out.address, step.fee, step.tick_spacing, step.hooks)
 
 
 CandidateSolver = Literal["hop_dp", "hermes"]
@@ -605,10 +607,18 @@ class Router:
 
         all_candidates.sort(key=lambda x: x[0], reverse=True)
 
-        seen_first_pools: set[EdgeKey] = set()
+        # Diversify by the first hop's *pool* (not direction): routes leaving a
+        # multi-coin Curve pool via different coins still share its liquidity.
+        seen_first_pools: set[tuple] = set()
         diverse: list[tuple[int, list[PoolEdge]]] = []
         for amount, path in all_candidates:
-            first_pool: EdgeKey = _edge_key(path[0])
+            edge = path[0]
+            first_pool = (
+                edge.pool_address,
+                edge.fee_bps,
+                getattr(edge, "tick_spacing", 0),
+                getattr(edge, "hooks", ZERO_ADDRESS),
+            )
             if first_pool not in seen_first_pools:
                 seen_first_pools.add(first_pool)
                 diverse.append((amount, path))

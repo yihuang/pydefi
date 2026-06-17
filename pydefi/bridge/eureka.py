@@ -133,7 +133,7 @@ class Eureka:
 
         ``receiver`` defaults to ``recipient`` hex-encoded — pass a bech32
         string when the destination is a Cosmos chain. ``slippage_bps`` is
-        accepted for :class:`BaseBridge` parity but has no effect (ICS-20 is
+        accepted for :class:`~pydefi.bridge.Bridge` parity but has no effect (ICS-20 is
         amount-preserving).
         """
         if amount_in.token.address != token_in.address:

@@ -10,14 +10,20 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from web3 import AsyncWeb3, Web3
 
+from pydefi._utils import erc20_approve_tx
+from pydefi.bridge import CCIP, CCTP, Bridge, LucidBridge
 from pydefi.deployments import get_token
 from pydefi.exceptions import BridgeError
 from pydefi.lending.aave_v3 import ReserveData
 from pydefi.types import Address, ChainId, Token, TokenAmount
 from pydefi.yields import (
+    PendingLeg,
     Position,
     YieldMarket,
-    build_approve_tx,
+    YieldRoute,
+    build_compose_supply_program,
+    build_compose_supply_route,
+    build_followup_route,
     build_yield_route,
     expected_apy_gain,
     find_best_rebalance,
@@ -28,8 +34,7 @@ from pydefi.yields import (
 )
 from pydefi.yields.router import (
     Protocol,
-    Strategy,
-    YieldRoute,
+    RouteStrategy,
     YieldStep,
     _morpho_markets,
     _supply_steps,
@@ -75,15 +80,14 @@ def _market(protocol: Protocol, chain_id: int, token: Token, apy: str = "0.04") 
     )
 
 
-def _fake_bridge(src_chain: int, dst_chain: int, controller: Address = Address("0x" + "CC" * 20)) -> object:
-    """Stand-in for LucidBridge — exposes only the attributes build_yield_route reads."""
+def _fake_bridge(src_chain: int, dst_chain: int, spender: Address = Address("0x" + "CC" * 20)) -> object:
+    """Stand-in for a Bridge — exposes only the attributes build_yield_route reads."""
     bridge = AsyncMock()
     bridge.src_chain_id = src_chain
     bridge.dst_chain_id = dst_chain
-    bridge.controller_address = controller
-    bridge.build_bridge_tx = AsyncMock(
-        return_value={"to": controller, "data": "0xfeed", "value": "1000", "gas": "500000"}
-    )
+    bridge.spender = spender
+    bridge.protocol_name = "FakeBridge"
+    bridge.build_bridge_tx = AsyncMock(return_value={"to": spender, "data": "0xfeed", "value": "1000", "gas": "500000"})
     return bridge
 
 
@@ -327,7 +331,7 @@ def test_yield_market_is_frozen_dataclass():
 
 
 # ---------------------------------------------------------------------------
-# build_approve_tx
+# erc20_approve_tx
 # ---------------------------------------------------------------------------
 
 
@@ -343,8 +347,8 @@ async def test_compound_unsupported_symbol_raises_value_error():
         await _supply_steps(bogus_market, _USER, cast(AsyncWeb3, object()), TokenAmount(weird, 1))
 
 
-def test_build_approve_tx_shape():
-    tx = build_approve_tx(USDC_BASE, Address("0x" + "BB" * 20), 10**12)
+def test_erc20_approve_tx_shape():
+    tx = erc20_approve_tx(USDC_BASE.address, Address("0x" + "BB" * 20), 10**12)
     assert tx["to"] == USDC_BASE.address
     selector = Web3.keccak(text="approve(address,uint256)")[:4].hex()
     assert tx["data"][:10] == "0x" + selector
@@ -378,6 +382,7 @@ async def test_withdraw_then_supply_same_chain():
     assert route.strategy == "withdraw_then_supply"
     assert route.source_chain == ChainId.BASE
     assert [s.kind for s in route.steps] == ["withdraw", "approve", "supply"]
+    assert route.pending is None  # same-chain — nothing deferred
     txs = route.build_transactions()
     assert txs[0]["data"] == _STUB_WITHDRAW["data"]
     assert txs[2]["data"] == _STUB_SUPPLY["data"]
@@ -402,6 +407,7 @@ async def test_withdraw_then_supply_cross_chain_emits_bridge():
     assert [s.kind for s in route.steps] == ["withdraw", "approve", "bridge"]
     assert route.source_chain == ChainId.MANTRA
     assert route.target_chain == ChainId.BASE
+    assert route.pending == PendingLeg(ChainId.BASE, dst)  # deferred destination supply
 
 
 # ---------------------------------------------------------------------------
@@ -425,6 +431,8 @@ async def test_supply_then_bridge_entry_leg():
     assert [s.kind for s in route.steps] == ["approve", "supply"]
     assert route.target_chain == ChainId.KITE
     assert all(s.kind != "bridge" for s in route.steps)
+    # The exit is a withdraw+bridge, not a deferred supply — no pending leg.
+    assert route.pending is None
 
 
 @pytest.mark.asyncio
@@ -443,9 +451,244 @@ async def test_bridge_then_supply_emits_approve_and_bridge():
     assert [s.kind for s in route.steps] == ["approve", "bridge"]
     assert route.source_chain == ChainId.MANTRA
     assert route.target_chain == ChainId.BASE
+    assert route.pending == PendingLeg(ChainId.BASE, target)  # deferred destination supply
     txs = route.build_transactions()
     assert txs[0]["to"] == USDC_MANTRA.address  # approve targets the source token
     assert txs[1]["to"] == controller  # bridge targets the controller
+
+
+# ---------------------------------------------------------------------------
+# build_followup_route — the deferred destination leg
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_build_followup_route_builds_destination_supply():
+    """The follow-up is [approve, supply] on the destination, built against
+    the amount that actually arrived."""
+    dst = _market("compound_v3", ChainId.BASE, USDC_BASE, apy="0.06")
+    route = YieldRoute(
+        strategy="withdraw_then_supply",
+        source_chain=ChainId.MANTRA,
+        steps=(),
+        route_id="withdraw_then_supply:src->dst",
+        target_market=dst,
+        target_chain=ChainId.BASE,
+        pending=PendingLeg(ChainId.BASE, dst),
+    )
+    received = TokenAmount(USDC_BASE, 990_000)  # post-bridge balance, < amount sent
+    with patch("pydefi.yields.router._supply_steps", new=AsyncMock(return_value=_STUB_SUPPLY_STEPS)) as supply:
+        followup = await build_followup_route(route, _USER, received, w3s={ChainId.BASE: object()})
+
+    assert [s.kind for s in followup.steps] == ["approve", "supply"]
+    assert followup.source_chain == ChainId.BASE
+    assert followup.target_market == dst
+    assert followup.pending is None  # nothing left to defer
+    assert followup.route_id == "followup:withdraw_then_supply:src->dst"
+    # _supply_steps(market, user, w3, amount) — built against the received amount.
+    assert supply.await_args.args[0] == dst
+    assert supply.await_args.args[3] == received
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("knob", ["defivm", "delegate"])
+async def test_build_followup_route_forwards_gasless_knobs(knob):
+    """defivm / delegate pass through to _supply_steps so the destination leg
+    can collapse to one gasless step, exactly like build_yield_route."""
+    dst = _market("compound_v3", ChainId.BASE, USDC_BASE, apy="0.06")
+    route = YieldRoute(
+        strategy="withdraw_then_supply",
+        source_chain=ChainId.MANTRA,
+        steps=(),
+        route_id="withdraw_then_supply:src->dst",
+        target_market=dst,
+        target_chain=ChainId.BASE,
+        pending=PendingLeg(ChainId.BASE, dst),
+    )
+    target = Address("0x" + "D7" * 20)
+    gasless_step = [YieldStep("supply_with_permit2", ChainId.BASE, None, sign_request={"x": 1})]
+    with patch("pydefi.yields.router._supply_steps", new=AsyncMock(return_value=gasless_step)) as supply:
+        followup = await build_followup_route(
+            route, _USER, TokenAmount(USDC_BASE, 990_000), w3s={ChainId.BASE: object()}, **{knob: target}
+        )
+
+    assert [s.kind for s in followup.steps] == ["supply_with_permit2"]
+    expected = {"defivm": None, "delegate": None} | {knob: target}
+    assert supply.await_args.kwargs == expected
+
+
+@pytest.mark.asyncio
+async def test_build_followup_route_rejects_route_without_pending():
+    route = YieldRoute(
+        strategy="withdraw_then_supply",
+        source_chain=ChainId.BASE,
+        steps=(),
+        route_id="same-chain",
+    )
+    with pytest.raises(ValueError, match="no pending destination leg"):
+        await build_followup_route(route, _USER, TokenAmount(USDC_BASE, 1), w3s={ChainId.BASE: object()})
+
+
+@pytest.mark.asyncio
+async def test_build_followup_route_rejects_token_mismatch():
+    dst = _market("compound_v3", ChainId.BASE, USDC_BASE)
+    route = YieldRoute(
+        strategy="withdraw_then_supply",
+        source_chain=ChainId.MANTRA,
+        steps=(),
+        route_id="r",
+        pending=PendingLeg(ChainId.BASE, dst),
+    )
+    dai = Token(chain_id=ChainId.BASE, address=Address("0x" + "DD" * 20), symbol="DAI", decimals=18)
+    with pytest.raises(ValueError, match="received.token must match"):
+        await build_followup_route(route, _USER, TokenAmount(dai, 1), w3s={ChainId.BASE: object()})
+
+
+# ---------------------------------------------------------------------------
+# Recovery story — a partial cross-chain route never strands funds
+# ---------------------------------------------------------------------------
+#
+# The guarantee rests on one invariant: the bridge delivers exactly the token
+# route.pending names. Skip build_followup_route and the user simply holds
+# pending.market.token on pending.chain_id.
+
+
+async def _cross_chain_route(strategy: RouteStrategy, bridge: object) -> YieldRoute:
+    """Build a cross-chain route through *bridge* for either cross-chain strategy."""
+    dst = _market("compound_v3", ChainId.BASE, USDC_BASE, apy="0.06")
+    amount = TokenAmount(USDC_MANTRA, 1_000_000)
+    w3s = {ChainId.MANTRA: object()}
+    if strategy == "withdraw_then_supply":
+        src = _market("aave_v3", ChainId.MANTRA, USDC_MANTRA)
+        with patch("pydefi.yields.router._withdraw_tx", new=AsyncMock(return_value=_STUB_WITHDRAW)):
+            return await build_yield_route(
+                strategy, _USER, amount, w3s=w3s, source_market=src, target_market=dst, bridge=bridge
+            )
+    return await build_yield_route(strategy, _USER, amount, w3s=w3s, target_market=dst, bridge=bridge)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("strategy", ["withdraw_then_supply", "bridge_then_supply"])
+async def test_cross_chain_route_bridges_into_the_pending_token(strategy: RouteStrategy):
+    """The bridge delivers exactly the token route.pending names, on the chain
+    it names — so a skipped follow-up strands nothing."""
+    bridge = _fake_bridge(ChainId.MANTRA, ChainId.BASE)
+    route = await _cross_chain_route(strategy, bridge)
+
+    assert route.pending is not None
+    # _bridge_steps calls build_bridge_tx(src_token, target_token, ...) — the
+    # delivered token is positional arg 1.
+    delivered_token = bridge.build_bridge_tx.await_args.args[1]
+    assert delivered_token == route.pending.market.token == USDC_BASE
+    assert route.pending.chain_id == delivered_token.chain_id == ChainId.BASE
+
+
+@pytest.mark.asyncio
+async def test_followup_route_consumes_the_token_the_user_holds():
+    """build_followup_route accepts exactly the token a skipped cross-chain
+    route leaves the user holding — the recovered funds stay actionable."""
+    bridge = _fake_bridge(ChainId.MANTRA, ChainId.BASE)
+    route = await _cross_chain_route("withdraw_then_supply", bridge)
+    assert route.pending is not None
+
+    held = TokenAmount(route.pending.market.token, 990_000)
+    with patch("pydefi.yields.router._supply_steps", new=AsyncMock(return_value=_STUB_SUPPLY_STEPS)):
+        followup = await build_followup_route(route, _USER, held, w3s={ChainId.BASE: object()})
+    assert [s.kind for s in followup.steps] == ["approve", "supply"]
+
+
+# ---------------------------------------------------------------------------
+# build_yield_route — bridge-agnostic (any Bridge, not just Lucid)
+# ---------------------------------------------------------------------------
+
+
+def _ccip_bridge_case() -> tuple[Bridge, Token, Token]:
+    """A real CCIP bridge with its source / destination USDC tokens."""
+    src = Token(chain_id=ChainId.ETHEREUM, address=Address("0x" + "E7" * 20), symbol="USDC", decimals=6)
+    dst = Token(chain_id=42161, address=Address("0x" + "A7" * 20), symbol="USDC", decimals=6)
+    return CCIP(w3=None, src_chain_id=ChainId.ETHEREUM, dst_chain_id=42161), src, dst  # type: ignore[arg-type]
+
+
+def _lucid_bridge_case() -> tuple[Bridge, Token, Token]:
+    """A real LucidBridge with its source / destination USDC tokens."""
+    src = Token(chain_id=ChainId.MANTRA, address=Address("0x" + "E8" * 20), symbol="USDC", decimals=6)
+    dst = Token(chain_id=ChainId.BASE, address=Address("0x" + "A8" * 20), symbol="USDC", decimals=6)
+    bridge = LucidBridge(
+        w3=None,  # type: ignore[arg-type]
+        src_chain_id=ChainId.MANTRA,
+        dst_chain_id=ChainId.BASE,
+        controller_address=Address("0x" + "C0" * 20),
+        adapter_address=Address("0x" + "AD" * 20),
+    )
+    return bridge, src, dst
+
+
+def _cctp_bridge_case() -> tuple[Bridge, Token, Token]:
+    """A real CCTP bridge with its source / destination USDC tokens."""
+    src = Token(chain_id=ChainId.ETHEREUM, address=Address("0x" + "E9" * 20), symbol="USDC", decimals=6)
+    dst = Token(chain_id=42161, address=Address("0x" + "A9" * 20), symbol="USDC", decimals=6)
+    return CCTP(w3=None, src_chain_id=ChainId.ETHEREUM, dst_chain_id=42161), src, dst  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "make_case", [_ccip_bridge_case, _lucid_bridge_case, _cctp_bridge_case], ids=["ccip", "lucid", "cctp"]
+)
+async def test_build_yield_route_accepts_any_concrete_bridge(make_case):
+    """build_yield_route works with every Bridge that exposes a spender —
+    CCIP, Lucid, and CCTP — encoding that bridge's own spender (Router /
+    controller / TokenMessenger) into the approve step, with no per-bridge
+    coupling."""
+    bridge, src_token, dst_token = make_case()
+    bridge.build_bridge_tx = AsyncMock(  # type: ignore[method-assign]
+        return_value={"to": "0xbridge", "data": "0xc0de", "value": "0", "gas": "500000"}
+    )
+    route = await build_yield_route(
+        "bridge_then_supply",
+        _USER,
+        TokenAmount(src_token, 1_000_000),
+        w3s={src_token.chain_id: object()},
+        target_market=_market("aave_v3", dst_token.chain_id, dst_token),
+        bridge=bridge,
+    )
+    assert [s.kind for s in route.steps] == ["approve", "bridge"]
+    assert bridge.spender in Address(route.steps[0].tx["data"])
+
+
+@pytest.mark.asyncio
+async def test_cross_chain_route_rejects_bridge_without_spender():
+    """A bridge that exposes no ERC-20 spender (the Bridge default) cannot
+    carry a yield route — rejected before any transaction is built."""
+    bridge = _fake_bridge(ChainId.MANTRA, ChainId.BASE)
+    bridge.spender = None
+    bridge.protocol_name = "NativeOnly"
+    with pytest.raises(ValueError, match="NativeOnly bridge exposes no ERC-20 spender"):
+        await build_yield_route(
+            "bridge_then_supply",
+            _USER,
+            TokenAmount(USDC_MANTRA, 1_000_000),
+            w3s={ChainId.MANTRA: object()},
+            target_market=_market("aave_v3", ChainId.BASE, USDC_BASE),
+            bridge=bridge,
+        )
+
+
+@pytest.mark.asyncio
+async def test_cross_chain_route_rejects_bridge_lacking_spender_attribute():
+    """A bridge class that never defines spender (most native-asset bridges,
+    e.g. GasZip) is rejected with the same ValueError — not an AttributeError."""
+    bridge = _fake_bridge(ChainId.MANTRA, ChainId.BASE)
+    del bridge.spender  # mock attribute deletion → AttributeError on access
+    bridge.protocol_name = "NativeOnly"
+    with pytest.raises(ValueError, match="NativeOnly bridge exposes no ERC-20 spender"):
+        await build_yield_route(
+            "bridge_then_supply",
+            _USER,
+            TokenAmount(USDC_MANTRA, 1_000_000),
+            w3s={ChainId.MANTRA: object()},
+            target_market=_market("aave_v3", ChainId.BASE, USDC_BASE),
+            bridge=bridge,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -455,7 +698,7 @@ async def test_bridge_then_supply_emits_approve_and_bridge():
 
 @pytest.mark.asyncio
 async def test_withdraw_then_supply_cross_chain_requires_bridge():
-    with pytest.raises(ValueError, match="cross-chain.*requires a configured LucidBridge"):
+    with pytest.raises(ValueError, match="cross-chain.*requires a configured bridge"):
         await build_yield_route(
             "withdraw_then_supply",
             _USER,
@@ -512,7 +755,7 @@ async def test_bridge_then_supply_validation_errors(bridge_src, bridge_dst, targ
     "strategy,kw,err",
     [
         ("withdraw_then_supply", {}, "requires source_market"),
-        ("bridge_then_supply", {}, "requires a configured LucidBridge"),
+        ("bridge_then_supply", {}, "requires a configured bridge"),
         ("supply_then_bridge", {}, "requires target_chain"),
         ("supply_then_borrow", {}, "unknown strategy"),
     ],
@@ -522,7 +765,7 @@ async def test_build_yield_route_validation_errors(strategy: str, kw: dict, err:
     target = _market("aave_v3", ChainId.BASE, USDC_BASE)
     with pytest.raises(ValueError, match=err):
         await build_yield_route(
-            cast(Strategy, strategy),  # "supply_then_borrow" is intentionally not in Strategy
+            cast(RouteStrategy, strategy),  # "supply_then_borrow" is intentionally not in RouteStrategy
             _USER,
             TokenAmount.from_human(USDC_BASE, "1"),
             w3s={ChainId.BASE: cast(AsyncWeb3, object())},
@@ -540,7 +783,7 @@ async def test_build_yield_route_rejects_token_mismatch():
     dai_m = _market("compound_v3", ChainId.BASE, dai)
     w3s: dict[int, AsyncWeb3] = {ChainId.BASE: cast(AsyncWeb3, object())}
 
-    cases: list[tuple[Strategy, Token, YieldMarket, YieldMarket, str]] = [
+    cases: list[tuple[RouteStrategy, Token, YieldMarket, YieldMarket, str]] = [
         ("withdraw_then_supply", dai, usdc_m, usdc_m, "amount_in.token must match source_market.token"),
         ("withdraw_then_supply", USDC_BASE, usdc_m, dai_m, "target_market.token must match amount_in.token"),
         ("supply_then_bridge", dai, usdc_m, usdc_m, "amount_in.token must match target_market.token"),
@@ -780,6 +1023,176 @@ async def test_rebalance_tick_forwards_thresholds():
     assert kwargs["min_apy_gain_bps"] == 10
     assert kwargs["positions"] == positions
     assert kwargs["markets"] == [candidate]
+
+
+# ---------------------------------------------------------------------------
+# Compose route — one-signature cross-chain yield deposit (CCTP / CCIP)
+# ---------------------------------------------------------------------------
+
+USDC_ETH = Token(chain_id=ChainId.ETHEREUM, address=Address("0x" + "E7" * 20), symbol="USDC", decimals=6)
+_COMPOSER = Address("0x" + "C0" * 20)
+_COMPOSE_POOL = Address("0x" + "A0" * 20)
+_COMPOSE_AMOUNT = TokenAmount(USDC_ETH, 1_000_000)
+_DELEGATE = Address("0x" + "DE" * 20)
+
+
+def _compose_bridge(kind: str) -> Bridge:
+    """A compose-capable bridge moving USDC from Ethereum to Base."""
+    cls = CCTP if kind == "cctp" else CCIP
+    return cls(w3=None, src_chain_id=ChainId.ETHEREUM, dst_chain_id=ChainId.BASE)
+
+
+async def _compose_route(bridge, w3s, *, amount=_COMPOSE_AMOUNT, **knobs):
+    """Build a compose route with the common args; the caller sets up patches."""
+    return await build_compose_supply_route(
+        _USER,
+        amount,
+        _market("aave_v3", ChainId.BASE, USDC_BASE),
+        composer_address=_COMPOSER,
+        bridge=bridge,
+        w3s=w3s,
+        **knobs,
+    )
+
+
+@pytest.mark.parametrize("protocol", ["aave_v3", "compound_v3"])
+def test_build_compose_supply_program_compiles(protocol):
+    """build_compose_supply_program emits DeFiVM bytecode for each supported protocol."""
+    program = build_compose_supply_program(protocol, _COMPOSE_POOL, USDC_ETH, _USER)
+    assert isinstance(program, bytes) and len(program) > 0
+
+
+def test_build_compose_supply_program_rejects_unsupported_protocol():
+    with pytest.raises(ValueError, match="unsupported protocol"):
+        build_compose_supply_program("morpho", _COMPOSE_POOL, USDC_ETH, _USER)  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bridge_kind", ["cctp", "ccip"])
+async def test_build_compose_supply_route_is_single_signature(bridge_kind):
+    """A compose-supply route is [approve, bridge] on the source chain only —
+    the destination supply rides in the bridge's compose hook, so there is no
+    pending leg. The route shape is identical for every compose-capable bridge."""
+    bridge = _compose_bridge(bridge_kind)
+    with (
+        patch("pydefi.yields.compose.supply_contract", new=AsyncMock(return_value=_COMPOSE_POOL)),
+        patch.object(CCIP, "quote_fee", new=AsyncMock(return_value=10**15)),
+    ):
+        route = await _compose_route(bridge, {ChainId.BASE: object()})
+
+    assert route.strategy == "compose_supply"
+    assert route.pending is None  # the destination supply runs inside the hook
+    assert [s.kind for s in route.steps] == ["approve", "bridge"]
+    approve_tx, bridge_tx = route.build_transactions()
+    # The approve targets USDC and grants the bridge entrypoint the compose tx hits.
+    assert Address(approve_tx["to"]) == USDC_ETH.address
+    assert Address(bridge_tx["to"]) in Address(approve_tx["data"])
+
+
+@pytest.mark.asyncio
+async def test_build_compose_supply_route_delegate_collapses_to_one_sponsored_step():
+    """delegate= (EIP-7702): the source leg is a single bridge_with_7702 step
+    batching [approve, bridge] in the EOA's own context — the user signs once
+    via sign_route and a relayer broadcasts. The destination supply still rides
+    in the compose hook, so the whole cross-chain deposit is one signature."""
+    bridge = _compose_bridge("cctp")
+    w3_src = MagicMock()
+    w3_src.eth.get_transaction_count = AsyncMock(return_value=3)
+    with (
+        patch("pydefi.yields.compose.supply_contract", new=AsyncMock(return_value=_COMPOSE_POOL)),
+        patch("pydefi.yields.router.delegation_status", AsyncMock(return_value=(0, True))),
+    ):
+        route = await _compose_route(bridge, {ChainId.BASE: object(), ChainId.ETHEREUM: w3_src}, delegate=_DELEGATE)
+
+    assert route.pending is None
+    assert [s.kind for s in route.steps] == ["bridge_with_7702"]
+    step = route.steps[0]
+    assert step.chain_id == ChainId.ETHEREUM
+    assert step.tx is None  # unbroadcastable until sign_route fills it in
+    req = step.sign_request
+    # The batch is [approve(USDC -> messenger), depositForBurnWithHook].
+    assert Address(req["calls"][0]["to"]) == USDC_ETH.address
+    assert Address(req["calls"][1]["to"]) == bridge.spender
+    assert req["needs_auth"] is True
+    assert req["auth_nonce"] == 3
+    # sign_route turns the batch into one broadcast-ready execute tx on the EOA.
+    signed = sign_route(route, ANVIL_PK)
+    assert signed.steps[0].sign_request is None
+    assert Address(signed.steps[0].tx["to"]) == _USER  # the delegated EOA itself
+
+
+@pytest.mark.asyncio
+async def test_build_compose_supply_route_defivm_collapses_to_one_witness_step():
+    """defivm= (Permit2): the source leg is a single bridge_with_permit2 step
+    whose witness-bound program approves the bridge entrypoint and runs the burn
+    inside the VM, so the user signs once and a relayer broadcasts."""
+    from pydefi.vm.permit2_supply import build_supply_program
+
+    bridge = _compose_bridge("cctp")
+    w3_src = MagicMock()
+    w3_src.eth.call = AsyncMock(return_value=(0).to_bytes(32, "big"))  # no standing VM allowance
+    with (
+        patch("pydefi.yields.compose.supply_contract", new=AsyncMock(return_value=_COMPOSE_POOL)),
+        patch("pydefi.yields.router.pick_nonce", AsyncMock(return_value=42)),
+    ):
+        route = await _compose_route(bridge, {ChainId.BASE: object(), ChainId.ETHEREUM: w3_src}, defivm=_DEFIVM)
+
+    assert route.pending is None
+    assert [s.kind for s in route.steps] == ["bridge_with_permit2"]
+    step = route.steps[0]
+    assert step.chain_id == ChainId.ETHEREUM and step.tx is None
+    req = step.sign_request
+    assert (req["defivm"], req["token"], req["amount"], req["nonce"]) == (
+        _DEFIVM,
+        USDC_ETH.address,
+        _COMPOSE_AMOUNT.amount,
+        42,
+    )
+    # The witness-bound program is exactly [approve(messenger), burn calldata].
+    hook = build_compose_supply_program("aave_v3", _COMPOSE_POOL, USDC_BASE, _USER)
+    bridge_tx = await bridge.build_bridge_compose_tx(_COMPOSE_AMOUNT, _COMPOSER, hook)
+    assert req["program"] == build_supply_program(
+        USDC_ETH.address, bridge.spender, bytes.fromhex(bridge_tx["data"][2:]), approve=True, reset=False
+    )
+    # sign_route fills in the broadcast-ready executeWithPermit2 tx on the VM.
+    signed = sign_route(route, ANVIL_PK)
+    assert signed.steps[0].sign_request is None
+    assert Address(signed.steps[0].tx["to"]) == _DEFIVM
+
+
+@pytest.mark.asyncio
+async def test_build_compose_supply_route_defivm_rejects_native_fee_bridge():
+    """The VM holds no native funds — a bridge whose compose tx carries value
+    (CCIP's native-fee lane) cannot ride the Permit2 path."""
+    bridge = _compose_bridge("ccip")
+    with (
+        patch("pydefi.yields.compose.supply_contract", new=AsyncMock(return_value=_COMPOSE_POOL)),
+        patch.object(CCIP, "quote_fee", new=AsyncMock(return_value=10**15)),
+        pytest.raises(ValueError, match="native fee"),
+    ):
+        await _compose_route(bridge, {ChainId.BASE: object(), ChainId.ETHEREUM: MagicMock()}, defivm=_DEFIVM)
+
+
+@pytest.mark.asyncio
+async def test_build_compose_supply_route_delegate_requires_source_w3():
+    """The gasless source leg reads delegation state on the source chain, so
+    w3s must carry it — rejected with a descriptive error, not a KeyError."""
+    bridge = _compose_bridge("cctp")
+    with (
+        patch("pydefi.yields.compose.supply_contract", new=AsyncMock(return_value=_COMPOSE_POOL)),
+        pytest.raises(ValueError, match="no entry for source chain"),
+    ):
+        await _compose_route(bridge, {ChainId.BASE: object()}, delegate=_DELEGATE)  # destination only
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bridge_kind", ["cctp", "ccip"])
+async def test_build_compose_supply_route_validates_chains(bridge_kind):
+    """The bridge's src / dst must match the amount and target chains."""
+    bridge = _compose_bridge(bridge_kind)
+    with pytest.raises(ValueError, match="bridge source"):
+        # source token on Base, but the bridge sources Ethereum
+        await _compose_route(bridge, {ChainId.BASE: object()}, amount=TokenAmount(USDC_BASE, 1))
 
 
 # ---------------------------------------------------------------------------
