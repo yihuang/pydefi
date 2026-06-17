@@ -15,10 +15,13 @@ from web3 import AsyncWeb3, Web3
 
 from pydefi._utils import erc20_approve_tx
 from pydefi.types import Address
+from pydefi.vm.permit2_supply import PERMIT2
 from tests.addrs import USDC_WHALE
 
 # WETH9 ``deposit()`` is not on the ERC-20 ABI; declare it once here.
 _WETH9 = Contract.from_abi(["function deposit() external payable"])
+
+_PERMIT2 = Contract.from_abi(["function approve(address token, address spender, uint160 amount, uint48 expiration)"])
 
 
 async def impersonate(w3: AsyncWeb3, address: Address) -> None:
@@ -56,6 +59,14 @@ async def erc20_approve(w3: AsyncWeb3, token: Address, owner: Address, spender: 
     )
     receipt = await w3.eth.wait_for_transaction_receipt(tx_hash)
     assert receipt["status"] == 1, "ERC20 approve reverted"
+
+
+async def permit2_approve(w3: AsyncWeb3, owner: Address, token: Address, spender: Address) -> None:
+    """Max-approve *token* to Permit2, then grant *spender* a max Permit2 allowance for it."""
+    permit2 = Address(PERMIT2)
+    await erc20_approve(w3, token, owner, permit2, (1 << 256) - 1)
+    call = _PERMIT2.fns.approve(token, spender, (1 << 160) - 1, (1 << 48) - 1).data
+    await send_ok(w3, owner, {"to": permit2, "data": "0x" + call.hex(), "value": 0}, "Permit2.approve")
 
 
 async def send_tx(w3: AsyncWeb3, sender: Address, tx: dict) -> dict:
