@@ -33,6 +33,7 @@ from pydefi.vm.permit2_supply import (
 from pydefi.yields import YieldMarket, build_yield_route, sign_route
 from tests.addrs import USDC
 from tests.live.anvil_helpers import erc20_approve, fund_usdc, impersonate, send_tx, set_balance
+from tests.live.conftest import _ensure_interpreter
 from tests.live.gasless_common import (
     AMT,
     COMET_USDC,
@@ -45,9 +46,6 @@ from tests.live.gasless_common import (
 from tests.live.sol_utils import compile_sol_file, deploy
 
 DEFI_VM_SOL = Path(__file__).resolve().parents[2] / "pydefi" / "vm" / "DeFiVM.sol"
-# Constructor arg: address(0) selects the pre-deployed Analog-Labs interpreter,
-# which exists on the mainnet fork.
-ZERO = Address("0x" + "00" * 20)
 
 
 async def _setup(fork_w3):
@@ -55,7 +53,8 @@ async def _setup(fork_w3):
     one-time owner ``approve(Permit2)``. No prime step: the program approves
     the protocol inline."""
     deployer = (await fork_w3.eth.accounts)[0]
-    defivm = await deploy(fork_w3, compile_sol_file(DEFI_VM_SOL, "DeFiVM"), deployer, ZERO)
+    interpreter = await _ensure_interpreter(fork_w3, deployer)
+    defivm = await deploy(fork_w3, compile_sol_file(DEFI_VM_SOL, "DeFiVM"), deployer, interpreter)
 
     owner_acct = Account.create()
     owner = Address(owner_acct.address)

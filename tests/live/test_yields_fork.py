@@ -54,6 +54,7 @@ from pydefi.yields import (
 from pydefi.yields.router import Protocol
 from tests.addrs import COMET_USDC, ETH_WHALE, USDC
 from tests.live.anvil_helpers import erc20_approve, fund_usdc, impersonate, send_tx, set_balance
+from tests.live.conftest import _ensure_interpreter
 from tests.live.gasless_common import send_sponsored
 from tests.live.sol_utils import MOCK_TOKEN_SOL, compile_sol_file, compile_sol_source, deploy
 
@@ -465,7 +466,8 @@ class TestGaslessComposeFork:
         owner's USDC into the VM and runs [approve, depositForBurnWithHook]
         bound by the witness — the owner signs once and spends no gas on it."""
         deployer = Address((await fork_w3.eth.accounts)[0])
-        defivm = await deploy(fork_w3, compile_sol_file(DEFI_VM_SOL, "DeFiVM"), deployer, Address("0x" + "00" * 20))
+        interpreter = await _ensure_interpreter(fork_w3, deployer)
+        defivm = await deploy(fork_w3, compile_sol_file(DEFI_VM_SOL, "DeFiVM"), deployer, interpreter)
 
         # Fresh code-less owner (Anvil keys carry 7702 delegations that break
         # Permit2 ECDSA); ETH only for the one-time approve(Permit2).

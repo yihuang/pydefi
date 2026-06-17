@@ -20,11 +20,11 @@ from pydefi.vm.yield_deposit import (
 from pydefi.yields import build_yield_deposit
 from tests.addrs import USDC
 from tests.live.anvil_helpers import fund_usdc, send_tx
+from tests.live.conftest import _ensure_interpreter
 from tests.live.gasless_common import AMT, COMET_USDC, assert_compound_credited, market
 from tests.live.sol_utils import compile_sol_file, deploy
 
 DEFI_VM_SOL = Path(__file__).resolve().parents[2] / "pydefi" / "vm" / "DeFiVM.sol"
-ZERO = Address("0x" + "00" * 20)
 FEE = 10**6  # 1 USDC to the sweeping relayer
 
 
@@ -44,7 +44,8 @@ async def _setup(fork_w3):
     it only ever receives tokens. The Safe factory/singleton are the canonical
     mainnet deployments already on the fork."""
     relayer = (await fork_w3.eth.accounts)[0]
-    defivm = await deploy(fork_w3, compile_sol_file(DEFI_VM_SOL, "DeFiVM"), relayer, ZERO)
+    interpreter = await _ensure_interpreter(fork_w3, relayer)
+    defivm = await deploy(fork_w3, compile_sol_file(DEFI_VM_SOL, "DeFiVM"), relayer, interpreter)
     owner = Address(Account.create().address)
     program = build_deposit_program(USDC.address, Address(COMET_USDC), _supply_template(fork_w3, owner), FEE)
     deposit = await deposit_address(fork_w3, owner, defivm, program)
@@ -102,7 +103,8 @@ class TestYieldDepositFork:
         out an address; a plain transfer + the returned sweep_tx credits the
         owner's Compound position and pays the relayer the committed fee."""
         relayer = (await fork_w3.eth.accounts)[0]
-        defivm = await deploy(fork_w3, compile_sol_file(DEFI_VM_SOL, "DeFiVM"), relayer, ZERO)
+        interpreter = await _ensure_interpreter(fork_w3, relayer)
+        defivm = await deploy(fork_w3, compile_sol_file(DEFI_VM_SOL, "DeFiVM"), relayer, interpreter)
         owner = Address(Account.create().address)
 
         dep = await build_yield_deposit(owner, market("compound_v3", "compound_v3:1:USDC"), defivm, fork_w3, FEE)
