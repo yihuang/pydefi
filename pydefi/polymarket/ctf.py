@@ -208,26 +208,12 @@ class PolymarketCTF:
         """Return *owner*'s balance of a single outcome token (ERC1155)."""
         return await CONDITIONAL_TOKENS.fns.balanceOf(owner, token_id).call(self.w3, to=self.conditional_tokens)
 
-    async def get_outcome_balances(self, owner: Address, token_ids: Sequence[int]) -> list[int]:
-        """Return *owner*'s balances for several outcome tokens in one call."""
-        owners = [owner] * len(token_ids)
-        return await CONDITIONAL_TOKENS.fns.balanceOfBatch(owners, list(token_ids)).call(
-            self.w3, to=self.conditional_tokens
-        )
-
     async def get_position_id(self, collection_id: Bytes32, collateral: Address | None = None) -> int:
         """Read ``getPositionId(collateral, collectionId)`` from the CTF."""
         token = collateral if collateral is not None else self.collateral.address
         return await CONDITIONAL_TOKENS.fns.getPositionId(token, _to_bytes32(collection_id)).call(
             self.w3, to=self.conditional_tokens
         )
-
-    async def get_condition_id(self, oracle: Address, question_id: Bytes32, outcome_slot_count: int = 2) -> Hash:
-        """Read ``getConditionId`` from the CTF (matches :func:`compute_condition_id`)."""
-        result = await CONDITIONAL_TOKENS.fns.getConditionId(oracle, _to_bytes32(question_id), outcome_slot_count).call(
-            self.w3, to=self.conditional_tokens
-        )
-        return Hash(result)
 
     async def is_resolved(self, condition_id: Bytes32) -> bool:
         """Return whether the condition has been resolved on-chain.
