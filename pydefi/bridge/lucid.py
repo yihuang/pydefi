@@ -26,7 +26,6 @@ from pydefi.abi.bridge import (
     LUCID_HYPERLANE_ADAPTER,
     LUCID_LAYERZERO_ADAPTER,
 )
-from pydefi.bridge.base import BaseBridge
 from pydefi.exceptions import BridgeError
 from pydefi.types import ZERO_ADDRESS, Address, BridgeQuote, ChainId, Token, TokenAmount
 
@@ -99,7 +98,23 @@ _DEFAULT_ADAPTER_BY_SRC: dict[int, AdapterKind] = {
 }
 
 
-class LucidBridge(BaseBridge):
+def _encode_transfer_message(
+    nonce: int,
+    dest_chain_id: int,
+    recipient: "Address",
+    amount: int,
+    unwrap: bool,
+    threshold: int = 1,
+    transfer_id: bytes = b"\x00" * 32,
+) -> bytes:
+    """Encode a Lucid Transfer message for quoting."""
+    return abi_encode(
+        ["(uint256,uint256,address,uint256,bool,uint256,bytes32)"],
+        [(nonce, dest_chain_id, bytes(recipient), amount, unwrap, threshold, transfer_id)],
+    )
+
+
+class LucidBridge:
     """One instance per (source controller, adapter). Token amounts are 1:1;
     only cost is the native fee from ``adapter.quoteMessage(..., includeFee=true)``.
 
@@ -122,7 +137,8 @@ class LucidBridge(BaseBridge):
                 f"LucidBridge: source chain must be Kite (2366), Kite testnet "
                 f"(2368), or MANTRA (5888), got {src_chain_id}"
             )
-        super().__init__(src_chain_id, dst_chain_id)
+        self.src_chain_id = src_chain_id
+        self.dst_chain_id = dst_chain_id
         self.w3 = w3
         self.controller_address = controller_address
         self.adapter_address = adapter_address
@@ -132,26 +148,12 @@ class LucidBridge(BaseBridge):
             raise BridgeError(f"LucidBridge: unknown adapter_kind {self.adapter_kind!r}")
         self._cached_source_token: Address | None = None
 
-    @property
-    def protocol_name(self) -> str:
-        return "Lucid"
+    protocol_name: str = "Lucid"
 
-    @staticmethod
-    def _encode_transfer_message(
-        nonce: int,
-        dest_chain_id: int,
-        recipient: Address,
-        amount: int,
-        unwrap: bool,
-        threshold: int = 1,
-        transfer_id: bytes = b"\x00" * 32,
-    ) -> bytes:
-        # Only the encoded length matters for the quote (Transfer is fixed-size),
-        # but we keep the real shape so the quote matches what the controller emits.
-        return abi_encode(
-            ["(uint256,uint256,address,uint256,bool,uint256,bytes32)"],
-            [(nonce, dest_chain_id, bytes(recipient), amount, unwrap, threshold, transfer_id)],
-        )
+    @property
+    def spender(self) -> Address:
+        """The Lucid controller — the contract that pulls ``token_in``."""
+        return self.controller_address
 
     def _encode_bridge_options(self, refund_address: Address, gas_limit: int) -> bytes:
         # LayerZero uses uint128 gasLimit, Hyperlane uses uint256 — only field
@@ -196,7 +198,7 @@ class LucidBridge(BaseBridge):
     ) -> int:
         """Required ``msg.value`` for the upcoming ``transferTo`` call (native wei)."""
         dest_ctrl = await self._dest_controller()
-        message = self._encode_transfer_message(
+        message = _encode_transfer_message(
             nonce=0,
             dest_chain_id=self.dst_chain_id,
             recipient=recipient,
@@ -262,7 +264,7 @@ class LucidBridge(BaseBridge):
         to ``recipient``). ``fee_buffer_bps`` bumps msg.value above the live quote
         for cases where broadcast lags the quote and adapter pricing drifts.
 
-        ``slippage_bps`` and ``token_out`` are accepted for ``BaseBridge``
+        ``slippage_bps`` and ``token_out`` are accepted for :class:`~pydefi.bridge.Bridge`
         compatibility and ignored: Lucid is 1:1, and the destination token is
         implicit from the controller — neither value can change the outcome.
         """

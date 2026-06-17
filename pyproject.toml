@@ -20,6 +20,7 @@ dependencies = [
     "sqlmodel>=0.0.38",
     "base58>=2.1.0",
     "vyper @ git+https://github.com/vyperlang/vyper.git@bdf00d314d335565be40bd064975b514e19b7029",
+    "networkx>=3.6.1",
 ]
 
 [project.optional-dependencies]
@@ -55,6 +56,7 @@ testpaths = ["tests"]
 markers = [
     "live: marks tests as live integration tests that require network access (run with '-m live')",
     "fork: marks tests that require a local fork of mainnet — EVM via Anvil or Solana via surfpool (run with '-m fork')",
+    "bench: gas-aggregation benchmark on a mainnet fork — produces a comparison table (run with '-m bench')",
 ]
 
 [tool.ruff]

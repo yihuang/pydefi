@@ -14,11 +14,57 @@ making simple DP relaxation both correct and safe.
 
 from __future__ import annotations
 
+import warnings
 from decimal import Decimal
+from typing import Literal
 
+from pydefi._math import MAX_BPS
 from pydefi.exceptions import NoRouteFoundError
+from pydefi.pathfinder.asgm import asgm_optimize
+from pydefi.pathfinder.dag import RouteDAG, RouteSplit, RouteSwap
 from pydefi.pathfinder.graph import PoolEdge, PoolGraph
-from pydefi.types import MAX_BPS, Address, RouteDAG, RouteSplit, RouteSwap, SwapRoute, SwapStep, Token, TokenAmount
+from pydefi.pathfinder.hermes import HermesRouter, WeightMode, from_pool_graph
+from pydefi.pathfinder.multipath import MultiEdgePath, _distribute_int, merge_and_expand
+from pydefi.types import ZERO_ADDRESS, Address, SwapRoute, SwapStep, Token, TokenAmount
+
+#: Full pool identity: ``(pool_address, token_in, fee, tick_spacing, hooks)``.
+#: ``pool_address`` alone is not unique — every Uniswap V4 pool on a chain
+#: shares the singleton PoolManager address, so the PoolKey fields are needed
+#: to tell pools apart.  ``token_out`` is needed too: a 3+-coin Curve pool
+#: yields several edges with the same (pool, token_in) but different outputs.
+EdgeKey = tuple[Address, Address, Address, int, int, Address]
+
+
+def _edge_key(edge: PoolEdge) -> EdgeKey:
+    """Return the :data:`EdgeKey` identifying *edge*'s underlying pool + direction."""
+    return (
+        edge.pool_address,
+        edge.token_in.address,
+        edge.token_out.address,
+        edge.fee_bps,
+        getattr(edge, "tick_spacing", 0),
+        getattr(edge, "hooks", ZERO_ADDRESS),
+    )
+
+
+def _step_key(step: SwapStep) -> EdgeKey:
+    """Return the :data:`EdgeKey` for a :class:`~pydefi.types.SwapStep` (round-trips :func:`_edge_key`)."""
+    return (step.pool_address, step.token_in.address, step.token_out.address, step.fee, step.tick_spacing, step.hooks)
+
+
+CandidateSolver = Literal["hop_dp", "hermes"]
+
+# Hermes ranks by ``-log(spot rate)`` over a parallel-pool-collapsed graph, so
+# its top-K can miss the path whose realized ``amount_out`` is best when one
+# pool's spot rate beats its actual depth at the requested size. Oversample
+# Yen's K, re-quote by realized output, then trim — recovers paths whose
+# realized rank is ≤ top_n but spot rank is between top_n and this multiple.
+# Cost: Yen scales O(k²·|E|·|V|), so 2× ≈ 4× candidate-fetch time.
+_HERMES_OVERSAMPLE = 2
+_HERMES_CAP_WARNING_TEXT = (
+    "Hermes candidate widening hit max_k before gathering top_n hop-valid paths; "
+    "results may be conservative under the current search budget"
+)
 
 
 class Router:
@@ -30,11 +76,52 @@ class Router:
     Args:
         graph: The pool graph to search.
         max_hops: Maximum number of swap hops allowed (default ``3``).
+            Enforced for both candidate solvers — ``"hermes"`` applies it as a
+            post-filter on Yen's K-shortest paths so its candidate hop-depth
+            stays aligned with ``"hop_dp"`` (prevents ASGM from diluting
+            weight onto longer alternatives that wouldn't be considered under
+            the same cap).
+        candidate_solver: Which top-K candidate-discovery strategy
+            :meth:`find_optimal_split` uses. ``"hop_dp"`` (default) is the
+            hop-bounded DP; ``"hermes"`` is the treewidth-parameterized SSSP
+            from :mod:`pydefi.pathfinder.hermes` — recommended for large
+            graphs (≥ 1k tokens) where Yen's K-shortest-paths over a
+            collapsed-best-spot graph scales better than DP over the full
+            edge set.
+        weight_mode: Hermes edge weights. ``"spot"`` (default) uses
+            post-fee marginal rate; ``"amount_out"`` bakes finite-input
+            slippage into the seed via ``edge.amount_out(probe_amount)`` —
+            better ranking for large trades.
+        probe_amount: Probe input size (raw units) for ``weight_mode=
+            "amount_out"``. Required > 0 in that mode; ignored otherwise.
     """
 
-    def __init__(self, graph: PoolGraph, max_hops: int = 3) -> None:
+    def __init__(
+        self,
+        graph: PoolGraph,
+        max_hops: int = 3,
+        *,
+        candidate_solver: CandidateSolver = "hop_dp",
+        weight_mode: WeightMode = "spot",
+        probe_amount: int = 0,
+    ) -> None:
+        if weight_mode == "amount_out" and probe_amount <= 0:
+            raise ValueError("probe_amount must be > 0 when weight_mode='amount_out'")
         self.graph = graph
         self.max_hops = max_hops
+        self.candidate_solver: CandidateSolver = candidate_solver
+        self.weight_mode: WeightMode = weight_mode
+        self.probe_amount = probe_amount
+        # Lazy-built Hermes router; reset whenever the graph signature changes
+        # (we don't track that yet — callers must build a new Router after
+        # mutating PoolGraph).
+        self._hermes: HermesRouter | None = None
+
+    def _ensure_hermes(self) -> HermesRouter:
+        if self._hermes is None:
+            nx_graph = from_pool_graph(self.graph, weight=self.weight_mode, probe_amount=self.probe_amount)
+            self._hermes = HermesRouter.build(nx_graph)
+        return self._hermes
 
     def find_best_route(
         self,
@@ -162,16 +249,7 @@ class Router:
             )
 
         final_amount, final_path = best_result
-        steps = [
-            SwapStep(
-                token_in=edge.token_in,
-                token_out=edge.token_out,
-                pool_address=edge.pool_address,
-                protocol=edge.protocol,
-                fee=edge.fee_bps,
-            )
-            for edge in final_path
-        ]
+        steps = self._steps_from_edges(final_path)
         return SwapRoute(
             steps=steps,
             amount_in=amount_in,
@@ -214,16 +292,7 @@ class Router:
             final_amount = edge.amount_out(final_amount)
 
         return SwapRoute(
-            steps=[
-                SwapStep(
-                    token_in=edge.token_in,
-                    token_out=edge.token_out,
-                    pool_address=edge.pool_address,
-                    protocol=edge.protocol,
-                    fee=edge.fee_bps,
-                )
-                for edge in path
-            ],
+            steps=self._steps_from_edges(path),
             amount_in=amount_in,
             amount_out=TokenAmount(token=token_out, amount=final_amount),
             price_impact=self._estimate_price_impact(path, amount_in.amount),
@@ -293,16 +362,7 @@ class Router:
             best_at[(tok_addr, depth)] = current_amount
 
             if tok_addr == dst_addr:
-                steps = [
-                    SwapStep(
-                        token_in=e.token_in,
-                        token_out=e.token_out,
-                        pool_address=e.pool_address,
-                        protocol=e.protocol,
-                        fee=e.fee_bps,
-                    )
-                    for e in path
-                ]
+                steps = self._steps_from_edges(path)
                 routes.append(
                     SwapRoute(
                         steps=steps,
@@ -374,75 +434,82 @@ class Router:
             raise ValueError("internal Router error: missing DAG representation")
         return [route.dag for route in routes if route.dag is not None]
 
-    def find_best_split(
+    def find_optimal_split(
         self,
         amount_in: TokenAmount,
         token_out: Token,
-        max_splits: int = 2,
-        step_bps: int = 1000,
+        *,
+        candidates: int = 4,
         max_hops: int | None = None,
     ) -> RouteDAG:
-        """Find the N-way allocation of *amount_in* across routes that maximises output.
+        """Optimal multi-edge allocation via PRIME's two-stage routing.
 
-        Distributes the input across up to *max_splits* diverse candidate routes
-        to maximise aggregate output — the same strategy used by Uniswap Smart
-        Path and UniRoute.  All weight vectors from 1-way up to *max_splits*-way
-        are evaluated in a single pass by :meth:`_best_n_way_split`.
-
-        Algorithm
-        ---------
-        1. Discover up to *max_splits* diverse candidate routes via
-           :meth:`_find_top_routes` (one per distinct first-hop pool).
-        2. Enumerate every weight vector ``(w_0, …, w_{n-1})`` where each
-           ``w_i`` is a non-negative multiple of *step_bps* and
-           ``sum(w_i) == 10 000``.
-        3. Evaluate each allocation off-chain via :meth:`_follow_route`.
-        4. Return the best allocation as a :class:`~pydefi.types.RouteDAG`.
-
-        A single-leg result (no split improves on the best route) is returned
-        as a linear DAG without a :class:`~pydefi.types.RouteSplit` node.
-
-        .. note::
-            Search cost is ``C(k+n-1, n-1)`` (stars-and-bars) where
-            ``k = MAX_BPS // step_bps`` and ``n = max_splits``.  At the
-            default ``step_bps=1000`` (k=10): 2-way → 11 evals, 3-way → 66,
-            4-way → 286.
-
-        Args:
-            amount_in: Total input amount.
-            token_out: Desired output token.
-            step_bps: Weight granularity in basis points (default ``1000`` = 10%).
-            max_splits: Maximum number of split legs to consider (default ``2``).
-            max_hops: Forwarded to :meth:`_find_top_routes`.
-
-        Returns:
-            A :class:`~pydefi.types.RouteDAG` — linear when a single route
-            wins, split/merge when multiple legs improve output.
+        Discovers top-*candidates* diverse routes, runs
+        :func:`~pydefi.pathfinder.multipath.merge_and_expand` to collapse
+        same-token-sequence candidates into multi-edge paths, then jointly
+        optimises ``(W_p, w_e)`` via
+        :func:`~pydefi.pathfinder.asgm.asgm_optimize`. Returns a
+        :class:`RouteDAG` with nested splits for multi-edge hops and a
+        top-level split when more than one path is active.
 
         Raises:
             :class:`~pydefi.exceptions.NoRouteFoundError`: If no route exists.
-            :class:`ValueError`: If *max_splits* < 1.
+            :class:`ValueError`: If *candidates* < 1.
         """
-        if max_splits < 1:
-            raise ValueError("max_splits must be >= 1")
-        routes = self._find_top_routes(amount_in, token_out, top_n=max_splits, max_hops=max_hops)
-        edge_index: dict[tuple[Address, Address], PoolEdge] = {
-            (edge.pool_address, edge.token_in.address): edge for edge in self.graph
-        }
-        legs = self._best_n_way_split(routes, amount_in, edge_index, step_bps)
+        if candidates < 1:
+            raise ValueError("candidates must be >= 1")
+        routes = self._find_top_routes(amount_in, token_out, top_n=candidates, max_hops=max_hops)
+        edge_index: dict[EdgeKey, PoolEdge] = {_edge_key(edge): edge for edge in self.graph}
+        candidate_edges: list[list[PoolEdge]] = [
+            [edge_index[_step_key(s)] for s in r.steps if s.pool_address is not None] for r in routes
+        ]
+        candidate_edges = [edges for edges in candidate_edges if edges]
+        if not candidate_edges:
+            raise NoRouteFoundError(f"No route found from {amount_in.token.symbol} to {token_out.symbol}")
 
-        if len(legs) == 1:
-            _, edges = legs[0]
-            return self._edges_to_dag(amount_in.token, edges)
+        multipaths = merge_and_expand(candidate_edges, self.graph)
+        weights = asgm_optimize(multipaths, amount_in.amount)
+        active = [(p, w) for p, w in zip(multipaths, weights) if w.path_weight > 1e-6]
+        if not active:
+            active = [(multipaths[0], weights[0])]
+            active[0][1].path_weight = 1.0
 
         dag = RouteDAG().from_token(amount_in.token)
+        if len(active) == 1:
+            self._emit_path_to_dag(active[0][0], active[0][1].intra_hop_weights, dag)
+            return dag
+
+        leg_bps = _distribute_int(MAX_BPS, [w.path_weight for _, w in active])
         dag.split()
-        for weight_bps, edges in legs:
-            dag.leg(weight_bps)
-            for edge in edges:
-                dag.swap(edge.token_out, edge)
+        for (path, w), bps in zip(active, leg_bps):
+            if bps == 0:
+                continue
+            dag.leg(bps)
+            self._emit_path_to_dag(path, w.intra_hop_weights, dag)
         dag.merge()
         return dag
+
+    @staticmethod
+    def _emit_path_to_dag(
+        path: MultiEdgePath,
+        intra_hop_weights: list[list[float]],
+        dag: RouteDAG,
+    ) -> None:
+        """Append *path*'s actions to *dag*, nesting a split for multi-edge hops."""
+        for bundle, ws in zip(path.hops, intra_hop_weights):
+            if len(bundle) == 1:
+                dag.swap(bundle[0].token_out, bundle[0])
+                continue
+            edge_bps = _distribute_int(MAX_BPS, ws)
+            non_zero = [(e, b) for e, b in zip(bundle, edge_bps) if b > 0]
+            if len(non_zero) == 1:
+                dag.swap(non_zero[0][0].token_out, non_zero[0][0])
+                continue
+            dag.split()
+            for edge, b in non_zero:
+                dag.leg(b)
+                dag.swap(edge.token_out, edge)
+            dag.merge()
 
     def _find_top_routes(
         self,
@@ -453,9 +520,18 @@ class Router:
     ) -> list[SwapRoute]:
         """Find the top-*n* diverse routes by output, deduplicated by first-hop pool.
 
-        Similar to :meth:`find_best_route` but tracks the best *top_n* paths
-        at each ``(token, hop)`` state, then deduplicates by first-hop pool
-        address so each returned route starts through a genuinely different pool.
+        Dispatches based on ``self.candidate_solver``:
+
+        * ``"hop_dp"`` (default): hop-bounded DP that tracks the best *top_n*
+          paths at each ``(token, hop)`` state, then deduplicates by first-hop
+          pool. Capped at ``max_hops`` (default 3).
+        * ``"hermes"``: Hermes treewidth-parameterized Yen's K-shortest paths
+          over a graph where each token-pair collapses to its best-spot pool.
+          Oversamples by :data:`_HERMES_OVERSAMPLE`× and re-ranks by realized
+          ``amount_out`` so finite-input slippage shuffles in paths whose spot
+          rank exceeds *top_n*. Capped at ``max_hops`` for symmetry with
+          ``hop_dp`` — drops longer alternatives that ASGM would otherwise
+          give weight to.
 
         Args:
             amount_in: Exact input amount.
@@ -470,6 +546,18 @@ class Router:
         Raises:
             :class:`~pydefi.exceptions.NoRouteFoundError`: If no path exists.
         """
+        if self.candidate_solver == "hermes":
+            return self._find_top_routes_hermes(amount_in, token_out, top_n, max_hops)
+        return self._find_top_routes_hop_dp(amount_in, token_out, top_n, max_hops)
+
+    def _find_top_routes_hop_dp(
+        self,
+        amount_in: TokenAmount,
+        token_out: Token,
+        top_n: int,
+        max_hops: int | None = None,
+    ) -> list[SwapRoute]:
+        """Hop-bounded DP candidate discovery (see :meth:`_find_top_routes` for semantics)."""
         effective_max_hops = self.max_hops if max_hops is None else max_hops
         src = amount_in.token
         dst_addr: Address = token_out.address
@@ -519,10 +607,18 @@ class Router:
 
         all_candidates.sort(key=lambda x: x[0], reverse=True)
 
-        seen_first_pools: set[Address] = set()
+        # Diversify by the first hop's *pool* (not direction): routes leaving a
+        # multi-coin Curve pool via different coins still share its liquidity.
+        seen_first_pools: set[tuple] = set()
         diverse: list[tuple[int, list[PoolEdge]]] = []
         for amount, path in all_candidates:
-            first_pool: Address = path[0].pool_address
+            edge = path[0]
+            first_pool = (
+                edge.pool_address,
+                edge.fee_bps,
+                getattr(edge, "tick_spacing", 0),
+                getattr(edge, "hooks", ZERO_ADDRESS),
+            )
             if first_pool not in seen_first_pools:
                 seen_first_pools.add(first_pool)
                 diverse.append((amount, path))
@@ -531,16 +627,7 @@ class Router:
 
         routes: list[SwapRoute] = []
         for final_amount, final_path in diverse:
-            steps = [
-                SwapStep(
-                    token_in=edge.token_in,
-                    token_out=edge.token_out,
-                    pool_address=edge.pool_address,
-                    protocol=edge.protocol,
-                    fee=edge.fee_bps,
-                )
-                for edge in final_path
-            ]
+            steps = self._steps_from_edges(final_path)
             routes.append(
                 SwapRoute(
                     steps=steps,
@@ -551,82 +638,119 @@ class Router:
             )
         return routes
 
-    def _follow_route(
+    def _find_top_routes_hermes(
         self,
-        route: SwapRoute,
-        raw_amount: int,
-        edge_index: dict[tuple[Address, Address], PoolEdge],
-    ) -> int:
-        """Walk each step of *route* at *raw_amount* and return the output amount."""
-        current = raw_amount
-        for step in route.steps:
-            key = (step.pool_address, step.token_in.address)
-            edge = edge_index.get(key)
-            if edge is None:
-                return 0
-            current = edge.amount_out(current)
-            if current <= 0:
-                return 0
-        return current
-
-    def _best_n_way_split(
-        self,
-        routes: list[SwapRoute],
         amount_in: TokenAmount,
-        edge_index: dict[tuple[Address, Address], PoolEdge],
-        step_bps: int,
-    ) -> list[tuple[int, list[PoolEdge]]]:
-        """Return the best N-way weight allocation across *routes* at *step_bps* granularity.
+        token_out: Token,
+        top_n: int,
+        max_hops: int | None = None,
+    ) -> list[SwapRoute]:
+        """Hermes-backed candidate discovery: oversample by spot rank, re-rank by realized output.
 
-        Enumerates every weight vector ``(w_0, …, w_{n-1})`` where each ``w_i``
-        is a non-negative multiple of *step_bps* and the vector sums to
-        ``MAX_BPS``.  Degenerate single-leg vectors are included, so the
-        result is always at least as good as any one route alone.
-
-        Integer-division rounding is corrected by adding the leftover to the
-        last leg with a non-zero weight so leg amounts sum exactly to
-        ``amount_in.amount``.
-
-        Returns:
-            List of ``(weight_bps, edges)`` pairs for legs with ``weight_bps > 0``,
-            ordered by the original route ranking.
+        Returns :class:`SwapRoute` objects whose ``amount_out`` is computed by
+        actually walking each path's edges with ``edge.amount_out`` — Hermes
+        only ranks by ``-log(spot rate)``, so we fetch
+        :data:`_HERMES_OVERSAMPLE`× *top_n* paths, re-quote at the requested
+        input size, sort by realized output, dedupe by first-hop pool (same
+        diversity contract as ``hop_dp``), and trim to *top_n* before ASGM
+        consumes the candidates. Paths exceeding *max_hops* edges are dropped
+        before re-ranking — keeps hermes' candidate hop-depth aligned with
+        hop_dp so ASGM doesn't dilute weight onto longer alternatives that
+        wouldn't be considered under the same cap. Widens ``k`` iteratively
+        when the initial sample contains too few hop-valid paths, greatly
+        reducing false ``NoRouteFoundError`` outcomes caused by an initial Yen
+        window that surfaces long alternatives before shorter hop-valid paths.
         """
-        total = amount_in.amount
-        n = len(routes)
-        best_legs: list[tuple[int, list[PoolEdge]]] = []
-        best_total: int = 0
+        src = amount_in.token
+        dst_addr: Address = token_out.address
+        if src.address == dst_addr:
+            raise ValueError("token_in and token_out must be different")
 
-        # Pre-build per-route edge lists once to avoid repeated dict lookups.
-        route_edges: list[list[PoolEdge]] = []
-        for route in routes:
-            edges = [
-                edge_index[(step.pool_address, step.token_in.address)]
-                for step in route.steps
-                if step.pool_address is not None
-            ]
-            route_edges.append(edges)
+        effective_max_hops = self.max_hops if max_hops is None else max_hops
+        hermes = self._ensure_hermes()
+        # Iteratively double ``k`` until top_n hop-valid candidates exist or
+        # Yen exhausts (returns fewer than asked). Bound keeps Yen's worst
+        # case O(k²·|E|·|V|) cost finite on pathological graphs.
+        k = top_n * _HERMES_OVERSAMPLE
+        max_k = top_n * _HERMES_OVERSAMPLE * 8
+        node_paths: list = []
+        hit_sampling_cap = False
+        while True:
+            candidates = hermes.top_k_paths(src.address, dst_addr, k)
+            # ``len(path) - 1`` is hop count (path is a node sequence; edge
+            # count = nodes - 1).
+            node_paths = [p for p in candidates if len(p) - 1 <= effective_max_hops]
+            if len(node_paths) >= top_n:
+                break
+            if len(candidates) < k or k >= max_k:
+                # Yen exhausted (fewer returned than asked) or hit the cap.
+                hit_sampling_cap = k >= max_k and len(candidates) >= k
+                break
+            k *= 2
+        if hit_sampling_cap:
+            # Python's default filter de-dups per call site, so warn freely:
+            # no module-global latch to race on or to suppress later cap hits.
+            warnings.warn(_HERMES_CAP_WARNING_TEXT, RuntimeWarning, stacklevel=2)
+        if not node_paths:
+            raise NoRouteFoundError(f"No route found from {src.symbol} to {token_out.symbol}")
 
-        def _enumerate(idx: int, remaining_bps: int, weights: list[int]) -> None:
-            nonlocal best_legs, best_total
-            if idx == n - 1:
-                weights.append(remaining_bps)
-                amts: list[int] = [total * w // MAX_BPS for w in weights]
-                last_nz = max(i for i in range(n) if weights[i] > 0)
-                amts[last_nz] += total - sum(amts)
-                outs = [self._follow_route(routes[i], amts[i], edge_index) if amts[i] > 0 else 0 for i in range(n)]
-                combined = sum(outs)
-                if combined > best_total:
-                    best_total = combined
-                    best_legs = [(weights[i], route_edges[i]) for i in range(n) if weights[i] > 0]
-                weights.pop()
-                return
-            for w in range(0, remaining_bps + 1, step_bps):
-                weights.append(w)
-                _enumerate(idx + 1, remaining_bps - w, weights)
-                weights.pop()
-
-        _enumerate(0, MAX_BPS, [])
-        return best_legs
+        # Each Hermes path is a list of token addresses. Walk the *original*
+        # PoolGraph edges underneath (recovered from edge_data['edge']) and
+        # quote amount_out at the actual input size.
+        routes: list[SwapRoute] = []
+        # The first iteration's HermesRouter holds the canonical graph; later
+        # iterations run on masked subgraphs — but every path returned uses
+        # only edges present in the *original* graph, so re-walk via self.graph.
+        for path in node_paths:
+            # Hermes can emit non-simple walks on negative-weight graphs (spot
+            # weights are -log(rate)); a token-revisiting route is not valid.
+            if len(set(path)) != len(path):
+                continue
+            edges_along: list[PoolEdge] = []
+            cur_amount = amount_in.amount
+            ok = True
+            for u_addr, v_addr in zip(path, path[1:]):
+                # The chosen PoolEdge for (u, v) was stashed at adapter time.
+                edge_data = hermes.graph.get_edge_data(u_addr, v_addr)
+                if edge_data is None or "edge" not in edge_data:
+                    ok = False
+                    break
+                edge = edge_data["edge"]
+                edges_along.append(edge)
+                cur_amount = edge.amount_out(cur_amount)
+                if cur_amount <= 0:
+                    ok = False
+                    break
+            if not ok or not edges_along:
+                continue
+            steps = self._steps_from_edges(edges_along)
+            routes.append(
+                SwapRoute(
+                    steps=steps,
+                    amount_in=amount_in,
+                    amount_out=TokenAmount(token=token_out, amount=cur_amount),
+                    price_impact=self._estimate_price_impact(edges_along, amount_in.amount),
+                )
+            )
+        # Sort by amount_out descending (Hermes ordered by -log(rate); finite-
+        # input quoting can shuffle near-tied routes), then dedupe by first-
+        # hop pool — same diversity contract as hop_dp. Without it, two Yen
+        # paths sharing pool_X for hop 0 would both reach ASGM and just split
+        # the same first-hop liquidity, blunting allocation diversity.
+        routes.sort(key=lambda r: r.amount_out.amount, reverse=True)
+        seen_first_pools: set[EdgeKey] = set()
+        diverse: list[SwapRoute] = []
+        for r in routes:
+            if r.steps[0].pool_address is None:
+                continue
+            first_pool = _step_key(r.steps[0])
+            if first_pool in seen_first_pools:
+                continue
+            seen_first_pools.add(first_pool)
+            diverse.append(r)
+            if len(diverse) >= top_n:
+                break
+        return diverse
 
     def simulate(self, dag: RouteDAG, amount_in: int) -> int:
         """Simulate the output amount for *dag* at *amount_in* using off-chain edge math.
@@ -665,6 +789,24 @@ class Router:
         return [MAX_BPS]
 
     @staticmethod
+    def _steps_from_edges(edges: list[PoolEdge]) -> list[SwapStep]:
+        """Build the :class:`SwapStep` list for *edges*, carrying each edge's V4
+        PoolKey fields (``tick_spacing`` / ``hooks``) so a step round-trips to its pool.
+        """
+        return [
+            SwapStep(
+                token_in=edge.token_in,
+                token_out=edge.token_out,
+                pool_address=edge.pool_address,
+                protocol=edge.protocol,
+                fee=edge.fee_bps,
+                tick_spacing=getattr(edge, "tick_spacing", 0),
+                hooks=getattr(edge, "hooks", ZERO_ADDRESS),
+            )
+            for edge in edges
+        ]
+
+    @staticmethod
     def _edges_to_dag(token_in: Token, edges: list[PoolEdge]) -> RouteDAG:
         dag = RouteDAG().from_token(token_in)
         for edge in edges:
@@ -684,18 +826,12 @@ class Router:
         * :class:`~pydefi.pathfinder.graph.V3PoolEdge`: uses virtual reserves
           derived from ``sqrtPriceX96`` / ``liquidity``.
 
+        Per-hop impact and forward amount propagation both read base pool
+        state — the metric is reporting-only and stays internally consistent.
+
         If a hop returns ``Decimal('NaN')`` (impact unestimable) and no other
         hop yields a positive estimate, the cumulative result is
         ``Decimal('NaN')`` to signal "impact unknown" rather than "zero impact".
-
-        Args:
-            edges: Ordered pool edges in the route.
-            amount_in: Input amount at the first hop.
-
-        Returns:
-            Estimated cumulative price impact in ``[0, 1]``, or
-            ``Decimal('NaN')`` if the entire path consists of pools where
-            impact cannot be estimated.
         """
         total_impact = Decimal(0)
         current_amount = amount_in
@@ -706,8 +842,6 @@ class Router:
                 has_unestimated_hop = True
             else:
                 total_impact += hop_impact
-            # Always propagate the simulated amount forward so that later hops
-            # use the correct intermediate amount.
             current_amount = edge.amount_out(current_amount)
         if has_unestimated_hop and total_impact == Decimal(0):
             return Decimal("NaN")

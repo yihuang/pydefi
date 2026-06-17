@@ -770,3 +770,78 @@ class TestFactoryDiscovery:
         addresses = call_kwargs["address"]
         assert Web3.to_checksum_address(_FACTORY_V2) in addresses
         assert Web3.to_checksum_address(_FACTORY_V3) in addresses
+
+
+class TestTokenMetaCaching:
+    @pytest.mark.asyncio
+    async def test_token_meta_cached_and_deduped(self):
+        """_fetch_token_meta caches by address; _prefetch_token_meta skips cached."""
+        indexer = PoolIndexer(db_url="sqlite://")
+        seen: list[str] = []
+
+        async def fake_view(fn, to, default):  # the single network seam
+            seen.append(to.lower())
+            return default
+
+        indexer._erc20_view = fake_view  # type: ignore[method-assign]
+
+        a = "0x" + "1a" * 20
+        assert await indexer._fetch_token_meta(a) == ("", 18)
+        n = len(seen)
+        assert await indexer._fetch_token_meta(a.upper()) == ("", 18)  # case-insensitive cache hit
+        assert len(seen) == n, "cached token is not refetched"
+        assert set(seen) == {a}
+
+        b = "0x" + "2b" * 20
+        await indexer._prefetch_token_meta({a, b, a.upper()})  # a cached, dupes collapse
+        assert set(seen) == {a, b}, "a not refetched; only b fetched"
+
+    @pytest.mark.asyncio
+    async def test_shared_token_fetched_once_across_pools(self):
+        """A token shared by two newly discovered pools is enriched only once."""
+        mock_w3 = _make_mock_w3(block_number=50)
+        other_pool = "0x" + "ce" * 20
+        logs = [
+            _make_pool_created_log(
+                factory_address=_FACTORY_V3, token0=_TOKEN_A, token1=_TOKEN_B, fee=3000, pool=_NEW_POOL_V3
+            ),
+            _make_pool_created_log(
+                factory_address=_FACTORY_V3, token0=_TOKEN_A, token1=_TOKEN_C, fee=500, pool=other_pool
+            ),
+        ]
+        mock_w3.eth.get_logs = AsyncMock(return_value=logs)
+
+        indexer = PoolIndexer(db_url="sqlite://", w3=mock_w3)
+        indexer.add_factory(factory_address=_FACTORY_V3, protocol="UniswapV3", chain_id=1)
+
+        seen: list[str] = []
+
+        async def fake_view(fn, to, default):
+            seen.append(to.lower())
+            return default
+
+        indexer._erc20_view = fake_view  # type: ignore[method-assign]
+        await indexer.backfill(from_block=10, to_block=50)
+
+        assert set(seen) == {_TOKEN_A.lower(), _TOKEN_B.lower(), _TOKEN_C.lower()}
+        # the shared token A is fetched the same number of times as a single-pool token,
+        # i.e. once — not per pool.
+        assert seen.count(_TOKEN_A.lower()) == seen.count(_TOKEN_B.lower())
+        assert indexer.get_pool(_NEW_POOL_V3) is not None
+        assert indexer.get_pool(other_pool) is not None
+
+    @pytest.mark.asyncio
+    async def test_factory_discovery_skips_get_block(self):
+        """Factory-creation events carry no timestamp, so backfill issues no eth_getBlock."""
+        mock_w3 = _make_mock_w3(block_number=50)
+        log = _make_pool_created_log(
+            factory_address=_FACTORY_V3, token0=_TOKEN_A, token1=_TOKEN_B, fee=3000, pool=_NEW_POOL_V3
+        )
+        mock_w3.eth.get_logs = AsyncMock(return_value=[log])
+
+        indexer = PoolIndexer(db_url="sqlite://", w3=mock_w3)
+        indexer.add_factory(factory_address=_FACTORY_V3, protocol="UniswapV3", chain_id=1)
+        await indexer.backfill(from_block=10, to_block=50)
+
+        assert indexer.get_pool(_NEW_POOL_V3) is not None
+        assert mock_w3.eth.get_block.call_count == 0, "discovery-only backfill must not fetch block timestamps"

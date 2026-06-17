@@ -12,16 +12,8 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 
-from pydefi.types import (
-    ZERO_ADDRESS,
-    Address,
-    RouteAction,
-    RouteBridge,
-    RouteDAG,
-    RouteSplit,
-    RouteSwap,
-    SwapProtocol,
-)
+from pydefi.pathfinder.dag import RouteAction, RouteBridge, RouteDAG, RouteSplit, RouteSwap
+from pydefi.types import ZERO_ADDRESS, Address, SwapProtocol
 from pydefi.vm.context import Operand, Program
 from pydefi.vm.eureka import approve_then_send_transfer
 from pydefi.vm.swap import (
@@ -66,12 +58,20 @@ def build_quote_program_for_dag(
     dag: RouteDAG,
     *,
     amount_in: int,
-    quoter_address: str | None = None,
+    min_final_out: int = 0,
+    quoter_address: Address | None = None,
 ) -> Program:
     """Build a quote/simulation program from a :class:`RouteDAG`.
 
     Returns ``amountOut`` via ``RETURN(0, 32)`` so callers reading from
     ``eth_call`` returndata see the final output amount.
+
+    Args:
+        dag: Route DAG to simulate.
+        amount_in: Input amount for the first hop.
+        min_final_out: If > 0, revert when ``amountOut < min_final_out``.
+        quoter_address: Uniswap V3-compatible quoter address.  Required when
+            the DAG contains V3 hops; ignored for V2-only routes.
     """
     if not dag.actions:
         raise ValueError("build_quote_program_for_dag: route DAG must contain at least one action")
@@ -83,6 +83,8 @@ def build_quote_program_for_dag(
         dag.actions,
         quoter_address=quoter_address,
     )
+    if min_final_out > 0:
+        prog.assert_ge(final_out, min_final_out, "slippage: out too low")
     prog.return_word(final_out)
     return prog
 
@@ -156,12 +158,17 @@ def _build_dag_quote_actions(
     amount_in: Operand,
     actions: Sequence[RouteAction],
     *,
-    quoter_address: str | None,
+    quoter_address: Address | None,
 ) -> Operand:
     current = amount_in
     for action in actions:
         if isinstance(action, RouteSwap):
             hop = _swap_hop_from_route_swap(action, recipient=ZERO_ADDRESS)
+            if hop.protocol == SwapProtocol.UNISWAP_V4:
+                raise NotImplementedError(
+                    "Uniswap V4 quoting is not supported by DeFiVM programs; "
+                    "use UniswapV4.quote_exact_input_single instead"
+                )
             if hop.protocol == SwapProtocol.UNISWAP_V3:
                 if quoter_address is None:
                     raise ValueError("build_quote_program_for_dag: quoter_address required for V3 hops")

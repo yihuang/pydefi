@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from hexbytes import HexBytes
 
+from pydefi._math import apply_slippage
 from pydefi.bridge.across import Across
-from pydefi.bridge.base import BaseBridge
 from pydefi.bridge.ccip import (
     _CCIP_CHAIN_SELECTOR,
     _CCIP_ROUTER,
@@ -26,7 +26,7 @@ from pydefi.bridge.eureka import (
 )
 from pydefi.bridge.gaszip import _SUPPORTED_CHAINS, GasZip
 from pydefi.bridge.layerzero_oft import _LZ_EID, LayerZeroOFT
-from pydefi.bridge.lucid import LucidBridge, discover_adapter
+from pydefi.bridge.lucid import LucidBridge, _encode_transfer_message, discover_adapter
 from pydefi.bridge.mayan import _CHAIN_NAMES, _MAYAN_FORWARDER, Mayan
 from pydefi.bridge.relay import Relay
 from pydefi.bridge.router import BridgeRouter, rank_bridge_quotes
@@ -162,14 +162,8 @@ class TestStargate:
             sg._pool_id(unknown_token)
 
     def test_apply_slippage(self):
-        sg = Stargate(
-            w3=None,
-            src_chain_id=1,
-            dst_chain_id=42161,
-            router_address=STARGATE_ROUTER_ETH,
-        )
-        assert sg._apply_slippage(1_000_000, 50) == 995_000
-        assert sg._apply_slippage(1_000_000, 0) == 1_000_000
+        assert apply_slippage(1_000_000, 50) == 995_000
+        assert apply_slippage(1_000_000, 0) == 1_000_000
 
     @pytest.mark.asyncio
     async def test_get_quote(self):
@@ -206,12 +200,7 @@ class TestStargate:
 
 class TestAcross:
     def test_protocol_name(self):
-        ac = Across(
-            w3=None,
-            src_chain_id=1,
-            dst_chain_id=42161,
-            spoke_pool_address=SPOKE_POOL_ETH,
-        )
+        ac = Across(w3=None, src_chain_id=1, dst_chain_id=42161, spoke_pool_address=SPOKE_POOL_ETH)
         assert ac.protocol_name == "Across"
 
     def test_chain_ids_stored(self):
@@ -258,25 +247,13 @@ class TestAcross:
         assert quote.estimated_time_seconds == 120
 
     def test_apply_slippage(self):
-        ac = Across(
-            w3=None,
-            src_chain_id=1,
-            dst_chain_id=42161,
-            spoke_pool_address=SPOKE_POOL_ETH,
-        )
-        result = ac._apply_slippage(1_000_000, 50)
+        result = apply_slippage(1_000_000, 50)
         assert result == 995_000
 
 
 # ---------------------------------------------------------------------------
-# BaseBridge abstract interface
+# BaseBridge was removed — concrete bridges are duck-typed
 # ---------------------------------------------------------------------------
-
-
-class TestBaseBridge:
-    def test_cannot_instantiate_abstract(self):
-        with pytest.raises(TypeError):
-            BaseBridge(src_chain_id=1, dst_chain_id=42161)
 
 
 # ---------------------------------------------------------------------------
@@ -686,12 +663,7 @@ OFT_TOKEN_ARB_ALT = Token(
 
 class TestLayerZeroOFT:
     def test_protocol_name(self):
-        oft = LayerZeroOFT(
-            w3=None,
-            src_chain_id=1,
-            dst_chain_id=42161,
-            oft_address=OFT_ADDRESS,
-        )
+        oft = LayerZeroOFT(w3=None, src_chain_id=1, dst_chain_id=42161, oft_address=OFT_ADDRESS)
         assert oft.protocol_name == "LayerZeroOFT"
 
     def test_chain_ids_stored(self):
@@ -756,14 +728,8 @@ class TestLayerZeroOFT:
         assert result[12:] == bytes(addr)
 
     def test_apply_slippage(self):
-        oft = LayerZeroOFT(
-            w3=None,
-            src_chain_id=1,
-            dst_chain_id=42161,
-            oft_address=OFT_ADDRESS,
-        )
-        assert oft._apply_slippage(1_000_000, 50) == 995_000
-        assert oft._apply_slippage(1_000_000, 0) == 1_000_000
+        assert apply_slippage(1_000_000, 50) == 995_000
+        assert apply_slippage(1_000_000, 0) == 1_000_000
 
     @pytest.mark.asyncio
     async def test_get_quote(self):
@@ -868,7 +834,7 @@ class TestLayerZeroOFT:
         amount_in = TokenAmount.from_human(OFT_TOKEN_ETH, "1000")
         recipient: Address = Address("0x" + "AA" * 20)
 
-        with patch.object(oft, "quote_send_fee", new=AsyncMock(return_value=5 * 10**15)):
+        with patch.object(oft, "_quote_native_fee", new=AsyncMock(return_value=5 * 10**15)):
             tx = await oft.build_bridge_tx(OFT_TOKEN_ETH, OFT_TOKEN_ARB, amount_in, recipient)
 
         assert tx["to"] == OFT_ADDRESS
@@ -888,7 +854,7 @@ class TestLayerZeroOFT:
         recipient: Address = Address("0x" + "AA" * 20)
         refund: Address = Address("0x" + "BB" * 20)
 
-        with patch.object(oft, "quote_send_fee", new=AsyncMock(return_value=10**15)):
+        with patch.object(oft, "_quote_native_fee", new=AsyncMock(return_value=10**15)):
             tx = await oft.build_bridge_tx(OFT_TOKEN_ETH, OFT_TOKEN_ARB, amount_in, recipient, refund_address=refund)
 
         assert tx["to"] == OFT_ADDRESS
@@ -1075,11 +1041,16 @@ class TestCCIP:
         assert ccip.protocol_name == "CCIP"
 
     def test_router_address_defaults_to_registry(self, ccip):
-        assert ccip.router_address == _CCIP_ROUTER[1]
+        assert ccip.router_address == Address(_CCIP_ROUTER[1])
+
+    def test_spender_is_the_router(self, ccip):
+        assert ccip.spender == ccip.router_address
 
     def test_router_address_override(self):
         custom = "0x" + "11" * 20
-        assert CCIP(w3=None, src_chain_id=1, dst_chain_id=42161, router_address=custom).router_address == custom
+        assert CCIP(w3=None, src_chain_id=1, dst_chain_id=42161, router_address=custom).router_address == Address(
+            custom
+        )
 
     def test_unknown_src_chain_raises(self):
         with pytest.raises(BridgeError, match="Router"):
@@ -1190,7 +1161,7 @@ class TestCCIP:
         """Native fee → tx.value carries the fee, tx.to is the Router."""
         with _patched_quote_fee(ccip, 5 * 10**15):
             tx = await ccip.build_bridge_tx(CCIP_USDC_ETH, CCIP_USDC_ARB, amount_in, _CCIP_RECIPIENT)
-        assert tx["to"] == _CCIP_ROUTER[1]
+        assert tx["to"] == Address(_CCIP_ROUTER[1])
         assert tx["data"].startswith("0x" + _CCIP_SEND_SELECTOR)
         assert tx["value"] == str(5 * 10**15)
         assert int(tx["gas"]) > 0
@@ -1308,26 +1279,21 @@ class TestCCIPCompose:
     async def test_rejects_empty_program(self, ccip, amount_in):
         with _patched_quote_fee(ccip, 10**15):
             with pytest.raises(BridgeError, match="program"):
-                await ccip.build_bridge_compose_tx(CCIP_USDC_ETH, amount_in, _CCIP_COMPOSER, program=b"")
+                await ccip.build_bridge_compose_tx(amount_in, _CCIP_COMPOSER, program=b"")
 
     @pytest.mark.asyncio
     async def test_embeds_program_in_data(self, ccip, amount_in):
         """The DeFiVM bytecode appears verbatim inside the ccipSend calldata."""
         program = b"\xde\xad\xbe\xef" * 16
         with _patched_quote_fee(ccip, 10**15):
-            tx = await ccip.build_bridge_compose_tx(CCIP_USDC_ETH, amount_in, _CCIP_COMPOSER, program)
+            tx = await ccip.build_bridge_compose_tx(amount_in, _CCIP_COMPOSER, program)
         assert tx["data"].startswith("0x" + _CCIP_SEND_SELECTOR)
         assert program.hex() in tx["data"].lower()
 
     @pytest.mark.asyncio
     async def test_receiver_is_composer(self, ccip, amount_in):
         with _patched_quote_fee(ccip, 10**15):
-            tx = await ccip.build_bridge_compose_tx(
-                CCIP_USDC_ETH,
-                amount_in,
-                _CCIP_COMPOSER,
-                program=b"\x01\x02\x03\x04",
-            )
+            tx = await ccip.build_bridge_compose_tx(amount_in, _CCIP_COMPOSER, program=b"\x01\x02\x03\x04")
         assert _CCIP_COMPOSER.hex().lower() in tx["data"].lower()
 
     @pytest.mark.asyncio
@@ -1336,13 +1302,7 @@ class TestCCIPCompose:
         program = b"\xaa" * 64
         spy = AsyncMock(return_value=10**15)
         with patch.object(ccip, "quote_fee", new=spy):
-            await ccip.build_bridge_compose_tx(
-                CCIP_USDC_ETH,
-                amount_in,
-                _CCIP_COMPOSER,
-                program,
-                gas_limit=1_500_000,
-            )
+            await ccip.build_bridge_compose_tx(amount_in, _CCIP_COMPOSER, program, gas_limit=1_500_000)
         spy.assert_called_once()
         assert spy.call_args.kwargs["data"] == program
         assert spy.call_args.kwargs["gas_limit"] == 1_500_000
@@ -1350,12 +1310,7 @@ class TestCCIPCompose:
     @pytest.mark.asyncio
     async def test_native_fee_attaches_value(self, ccip, amount_in):
         with _patched_quote_fee(ccip, 7 * 10**15):
-            tx = await ccip.build_bridge_compose_tx(
-                CCIP_USDC_ETH,
-                amount_in,
-                _CCIP_COMPOSER,
-                program=b"\xff" * 32,
-            )
+            tx = await ccip.build_bridge_compose_tx(amount_in, _CCIP_COMPOSER, program=b"\xff" * 32)
         assert tx["value"] == str(7 * 10**15)
 
     @pytest.mark.asyncio
@@ -1364,12 +1319,7 @@ class TestCCIPCompose:
         link = Address("0x" + "DD" * 20)
         c = CCIP(w3=None, src_chain_id=1, dst_chain_id=42161, fee_token=link)
         with _patched_quote_fee(c, 20 * 10**18):
-            tx = await c.build_bridge_compose_tx(
-                CCIP_USDC_ETH,
-                amount_in,
-                _CCIP_COMPOSER,
-                program=b"\xff" * 32,
-            )
+            tx = await c.build_bridge_compose_tx(amount_in, _CCIP_COMPOSER, program=b"\xff" * 32)
         assert tx["value"] == "0"
         assert link.hex().lower() in tx["data"].lower()
 
@@ -1421,8 +1371,8 @@ def _native_fee_to_usdc(q: BridgeQuote) -> int | None:
 
 
 def _mock_bridge(*, quote: BridgeQuote | None = None, side_effect: BaseException | None = None) -> MagicMock:
-    """Build a fake BaseBridge whose ``get_quote`` returns a quote or raises."""
-    b = MagicMock(spec=BaseBridge)
+    """Build a fake bridge whose ``get_quote`` returns a quote or raises."""
+    b = MagicMock()
     if side_effect is not None:
         b.get_quote = AsyncMock(side_effect=side_effect)
     else:
@@ -1610,6 +1560,9 @@ class TestLucidBridge:
         assert b.controller_address == lucid.ctrl
         assert b.adapter_address == lucid.adapter
 
+    def test_spender_is_the_controller(self, lucid):
+        assert lucid.bridge.spender == lucid.ctrl
+
     def test_encode_bridge_options_shape(self, lucid):
         # 64 bytes total; gasLimit lives in the low bytes of the second word
         # for both adapters (uint128 and uint256 differ only at >2^128, see
@@ -1709,7 +1662,7 @@ class TestLucidAdapter:
 
     def test_encode_transfer_message_length(self):
         # 7 fixed-size words → 224 bytes. Chain-agnostic.
-        msg = LucidBridge._encode_transfer_message(
+        msg = _encode_transfer_message(
             nonce=0,
             dest_chain_id=ChainId.BASE,
             recipient=_RECIPIENT,

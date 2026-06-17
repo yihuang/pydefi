@@ -14,11 +14,11 @@ from pathlib import Path
 from typing import Any
 
 from eth_abi import encode as abi_encode
+from hexbytes import HexBytes
 from web3 import AsyncWeb3
 
-from pydefi._utils import address_to_bytes32
+from pydefi._utils import address_to_bytes32, erc20_approve_tx
 from pydefi.abi.bridge import CCIP_ROUTER, CCIPEVM2AnyMessage, CCIPEVMTokenAmount
-from pydefi.bridge.base import BaseBridge
 from pydefi.exceptions import BridgeError
 from pydefi.types import ZERO_ADDRESS, Address, BridgeQuote, Token, TokenAmount
 
@@ -51,7 +51,7 @@ _DEFAULT_SEND_GAS = 500_000
 _DEFAULT_COMPOSE_GAS = 600_000
 
 
-class CCIP(BaseBridge):
+class CCIP:
     """Chainlink CCIP bridge — token-only or compose ``ccipSend`` via the Router.
 
     Tokens are bridged 1:1; the per-message fee is paid in native gas
@@ -79,19 +79,21 @@ class CCIP(BaseBridge):
         w3: AsyncWeb3,
         src_chain_id: int,
         dst_chain_id: int,
-        router_address: str | None = None,
+        router_address: Address | str | None = None,
         fee_token: Address | None = None,
         fee_token_decimals: int = 18,
         fee_token_symbol: str | None = None,
     ) -> None:
-        super().__init__(src_chain_id, dst_chain_id)
+        self.src_chain_id = src_chain_id
+        self.dst_chain_id = dst_chain_id
         self.w3 = w3
 
-        self.router_address = router_address or _CCIP_ROUTER.get(src_chain_id, "")
-        if not self.router_address:
+        router = router_address or _CCIP_ROUTER.get(src_chain_id, "")
+        if not router:
             raise BridgeError(
                 f"CCIP: no Router address known for chain {src_chain_id}. Pass router_address explicitly."
             )
+        self.router_address = Address(router)
 
         self.fee_token: Address = fee_token if fee_token is not None else ZERO_ADDRESS
         # bool subclasses int — reject explicitly so True/False don't sneak in.
@@ -105,9 +107,12 @@ class CCIP(BaseBridge):
         # Resolve eagerly so unsupported destinations fail at construction.
         self.dst_chain_selector = _ccip_chain_selector(dst_chain_id)
 
+    protocol_name: str = "CCIP"
+
     @property
-    def protocol_name(self) -> str:
-        return "CCIP"
+    def spender(self) -> Address:
+        """The CCIP Router — the contract ``ccipSend`` pulls ``token_in`` through."""
+        return self.router_address
 
     def _build_message(
         self,
@@ -164,7 +169,7 @@ class CCIP(BaseBridge):
         return int(fee)
 
     # -----------------------------------------------------------------------
-    # BaseBridge interface
+    # Bridge interface
     # -----------------------------------------------------------------------
 
     async def get_quote(
@@ -262,7 +267,6 @@ class CCIP(BaseBridge):
 
     async def build_bridge_compose_tx(
         self,
-        token_in: Token,
         amount_in: TokenAmount,
         composer_address: Address,
         program: bytes,
@@ -283,6 +287,7 @@ class CCIP(BaseBridge):
         """
         if not program:
             raise BridgeError("CCIP: program must not be empty for compose transactions.")
+        token_in = amount_in.token
         message = self._build_message(
             recipient=composer_address,
             token_in=token_in,
@@ -300,3 +305,39 @@ class CCIP(BaseBridge):
             allow_out_of_order_execution=allow_out_of_order_execution,
         )
         return self._encode_send_tx(message, fee, gas_budget=_DEFAULT_COMPOSE_GAS)
+
+    async def build_compose_send(
+        self,
+        amount_in: TokenAmount,
+        composer: Address,
+        program: bytes,
+        *,
+        gas_limit: int = 800_000,
+        allow_out_of_order_execution: bool = False,
+        **_: Any,
+    ) -> list[dict[str, Any]]:
+        """``ComposeBridge`` legs: approve the bridged token (and the fee token if
+        ERC-20) to the Router, then ``ccipSend`` carrying *program* as ``data``."""
+        router = Address(HexBytes(self.router_address))
+        legs = [erc20_approve_tx(amount_in.token.address, router, amount_in.amount)]
+        if self.fee_token != ZERO_ADDRESS:
+            fee = await self.quote_fee(
+                amount_in.token,
+                amount_in,
+                composer,
+                data=program,
+                gas_limit=gas_limit,
+                allow_out_of_order_execution=allow_out_of_order_execution,
+            )
+            legs.append(erc20_approve_tx(self.fee_token, router, fee))
+        legs.append(
+            await self.build_bridge_compose_tx(
+                amount_in.token,
+                amount_in,
+                composer,
+                program,
+                gas_limit=gas_limit,
+                allow_out_of_order_execution=allow_out_of_order_execution,
+            )
+        )
+        return legs

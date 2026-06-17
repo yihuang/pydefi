@@ -14,7 +14,40 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Callable, ClassVar, Iterator
 
-from pydefi.types import Address, BasePool, Token
+from pydefi.types import ZERO_ADDRESS, Address, SwapProtocol, Token
+
+
+class BasePool:
+    """Base class for pool descriptors used by RouteDAG actions.
+
+    Subclasses (e.g. :class:`PoolEdge`) must override :meth:`zero_for_one`.
+    """
+
+    pool_address: Address
+    protocol: SwapProtocol
+    fee_bps: int
+
+    def zero_for_one(self, token_out: Address) -> bool:
+        raise NotImplementedError("BasePool.zero_for_one() must be implemented by subclasses")
+
+
+@dataclass
+class ReserveOverlay:
+    """Per-call diff over pool state during sequenced split routing.
+
+    A per-invocation overlay scopes state changes to one routing call so the
+    shared :class:`PoolGraph` stays untouched. Both directions of a
+    bidirectional pool see the same entry because the overlay is keyed by
+    ``pool_address``.
+
+    ``v2_deltas`` holds signed ``(Δtoken0, Δtoken1)`` deltas for CPMM pools;
+    ``v3_sqrt_price`` holds the running ``sqrtPriceX96`` left by prior swaps
+    for V3 pools (liquidity assumed constant within the active tick), used as
+    the starting price for the next quote.
+    """
+
+    v2_deltas: dict[Address, tuple[int, int]] = field(default_factory=dict)
+    v3_sqrt_price: dict[Address, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -46,6 +79,22 @@ class PoolEdge(BasePool):
     extra: dict = field(default_factory=dict)
 
     @property
+    def pool_uid(self) -> tuple[Address, int, int, Address]:
+        """Direction-agnostic pool identity: ``(pool_address, fee, tick_spacing, hooks)``.
+
+        Every Uniswap V4 pool shares the singleton PoolManager address, so
+        ``pool_address`` alone can't tell pools apart. ``token_in`` is excluded
+        so both directions count as one pool for the pool-disjoint constraint in
+        :func:`~pydefi.pathfinder.multipath.merge_and_expand`.
+        """
+        return (
+            self.pool_address,
+            self.fee_bps,
+            getattr(self, "tick_spacing", 0),
+            getattr(self, "hooks", ZERO_ADDRESS),
+        )
+
+    @property
     def spot_price(self) -> Decimal:
         """Spot price of token_out denominated in token_in.
 
@@ -58,24 +107,44 @@ class PoolEdge(BasePool):
         adj_out = Decimal(self.reserve_out) / Decimal(10**self.token_out.decimals)
         return adj_out / adj_in
 
-    def amount_out(self, amount_in: int) -> int:
-        """Estimate the output amount for *amount_in* using the constant-product formula.
+    def amount_out(self, amount_in: int, overlay: ReserveOverlay | None = None) -> int:
+        """Estimate ``amount_out`` via the constant-product formula.
 
-        Args:
-            amount_in: Raw input amount.
-
-        Returns:
-            Estimated raw output amount (0 if reserves are unavailable).
+        *overlay*, if given, layers pending swap deltas on top of stored reserves.
         """
-        if self.reserve_in == 0 or self.reserve_out == 0:
+        if amount_in <= 0:
+            return 0
+        eff_in, eff_out = self._effective_reserves(overlay)
+        if eff_in <= 0 or eff_out <= 0:
             return 0
         fee_factor = 10_000 - self.fee_bps
         amount_in_with_fee = amount_in * fee_factor
-        numerator = amount_in_with_fee * self.reserve_out
-        denominator = self.reserve_in * 10_000 + amount_in_with_fee
+        numerator = amount_in_with_fee * eff_out
+        denominator = eff_in * 10_000 + amount_in_with_fee
         if denominator == 0:
             return 0
         return numerator // denominator
+
+    def record_swap(self, overlay: ReserveOverlay, amount_in: int, amount_out: int) -> None:
+        """Record this swap's effect on *overlay* for subsequent quotes.
+
+        Deltas are oriented via ``extra['is_token0_in']`` (default ``True``) so
+        both directions of a pool stay consistent.
+        """
+        if amount_in <= 0 or amount_out <= 0:
+            return
+        d0, d1 = (amount_in, -amount_out) if self.extra.get("is_token0_in", True) else (-amount_out, amount_in)
+        cur0, cur1 = overlay.v2_deltas.get(self.pool_address, (0, 0))
+        overlay.v2_deltas[self.pool_address] = (cur0 + d0, cur1 + d1)
+
+    def _effective_reserves(self, overlay: ReserveOverlay | None) -> tuple[int, int]:
+        """Apply ``overlay`` to ``(reserve_in, reserve_out)`` for this direction."""
+        if overlay is None:
+            return self.reserve_in, self.reserve_out
+        d0, d1 = overlay.v2_deltas.get(self.pool_address, (0, 0))
+        if self.extra.get("is_token0_in", True):
+            return self.reserve_in + d0, self.reserve_out + d1
+        return self.reserve_in + d1, self.reserve_out + d0
 
     def zero_for_one(self, token_out: Address) -> bool:
         """Return ``True`` if this edge sends token0 into the pool (zeroForOne direction).
@@ -221,6 +290,10 @@ class V3PoolEdge(PoolEdge):
         """
         return self.is_token0_in
 
+    def _net_amount_in(self, amount_in: int) -> int:
+        """Return *amount_in* after deducting the swap fee (``fee_bps``, base 10 000)."""
+        return amount_in * (10_000 - self.fee_bps) // 10_000
+
     @property
     def spot_price(self) -> Decimal:
         """Spot price of ``token_out`` denominated in ``token_in``, adjusted
@@ -242,66 +315,72 @@ class V3PoolEdge(PoolEdge):
                 return Decimal(0)
             return (Decimal(1) / price_raw) * adj
 
-    def amount_out(self, amount_in: int) -> int:
-        """Estimate output using the V3 concentrated liquidity formula.
+    def amount_out(self, amount_in: int, overlay: ReserveOverlay | None = None) -> int:
+        """Estimate output via Uniswap V3 ``sqrtPrice`` math (single-tick approximation).
 
-        This uses the exact Uniswap V3 ``sqrtPrice`` math for a **single-tick
-        approximation** — it assumes all liquidity ``L`` is available at the
-        current price and that no tick boundaries are crossed during the swap.
-
-        **Accuracy vs trade size:**  For swaps that are small relative to
-        ``L * sqrtP / Q96`` (roughly the depth of the current tick range), the
-        estimate is very close to the true on-chain result.  For large swaps
-        that would move the price across one or more tick boundaries, the
-        formula overestimates the output because it ignores the reduced
-        liquidity (and potentially zero liquidity) beyond the current tick.
-        In practice this is fine for **pathfinding** — the router is comparing
-        routes to pick the best one, not producing the definitive execution
-        quote.  For the precise execution quote, always call
-        :meth:`~pydefi.amm.uniswap_v3.UniswapV3.quote_exact_input_single`
-        (backed by the on-chain QuoterV2 which simulates full tick traversal).
-
-        Args:
-            amount_in: Raw input amount.
-
-        Returns:
-            Estimated raw output amount (0 if pool state is unavailable).
+        Tick-crossing trades are overestimated; for the definitive on-chain
+        quote use :meth:`~pydefi.amm.uniswap_v3.UniswapV3.quote_exact_input_single`.
+        *overlay*, if given, supplies the starting ``sqrtPriceX96`` (the pool
+        state left by prior in-flight swaps) instead of the edge's stored value.
         """
-        if self.sqrt_price_x96 == 0 or self.liquidity == 0 or amount_in <= 0:
+        if self.liquidity == 0 or amount_in <= 0:
             return 0
-
-        Q96 = self._Q96
-        sqrtP = self.sqrt_price_x96
-        L = self.liquidity
-
-        # Deduct fee from input (fee_bps is in basis points, e.g. 30 = 0.3%)
-        amount_in_net = amount_in * (10_000 - self.fee_bps) // 10_000
+        sqrtP = self._effective_sqrt_price(overlay)
+        if sqrtP == 0:
+            return 0
+        amount_in_net = self._net_amount_in(amount_in)
         if amount_in_net <= 0:
             return 0
+        new_sqrtP = self._new_sqrt_price(sqrtP, amount_in_net)
+        if new_sqrtP == 0:
+            return 0
+        return self._output_from_sqrt_delta(sqrtP, new_sqrtP)
 
+    def record_swap(self, overlay: ReserveOverlay, amount_in: int, amount_out: int) -> None:
+        """Record the swap's effect on V3 ``sqrtPriceX96``; liquidity is held constant."""
+        if amount_in <= 0 or self.liquidity == 0:
+            return
+        sqrtP = self._effective_sqrt_price(overlay)
+        if sqrtP == 0:
+            return
+        amount_in_net = self._net_amount_in(amount_in)
+        if amount_in_net <= 0:
+            return
+        new_sqrtP = self._new_sqrt_price(sqrtP, amount_in_net)
+        if new_sqrtP == 0:
+            return
+        overlay.v3_sqrt_price[self.pool_address] = new_sqrtP
+
+    def _effective_sqrt_price(self, overlay: ReserveOverlay | None) -> int:
+        if overlay is None:
+            return self.sqrt_price_x96
+        return overlay.v3_sqrt_price.get(self.pool_address, self.sqrt_price_x96)
+
+    def _new_sqrt_price(self, sqrtP: int, amount_in_net: int) -> int:
+        """Return the post-swap ``sqrtPriceX96`` (0 on degenerate inputs)."""
+        Q96 = self._Q96
+        L = self.liquidity
         if self.is_token0_in:
-            # Swapping token0 → token1 (price decreases):
-            # new_sqrtP = sqrtP * L * Q96 / (L * Q96 + amount_in_net * sqrtP)
             denom = L * Q96 + amount_in_net * sqrtP
             if denom <= 0:
                 return 0
-            new_sqrtP = sqrtP * L * Q96 // denom
-            # Δy = L * (sqrtP - new_sqrtP) / Q96
+            return sqrtP * L * Q96 // denom
+        return sqrtP + amount_in_net * Q96 // L
+
+    def _output_from_sqrt_delta(self, sqrtP: int, new_sqrtP: int) -> int:
+        """Translate a ``sqrtPriceX96`` delta into the swap's output amount."""
+        Q96 = self._Q96
+        L = self.liquidity
+        if self.is_token0_in:
             if sqrtP <= new_sqrtP:
                 return 0
             return L * (sqrtP - new_sqrtP) // Q96
-        else:
-            # Swapping token1 → token0 (price increases):
-            # new_sqrtP = sqrtP + amount_in_net * Q96 / L
-            new_sqrtP = sqrtP + amount_in_net * Q96 // L
-            # Δx = L * Q96 * (new_sqrtP - sqrtP) / (sqrtP * new_sqrtP)
-            if new_sqrtP <= sqrtP:
-                return 0
-            numerator = L * Q96 * (new_sqrtP - sqrtP)
-            denominator = sqrtP * new_sqrtP
-            if denominator == 0:
-                return 0
-            return numerator // denominator
+        if new_sqrtP <= sqrtP:
+            return 0
+        denom = sqrtP * new_sqrtP
+        if denom == 0:
+            return 0
+        return L * Q96 * (new_sqrtP - sqrtP) // denom
 
     def estimate_price_impact(self, amount_in: int) -> Decimal:
         """Estimate price impact using V3 current-tick virtual reserves.
@@ -341,6 +420,224 @@ class V3PoolEdge(PoolEdge):
         if depth <= 0:
             return Decimal("NaN")
         return Decimal(amount_in) / Decimal(depth + amount_in)
+
+
+@dataclass
+class V4PoolEdge(V3PoolEdge):
+    """A directed edge for a Uniswap V4 pool.
+
+    V4 math is identical to V3 concentrated liquidity, so this subclass
+    inherits :meth:`~V3PoolEdge.amount_out` and
+    :meth:`~V3PoolEdge.estimate_price_impact` unchanged. ``pool_address`` is
+    the singleton ``PoolManager`` (shared by every V4 pool on a chain); pools
+    are distinguished by the ``PoolKey`` fields below.
+
+    Attributes:
+        tick_spacing: Pool tick spacing (e.g. 10 / 60 / 200).
+        hooks: Hooks contract address, or the zero address for no hooks.
+        pool_id: keccak256 of the PoolKey, hex. Optional (display/indexing).
+        lp_fee_pips: Current LP fee in pips (1e-6, from ``slot0.lpFee``), used
+            for pricing. V4 fees need not be a multiple of 100, so the
+            basis-point ``fee_bps`` field alone would truncate (e.g. a 10-pip
+            fee would price as free).
+        key_fee_pips: The ``fee`` field of the PoolKey (pips; equals
+            ``LPFeeLibrary.DYNAMIC_FEE_FLAG`` for dynamic-fee pools). Needed to
+            reconstruct the pool key for quoting — ``lp_fee_pips`` cannot be
+            used for that once calibration rewrites it.
+        is_dynamic_fee: True if the PoolKey carries the dynamic-fee flag; the
+            edge is then priced at the *current* ``lpFee``, which the hook may
+            change (or override per-swap) at any time.
+        hook_affects_pricing: True if the hook can change swap amounts (hook
+            fees / custom curves / dynamic-fee overrides — see
+            :func:`pydefi.amm.v4_hooks.affects_swap_pricing`). ``amount_out``
+            is then an estimate that ignores the hook's cut: still useful for
+            ranking candidate routes, but quote such pools on-chain (the V4
+            Quoter executes the real hook) before acting on the number.
+        hook_fee_calibrated: True once
+            :meth:`~pydefi.amm.uniswap_v4.UniswapV4.calibrate_hook_fee` has
+            verified the hook take is size-independent and folded it into
+            ``lp_fee_pips``, making local pricing trustworthy again.
+    """
+
+    tick_spacing: int = 0
+    hooks: Address = ZERO_ADDRESS
+    pool_id: str = ""
+    lp_fee_pips: int = 0
+    key_fee_pips: int = 0
+    is_dynamic_fee: bool = False
+    hook_affects_pricing: bool = False
+    hook_fee_calibrated: bool = False
+
+    def _net_amount_in(self, amount_in: int) -> int:
+        """Return *amount_in* after deducting the LP fee (``lp_fee_pips``, base 1 000 000).
+
+        Falls back to ``fee_bps`` when ``lp_fee_pips`` is unset (e.g. edges
+        constructed without slot0 data) — unless calibration explicitly set
+        it (a calibrated fee of 0 is a real zero-fee pool, not "unset").
+        """
+        if self.lp_fee_pips or self.hook_fee_calibrated:
+            fee_pips = self.lp_fee_pips
+        else:
+            fee_pips = self.fee_bps * 100
+        return amount_in * (1_000_000 - fee_pips) // 1_000_000
+
+
+@dataclass
+class _CurveEdgeBase(PoolEdge):
+    """Shared behaviour for Curve edges, which price by probing local math.
+
+    Curve edges carry a state snapshot instead of constant-product reserves, so
+    ``spot_price`` and ``estimate_price_impact`` are derived from
+    :meth:`amount_out` probes rather than ``reserve_in`` / ``reserve_out``.
+    """
+
+    i: int = 0
+    j: int = 0
+    balances: list[int] = field(default_factory=list)
+
+    def zero_for_one(self, token_out: Address) -> bool:
+        """Curve has no token0/token1 ordering; return ``i < j`` for callers
+        that key on direction.  Swap codegen uses ``exchange(i, j, …)``, which
+        doesn't need it.
+        """
+        return self.i < self.j
+
+    @property
+    def spot_price(self) -> Decimal:
+        """Marginal price of ``token_out`` per ``token_in`` (probe of 1 unit)."""
+        probe = 10**self.token_in.decimals
+        out = self.amount_out(probe)
+        if out <= 0:
+            return Decimal(0)
+        adj_in = Decimal(probe) / Decimal(10**self.token_in.decimals)
+        adj_out = Decimal(out) / Decimal(10**self.token_out.decimals)
+        return adj_out / adj_in
+
+    def estimate_price_impact(self, amount_in: int) -> Decimal:
+        """Price impact: 1 − (realised rate / marginal small-trade rate)."""
+        if amount_in <= 0 or not self.balances:
+            return Decimal("NaN")
+        # Probe with one whole token: a smaller probe drowns in the output
+        # coin's integer rounding (e.g. 6-dec USDC) and can read as zero impact.
+        small = 10**self.token_in.decimals
+        small_out = self.amount_out(small)
+        big_out = self.amount_out(amount_in)
+        if small_out <= 0 or big_out <= 0:
+            return Decimal("NaN")
+        marginal = Decimal(small_out) / Decimal(small)
+        realised = Decimal(big_out) / Decimal(amount_in)
+        if marginal <= 0:
+            return Decimal("NaN")
+        impact = Decimal(1) - realised / marginal
+        return impact if impact > 0 else Decimal(0)
+
+
+@dataclass
+class CurveStableEdge(_CurveEdgeBase):
+    """A directed edge representing a Curve stableswap pool direction.
+
+    Covers plain V1 pools, factory plain pools, and Stable-NG.  Prices swaps
+    locally via :mod:`pydefi.amm.curve_math` from a state snapshot rather than
+    the constant-product model used by :class:`PoolEdge`.
+
+    Attributes:
+        i: Index of ``token_in`` in the pool's ``coins`` array.
+        j: Index of ``token_out`` in the pool's ``coins`` array.
+        balances: Raw pool balances (coin units).
+        rates: Per-coin rate multipliers (see :func:`pydefi.amm.curve_math._xp_mem`).
+        amp: Amplification (precise for NG/factory, raw for legacy).
+        fee: Base swap fee (units of ``1/1e10``).
+        a_precision: ``1`` for legacy plain pools, ``100`` otherwise.
+        ng_d_form: Use the Stable-NG ``D_P`` accumulation form.
+        offpeg_fee_multiplier: Stable-NG off-peg multiplier (``0`` = flat fee).
+        legacy_fee_order: Legacy plain pools convert to coin units before fee.
+    """
+
+    rates: list[int] = field(default_factory=list)
+    amp: int = 0
+    fee: int = 0
+    a_precision: int = 100
+    ng_d_form: bool = False
+    offpeg_fee_multiplier: int = 0
+    legacy_fee_order: bool = False
+
+    def amount_out(self, amount_in: int) -> int:
+        """Estimate output using local Curve stableswap math (0 on failure)."""
+        from pydefi.amm import curve_math
+
+        if amount_in <= 0 or not self.balances:
+            return 0
+        try:
+            return curve_math.stable_get_dy(
+                self.i,
+                self.j,
+                amount_in,
+                self.balances,
+                self.rates,
+                self.amp,
+                self.fee,
+                a_precision=self.a_precision,
+                ng_d_form=self.ng_d_form,
+                offpeg_fee_multiplier=self.offpeg_fee_multiplier,
+                legacy_fee_order=self.legacy_fee_order,
+            )
+        except (curve_math.CurveConvergenceError, ZeroDivisionError, ValueError):
+            return 0
+
+
+@dataclass
+class CurveCryptoEdge(_CurveEdgeBase):
+    """A directed edge representing a Curve V2 (cryptoswap) pool direction.
+
+    Prices swaps locally via :func:`pydefi.amm.curve_math.crypto_get_dy` from a
+    state snapshot.
+
+    Attributes:
+        i: Index of ``token_in`` in the pool's ``coins`` array.
+        j: Index of ``token_out`` in the pool's ``coins`` array.
+        balances: Raw pool balances (coin units).
+        precisions: Per-coin ``10**(18 - decimals)`` multipliers.
+        price_scale: Per-coin price scale (1e18 base); index 0 must be ``1e18``.
+        amp: Pool ``A`` (as returned on-chain).
+        gamma: Pool ``gamma``.
+        mid_fee: Fee at parity (units of ``1/1e10``).
+        out_fee: Fee when fully imbalanced (units of ``1/1e10``).
+        fee_gamma: Fee curvature parameter (1e18 base).
+        d: Pool invariant ``D``. If ``None``, recompute from balances.
+    """
+
+    precisions: list[int] = field(default_factory=list)
+    price_scale: list[int] = field(default_factory=list)
+    amp: int = 0
+    gamma: int = 0
+    mid_fee: int = 0
+    out_fee: int = 0
+    fee_gamma: int = 0
+    d: int | None = None
+
+    def amount_out(self, amount_in: int) -> int:
+        """Estimate output using local Curve V2 cryptoswap math (0 on failure)."""
+        from pydefi.amm import curve_math
+
+        if amount_in <= 0 or not self.balances:
+            return 0
+        try:
+            return curve_math.crypto_get_dy(
+                self.i,
+                self.j,
+                amount_in,
+                self.balances,
+                self.precisions,
+                self.price_scale,
+                self.amp,
+                self.gamma,
+                self.mid_fee,
+                self.out_fee,
+                self.fee_gamma,
+                d=self.d,
+            )
+        except (curve_math.CurveConvergenceError, ZeroDivisionError, ValueError):
+            return 0
 
 
 class PoolGraph:
@@ -493,6 +790,79 @@ class PoolGraph:
                 extra=extra_reverse,
             )
         )
+
+    def add_curve_pool(self, pool) -> None:
+        """Add every directed coin pair of a state-loaded Curve pool as an edge.
+
+        The pool must have had :meth:`~pydefi.amm.curve.CurvePool.load_state`
+        called so the local-pricing snapshot is available.  One
+        :class:`CurveStableEdge` (or :class:`CurveCryptoEdge` for Curve V2) is
+        added for each ordered pair of coins, so the pathfinder can route
+        through the pool in any direction.
+
+        Args:
+            pool: A :class:`~pydefi.amm.curve.CurvePool` with loaded state.
+
+        Raises:
+            ValueError: If the pool's state has not been loaded.
+        """
+        from pydefi.amm.curve_math import FEE_DENOMINATOR
+
+        if getattr(pool, "_state", None) is None:
+            raise ValueError("Curve pool state not loaded; call load_state() first")
+
+        s = pool._state
+        tokens = pool.tokens
+        n = len(tokens)
+        addr = pool.router_address
+        proto = pool.protocol_name
+        is_crypto = pool.kind.is_crypto
+        # Router copies edge.fee_bps into SwapStep.fee; report the pool's real
+        # base fee (mid_fee at parity for cryptoswap) instead of the V2 default.
+        fee_bps = (s["mid_fee"] if is_crypto else s["fee"]) * 10_000 // FEE_DENOMINATOR
+
+        for i in range(n):
+            for j in range(n):
+                if i == j:
+                    continue
+                if is_crypto:
+                    edge: PoolEdge = CurveCryptoEdge(
+                        token_in=tokens[i],
+                        token_out=tokens[j],
+                        pool_address=addr,
+                        protocol=proto,
+                        fee_bps=fee_bps,
+                        i=i,
+                        j=j,
+                        balances=list(s["balances"]),
+                        precisions=list(s["precisions"]),
+                        price_scale=list(s["price_scale"]),
+                        amp=s["amp"],
+                        gamma=s["gamma"],
+                        mid_fee=s["mid_fee"],
+                        out_fee=s["out_fee"],
+                        fee_gamma=s["fee_gamma"],
+                        d=s["d"] or None,
+                    )
+                else:
+                    edge = CurveStableEdge(
+                        token_in=tokens[i],
+                        token_out=tokens[j],
+                        pool_address=addr,
+                        protocol=proto,
+                        fee_bps=fee_bps,
+                        i=i,
+                        j=j,
+                        balances=list(s["balances"]),
+                        rates=list(s["rates"]),
+                        amp=s["amp"],
+                        fee=s["fee"],
+                        a_precision=s["a_precision"],
+                        ng_d_form=s["ng_d_form"],
+                        offpeg_fee_multiplier=s["offpeg_fee_multiplier"],
+                        legacy_fee_order=s["legacy_fee_order"],
+                    )
+                self.add_pool(edge)
 
     def edges_from(self, token: Token) -> list[PoolEdge]:
         """Return all edges that depart from *token*.

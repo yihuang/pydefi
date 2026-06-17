@@ -20,10 +20,19 @@ are handled correctly.
 
 from __future__ import annotations
 
+from typing import Any, Literal
+
 import base58
+from eth_contract.erc20 import ERC20
 from hexbytes import HexBytes
 
-from pydefi.types import NATIVE_ADDRESSES, ZERO_HASH, Address, ChainId, Hash
+from pydefi.types import NATIVE_ADDRESSES, ZERO_HASH, Address, ChainId, Hash, Token, TokenAmount
+
+#: Generous default gas for ``approve`` — fits quirky tokens above the EIP-20 minimum.
+_APPROVE_GAS = 100_000
+
+#: ``type(uint256).max``
+UINT256_MAX: int = (1 << 256) - 1
 
 
 def address_to_bytes32(address: Address) -> Hash:
@@ -110,3 +119,32 @@ def decode_address(addr_str: str, chain_id: int) -> Address:
         if len(bz) != 20:
             raise ValueError(f"Invalid EVM address: {addr_str!r}")
     return Address(bz)
+
+
+def resolve_amount(amount: TokenAmount | tuple[Token, Literal["max"]]) -> tuple[Token, int]:
+    """Accept either an exact :class:`TokenAmount` or ``(token, "max")``."""
+    if isinstance(amount, TokenAmount):
+        return amount.token, amount.amount
+    if isinstance(amount, tuple) and len(amount) == 2 and amount[1] == "max":
+        return amount[0], UINT256_MAX
+    raise TypeError("amount must be a TokenAmount or (Token, 'max') tuple")
+
+
+def to_tx(to: Address, data: bytes, **kwargs: Any) -> dict[str, Any]:
+    """Format a calldata payload as the project-wide tx dict shape."""
+    kwargs.setdefault("value", "0")
+    return {
+        "to": to.to_0x_hex(),
+        "data": "0x" + data.hex(),
+        **kwargs,
+    }
+
+
+def erc20_approve_tx(token: Address, spender: Address, amount: int, gas: int = _APPROVE_GAS) -> dict[str, Any]:
+    """A standard ERC-20 ``approve(spender, amount)`` tx dict targeting *token*."""
+    return {
+        "to": token,
+        "data": "0x" + ERC20.fns.approve(bytes(spender), amount).data.hex(),
+        "value": "0",
+        "gas": str(gas),
+    }

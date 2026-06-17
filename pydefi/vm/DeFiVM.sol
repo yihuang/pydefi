@@ -4,6 +4,34 @@ pragma solidity ^0.8.24;
 import "./DEXCallbackRouter.sol";
 import {PATCHED_INTERPRETER_ADDRESS} from "./PatchedInterpreterConstants.sol";
 
+/// @dev Minimal Permit2 SignatureTransfer surface used by ``executeWithPermit2``.
+interface ISignatureTransfer {
+    struct TokenPermissions {
+        address token;
+        uint256 amount;
+    }
+
+    struct PermitBatchTransferFrom {
+        TokenPermissions[] permitted;
+        uint256 nonce;
+        uint256 deadline;
+    }
+
+    struct SignatureTransferDetails {
+        address to;
+        uint256 requestedAmount;
+    }
+
+    function permitWitnessTransferFrom(
+        PermitBatchTransferFrom memory permit,
+        SignatureTransferDetails[] calldata transferDetails,
+        address owner,
+        bytes32 witness,
+        string calldata witnessTypeString,
+        bytes calldata signature
+    ) external;
+}
+
 /**
  * @title DeFiVM
  * @notice A minimal, stateless executor for composable DeFi flows expressed as raw EVM bytecode.
@@ -41,8 +69,10 @@ import {PATCHED_INTERPRETER_ADDRESS} from "./PatchedInterpreterConstants.sol";
  * --------------------
  *  1. Never approve tokens directly to this contract.  Approvals can be drained by
  *     any caller because ``execute`` is permissionless.  Use ``ApproveProxy``
- *     (see ``ApproveProxy.sol``) or permit signatures instead.
+ *     (see ``ApproveProxy.sol``) or ``executeWithPermit2`` instead.
  *  2. Do not leave token or ETH balances in this contract between transactions.
+ *     Programs funded via ``executeWithPermit2`` must consume the pulled tokens
+ *     within the same run.
  *  3. Verify every address in a program and simulate off-chain before broadcasting.
  *  4. Programs run via DELEGATECALL and have full access to DeFiVM's storage.
  *
@@ -55,6 +85,14 @@ import {PATCHED_INTERPRETER_ADDRESS} from "./PatchedInterpreterConstants.sol";
  *  parameter and the supported selectors.
  */
 contract DeFiVM is DEXCallbackRouter {
+    /// @dev Canonical Permit2 deployment (same address on every chain).
+    ISignatureTransfer public constant PERMIT2 = ISignatureTransfer(0x000000000022D473030F116dDEE9F6B43aC78BA3);
+
+    /// @dev Witness binding the Permit2 pull to the exact program that spends it.
+    bytes32 private constant WITNESS_TYPEHASH = keccak256("Witness(bytes32 programHash)");
+    string private constant WITNESS_TYPE_STRING =
+        "Witness witness)TokenPermissions(address token,uint256 amount)Witness(bytes32 programHash)";
+
     /// @dev Address of the EVM interpreter used for DELEGATECALL execution.
     address private immutable INTERPRETER;
 
@@ -100,6 +138,37 @@ contract DeFiVM is DEXCallbackRouter {
      * them via ``TLOAD`` from the same transient namespace.
      */
     function execute(bytes calldata program) external payable {
+        _run(program);
+    }
+
+    /// @notice Pull the permitted tokens from ``owner`` via one Permit2 batch
+    ///         witness signature bound to ``keccak256(program)``, then execute
+    ///         ``program`` atomically — a relayer submits and pays gas but
+    ///         cannot alter what runs. Permit2's unordered nonce gives replay
+    ///         protection; a single token is a batch of one.
+    function executeWithPermit2(
+        ISignatureTransfer.PermitBatchTransferFrom calldata permit,
+        address owner,
+        bytes calldata signature,
+        bytes calldata program
+    ) external payable {
+        uint256 n = permit.permitted.length;
+        ISignatureTransfer.SignatureTransferDetails[] memory details =
+            new ISignatureTransfer.SignatureTransferDetails[](n);
+        for (uint256 i; i < n; ++i) {
+            details[i] = ISignatureTransfer.SignatureTransferDetails({
+                to: address(this),
+                requestedAmount: permit.permitted[i].amount
+            });
+        }
+        PERMIT2.permitWitnessTransferFrom(
+            permit, details, owner, keccak256(abi.encode(WITNESS_TYPEHASH, keccak256(program))), WITNESS_TYPE_STRING, signature
+        );
+        _run(program);
+    }
+
+    /// @dev DELEGATECALL *program* to the interpreter, bubbling return/revert data.
+    function _run(bytes calldata program) private {
         address interpreter = INTERPRETER;
         assembly {
             calldatacopy(0, program.offset, program.length)

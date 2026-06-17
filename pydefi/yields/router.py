@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import logging
+import time
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Literal
@@ -15,23 +16,44 @@ import aiohttp
 from eth_contract.erc20 import ERC20
 from web3 import AsyncWeb3
 
-from pydefi._utils import decode_address
-from pydefi.bridge.lucid import LucidBridge
+from pydefi._utils import decode_address, erc20_approve_tx
+from pydefi.bridge import Bridge
 from pydefi.deployments import chains_for, comet_contract_for, get_token
 from pydefi.lending.aave_v3 import AaveV3
 from pydefi.lending.aave_v4 import AaveV4
 from pydefi.lending.compound_v3 import CompoundV3
 from pydefi.lending.morpho import MarketParams, MorphoBlue
 from pydefi.types import Address, ChainId, Token, TokenAmount
+from pydefi.vm.eip712 import sign_typed_data
+from pydefi.vm.eip7702_supply import (
+    build_batch_typed_data,
+    build_execute_tx,
+    delegation_status,
+    sign_authorization,
+)
+from pydefi.vm.permit2_supply import build_supply_program, build_supply_tx, build_witness_typed_data, pick_nonce
 
 logger = logging.getLogger(__name__)
 
 Protocol = Literal["aave_v3", "compound_v3", "morpho", "aave_v4"]
-Strategy = Literal["withdraw_then_supply", "supply_then_bridge", "bridge_then_supply"]
-StepKind = Literal["approve", "supply", "withdraw", "bridge"]
+# Strategies build_yield_route sequences directly into source-chain steps.
+RouteStrategy = Literal["withdraw_then_supply", "supply_then_bridge", "bridge_then_supply"]
+# Every strategy a YieldRoute can carry. "compose_supply" routes are built by
+# build_compose_supply_route (one-signature compose), not build_yield_route.
+Strategy = RouteStrategy | Literal["compose_supply"]
+StepKind = Literal[
+    "approve",
+    "supply",
+    "supply_with_permit2",
+    "supply_with_7702",
+    "withdraw",
+    "bridge",
+    "bridge_with_7702",
+    "bridge_with_permit2",
+]
 
-# Generous; fits quirky tokens whose approve consumes more than the EIP-20 minimum.
-_APPROVE_GAS = 100_000
+# Gasless signature validity window, stamped at sign time (sign_route).
+_SIGN_TTL = 3600
 
 # Aave V4 is Ethereum-only; yield markets are surfaced from the MAIN_SPOKE —
 # the broad-asset Spoke that carries WETH / USDC / WBTC / etc.
@@ -83,18 +105,47 @@ class YieldMarket:
 
 @dataclass(frozen=True)
 class YieldStep:
-    """``tx`` is the standard pydefi tx-dict ``{to, data, value, gas}``."""
+    """``tx`` is the standard pydefi tx-dict ``{to, data, value}`` (some builders also include ``gas``).
+
+    Gasless steps start with ``tx=None`` — unbroadcastable — until
+    :func:`sign_route` signs ``sign_request`` and fills in the real tx."""
 
     kind: StepKind
     chain_id: int
-    tx: dict[str, Any]
+    tx: dict[str, Any] | None
+    sign_request: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class PendingLeg:
+    """The deferred destination-chain supply of a cross-chain route.
+
+    A cross-chain :class:`YieldRoute` carries only source-chain steps: the
+    destination supply cannot be built until the bridge settles and the
+    received amount is known. This records what that follow-up will do —
+    pass it, with the settled amount, to :func:`build_followup_route`.
+
+    Until the follow-up runs the user simply holds ``market.token`` on
+    ``chain_id``; a partially completed cross-chain route never strands
+    funds, it leaves them as the bridged token.
+
+    Attributes:
+        chain_id: The destination chain the supply will run on.
+        market: The :class:`YieldMarket` the bridged funds will be supplied to.
+    """
+
+    chain_id: int
+    market: YieldMarket
 
 
 @dataclass(frozen=True)
 class YieldRoute:
-    """Sequenced plan. Cross-chain follow-ups (destination supply after a
-    bridge settles) are not pre-built — caller invokes the router again
-    once the prior leg confirms."""
+    """Sequenced plan of source-chain steps.
+
+    For a cross-chain route the destination supply is not pre-built — the
+    bridged amount is unknown until the bridge settles. :attr:`pending`
+    describes that deferred leg; build it with :func:`build_followup_route`
+    once the funds arrive. A same-chain route has ``pending is None``."""
 
     strategy: Strategy
     source_chain: int
@@ -102,8 +153,12 @@ class YieldRoute:
     route_id: str
     target_market: YieldMarket | None = None
     target_chain: int | None = None
+    pending: PendingLeg | None = None
 
     def build_transactions(self) -> list[dict[str, Any]]:
+        pending = [s.kind for s in self.steps if s.tx is None]
+        if pending:
+            raise RuntimeError(f"Route has unsigned steps {pending}. Call sign_route(route, private_key) first.")
         return [s.tx for s in self.steps]
 
 
@@ -135,15 +190,6 @@ def _require_token(token: Token, expected: Token, what: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def build_approve_tx(token: Token, spender: Address, amount: int, gas: int = _APPROVE_GAS) -> dict[str, Any]:
-    return {
-        "to": token.address,
-        "data": "0x" + ERC20.fns.approve(bytes(spender), amount).data.hex(),
-        "value": "0",
-        "gas": str(gas),
-    }
-
-
 def morpho_id(market: YieldMarket) -> bytes:
     """Extract the bytes32 Morpho market Id from a ``morpho:<chain>:0x..`` id."""
     parts = market.market_id.split(":")
@@ -167,6 +213,22 @@ def aave_v4_ref(market: YieldMarket) -> tuple[str, int]:
     return parts[2], int(parts[3])
 
 
+async def supply_contract(market: YieldMarket, w3: AsyncWeb3) -> Address:
+    """The contract a supply into *market* hits — and therefore the ERC-20
+    approve target: the Aave V3 ``Pool``, the Compound III ``Comet``, the
+    Aave V4 ``Spoke``, or the Morpho Blue singleton."""
+    if market.protocol == "aave_v3":
+        return (await AaveV3.from_chain(w3, market.chain_id)).pool_address
+    if market.protocol == "compound_v3":
+        return CompoundV3.from_chain(w3, market.chain_id, market.token.symbol).comet_address
+    if market.protocol == "aave_v4":
+        spoke_name, _ = aave_v4_ref(market)
+        return AaveV4.from_chain(w3, market.chain_id, spoke_name).spoke_address
+    if market.protocol == "morpho":
+        return MorphoBlue.from_chain(w3, market.chain_id).morpho_address
+    raise ValueError(f"unknown protocol: {market.protocol!r}")
+
+
 async def _withdraw_tx(market: YieldMarket, user: Address, w3: AsyncWeb3, amount: TokenAmount) -> dict[str, Any]:
     if market.protocol == "aave_v3":
         aave = await AaveV3.from_chain(w3, market.chain_id)
@@ -183,21 +245,54 @@ async def _withdraw_tx(market: YieldMarket, user: Address, w3: AsyncWeb3, amount
     raise ValueError(f"unknown protocol: {market.protocol!r}")
 
 
-async def _supply_steps(market: YieldMarket, user: Address, w3: AsyncWeb3, amount: TokenAmount) -> list[YieldStep]:
+async def _supply_steps(
+    market: YieldMarket,
+    user: Address,
+    w3: AsyncWeb3,
+    amount: TokenAmount,
+    defivm: Address | None = None,
+    delegate: Address | None = None,
+    user_txs_before: int = 0,
+) -> list[YieldStep]:
     """``[approve, supply]`` — approve the market's spender, then supply.
 
     The ERC-20 ``approve`` spender is the contract that pulls the funds —
     the Aave V3 ``Pool``, the Compound III ``Comet``, the Morpho Blue
     singleton, or the Aave V4 ``Spoke``. Each comes off the constructed
     client, so the approval always targets the exact contract the supply
-    call hits."""
+    call hits.
+
+    Gasless variants — each collapses to one unsigned step; finalize with
+    :func:`sign_route`:
+
+    * *delegate* (an EIP-7702 delegate, e.g. :data:`~pydefi.vm.eip7702_supply.CALIBUR`)
+      → ``supply_with_7702``: a sponsor runs the signed ``[approve, supply]``
+      batch in the EOA's own context. *user_txs_before* must count the txs the
+      EOA broadcasts first (e.g. a preceding withdraw) — the 7702 authorization
+      is consumed at the account nonce at submission time, and a stale one
+      silently no-ops. Takes precedence over *defivm*.
+    * *defivm* (a deployed :sol:`DeFiVM`) → ``supply_with_permit2``:
+      ``executeWithPermit2`` pulls the token via a Permit2 witness signature
+      bound to the compiled program. Needs a one-time ``approve(Permit2)``;
+      raises ``ValueError`` for ``aave_v4`` (position-manager gated)."""
+    # On the Permit2 path the VM is msg.sender; every builder below credits
+    # *user* except Compound's plain supply(), overridden with supplyTo(user, …).
+    gasless_override: dict[str, Any] | None = None
     if market.protocol == "aave_v3":
         aave = await AaveV3.from_chain(w3, market.chain_id)
         spender, supply_tx = aave.pool_address, aave.build_supply_tx(user, amount)
     elif market.protocol == "compound_v3":
         comet = CompoundV3.from_chain(w3, market.chain_id, market.token.symbol)
         spender, supply_tx = comet.comet_address, comet.build_supply_tx(amount)
+        gasless_override = comet.build_supply_tx(amount, dst=user)
     elif market.protocol == "aave_v4":
+        if defivm is not None and delegate is None:
+            # Spoke.supply is onlyPositionManager(onBehalfOf): an unapproved VM
+            # always reverts Unauthorized.
+            raise ValueError(
+                "defivm is unsupported for aave_v4: Spoke.supply(onBehalfOf=user) requires the "
+                "caller to be a user-approved position manager. Use delegate= (EIP-7702) instead."
+            )
         spoke_name, reserve_id = aave_v4_ref(market)
         v4 = AaveV4.from_chain(w3, market.chain_id, spoke_name)
         spender, supply_tx = v4.spoke_address, v4.build_supply_tx(reserve_id, amount, user)
@@ -208,21 +303,144 @@ async def _supply_steps(market: YieldMarket, user: Address, w3: AsyncWeb3, amoun
         supply_tx = morpho.build_supply_tx(params, assets=amount, on_behalf_of=user)
     else:
         raise ValueError(f"unknown protocol: {market.protocol!r}")
+    gasless_supply_tx = gasless_override or supply_tx
+
+    if delegate is not None:
+        # 7702: the EOA is msg.sender, so the plain supply_tx credits the user —
+        # no supplyTo / onBehalfOf indirection. Batch a fresh approve before it.
+        approve_tx = erc20_approve_tx(amount.token.address, spender, amount.amount)
+        sign_req = await _sign_request_7702(
+            w3, user, delegate, market.chain_id, [approve_tx, supply_tx], user_txs_before
+        )
+        return [YieldStep("supply_with_7702", market.chain_id, None, sign_request=sign_req)]
+
+    if defivm is not None:
+        supply_data = bytes.fromhex(gasless_supply_tx["data"][2:])
+        sign_req = await _sign_request_permit2(w3, user, defivm, amount, spender, supply_data)
+        return [YieldStep("supply_with_permit2", market.chain_id, None, sign_request=sign_req)]
+
     return [
-        YieldStep("approve", market.chain_id, build_approve_tx(amount.token, spender, amount.amount)),
+        YieldStep("approve", market.chain_id, erc20_approve_tx(amount.token.address, spender, amount.amount)),
         YieldStep("supply", market.chain_id, supply_tx),
     ]
 
 
-async def _bridge_steps(
-    bridge: LucidBridge, user: Address, amount: TokenAmount, target_token: Token
-) -> list[YieldStep]:
-    """``[approve, bridge]`` — approve the Lucid controller, then bridge."""
+async def _sign_request_permit2(
+    w3: AsyncWeb3,
+    user: Address,
+    defivm: Address,
+    amount: TokenAmount,
+    target: Address,
+    call_data: bytes,
+) -> dict[str, Any]:
+    """The unsigned half of a ``DeFiVM.executeWithPermit2`` step: everything
+    :func:`sign_route` needs to sign a witness pulling *amount* and running
+    ``[approve(target), target.call(call_data)]`` inside the VM.
+
+    The VM keeps a max allowance per (token, target) once set, so the approve
+    leg is compiled in only when the standing allowance is short (with the
+    USDT-safe reset when it is nonzero)."""
+    nonce, allowance = await asyncio.gather(
+        pick_nonce(w3, user),
+        ERC20.fns.allowance(bytes(defivm), bytes(target)).call(w3, to=bytes(amount.token.address)),
+    )
+    return {
+        "defivm": defivm,
+        "token": amount.token.address,
+        "amount": amount.amount,
+        "nonce": nonce,
+        "owner": user,
+        "program": build_supply_program(
+            amount.token.address,
+            target,
+            call_data,
+            approve=allowance < amount.amount,
+            reset=0 < allowance < amount.amount,
+        ),
+    }
+
+
+async def _sign_request_7702(
+    w3: AsyncWeb3,
+    user: Address,
+    delegate: Address,
+    chain_id: int,
+    calls: list[dict[str, Any]],
+    user_txs_before: int = 0,
+) -> dict[str, Any]:
+    """The unsigned half of a sponsored EIP-7702 batch: everything
+    :func:`sign_route` needs to sign *calls* running in the EOA's own context.
+
+    Call values are paid from the EOA's native balance — the sponsor covers
+    gas only. *user_txs_before* counts txs the EOA broadcasts before this one
+    (each consumes the account nonce the 7702 authorization is bound to)."""
+    nonce, needs_auth = await delegation_status(w3, user, delegate)
+    return {
+        "delegate": delegate,
+        "owner": user,
+        "chain_id": chain_id,
+        "calls": calls,
+        "nonce": nonce,
+        "auth_nonce": await w3.eth.get_transaction_count(bytes(user)) + user_txs_before,
+        "needs_auth": needs_auth,
+    }
+
+
+def _sign_7702_step(req: dict[str, Any], private_key: str, deadline: int) -> dict[str, Any]:
+    """Sign the EIP-712 batch and (on the first deposit) the 7702 authorization,
+    then encode the ``execute`` tx targeting the owner's delegated EOA."""
+    typed_data = build_batch_typed_data(
+        req["calls"], req["nonce"], deadline, req["owner"], req["chain_id"], req["delegate"]
+    )
+    sig = sign_typed_data(typed_data, private_key)
+    auth = (
+        sign_authorization(private_key, req["delegate"], req["chain_id"], req["auth_nonce"])
+        if req["needs_auth"]
+        else None
+    )
+    return build_execute_tx(req["owner"], req["calls"], req["nonce"], deadline, sig, authorization=auth)
+
+
+def _sign_permit2_step(req: dict[str, Any], private_key: str, deadline: int, chain_id: int) -> dict[str, Any]:
+    """Sign the program-bound Permit2 witness and encode the
+    ``DeFiVM.executeWithPermit2`` tx."""
+    permitted = [(req["token"], req["amount"])]
+    typed_data = build_witness_typed_data(permitted, req["defivm"], req["nonce"], deadline, req["program"], chain_id)
+    sig = sign_typed_data(typed_data, private_key)
+    return build_supply_tx(req["defivm"], permitted, req["nonce"], deadline, req["owner"], sig, req["program"])
+
+
+def sign_route(route: YieldRoute, private_key: str) -> YieldRoute:
+    """Sign pending gasless steps (``*_with_permit2`` / ``*_with_7702``) and
+    return a route with broadcast-ready txs. Steps without ``sign_request``
+    pass through. Signature deadlines (``_SIGN_TTL``) start now, not at
+    route-build time."""
+
+    deadline = int(time.time()) + _SIGN_TTL
+    signed: list[YieldStep] = []
+    for step in route.steps:
+        if step.sign_request is None:
+            signed.append(step)
+            continue
+        req = step.sign_request
+        if step.kind in ("supply_with_7702", "bridge_with_7702"):
+            tx = _sign_7702_step(req, private_key, deadline)
+        else:
+            tx = _sign_permit2_step(req, private_key, deadline, step.chain_id)
+        signed.append(dataclasses.replace(step, tx=tx, sign_request=None))
+    return dataclasses.replace(route, steps=tuple(signed))
+
+
+async def _bridge_steps(bridge: Bridge, user: Address, amount: TokenAmount, target_token: Token) -> list[YieldStep]:
+    """``[approve, bridge]`` — approve the bridge's token spender, then bridge."""
+    # getattr, not direct access: bridges without an ERC-20 approval target
+    # (native-only movers) simply don't define spender.
+    spender = getattr(bridge, "spender", None)
+    if spender is None:
+        raise ValueError(f"{bridge.protocol_name} bridge exposes no ERC-20 spender — it cannot carry a yield route")
     bridge_tx = await bridge.build_bridge_tx(amount.token, target_token, amount, user)
     return [
-        YieldStep(
-            "approve", bridge.src_chain_id, build_approve_tx(amount.token, bridge.controller_address, amount.amount)
-        ),
+        YieldStep("approve", bridge.src_chain_id, erc20_approve_tx(amount.token.address, spender, amount.amount)),
         YieldStep("bridge", bridge.src_chain_id, bridge_tx),
     ]
 
@@ -453,7 +671,9 @@ async def _withdraw_then_supply(
     w3s: dict[int, AsyncWeb3],
     target_market: YieldMarket,
     source_market: YieldMarket | None,
-    bridge: LucidBridge | None,
+    bridge: Bridge | None,
+    defivm: Address | None = None,
+    delegate: Address | None = None,
 ) -> YieldRoute:
     if source_market is None:
         raise ValueError("withdraw_then_supply requires source_market")
@@ -470,7 +690,7 @@ async def _withdraw_then_supply(
         )
     elif bridge is None:
         raise ValueError(
-            "cross-chain withdraw_then_supply requires a configured LucidBridge "
+            "cross-chain withdraw_then_supply requires a configured bridge "
             f"(source={source_market.chain_id}, target={target_market.chain_id})"
         )
     elif bridge.src_chain_id != source_market.chain_id:
@@ -490,7 +710,17 @@ async def _withdraw_then_supply(
         YieldStep("withdraw", chain_id, await _withdraw_tx(source_market, user, w3, amount_in)),
     ]
     if same_chain:
-        steps += await _supply_steps(target_market, user, w3, amount_in)
+        # The EOA broadcasts the preceding steps itself, consuming one account
+        # nonce each — the 7702 authorization must be signed past them.
+        steps += await _supply_steps(
+            target_market,
+            user,
+            w3,
+            amount_in,
+            defivm=defivm,
+            delegate=delegate,
+            user_txs_before=len(steps),
+        )
     else:
         assert bridge is not None  # narrowed above
         steps += await _bridge_steps(bridge, user, amount_in, target_market.token)
@@ -502,6 +732,7 @@ async def _withdraw_then_supply(
         route_id=f"withdraw_then_supply:{source_market.market_id}->{target_market.market_id}",
         target_market=target_market,
         target_chain=None if same_chain else target_market.chain_id,
+        pending=None if same_chain else PendingLeg(target_market.chain_id, target_market),
     )
 
 
@@ -511,6 +742,8 @@ async def _supply_then_bridge(
     w3s: dict[int, AsyncWeb3],
     target_market: YieldMarket,
     target_chain: int | None,
+    defivm: Address | None = None,
+    delegate: Address | None = None,
 ) -> YieldRoute:
     if target_chain is None:
         raise ValueError(
@@ -527,7 +760,7 @@ async def _supply_then_bridge(
         amount_in.token, target_market.token, "supply_then_bridge: amount_in.token must match target_market.token"
     )
 
-    steps = await _supply_steps(target_market, user, w3s[chain_id], amount_in)
+    steps = await _supply_steps(target_market, user, w3s[chain_id], amount_in, defivm=defivm, delegate=delegate)
     return YieldRoute(
         strategy="supply_then_bridge",
         source_chain=chain_id,
@@ -542,10 +775,10 @@ async def _bridge_then_supply(
     user: Address,
     amount_in: TokenAmount,
     target_market: YieldMarket,
-    bridge: LucidBridge | None,
+    bridge: Bridge | None,
 ) -> YieldRoute:
     if bridge is None:
-        raise ValueError("bridge_then_supply requires a configured LucidBridge")
+        raise ValueError("bridge_then_supply requires a configured bridge")
     if amount_in.token.chain_id != bridge.src_chain_id:
         raise ValueError(
             "bridge_then_supply expects amount_in.token on the bridge's source chain "
@@ -565,22 +798,30 @@ async def _bridge_then_supply(
         route_id=f"bridge_then_supply:chain:{bridge.src_chain_id}->{target_market.market_id}",
         target_market=target_market,
         target_chain=bridge.dst_chain_id,
+        pending=PendingLeg(target_market.chain_id, target_market),
     )
 
 
 async def build_yield_route(
-    strategy: Strategy,
+    strategy: RouteStrategy,
     user: Address,
     amount_in: TokenAmount,
     w3s: dict[int, AsyncWeb3],
     *,
     target_market: YieldMarket,
     source_market: YieldMarket | None = None,
-    bridge: LucidBridge | None = None,
+    bridge: Bridge | None = None,
     target_chain: int | None = None,
+    defivm: Address | None = None,
+    delegate: Address | None = None,
 ) -> YieldRoute:
     """Source-chain steps only; cross-chain follow-ups are deferred to a
     second invocation after the bridge settles.
+
+    Pass *delegate* (EIP-7702, e.g. :data:`~pydefi.vm.eip7702_supply.CALIBUR`)
+    or *defivm* (Permit2) to make the supply leg a single gasless step;
+    finalize with :func:`sign_route` before broadcast. *delegate* wins if both
+    are given.
 
     * ``withdraw_then_supply`` — rebalance; needs ``source_market``.
       Same-chain produces ``[withdraw, approve, supply]``. Cross-chain
@@ -591,11 +832,64 @@ async def build_yield_route(
       is recorded on the route but not built.
     * ``bridge_then_supply`` — source-chain ``[approve, bridge]``; the
       destination supply runs on a follow-up call. Requires ``bridge``.
+
+    A cross-chain route carries a :class:`PendingLeg` in ``route.pending``;
+    feed it to :func:`build_followup_route` once the bridge settles.
     """
     if strategy == "withdraw_then_supply":
-        return await _withdraw_then_supply(user, amount_in, w3s, target_market, source_market, bridge)
+        return await _withdraw_then_supply(
+            user, amount_in, w3s, target_market, source_market, bridge, defivm=defivm, delegate=delegate
+        )
     if strategy == "supply_then_bridge":
-        return await _supply_then_bridge(user, amount_in, w3s, target_market, target_chain)
+        return await _supply_then_bridge(
+            user, amount_in, w3s, target_market, target_chain, defivm=defivm, delegate=delegate
+        )
     if strategy == "bridge_then_supply":
         return await _bridge_then_supply(user, amount_in, target_market, bridge)
     raise ValueError(f"unknown strategy: {strategy!r}")
+
+
+async def build_followup_route(
+    route: YieldRoute,
+    user: Address,
+    received: TokenAmount,
+    w3s: dict[int, AsyncWeb3],
+    defivm: Address | None = None,
+    delegate: Address | None = None,
+) -> YieldRoute:
+    """Build the deferred destination leg of a cross-chain *route*.
+
+    Call this once the bridge settles, with *received* set to the amount of
+    the destination token that actually arrived — read it from the user's
+    on-chain balance, since bridge fees mean it is not known in advance.
+    Returns a same-chain :class:`YieldRoute` of ``[approve, supply]`` on the
+    destination chain.
+
+    Pass *delegate* (EIP-7702) or *defivm* (Permit2) to make the follow-up a
+    single gasless step on the destination chain — the same knobs as
+    :func:`build_yield_route`; finalize with :func:`sign_route` before
+    broadcast. *delegate* wins if both are set.
+
+    Raises :class:`ValueError` if *route* has no :attr:`~YieldRoute.pending`
+    leg (it was same-chain, or already a follow-up), if *received* is not
+    the pending market's token, or if *w3s* lacks the destination chain.
+    """
+    pending = route.pending
+    if pending is None:
+        raise ValueError(f"route {route.route_id!r} has no pending destination leg")
+    _require_token(
+        received.token,
+        pending.market.token,
+        "build_followup_route: received.token must match the pending market token",
+    )
+    w3 = w3s.get(pending.chain_id)
+    if w3 is None:
+        raise ValueError(f"build_followup_route: w3s has no entry for destination chain {pending.chain_id}")
+    steps = await _supply_steps(pending.market, user, w3, received, defivm=defivm, delegate=delegate)
+    return YieldRoute(
+        strategy=route.strategy,
+        source_chain=pending.chain_id,
+        steps=tuple(steps),
+        route_id=f"followup:{route.route_id}",
+        target_market=pending.market,
+    )

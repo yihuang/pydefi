@@ -66,3 +66,62 @@ deno eval 'import { addressesRegistry } from "npm:@morpho-org/blue-sdk"; import 
                                   | map({(.key): .value.adaptiveCurveIrm}) | add)
     }' \
   > morpho.json
+
+# Uniswap V3 factory + V4 PoolManager / StateView / Quoter + UniversalRouter, per chain (uniswap.json).
+# Source: @uniswap/sdk-core's CHAIN_TO_ADDRESSES_MAP, plus
+# @uniswap/universal-router-sdk for the UniversalRouter (not in sdk-core).
+# Only routers >= 2.1.1 are emitted (newest per chain) — older V2_0 routers
+# use the pre-minHopPriceX36 V4 structs and would misdecode pydefi's calldata.
+echo "Fetching Uniswap V3/V4 addresses"
+deno eval '
+import { CHAIN_TO_ADDRESSES_MAP as M } from "https://esm.sh/@uniswap/sdk-core@7";
+import { UNIVERSAL_ROUTER_ADDRESS, UniversalRouterVersion } from "https://esm.sh/@uniswap/universal-router-sdk@5";
+const FIELDS = {
+  UNISWAP_V3_FACTORY: "v3CoreFactoryAddress",
+  UNISWAP_V4_POOL_MANAGER: "v4PoolManagerAddress",
+  UNISWAP_V4_STATE_VIEW: "v4StateView",
+  UNISWAP_V4_QUOTER: "v4QuoterAddress",
+};
+const out = {};
+for (const [name, field] of Object.entries(FIELDS)) {
+  const m = {};
+  for (const [cid, a] of Object.entries(M)) if (a[field]) m[cid] = a[field];
+  out[name] = m;
+}
+out.UNIVERSAL_ROUTER = {};
+for (const cid of Object.keys(M)) {
+  for (const v of [UniversalRouterVersion.V2_2_0, UniversalRouterVersion.V2_1_1]) {
+    try {
+      out.UNIVERSAL_ROUTER[cid] = UNIVERSAL_ROUTER_ADDRESS(v, Number(cid));
+      break;
+    } catch {
+      // chain has no UniversalRouter of this generation
+    }
+  }
+}
+console.log(JSON.stringify(out));
+' \
+  | jq -S '.' \
+  > uniswap.json
+
+# Polymarket neg-risk + CTF addresses (polymarket.json).
+# Source: https://github.com/Polymarket/neg-risk-ctf-adapter — addresses.json.
+# Transpose to {CONTRACT: {chain: addr}}, Polygon mainnet only; the appended
+# ConditionalTokens Amoy (80002) address isn't in the manifest.
+echo "Fetching Polymarket addresses"
+curl -s 'https://raw.githubusercontent.com/Polymarket/neg-risk-ctf-adapter/main/addresses.json' \
+  | jq -S --arg amoy "0x69308FB512518e39F9b16112fA8d994F4e2Bf8bB" '
+      {
+        ctf: "POLYMARKET_CONDITIONAL_TOKENS",
+        negRiskAdapter: "POLYMARKET_NEG_RISK_ADAPTER",
+        negRiskCtfExchange: "POLYMARKET_NEG_RISK_CTF_EXCHANGE",
+        negRiskFeeModule: "POLYMARKET_NEG_RISK_FEE_MODULE",
+        negRiskOperator: "POLYMARKET_NEG_RISK_OPERATOR",
+        negRiskVault: "POLYMARKET_NEG_RISK_VAULT",
+        negRiskUmaCtfAdapter: "POLYMARKET_NEG_RISK_UMA_CTF_ADAPTER",
+        negRiskWrappedCollateral: "POLYMARKET_NEG_RISK_WRAPPED_COLLATERAL"
+      } as $names
+      | reduce ((."137" // {}) | to_entries[]) as $e ({};
+          if $names[$e.key] then .[$names[$e.key]]["137"] = $e.value else . end)
+      | .POLYMARKET_CONDITIONAL_TOKENS["80002"] = $amoy' \
+  > polymarket.json

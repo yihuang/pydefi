@@ -1,14 +1,17 @@
 """Tests for pydefi.pathfinder — graph and router."""
 
-import math
 from decimal import Decimal
 
 import pytest
 
 from pydefi.exceptions import NoRouteFoundError
-from pydefi.pathfinder.graph import PoolEdge, PoolGraph, V3PoolEdge
+from pydefi.pathfinder.asgm import _MARGINAL_EPS, _bundle_marginal, asgm_optimize
+from pydefi.pathfinder.dag import RouteDAG, RouteSplit, RouteSwap
+from pydefi.pathfinder.graph import PoolEdge, PoolGraph, ReserveOverlay, V3PoolEdge
+from pydefi.pathfinder.multipath import MultiEdgePath, PathWeights, _distribute_int, merge_and_expand
 from pydefi.pathfinder.router import Router
-from pydefi.types import Address, ChainId, RouteDAG, RouteSwap, Token, TokenAmount
+from pydefi.types import Address, ChainId, Token, TokenAmount
+from tests._fixtures import make_v3_edge
 from tests.addrs import DAI, USDC, WETH
 
 # ---------------------------------------------------------------------------
@@ -80,6 +83,20 @@ class TestPoolEdge:
             protocol="UniswapV2",
         )
         assert edge.amount_out(10**18) == 0
+
+    @pytest.mark.parametrize("amount_in", [0, -1, -(10**15)])
+    def test_amount_out_non_positive_input_returns_zero(self, amount_in):
+        """Quote contract is non-negative; negative inputs must not produce a negative quote."""
+        edge = PoolEdge(
+            token_in=WETH,
+            token_out=USDC,
+            pool_address=POOL_A,
+            protocol="UniswapV2",
+            reserve_in=1_000 * 10**18,
+            reserve_out=2_000_000 * 10**6,
+            fee_bps=30,
+        )
+        assert edge.amount_out(amount_in) == 0
 
     def test_log_weight_finite(self):
         edge = PoolEdge(
@@ -159,49 +176,18 @@ class TestPoolEdge:
 # ---------------------------------------------------------------------------
 
 
-def _make_v3_edge(
-    token_in,
-    token_out,
-    pool_address,
-    is_token0_in: bool,
-    price_usdc_per_weth: float = 2000.0,
-    fee_bps: int = 30,
-):
-    """Build a V3PoolEdge with a synthetic sqrtPriceX96 at the given USDC/WETH price."""
-    # P_raw = price_raw_token1_per_token0 (in smallest units)
-    if is_token0_in:
-        # token_in = WETH (token0), token_out = USDC (token1)
-        P_raw = price_usdc_per_weth * (10**token_out.decimals) / (10**token_in.decimals)
-    else:
-        # token_in = USDC (token1), token_out = WETH (token0)
-        # P_raw is still defined as token1/token0 for the underlying pool
-        P_raw = price_usdc_per_weth * (10**token_in.decimals) / (10**token_out.decimals)
-    sqrtP_real = math.sqrt(P_raw)
-    Q96 = 2**96
-    sqrt_price_x96 = int(sqrtP_real * Q96)
-    liquidity = 5 * 10**22  # large pool
-    return V3PoolEdge(
-        token_in=token_in,
-        token_out=token_out,
-        pool_address=pool_address,
-        protocol="UniswapV3",
-        fee_bps=fee_bps,
-        sqrt_price_x96=sqrt_price_x96,
-        liquidity=liquidity,
-        is_token0_in=is_token0_in,
-    )
-
-
 class TestV3PoolEdge:
-    def test_spot_price_token0_in(self):
-        """Spot price should be ~2000 USDC/WETH when WETH is token0."""
-        edge = _make_v3_edge(WETH, USDC, POOL_A, is_token0_in=True)
-        assert abs(edge.spot_price - Decimal("2000")) < Decimal("1")
-
-    def test_spot_price_token1_in(self):
-        """Spot price should be ~1/2000 WETH/USDC when USDC is token1 in."""
-        edge = _make_v3_edge(USDC, WETH, POOL_A, is_token0_in=False)
-        assert abs(edge.spot_price - Decimal("1") / Decimal("2000")) < Decimal("0.001")
+    @pytest.mark.parametrize(
+        "tin,tout,is_token0_in,expected,tol",
+        [
+            (WETH, USDC, True, Decimal("2000"), Decimal("1")),
+            (USDC, WETH, False, Decimal("1") / Decimal("2000"), Decimal("0.001")),
+        ],
+        ids=["token0_in", "token1_in"],
+    )
+    def test_spot_price(self, tin, tout, is_token0_in, expected, tol):
+        edge = make_v3_edge(tin, tout, POOL_A, is_token0_in=is_token0_in)
+        assert abs(edge.spot_price - expected) < tol
 
     def test_spot_price_zero_sqrt_price(self):
         edge = V3PoolEdge(
@@ -214,87 +200,75 @@ class TestV3PoolEdge:
         )
         assert edge.spot_price == Decimal(0)
 
-    def test_amount_out_token0_in(self):
-        """Swapping 1 WETH should yield ~1994 USDC (after 0.3% fee at $2000)."""
-        edge = _make_v3_edge(WETH, USDC, POOL_A, is_token0_in=True)
-        out = edge.amount_out(10**18)
-        assert 1_990 * 10**6 < out < 1_998 * 10**6, f"Got {out / 10**6:.2f} USDC"
+    @pytest.mark.parametrize(
+        "tin,tout,is_token0_in,amount_in,lo,hi",
+        [
+            (WETH, USDC, True, 10**18, 1_990 * 10**6, 1_998 * 10**6),
+            (USDC, WETH, False, 2000 * 10**6, int(0.994 * 10**18), int(0.998 * 10**18)),
+        ],
+        ids=["token0_in_1WETH", "token1_in_2000USDC"],
+    )
+    def test_amount_out(self, tin, tout, is_token0_in, amount_in, lo, hi):
+        edge = make_v3_edge(tin, tout, POOL_A, is_token0_in=is_token0_in)
+        assert lo < edge.amount_out(amount_in) < hi
 
-    def test_amount_out_token1_in(self):
-        """Swapping 2000 USDC should yield ~0.997 WETH (after 0.3% fee)."""
-        edge = _make_v3_edge(USDC, WETH, POOL_A, is_token0_in=False)
-        out = edge.amount_out(2000 * 10**6)
-        assert int(0.994 * 10**18) < out < int(0.998 * 10**18), f"Got {out / 10**18:.6f} WETH"
-
-    def test_amount_out_zero_liquidity(self):
+    @pytest.mark.parametrize(
+        "sqrt_price,liquidity",
+        [(10**20, 0), (0, 10**22)],
+        ids=["zero_liquidity", "zero_sqrt_price"],
+    )
+    def test_amount_out_degenerate_state_returns_zero(self, sqrt_price, liquidity):
         edge = V3PoolEdge(
             token_in=WETH,
             token_out=USDC,
             pool_address=POOL_A,
             protocol="UniswapV3",
-            sqrt_price_x96=10**20,
-            liquidity=0,
-        )
-        assert edge.amount_out(10**18) == 0
-
-    def test_amount_out_zero_sqrt_price(self):
-        edge = V3PoolEdge(
-            token_in=WETH,
-            token_out=USDC,
-            pool_address=POOL_A,
-            protocol="UniswapV3",
-            sqrt_price_x96=0,
-            liquidity=10**22,
+            sqrt_price_x96=sqrt_price,
+            liquidity=liquidity,
         )
         assert edge.amount_out(10**18) == 0
 
     def test_log_weight_finite(self):
-        edge = _make_v3_edge(WETH, USDC, POOL_A, is_token0_in=True)
+        edge = make_v3_edge(WETH, USDC, POOL_A, is_token0_in=True)
         weight = edge.log_weight(10**18)
         assert weight < float("inf")
         assert weight > 0  # fee causes loss
 
-    def test_estimate_price_impact_token0_in(self):
-        """V3 price impact should be a sensible positive fraction."""
-        edge = _make_v3_edge(WETH, USDC, POOL_A, is_token0_in=True)
-        impact = edge.estimate_price_impact(10**18)  # 1 WETH
+    @pytest.mark.parametrize(
+        "tin,tout,is_token0_in,amount_in",
+        [
+            (WETH, USDC, True, 10**18),
+            (USDC, WETH, False, 2000 * 10**6),
+        ],
+        ids=["token0_in", "token1_in"],
+    )
+    def test_estimate_price_impact(self, tin, tout, is_token0_in, amount_in):
+        edge = make_v3_edge(tin, tout, POOL_A, is_token0_in=is_token0_in)
+        impact = edge.estimate_price_impact(amount_in)
         assert not impact.is_nan()
         assert Decimal(0) < impact < Decimal(1)
 
-    def test_estimate_price_impact_token1_in(self):
-        """V3 price impact should be sensible for token1→token0 direction."""
-        edge = _make_v3_edge(USDC, WETH, POOL_A, is_token0_in=False)
-        impact = edge.estimate_price_impact(2000 * 10**6)  # 2000 USDC
-        assert not impact.is_nan()
-        assert Decimal(0) < impact < Decimal(1)
-
-    def test_estimate_price_impact_zero_liquidity(self):
+    @pytest.mark.parametrize(
+        "sqrt_price,liquidity",
+        [(10**20, 0), (0, 10**22)],
+        ids=["zero_liquidity", "zero_sqrt_price"],
+    )
+    def test_estimate_price_impact_degenerate_state_is_nan(self, sqrt_price, liquidity):
         edge = V3PoolEdge(
             token_in=WETH,
             token_out=USDC,
             pool_address=POOL_A,
             protocol="UniswapV3",
-            sqrt_price_x96=10**20,
-            liquidity=0,
-        )
-        assert edge.estimate_price_impact(10**18).is_nan()
-
-    def test_estimate_price_impact_zero_sqrt_price(self):
-        edge = V3PoolEdge(
-            token_in=WETH,
-            token_out=USDC,
-            pool_address=POOL_A,
-            protocol="UniswapV3",
-            sqrt_price_x96=0,
-            liquidity=10**22,
+            sqrt_price_x96=sqrt_price,
+            liquidity=liquidity,
         )
         assert edge.estimate_price_impact(10**18).is_nan()
 
     def test_v3_edge_in_router(self):
         """Router should find a route through a V3 pool edge."""
         g = PoolGraph()
-        edge_in = _make_v3_edge(WETH, USDC, POOL_A, is_token0_in=True)
-        edge_out = _make_v3_edge(USDC, WETH, POOL_A, is_token0_in=False)
+        edge_in = make_v3_edge(WETH, USDC, POOL_A, is_token0_in=True)
+        edge_out = make_v3_edge(USDC, WETH, POOL_A, is_token0_in=False)
         g.add_pool(edge_in)
         g.add_pool(edge_out)
         router = Router(g)
@@ -502,7 +476,7 @@ class TestRouter:
         g = self._make_graph()
         router = Router(g)
         amount_in = TokenAmount(token=WETH, amount=10**18)
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="must be different"):
             router.find_best_route(amount_in, WETH)
 
     def test_find_best_route_max_hops_respected(self):
@@ -693,110 +667,12 @@ class TestRouter:
 
 
 # ---------------------------------------------------------------------------
-# find_best_split tests
+# _find_top_routes (used by find_optimal_split)
 # ---------------------------------------------------------------------------
 
 
-class TestFindBestSplit:
-    """Tests for Router.find_best_split — N-way split routing."""
-
-    POOL_A2 = "0x" + "55" * 20  # second WETH→USDC pool
-
-    def _make_split_graph(self) -> PoolGraph:
-        """Two independent WETH→USDC pools so a split is possible."""
-        g = PoolGraph()
-        g.add_pool(
-            PoolEdge(
-                WETH, USDC, POOL_A, "UniswapV2", reserve_in=1_000 * 10**18, reserve_out=2_000_000 * 10**6, fee_bps=30
-            )
-        )
-        g.add_pool(
-            PoolEdge(
-                WETH,
-                USDC,
-                self.POOL_A2,
-                "UniswapV3",
-                reserve_in=1_000 * 10**18,
-                reserve_out=2_000_000 * 10**6,
-                fee_bps=5,
-            )
-        )
-        return g
-
-    def test_single_pool_returns_linear_dag(self):
-        """With only one route available the result is a linear DAG (no split node)."""
-        g = PoolGraph()
-        g.add_pool(PoolEdge(WETH, USDC, POOL_A, "UniswapV2", reserve_in=10**21, reserve_out=2 * 10**9, fee_bps=30))
-        router = Router(g)
-        dag = router.find_best_split(TokenAmount(WETH, 10**18), USDC)
-        payload = dag.to_dict()
-        assert payload["token_in"] == WETH
-        from pydefi.types import RouteSplit
-
-        assert not any(isinstance(a, RouteSplit) for a in payload["actions"])
-        assert payload["actions"][-1].token_out == USDC
-
-    def test_two_pools_may_produce_split(self):
-        """With two pools of equal depth a split is at least as good as a single route."""
-        g = self._make_split_graph()
-        router = Router(g)
-        amount_in = TokenAmount(WETH, 10**18)
-        dag = router.find_best_split(amount_in, USDC)
-        assert isinstance(dag, RouteDAG)
-        payload = dag.to_dict()
-        assert payload["token_in"] == WETH
-        assert payload["actions"][-1].token_out == USDC
-
-    def test_split_dag_structure(self):
-        """When a split is chosen the DAG root action is a RouteSplit.
-
-        Two shallow equal pools (same fee, 10 ETH reserve each) with a 1 ETH
-        input: price impact per pool is ~9% for 100% allocation but only ~5%
-        per pool for 50/50, so splitting strictly wins.
-        """
-        from pydefi.types import RouteSplit
-
-        g = PoolGraph()
-        g.add_pool(
-            PoolEdge(WETH, USDC, POOL_A, "UniswapV2", reserve_in=10 * 10**18, reserve_out=20_000 * 10**6, fee_bps=30)
-        )
-        g.add_pool(
-            PoolEdge(
-                WETH, USDC, self.POOL_A2, "UniswapV2", reserve_in=10 * 10**18, reserve_out=20_000 * 10**6, fee_bps=30
-            )
-        )
-        router = Router(g)
-        dag = router.find_best_split(TokenAmount(WETH, 10**18), USDC, step_bps=5000)
-        payload = dag.to_dict()
-        split = payload["actions"][0]
-        assert isinstance(split, RouteSplit)
-        assert sum(leg.fraction_bps for leg in split.legs) == 10_000
-        assert split.token_out == USDC
-
-    def test_max_splits_one_returns_linear(self):
-        """max_splits=1 forces a single-route result even when two pools exist."""
-        g = self._make_split_graph()
-        router = Router(g)
-        dag = router.find_best_split(TokenAmount(WETH, 10**18), USDC, max_splits=1)
-        payload = dag.to_dict()
-        from pydefi.types import RouteSplit
-
-        assert not any(isinstance(a, RouteSplit) for a in payload["actions"])
-
-    def test_invalid_max_splits_raises(self):
-        g = self._make_split_graph()
-        router = Router(g)
-        with pytest.raises(ValueError, match="max_splits"):
-            router.find_best_split(TokenAmount(WETH, 10**18), USDC, max_splits=0)
-
-    def test_no_route_raises(self):
-        g = PoolGraph()
-        g.add_pool(PoolEdge(WETH, USDC, POOL_A, "UniswapV2", reserve_in=10**21, reserve_out=2 * 10**9, fee_bps=30))
-        router = Router(g)
-        with pytest.raises(NoRouteFoundError):
-            router.find_best_split(TokenAmount(WETH, 10**18), DAI)
-
-    def test_find_top_routes_multi_state_same_destination(self):
+class TestFindTopRoutes:
+    def test_multi_state_same_destination(self):
         """Two intermediate states at hop-1 both expand to WBTC at hop-2.
 
         Exercises the path where multiple ``current_states`` entries contribute
@@ -885,11 +761,8 @@ class TestRouterSimulate:
         router = Router(g)
 
         amount_in = 10**18
-        dag = router.find_best_split(TokenAmount(WETH, amount_in), USDC, step_bps=5000)
+        dag = router.find_optimal_split(TokenAmount(WETH, amount_in), USDC)
         result = router.simulate(dag, amount_in)
-
-        # Manual: each leg gets amount_in * bps / 10000
-        from pydefi.types import RouteSplit
 
         payload = dag.to_dict()
         split = payload["actions"][0]
@@ -907,3 +780,676 @@ class TestRouterSimulate:
         dag = RouteDAG().from_token(WETH)
         dag.swap(USDC, edge)
         assert router.simulate(dag, 10**18) == 0
+
+
+# ---------------------------------------------------------------------------
+# Helpers + tests for ReserveOverlay and sequenced K-split routing
+# ---------------------------------------------------------------------------
+
+
+def _v2_pool_edge(
+    token_in,
+    token_out,
+    pool_addr,
+    *,
+    reserve_in: int = 10**21,
+    reserve_out: int = 2 * 10**9,
+    fee_bps: int = 30,
+    is_token0_in: bool = True,
+) -> PoolEdge:
+    return PoolEdge(
+        token_in=token_in,
+        token_out=token_out,
+        pool_address=pool_addr,
+        protocol="UniswapV2",
+        reserve_in=reserve_in,
+        reserve_out=reserve_out,
+        fee_bps=fee_bps,
+        extra={"is_token0_in": is_token0_in},
+    )
+
+
+def _v2_weth_usdc_edge(*, is_token0_in: bool = True) -> PoolEdge:
+    """V2 WETH/USDC edge at $2000 with deep reserves."""
+    return _v2_pool_edge(
+        WETH,
+        USDC,
+        POOL_A,
+        reserve_in=1_000 * 10**18,
+        reserve_out=2_000_000 * 10**6,
+        is_token0_in=is_token0_in,
+    )
+
+
+class TestReserveOverlay:
+    def test_empty(self):
+        ov = ReserveOverlay()
+        assert not ov.v2_deltas and not ov.v3_sqrt_price
+        assert ov.v2_deltas.get(POOL_A, (0, 0)) == (0, 0)
+        assert ov.v3_sqrt_price.get(POOL_A, 12345) == 12345
+
+    def test_v2_delta_accumulates_via_record_swap(self):
+        edge = _v2_weth_usdc_edge()
+        ov = ReserveOverlay()
+        edge.record_swap(ov, 10**18, 2 * 10**6)
+        edge.record_swap(ov, 5 * 10**17, 10**6)
+        assert ov.v2_deltas[POOL_A] == (15 * 10**17, -3 * 10**6)
+        assert ov.v2_deltas.get(POOL_B, (0, 0)) == (0, 0)
+
+    def test_v3_sqrt_price_replaces_not_accumulates(self):
+        ov = ReserveOverlay()
+        ov.v3_sqrt_price[POOL_A] = 79228162514264337593543950336  # 1.0 in Q96
+        ov.v3_sqrt_price[POOL_A] = 1
+        assert ov.v3_sqrt_price[POOL_A] == 1
+
+    def test_pool_isolation(self):
+        ov = ReserveOverlay()
+        ov.v2_deltas[POOL_A] = (1, -1)
+        ov.v3_sqrt_price[POOL_B] = 999
+        assert POOL_B not in ov.v2_deltas
+        assert POOL_A not in ov.v3_sqrt_price
+
+
+class TestPoolEdgeOverlay:
+    def test_record_swap_then_quote_matches_advanced_reserves(self):
+        """amount_out under overlay must match a fresh edge with advanced reserves."""
+        edge = _v2_weth_usdc_edge()
+        ov = ReserveOverlay()
+        x1 = 5 * 10**18
+        y1 = edge.amount_out(x1)
+        edge.record_swap(ov, x1, y1)
+        advanced = PoolEdge(
+            token_in=WETH,
+            token_out=USDC,
+            pool_address=POOL_A,
+            protocol="UniswapV2",
+            reserve_in=edge.reserve_in + x1,
+            reserve_out=edge.reserve_out - y1,
+            fee_bps=30,
+        )
+        assert edge.amount_out(3 * 10**18, ov) == advanced.amount_out(3 * 10**18)
+
+    def test_overlay_couples_bidirectional_edges(self):
+        """A swap on A→B updates the effective reserves of B→A."""
+        g = PoolGraph()
+        g.add_bidirectional_pool(
+            WETH,
+            USDC,
+            POOL_A,
+            "UniswapV2",
+            reserve_a=1_000 * 10**18,
+            reserve_b=2_000_000 * 10**6,
+            fee_bps=30,
+        )
+        forward = next(e for e in g.edges_from(WETH) if e.token_out.address == USDC.address)
+        reverse = next(e for e in g.edges_from(USDC) if e.token_out.address == WETH.address)
+        ov = ReserveOverlay()
+        x = 10 * 10**18
+        y = forward.amount_out(x)
+        forward.record_swap(ov, x, y)
+        eff_in_rev, eff_out_rev = reverse._effective_reserves(ov)
+        assert eff_in_rev == reverse.reserve_in - y
+        assert eff_out_rev == reverse.reserve_out + x
+
+    def test_record_swap_token1_direction(self):
+        """is_token0_in=False must store deltas in the opposite slots."""
+        edge = _v2_weth_usdc_edge(is_token0_in=False)
+        ov = ReserveOverlay()
+        x = 4 * 10**18
+        y = edge.amount_out(x)
+        edge.record_swap(ov, x, y)
+        d0, d1 = ov.v2_deltas[POOL_A]
+        assert d1 == x and d0 == -y
+
+    def test_zero_swap_is_noop(self):
+        edge = _v2_weth_usdc_edge()
+        ov = ReserveOverlay()
+        for x, y in [(0, 0), (100, 0), (0, 100)]:
+            edge.record_swap(ov, x, y)
+            assert not ov.v2_deltas and not ov.v3_sqrt_price
+
+    def test_two_sequential_swaps_compose(self):
+        edge = _v2_weth_usdc_edge()
+        ov = ReserveOverlay()
+        x1 = 5 * 10**18
+        y1 = edge.amount_out(x1)
+        edge.record_swap(ov, x1, y1)
+        advanced = PoolEdge(
+            token_in=WETH,
+            token_out=USDC,
+            pool_address=POOL_A,
+            protocol="UniswapV2",
+            reserve_in=edge.reserve_in + x1,
+            reserve_out=edge.reserve_out - y1,
+            fee_bps=30,
+        )
+        assert edge.amount_out(5 * 10**18, ov) == advanced.amount_out(5 * 10**18)
+
+
+class TestV3PoolEdgeOverlay:
+    def test_record_swap_advances_sqrt_price(self):
+        edge = make_v3_edge(WETH, USDC, POOL_B, is_token0_in=True, fee_bps=5)
+        ov = ReserveOverlay()
+        x = 10**18
+        edge.record_swap(ov, x, edge.amount_out(x))
+        # token0_in: price decreases ⇒ sqrt_price drops.
+        assert 0 < ov.v3_sqrt_price[POOL_B] < edge.sqrt_price_x96
+
+    def test_overlay_decreases_subsequent_output(self):
+        edge = make_v3_edge(WETH, USDC, POOL_B, is_token0_in=True, fee_bps=5)
+        ov = ReserveOverlay()
+        x = 10 * 10**18
+        y1 = edge.amount_out(x)
+        edge.record_swap(ov, x, y1)
+        y2 = edge.amount_out(x, ov)
+        assert 0 < y2 < y1
+
+    def test_overlay_couples_bidirectional_v3(self):
+        forward = make_v3_edge(WETH, USDC, POOL_B, is_token0_in=True, fee_bps=5)
+        reverse = make_v3_edge(USDC, WETH, POOL_B, is_token0_in=False, fee_bps=5)
+        ov = ReserveOverlay()
+        x = 10**18
+        forward.record_swap(ov, x, forward.amount_out(x))
+        # Reverse edge sees the same overlayed sqrt_price (lower than baseline).
+        assert reverse._effective_sqrt_price(ov) == ov.v3_sqrt_price[POOL_B] < reverse.sqrt_price_x96
+
+
+# ---------------------------------------------------------------------------
+# _distribute_int (largest-remainder apportionment)
+# ---------------------------------------------------------------------------
+
+
+class TestDistributeInt:
+    @pytest.mark.parametrize(
+        "weights,total",
+        [
+            ([1 / 3] * 3, 10**18),  # leftover would exceed n under naive float math
+            ([1 / 7] * 7, 10**18),
+            ([1 / 100] * 100, 10**18),
+            ([0.5, 0.5, 0.0001], 10**18),  # weights sum > 1
+            ([0.9999, 0.0001], 10**18),
+            ([1.0, 0.0, 0.0], 10**18),
+            ([0.5, 0.5], 10**30),  # past 2^53 float precision
+            ([0.5, 0.5], 1),
+            ([1 / 3] * 3, 10),
+        ],
+    )
+    def test_conserves_total_exactly(self, weights, total):
+        """Output must sum to ``total`` exactly across float-pathological inputs."""
+        result = _distribute_int(total, weights)
+        assert sum(result) == total
+        assert all(x >= 0 for x in result)
+
+    def test_zero_or_negative_total_returns_zeros(self):
+        assert _distribute_int(0, [0.5, 0.5]) == [0, 0]
+        assert _distribute_int(-1, [0.5, 0.5]) == [0, 0]
+
+    def test_empty_weights_returns_empty(self):
+        assert _distribute_int(100, []) == []
+
+    def test_all_zero_weights_returns_zeros(self):
+        assert _distribute_int(100, [0.0, 0.0]) == [0, 0]
+
+    def test_proportional_allocation(self):
+        """Allocations should respect the relative weight ordering."""
+        result = _distribute_int(10**18, [0.7, 0.2, 0.1])
+        assert result[0] > result[1] > result[2]
+        assert sum(result) == 10**18
+
+
+# ---------------------------------------------------------------------------
+# MultiEdgePath / merge_and_expand (PRIME §V)
+# ---------------------------------------------------------------------------
+
+
+class TestMultiEdgePath:
+    def test_empty_hops_rejected(self):
+        with pytest.raises(ValueError, match="at least one hop"):
+            MultiEdgePath(hops=())
+
+    def test_mismatched_tokens_in_bundle_rejected(self):
+        e1 = _v2_pool_edge(WETH, USDC, POOL_A)
+        e2 = _v2_pool_edge(WETH, DAI, POOL_B)  # different token_out
+        with pytest.raises(ValueError, match="share"):
+            MultiEdgePath(hops=((e1, e2),))
+
+    def test_chain_break_rejected(self):
+        e1 = _v2_pool_edge(WETH, USDC, POOL_A)
+        e2 = _v2_pool_edge(DAI, USDC, POOL_B)  # hop1 in (DAI) != hop0 out (USDC)
+        with pytest.raises(ValueError, match="must match"):
+            MultiEdgePath(hops=((e1,), (e2,)))
+
+    def test_amount_out_single_edge_matches_pool_edge(self):
+        edge = _v2_pool_edge(WETH, USDC, POOL_A)
+        path = MultiEdgePath(hops=((edge,),))
+        weights = PathWeights(path_weight=1.0, intra_hop_weights=[[1.0]])
+        assert path.amount_out(10**18, weights) == edge.amount_out(10**18)
+
+    def test_amount_out_two_edge_bundle_50_50_matches_split(self):
+        e1 = _v2_pool_edge(WETH, USDC, POOL_A, reserve_in=10**21, reserve_out=2 * 10**9)
+        e2 = _v2_pool_edge(WETH, USDC, POOL_B, reserve_in=10**21, reserve_out=2 * 10**9)
+        path = MultiEdgePath(hops=((e1, e2),))
+        ws = PathWeights(path_weight=1.0, intra_hop_weights=[[0.5, 0.5]])
+        x = 10**18
+        expected = e1.amount_out(x // 2) + e2.amount_out(x - x // 2)
+        assert path.amount_out(x, ws) == expected
+
+    def test_amount_out_zero_input_returns_zero(self):
+        edge = _v2_pool_edge(WETH, USDC, POOL_A)
+        path = MultiEdgePath(hops=((edge,),))
+        ws = PathWeights(path_weight=1.0, intra_hop_weights=[[1.0]])
+        assert path.amount_out(0, ws) == 0
+
+    def test_amount_out_tiny_input_through_50_50_bundle_conserves_input(self):
+        """1 wei split 50/50 across a 2-edge bundle must not be zeroed out.
+
+        Tiny reserves (~10^3) so single-edge amount_out > 0 — deep pools
+        return 0 and mask the floor-allocation bug.
+        """
+        e1 = _v2_pool_edge(WETH, USDC, POOL_A, reserve_in=1_000, reserve_out=2_000, fee_bps=0)
+        e2 = _v2_pool_edge(WETH, USDC, POOL_B, reserve_in=1_000, reserve_out=2_000, fee_bps=0)
+        single_path = MultiEdgePath(hops=((e1,),))
+        single_ws = PathWeights(path_weight=1.0, intra_hop_weights=[[1.0]])
+        bundle_path = MultiEdgePath(hops=((e1, e2),))
+        bundle_ws = PathWeights(path_weight=1.0, intra_hop_weights=[[0.5, 0.5]])
+        single_out = single_path.amount_out(1, single_ws)
+        bundle_out = bundle_path.amount_out(1, bundle_ws)
+        assert single_out > 0
+        # Pre-fix this returned 0 — the 1 wei was silently dropped by the
+        # ``int(1 * 0.5) = 0`` floor + guarded-leftover logic.
+        assert bundle_out > 0
+
+
+class TestMergeAndExpand:
+    def _graph_two_pools_weth_usdc(self) -> PoolGraph:
+        """WETH↔USDC via two V2 pools (different fee tiers / depths)."""
+        g = PoolGraph()
+        g.add_bidirectional_pool(
+            WETH,
+            USDC,
+            POOL_A,
+            "UniswapV2",
+            reserve_a=1_000 * 10**18,
+            reserve_b=2_000_000 * 10**6,
+            fee_bps=30,
+        )
+        g.add_bidirectional_pool(
+            WETH,
+            USDC,
+            POOL_B,
+            "UniswapV2",
+            reserve_a=500 * 10**18,
+            reserve_b=1_000_000 * 10**6,
+            fee_bps=5,
+        )
+        return g
+
+    def test_collapses_same_token_sequence(self):
+        """Two routes with the same token sequence merge into one MultiEdgePath."""
+        g = self._graph_two_pools_weth_usdc()
+        edge_a = next(e for e in g.edges_from(WETH) if e.pool_address == POOL_A and e.token_out == USDC)
+        edge_b = next(e for e in g.edges_from(WETH) if e.pool_address == POOL_B and e.token_out == USDC)
+        paths = merge_and_expand([[edge_a], [edge_b]], g)
+        assert len(paths) == 1
+        # Single hop with both pools in the bundle.
+        assert len(paths[0].hops) == 1
+        bundle_pools = {e.pool_address for e in paths[0].hops[0]}
+        assert bundle_pools == {POOL_A, POOL_B}
+
+    def test_widens_with_graph_parallel_edges(self):
+        """A single-route input still picks up every parallel edge from the graph."""
+        g = self._graph_two_pools_weth_usdc()
+        edge_a = next(e for e in g.edges_from(WETH) if e.pool_address == POOL_A and e.token_out == USDC)
+        paths = merge_and_expand([[edge_a]], g)
+        assert len(paths) == 1
+        bundle_pools = {e.pool_address for e in paths[0].hops[0]}
+        # POOL_A from the input + POOL_B added during expand.
+        assert bundle_pools == {POOL_A, POOL_B}
+
+    def test_caps_bundle_size(self):
+        g = PoolGraph()
+        for i, pool in enumerate([POOL_A, POOL_B, POOL_C, POOL_D]):
+            g.add_bidirectional_pool(
+                WETH,
+                USDC,
+                pool,
+                "UniswapV2",
+                reserve_a=10**21,
+                reserve_b=2 * 10**9,
+                fee_bps=30,
+            )
+        edge_a = next(e for e in g.edges_from(WETH) if e.pool_address == POOL_A and e.token_out == USDC)
+        paths = merge_and_expand([[edge_a]], g, max_parallel_per_hop=2)
+        assert len(paths[0].hops[0]) == 2  # capped
+
+    def test_preserves_distinct_token_sequences(self):
+        """Routes with different token sequences stay separate."""
+        g = PoolGraph()
+        g.add_bidirectional_pool(
+            WETH,
+            USDC,
+            POOL_A,
+            "UniswapV2",
+            reserve_a=10**21,
+            reserve_b=2 * 10**9,
+            fee_bps=30,
+        )
+        g.add_bidirectional_pool(
+            WETH,
+            DAI,
+            POOL_B,
+            "UniswapV2",
+            reserve_a=10**21,
+            reserve_b=10**21,
+            fee_bps=30,
+        )
+        g.add_bidirectional_pool(
+            DAI,
+            USDC,
+            POOL_C,
+            "UniswapV2",
+            reserve_a=10**21,
+            reserve_b=2 * 10**9,
+            fee_bps=30,
+        )
+        e_direct = next(e for e in g.edges_from(WETH) if e.pool_address == POOL_A and e.token_out == USDC)
+        e_dai = next(e for e in g.edges_from(WETH) if e.token_out == DAI)
+        e_dai_usdc = next(e for e in g.edges_from(DAI) if e.token_out == USDC)
+        paths = merge_and_expand([[e_direct], [e_dai, e_dai_usdc]], g)
+        assert len(paths) == 2
+        # Distinguishable by hop count.
+        hop_counts = sorted(len(p.hops) for p in paths)
+        assert hop_counts == [1, 2]
+
+    def test_enforces_pool_disjoint_across_paths(self):
+        """A pool claimed by the earlier-ranked path is excluded from later paths (PRIME §III)."""
+        g = PoolGraph()
+        # Two routes both pass through WETH→USDC via POOL_A, then diverge.
+        g.add_bidirectional_pool(
+            WETH,
+            USDC,
+            POOL_A,
+            "UniswapV2",
+            reserve_a=10**22,
+            reserve_b=2 * 10**10,
+            fee_bps=30,
+        )
+        g.add_bidirectional_pool(
+            USDC,
+            DAI,
+            POOL_B,
+            "UniswapV2",
+            reserve_a=2 * 10**10,
+            reserve_b=2 * 10**22,
+            fee_bps=30,
+        )
+        g.add_bidirectional_pool(
+            USDC,
+            WBTC,
+            POOL_C,
+            "UniswapV2",
+            reserve_a=2 * 10**10,
+            reserve_b=10**9,
+            fee_bps=30,
+        )
+        e_weth_usdc = next(e for e in g.edges_from(WETH) if e.pool_address == POOL_A and e.token_out == USDC)
+        e_usdc_dai = next(e for e in g.edges_from(USDC) if e.pool_address == POOL_B and e.token_out == DAI)
+        e_usdc_wbtc = next(e for e in g.edges_from(USDC) if e.pool_address == POOL_C and e.token_out == WBTC)
+        paths = merge_and_expand([[e_weth_usdc, e_usdc_dai], [e_weth_usdc, e_usdc_wbtc]], g)
+        # Each path is a distinct token sequence, so both survive — but POOL_A
+        # may appear in only one of them.
+        appearances = [pool for p in paths for bundle in p.hops for e in bundle if (pool := e.pool_address) == POOL_A]
+        assert len(appearances) == 1, "POOL_A must not appear in more than one MultiEdgePath"
+
+    def test_v4_pools_sharing_pool_manager_address_not_collapsed(self):
+        """Distinct V4 pools share the singleton PoolManager address but differ
+        by fee/tickSpacing/hooks; they must NOT collapse into one bundle.
+        """
+        singleton = Address("0x" + "44" * 20)  # shared PoolManager address
+        g = PoolGraph()
+        e_lo = PoolEdge(WETH, USDC, singleton, "UniswapV4", reserve_in=10**21, reserve_out=2 * 10**9, fee_bps=5)
+        e_hi = PoolEdge(WETH, USDC, singleton, "UniswapV4", reserve_in=10**21, reserve_out=2 * 10**9, fee_bps=30)
+        g.add_pool(e_lo)
+        g.add_pool(e_hi)
+        paths = merge_and_expand([[e_lo], [e_hi]], g)
+        assert len(paths) == 1
+        # Both fee tiers must survive in the bundle despite the shared address.
+        assert len(paths[0].hops[0]) == 2
+        assert {e.fee_bps for e in paths[0].hops[0]} == {5, 30}
+
+
+# ---------------------------------------------------------------------------
+# ASGM solver (PRIME §V-C)
+# ---------------------------------------------------------------------------
+
+
+class TestASGM:
+    def test_single_path_single_edge_returns_full_weight(self):
+        edge = _v2_pool_edge(WETH, USDC, POOL_A)
+        path = MultiEdgePath(hops=((edge,),))
+        out = asgm_optimize([path], 10**18)
+        assert len(out) == 1
+        assert out[0].path_weight == 1.0
+        assert out[0].intra_hop_weights == [[1.0]]
+
+    def test_two_symmetric_paths_converge_to_50_50(self):
+        """Two identical pools across two paths should split evenly at the optimum."""
+        e1 = _v2_pool_edge(WETH, USDC, POOL_A, reserve_in=10**21, reserve_out=2 * 10**9, fee_bps=30)
+        e2 = _v2_pool_edge(WETH, USDC, POOL_B, reserve_in=10**21, reserve_out=2 * 10**9, fee_bps=30)
+        p1 = MultiEdgePath(hops=((e1,),))
+        p2 = MultiEdgePath(hops=((e2,),))
+        ws = asgm_optimize([p1, p2], 10**18)
+        assert len(ws) == 2
+        # Symmetric pools ⇒ expect ~50/50 within a few percent (granularity).
+        assert abs(ws[0].path_weight - 0.5) < 0.05
+        assert abs(ws[1].path_weight - 0.5) < 0.05
+        assert abs(ws[0].path_weight + ws[1].path_weight - 1.0) < 1e-6
+
+    def test_two_asymmetric_paths_favours_deeper_pool(self):
+        """A deeper pool should attract more allocation than a shallow one."""
+        deep = _v2_pool_edge(WETH, USDC, POOL_A, reserve_in=10**22, reserve_out=2 * 10**10, fee_bps=30)
+        shallow = _v2_pool_edge(WETH, USDC, POOL_B, reserve_in=5 * 10**20, reserve_out=10**9, fee_bps=30)
+        p1 = MultiEdgePath(hops=((deep,),))
+        p2 = MultiEdgePath(hops=((shallow,),))
+        ws = asgm_optimize([p1, p2], 10 * 10**18)
+        assert ws[0].path_weight > ws[1].path_weight, "deeper pool should get larger share"
+        assert abs(ws[0].path_weight + ws[1].path_weight - 1.0) < 1e-6
+
+    def test_two_paths_beat_single_path(self):
+        """Splitting across two parallel paths must yield ≥ either path alone."""
+        e1 = _v2_pool_edge(WETH, USDC, POOL_A, reserve_in=10**21, reserve_out=2 * 10**9, fee_bps=30)
+        e2 = _v2_pool_edge(WETH, USDC, POOL_B, reserve_in=10**21, reserve_out=2 * 10**9, fee_bps=30)
+        p1 = MultiEdgePath(hops=((e1,),))
+        p2 = MultiEdgePath(hops=((e2,),))
+        x = 10**19
+        ws = asgm_optimize([p1, p2], x)
+        split_out = sum(p.amount_out(int(w.path_weight * x), w) for p, w in zip([p1, p2], ws))
+        single_out = max(e1.amount_out(x), e2.amount_out(x))
+        assert split_out >= single_out
+
+    def test_optimized_never_worse_than_uniform_split(self):
+        """ASGM's result must be >= the uniform allocation it starts from.
+
+        Guards the Armijo line search: a rejected trial must fully restore the
+        in-place-tuned intra_hop_weights, otherwise the optimizer can return an
+        allocation worse than its own starting point.
+        """
+        # Asymmetric depths/fees so the line search actually backtracks.
+        e1 = _v2_pool_edge(WETH, USDC, POOL_A, reserve_in=10**22, reserve_out=2 * 10**10, fee_bps=30)
+        e2 = _v2_pool_edge(WETH, USDC, POOL_B, reserve_in=10**21, reserve_out=2 * 10**9, fee_bps=5)
+        e3 = _v2_pool_edge(WETH, USDC, POOL_C, reserve_in=3 * 10**20, reserve_out=6 * 10**8, fee_bps=100)
+        paths = [MultiEdgePath(hops=((e,),)) for e in (e1, e2, e3)]
+        x = 5 * 10**18
+        n = len(paths)
+        uniform = [PathWeights(path_weight=1.0 / n, intra_hop_weights=[[1.0]]) for _ in paths]
+        uniform_inputs = _distribute_int(x, [1.0 / n] * n)
+        uniform_out = sum(p.amount_out(a, w) for p, w, a in zip(paths, uniform, uniform_inputs) if a > 0)
+        ws = asgm_optimize(paths, x)
+        opt_inputs = _distribute_int(x, [w.path_weight for w in ws])
+        opt_out = sum(p.amount_out(a, w) for p, w, a in zip(paths, ws, opt_inputs) if a > 0)
+        assert opt_out >= uniform_out
+
+    def test_amount_in_zero_raises(self):
+        edge = _v2_pool_edge(WETH, USDC, POOL_A)
+        path = MultiEdgePath(hops=((edge,),))
+        with pytest.raises(ValueError, match="positive"):
+            asgm_optimize([path], 0)
+
+    def test_empty_paths_returns_empty(self):
+        assert asgm_optimize([], 10**18) == []
+
+    def test_tiny_input_across_paths_conserves_amount_in(self):
+        """amount_in=2 with 3 paths must not silently allocate [0,0,0] under floor distribution."""
+        e1 = _v2_pool_edge(WETH, USDC, POOL_A)
+        e2 = _v2_pool_edge(WETH, USDC, POOL_B)
+        e3 = _v2_pool_edge(WETH, USDC, POOL_C)
+        p1 = MultiEdgePath(hops=((e1,),))
+        p2 = MultiEdgePath(hops=((e2,),))
+        p3 = MultiEdgePath(hops=((e3,),))
+        ws = asgm_optimize([p1, p2, p3], 2)
+        # All path_weights still on the simplex.
+        total_w = sum(w.path_weight for w in ws)
+        assert abs(total_w - 1.0) < 1e-6
+        # The 2 wei must be distributed, not dropped to [0, 0, 0] by rounding.
+        # (Output stays 0 only because the pools are too deep to yield on 1 wei.)
+        inputs = _distribute_int(2, [w.path_weight for w in ws])
+        assert sum(inputs) == 2
+        assert any(a > 0 for a in inputs)
+
+    def test_intra_hop_weights_optimised_for_bundle(self):
+        """A path with a multi-edge bundle should allocate non-trivially across edges."""
+        e1 = _v2_pool_edge(WETH, USDC, POOL_A, reserve_in=10**22, reserve_out=2 * 10**10, fee_bps=30)  # deep
+        e2 = _v2_pool_edge(WETH, USDC, POOL_B, reserve_in=10**21, reserve_out=2 * 10**9, fee_bps=30)  # shallow
+        path = MultiEdgePath(hops=((e1, e2),))
+        ws = asgm_optimize([path], 10 * 10**18)
+        assert ws[0].path_weight == 1.0
+        # Both pools should get some share; deep one should get more.
+        w_e1, w_e2 = ws[0].intra_hop_weights[0]
+        assert w_e1 > 0 and w_e2 > 0
+        assert w_e1 > w_e2, "deep pool should get larger intra-hop share"
+        assert abs(w_e1 + w_e2 - 1.0) < 1e-6
+
+    def test_bundle_marginal_returns_per_edge_marginal_price(self):
+        """Returns f_e'(w_e · c) — positive for every edge, even an over-allocated one."""
+        e1 = _v2_pool_edge(WETH, USDC, POOL_A, reserve_in=10**22, reserve_out=2 * 10**10, fee_bps=30)
+        e2 = _v2_pool_edge(WETH, USDC, POOL_B, reserve_in=10**22, reserve_out=2 * 10**10, fee_bps=30)
+        bundle = (e1, e2)
+        hop_input = 10**18
+        g_saturated = _bundle_marginal(bundle, hop_input, [0.99, 0.01], idx=0)
+        g_underused = _bundle_marginal(bundle, hop_input, [0.99, 0.01], idx=1)
+        assert g_saturated > 0, "per-edge marginal of a monotone swap function is positive"
+        assert g_underused > g_saturated, "less-allocated identical edge has higher marginal"
+        # Cross-check: marginal at the equal-split point matches a direct FD on the edge.
+        equal = _bundle_marginal(bundle, hop_input, [0.5, 0.5], idx=0)
+        x0, x1 = int(0.5 * hop_input), int(0.5 * hop_input) + int(_MARGINAL_EPS * hop_input)
+        expected = (e1.amount_out(x1) - e1.amount_out(x0)) / (x1 - x0)
+        assert abs(equal - expected) / max(expected, 1e-18) < 1e-6
+
+
+# ---------------------------------------------------------------------------
+# Router.find_optimal_split (Slice B integration)
+# ---------------------------------------------------------------------------
+
+
+class TestFindOptimalSplit:
+    def _two_pool_graph(self, *, deep: bool = True) -> PoolGraph:
+        """WETH↔USDC via two parallel V2 pools (deep=True ⇒ similar depth)."""
+        g = PoolGraph()
+        g.add_bidirectional_pool(
+            WETH,
+            USDC,
+            POOL_A,
+            "UniswapV2",
+            reserve_a=1_000 * 10**18,
+            reserve_b=2_000_000 * 10**6,
+            fee_bps=30,
+        )
+        g.add_bidirectional_pool(
+            WETH,
+            USDC,
+            POOL_B,
+            "UniswapV2",
+            reserve_a=1_000 * 10**18 if deep else 50 * 10**18,
+            reserve_b=2_000_000 * 10**6 if deep else 100_000 * 10**6,
+            fee_bps=30,
+        )
+        return g
+
+    def test_single_path_returns_linear_dag(self):
+        """When only one route exists, find_optimal_split returns a linear DAG."""
+        g = PoolGraph()
+        g.add_bidirectional_pool(
+            WETH,
+            USDC,
+            POOL_A,
+            "UniswapV2",
+            reserve_a=10**21,
+            reserve_b=2 * 10**9,
+            fee_bps=30,
+        )
+        router = Router(g)
+        dag = router.find_optimal_split(TokenAmount(WETH, 10**18), USDC)
+        payload = dag.to_dict()
+        # One swap action, no split.
+        assert len(payload["actions"]) == 1
+        assert isinstance(payload["actions"][0], RouteSwap)
+
+    def test_two_parallel_pools_emit_inner_split(self):
+        """Two parallel WETH/USDC pools should emit a split DAG with both pools."""
+        router = Router(self._two_pool_graph(deep=True))
+        dag = router.find_optimal_split(TokenAmount(WETH, 10**18), USDC)
+        payload = dag.to_dict()
+        # Single hop with multi-edge bundle ⇒ outer action is RouteSplit.
+        assert isinstance(payload["actions"][0], RouteSplit)
+        legs = payload["actions"][0].legs
+        # Both pools represented across the split legs.
+        leg_pools = {leg.actions[0].pool.pool_address for leg in legs}
+        assert {POOL_A, POOL_B}.issubset(leg_pools)
+        # Fractions must sum exactly to MAX_BPS.
+        assert sum(leg.fraction_bps for leg in legs) == 10_000
+
+    def test_invalid_candidates_raises(self):
+        router = Router(self._two_pool_graph())
+        with pytest.raises(ValueError, match="candidates must be >= 1"):
+            router.find_optimal_split(TokenAmount(WETH, 10**18), USDC, candidates=0)
+
+    def test_no_route_raises(self):
+        g = PoolGraph()
+        g.add_bidirectional_pool(
+            WETH,
+            USDC,
+            POOL_A,
+            "UniswapV2",
+            reserve_a=10**21,
+            reserve_b=2 * 10**9,
+        )
+        router = Router(g)
+        with pytest.raises(NoRouteFoundError):
+            router.find_optimal_split(TokenAmount(WETH, 10**18), DAI)
+
+    def test_multi_hop_path(self):
+        """Multi-hop graph: find_optimal_split routes WETH→USDC→DAI as a single path."""
+        g = PoolGraph()
+        g.add_bidirectional_pool(
+            WETH,
+            USDC,
+            POOL_A,
+            "UniswapV2",
+            reserve_a=1_000 * 10**18,
+            reserve_b=2_000_000 * 10**6,
+            fee_bps=30,
+        )
+        g.add_bidirectional_pool(
+            USDC,
+            DAI,
+            POOL_B,
+            "Curve",
+            reserve_a=5_000_000 * 10**6,
+            reserve_b=5_000_000 * 10**18,
+            fee_bps=4,
+        )
+        router = Router(g)
+        dag = router.find_optimal_split(TokenAmount(WETH, 10**18), DAI)
+        out = router.simulate(dag, 10**18)
+        # ~$2000 worth of DAI in raw units (6→18 dec): expect 1k–10k * 1e18.
+        assert 1_000 * 10**18 < out < 10_000 * 10**18

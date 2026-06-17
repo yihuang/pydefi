@@ -60,6 +60,7 @@ import asyncio
 import logging
 from typing import Any, Optional
 
+from eth_contract.erc20 import ERC20
 from hexbytes import HexBytes
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlmodel import Session, SQLModel, create_engine, select
@@ -86,6 +87,9 @@ _DEFAULT_BATCH_SIZE = 2_000
 # Maximum concurrent eth_getBlock calls when resolving timestamps for a log batch.
 # Public RPCs (drpc, ankr, …) 500 under unbounded fan-out for hundreds of blocks.
 _GET_BLOCK_CONCURRENCY = 4
+
+# Maximum concurrent ERC-20 metadata calls when enriching newly discovered pools.
+_TOKEN_META_CONCURRENCY = 8
 
 # Default polling interval for live mode (seconds)
 _DEFAULT_POLL_INTERVAL = 12
@@ -151,6 +155,9 @@ class PoolIndexer:
         self._pool_protocol: dict[str, str] = {}
         self._factory_protocol: dict[str, str] = {}
         self._factory_chain_id: dict[str, int] = {}
+        # Cache of ERC-20 (symbol, decimals) by lower-case address, so a token
+        # shared across many discovered pools (WETH/USDC/…) is fetched only once.
+        self._token_meta: dict[str, tuple[str, int]] = {}
         # Load existing registrations from DB.
         with Session(self._engine) as session:
             for pool in session.exec(select(Pool)).all():
@@ -579,11 +586,11 @@ class PoolIndexer:
         if not logs:
             return 0
 
-        # Fetch timestamps for all unique block numbers, with bounded concurrency
-        # so a wide backfill doesn't fan out hundreds of parallel requests at a
-        # public RPC (which then 500s).
-        unique_bns = list({int(log["blockNumber"]) for log in logs})
-        sem = asyncio.Semaphore(_GET_BLOCK_CONCURRENCY)
+        # Only Sync/Swap handlers use a timestamp, so fetch blocks only for those
+        # logs — a factory-discovery backfill then skips eth_getBlock entirely.
+        ts_topics = (_V2_SYNC_TOPIC, _V3_SWAP_TOPIC)
+        unique_bns = list({int(log["blockNumber"]) for log in logs if HexBytes(log["topics"][0]) in ts_topics})
+        sem = asyncio.Semaphore(_GET_BLOCK_CONCURRENCY)  # public RPCs 500 under unbounded fan-out
 
         async def _get(bn: int) -> Any:
             async with sem:
@@ -592,13 +599,24 @@ class PoolIndexer:
         fetched = await asyncio.gather(*[_get(bn) for bn in unique_bns])
         timestamps = {bn: int(b["timestamp"]) for bn, b in zip(unique_bns, fetched)}
 
+        # Warm the token-metadata cache for this batch's newly created pools
+        # concurrently, so the serial DB-write loop below does no network I/O.
+        creation = (_V2_PAIR_CREATED_TOPIC, _V3_POOL_CREATED_TOPIC)
+        tokens = {
+            _addr_from_topic(log["topics"][i])
+            for log in logs
+            if HexBytes(log["topics"][0]) in creation and log["address"].lower() in self._factory_protocol
+            for i in (1, 2)
+        }
+        await self._prefetch_token_meta(tokens)
+
         stored = 0
         with Session(self._engine) as session:
             for log in logs:
                 topic0 = HexBytes(log["topics"][0])
                 emitter = log["address"].lower()
                 bn = int(log["blockNumber"])
-                ts = timestamps[bn]
+                ts = timestamps.get(bn, 0)  # 0 for factory-creation logs (timestamp unused)
                 tx_hash = (
                     log["transactionHash"].hex()
                     if not isinstance(log["transactionHash"], str)
@@ -823,31 +841,42 @@ class PoolIndexer:
             fee,
         )
 
+    async def _prefetch_token_meta(self, token_addresses: set[str]) -> None:
+        """Warm the cache for *token_addresses* concurrently (bounded; cached skipped)."""
+        sem = asyncio.Semaphore(_TOKEN_META_CONCURRENCY)
+
+        async def _one(addr: str) -> None:
+            async with sem:
+                await self._fetch_token_meta(addr)
+
+        missing = (a for a in token_addresses if a.lower() not in self._token_meta)
+        await asyncio.gather(*[_one(a) for a in missing])
+
     async def _fetch_token_meta(self, token_address: str) -> tuple[str, int]:
-        """Return ``(symbol, decimals)`` for *token_address* via ERC-20 calls.
+        """Return cached ``(symbol, decimals)``, fetching the two calls concurrently once.
 
-        Falls back to ``("", 18)`` for non-standard or non-ERC-20 tokens.
-        Unexpected errors (network timeouts, etc.) are logged and re-raised.
+        Either field falls back (``""`` / ``18``) for non-standard tokens rather
+        than failing the batch.
         """
-        from eth_contract.erc20 import ERC20
+        key = token_address.lower()
+        if key not in self._token_meta:
+            to = Web3.to_checksum_address(token_address)
+            symbol, decimals = await asyncio.gather(
+                self._erc20_view(ERC20.fns.symbol(), to, ""),
+                self._erc20_view(ERC20.fns.decimals(), to, 18),
+            )
+            self._token_meta[key] = (symbol, decimals)
+        return self._token_meta[key]
 
+    async def _erc20_view(self, fn: Any, to: str, default: Any) -> Any:
+        """Call an ERC-20 view *fn*, returning *default* on a non-standard/failed token."""
         try:
-            symbol: str = await ERC20.fns.symbol().call(self.w3, to=token_address)
+            return await fn.call(self.w3, to=to)
         except (ValueError, TypeError, OverflowError):
-            # Non-standard token: missing or malformed symbol() response.
-            symbol = ""
+            return default  # missing or malformed response
         except Exception as exc:
-            logger.warning("Unexpected error fetching symbol for %s: %s", token_address, exc)
-            symbol = ""
-        try:
-            decimals: int = await ERC20.fns.decimals().call(self.w3, to=token_address)
-        except (ValueError, TypeError, OverflowError):
-            # Non-standard token: missing or malformed decimals() response.
-            decimals = 18
-        except Exception as exc:
-            logger.warning("Unexpected error fetching decimals for %s: %s", token_address, exc)
-            decimals = 18
-        return symbol, decimals
+            logger.warning("ERC-20 view failed for %s: %s", to, exc)
+            return default
 
     # ------------------------------------------------------------------
     # Checkpoint helpers

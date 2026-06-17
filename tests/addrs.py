@@ -45,6 +45,8 @@ UNISWAP_V3_ROUTER: Address = get_address("UNISWAP_V3_ROUTER", ChainId.ETHEREUM)
 UNISWAP_V3_QUOTER: Address = get_address("UNISWAP_V3_QUOTER", ChainId.ETHEREUM)
 UNISWAP_V3_FACTORY: Address = get_address("UNISWAP_V3_FACTORY", ChainId.ETHEREUM)
 UNISWAP_V4_POOL_MANAGER: Address = get_address("UNISWAP_V4_POOL_MANAGER", ChainId.ETHEREUM)
+UNISWAP_V4_STATE_VIEW: Address = get_address("UNISWAP_V4_STATE_VIEW", ChainId.ETHEREUM)
+UNISWAP_V4_QUOTER: Address = get_address("UNISWAP_V4_QUOTER", ChainId.ETHEREUM)
 UNIVERSAL_ROUTER: Address = get_address("UNIVERSAL_ROUTER", ChainId.ETHEREUM)
 
 # ── Well-known Uniswap V3 pools ───────────────────────────────────────────────
@@ -67,12 +69,19 @@ PAIR_USDC_USDT: Address = get_address("PAIR_USDC_USDT", ChainId.ETHEREUM)
 
 AAVE_ADDRESSES_PROVIDER: Address = get_address("AAVE_V3_ADDRESSES_PROVIDER", ChainId.ETHEREUM)
 
+# ── Compound III (Comet) mainnet ──────────────────────────────────────────────
+
+COMET_USDC: Address = get_address("COMPOUND_V3_USDC", ChainId.ETHEREUM)
+
 # ── Morpho Blue mainnet ───────────────────────────────────────────────────────
 # Morpho Blue is an immutable singleton; the AdaptiveCurveIRM is the standard
 # interest-rate model used by virtually every market.
 
 MORPHO_BLUE: Address = get_address("MORPHO_BLUE", ChainId.ETHEREUM)
 MORPHO_IRM: Address = get_address("MORPHO_ADAPTIVE_CURVE_IRM", ChainId.ETHEREUM)
+#: cbBTC/USDC market unique key — a deep, stable market used by lending fork
+#: tests (USDC is the loan asset).
+MORPHO_CBBTC_USDC: bytes = bytes.fromhex("64d65c9a2d91c36d56fbc42d69e979335320169b3df63bf92789e2c8883fcc64")
 
 # ── Lucid Labs ────────────────────────────────────────────────────────────────
 

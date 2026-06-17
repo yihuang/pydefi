@@ -15,9 +15,9 @@ from typing import Any
 
 from web3 import AsyncWeb3, Web3
 
+from pydefi._math import apply_slippage
 from pydefi._utils import address_to_bytes32
 from pydefi.abi.bridge import LAYERZERO_OFT, MessagingFee, OFTSendParam
-from pydefi.bridge.base import BaseBridge
 from pydefi.exceptions import BridgeError
 from pydefi.types import Address, BridgeQuote, Token, TokenAmount
 
@@ -41,8 +41,37 @@ _LZ_EID: dict[int, int] = {
     7777777: 30195,  # Zora
 }
 
+# LayerZero v2 executor options (``OptionsBuilder`` TYPE_3 wire format). The
+# destination endpoint only runs ``lzReceive`` (OFT credit) and ``lzCompose``
+# (the DeFiVM program) for the executor gas these options fund — omit them and
+# the compose silently never executes.
+_OPTIONS_TYPE_3 = (3).to_bytes(2, "big")
+_WORKER_ID_EXECUTOR = 1
+_OPTION_TYPE_LZRECEIVE = 1
+_OPTION_TYPE_LZCOMPOSE = 3
+_DEFAULT_LZ_RECEIVE_GAS = 150_000  # destination OFT credit/mint
+_DEFAULT_COMPOSE_GAS = 800_000  # destination DeFiVM swap -> supply program
+_BRIDGE_SEND_GAS = 300_000  # source ``send`` gas budget (plain transfer)
+_COMPOSE_SEND_GAS = 400_000  # source ``send`` gas budget (larger compose msg)
 
-class LayerZeroOFT(BaseBridge):
+
+def _executor_option(option_type: int, option_data: bytes) -> bytes:
+    """One ``OptionsBuilder`` executor option: ``worker_id || uint16(len+1) ||
+    option_type || option_data`` (the ``+1`` counts the type byte)."""
+    return bytes([_WORKER_ID_EXECUTOR]) + (len(option_data) + 1).to_bytes(2, "big") + bytes([option_type]) + option_data
+
+
+def _compose_options(lz_receive_gas: int, compose_gas: int, *, compose_index: int = 0) -> bytes:
+    """LayerZero v2 ``extraOptions`` funding the destination ``lzReceive`` (OFT
+    credit) and ``lzCompose`` (DeFiVM program) executor gas."""
+    lz_receive = _executor_option(_OPTION_TYPE_LZRECEIVE, lz_receive_gas.to_bytes(16, "big"))
+    lz_compose = _executor_option(
+        _OPTION_TYPE_LZCOMPOSE, compose_index.to_bytes(2, "big") + compose_gas.to_bytes(16, "big")
+    )
+    return _OPTIONS_TYPE_3 + lz_receive + lz_compose
+
+
+class LayerZeroOFT:
     """LayerZero OFT v2 cross-chain token bridge integration.
 
     This class wraps the ``IOFT`` interface used by OFT tokens built on
@@ -76,14 +105,13 @@ class LayerZeroOFT(BaseBridge):
         oft_address: str,
         dst_oft_address: str | None = None,
     ) -> None:
-        super().__init__(src_chain_id, dst_chain_id)
+        self.src_chain_id = src_chain_id
+        self.dst_chain_id = dst_chain_id
         self.w3 = w3
         self.oft_address = oft_address
         self.dst_oft_address = dst_oft_address or oft_address
 
-    @property
-    def protocol_name(self) -> str:
-        return "LayerZeroOFT"
+    protocol_name: str = "LayerZeroOFT"
 
     def _lz_eid(self, evm_chain_id: int) -> int:
         """Map an EVM chain ID to a LayerZero v2 endpoint ID (EID)."""
@@ -112,77 +140,50 @@ class LayerZeroOFT(BaseBridge):
                 f"does not match destination OFT address {self.dst_oft_address!r}"
             )
 
-    async def quote_send_fee(
+    def _send_param(
         self,
         amount: int,
         recipient: Address,
-        slippage_bps: int = 50,
-    ) -> int:
-        """Estimate the native LayerZero messaging fee for a ``send`` call.
-
-        Calls ``quoteSend`` on the OFT contract to get the exact native fee
-        required for the cross-chain message.
-
-        Args:
-            amount: Token amount to bridge (raw, in local decimals).
-            recipient: Recipient address on the destination chain.
-            slippage_bps: Slippage tolerance in basis points used to compute
-                ``minAmountLD``.
-
-        Returns:
-            Estimated native fee in wei.
-
-        Raises:
-            :class:`~pydefi.exceptions.BridgeError`: On contract call failure.
-        """
-        dst_eid = self._lz_eid(self.dst_chain_id)
-        to_bytes32 = address_to_bytes32(recipient)
-        min_amount = self._apply_slippage(amount, slippage_bps)
-
-        send_param = OFTSendParam(
-            dstEid=dst_eid,
-            to=to_bytes32,
+        slippage_bps: int,
+        *,
+        compose_msg: bytes = b"",
+        extra_options: bytes = b"",
+    ) -> OFTSendParam:
+        """Build the ``SendParam`` for ``quoteSend`` / ``send`` — *compose_msg* and
+        *extra_options* are empty for a plain transfer, set for a compose."""
+        return OFTSendParam(
+            dstEid=self._lz_eid(self.dst_chain_id),
+            to=address_to_bytes32(recipient),
             amountLD=amount,
-            minAmountLD=min_amount,
-            extraOptions=b"",
-            composeMsg=b"",
+            minAmountLD=apply_slippage(amount, slippage_bps),
+            extraOptions=extra_options,
+            composeMsg=compose_msg,
             oftCmd=b"",
         )
 
+    async def _quote_native_fee(self, send_param: OFTSendParam) -> int:
+        """Call ``quoteSend`` and return the native messaging fee (wei)."""
         try:
             result = await LAYERZERO_OFT.fns.quoteSend(send_param, False).call(self.w3, to=self.oft_address)
             # quoteSend returns (nativeFee, lzTokenFee)
-            native_fee: int = result[0] if isinstance(result, (list, tuple)) else result
+            return result[0] if isinstance(result, (list, tuple)) else result
         except Exception as exc:
             raise BridgeError(f"LayerZeroOFT: quoteSend failed: {exc}") from exc
-        return native_fee
 
-    async def get_quote(
-        self,
-        token_in: Token,
-        token_out: Token,
-        amount_in: TokenAmount,
-        **kwargs: Any,
-    ) -> BridgeQuote:
-        """Get a LayerZero OFT bridge quote.
+    async def _send_tx(self, send_param: OFTSendParam, refund: Address, gas: int) -> dict[str, Any]:
+        """Quote the native fee for *send_param* and encode the ``send`` tx dict (``value`` = the fee)."""
+        native_fee = await self._quote_native_fee(send_param)
+        call_data = LAYERZERO_OFT.fns.send(send_param, MessagingFee(nativeFee=native_fee, lzTokenFee=0), refund).data
+        return {"to": self.oft_address, "data": "0x" + call_data.hex(), "value": str(native_fee), "gas": str(gas)}
 
-        OFT transfers are 1:1: the full ``amount_in`` is received on the
-        destination chain (``bridge_fee`` is zero in token terms).  The
-        LayerZero native messaging fee is paid separately in the source
-        chain's native gas token when submitting the transaction.
+    async def quote_send_fee(self, amount: int, recipient: Address, slippage_bps: int = 50) -> int:
+        """Native LayerZero messaging fee (wei) for a plain ``send`` of *amount* to *recipient*."""
+        return await self._quote_native_fee(self._send_param(amount, recipient, slippage_bps))
 
-        Args:
-            token_in: Source chain OFT token.
-            token_out: Destination chain OFT token (same asset, different chain).
-            amount_in: Amount to bridge.
-
-        Returns:
-            A :class:`~pydefi.types.BridgeQuote`.
-
-        Raises:
-            :class:`~pydefi.exceptions.BridgeError`: If token addresses do not
-                match the configured OFT contracts.
-        """
+    async def get_quote(self, token_in: Token, token_out: Token, amount_in: TokenAmount, **kwargs: Any) -> BridgeQuote:
+        """OFT bridge quote: 1:1 in token terms (full *amount_in* received, zero token fee); the
+        LayerZero native messaging fee is paid separately in source gas. Raises if the token
+        addresses don't match the configured OFT contracts."""
         self._validate_tokens(token_in, token_out)
         return BridgeQuote(
             token_in=token_in,
@@ -204,52 +205,41 @@ class LayerZeroOFT(BaseBridge):
         refund_address: Address | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
-        """Build a LayerZero OFT ``send`` transaction.
-
-        Fetches the current native messaging fee via ``quoteSend``, then
-        encodes a ``send`` call that transfers ``amount_in`` to ``recipient``
-        on the destination chain.
-
-        Args:
-            token_in: Source chain OFT token.
-            token_out: Destination chain OFT token.
-            amount_in: Amount to bridge.
-            recipient: Receiver address on the destination chain.
-            slippage_bps: Slippage tolerance in basis points.
-            refund_address: Address to receive any excess native fee refund.
-                Defaults to ``recipient``.
-
-        Returns:
-            Transaction dict with ``to``, ``data``, ``value``, ``gas``.
-
-        Raises:
-            :class:`~pydefi.exceptions.BridgeError`: On fee estimation failure
-                or if token addresses do not match the configured OFT contracts.
-        """
+        """A LayerZero OFT ``send`` tx moving *amount_in* to *recipient* on the destination
+        chain. *refund_address* (default *recipient*) receives any excess native fee. Raises
+        if the tokens don't match the configured OFT contracts."""
         self._validate_tokens(token_in, token_out)
-        _refund = refund_address or recipient
-        dst_eid = self._lz_eid(self.dst_chain_id)
-        to_bytes32 = address_to_bytes32(recipient)
-        min_amount = self._apply_slippage(amount_in.amount, slippage_bps)
+        send_param = self._send_param(amount_in.amount, recipient, slippage_bps)
+        return await self._send_tx(send_param, refund_address or recipient, _BRIDGE_SEND_GAS)
 
-        send_param = OFTSendParam(
-            dstEid=dst_eid,
-            to=to_bytes32,
-            amountLD=amount_in.amount,
-            minAmountLD=min_amount,
-            extraOptions=b"",
-            composeMsg=b"",
-            oftCmd=b"",
+    async def build_compose_send(
+        self,
+        amount_in: TokenAmount,
+        composer: Address,
+        program: bytes,
+        *,
+        compose_gas: int = _DEFAULT_COMPOSE_GAS,
+        lz_receive_gas: int = _DEFAULT_LZ_RECEIVE_GAS,
+        slippage_bps: int = 50,
+        refund_address: Address | None = None,
+        **_: Any,
+    ) -> list[dict[str, Any]]:
+        """``ComposeBridge`` legs: a single OFT ``send`` to *composer* (the
+        :class:`OFTComposer`) carrying *program* as ``composeMsg``, with ``extraOptions``
+        funding the destination ``lzReceive`` + ``lzCompose`` gas. A native OFT burns from
+        the sender, so there is no approve leg. The bridged token must be the OFT itself;
+        *refund_address* (default *composer*) receives any excess native fee."""
+        if not program:
+            raise BridgeError("LayerZeroOFT: program must not be empty for compose transactions.")
+        if Web3.to_checksum_address(amount_in.token.address) != Web3.to_checksum_address(self.oft_address):
+            raise BridgeError(
+                f"LayerZeroOFT: amount_in token {amount_in.token.address!r} is not the OFT {self.oft_address!r}"
+            )
+        send_param = self._send_param(
+            amount_in.amount,
+            composer,
+            slippage_bps,
+            compose_msg=program,
+            extra_options=_compose_options(lz_receive_gas, compose_gas),
         )
-
-        native_fee = await self.quote_send_fee(amount_in.amount, recipient, slippage_bps)
-        messaging_fee = MessagingFee(nativeFee=native_fee, lzTokenFee=0)
-
-        call_data = LAYERZERO_OFT.fns.send(send_param, messaging_fee, _refund).data
-
-        return {
-            "to": self.oft_address,
-            "data": "0x" + call_data.hex(),
-            "value": str(native_fee),
-            "gas": str(300_000),
-        }
+        return [await self._send_tx(send_param, refund_address or composer, _COMPOSE_SEND_GAS)]
