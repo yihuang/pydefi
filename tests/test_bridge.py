@@ -1912,9 +1912,8 @@ class TestEureka:
                 timeout_timestamp=1,
             )
 
-    @pytest.mark.parametrize("denom", [Address(b"\x11" * 20), "0x" + "11" * 20])
-    def test_encode_send_transfer_accepts_address_or_hex_string(self, denom):
-        # Both forms must encode to the same bytes.
+    def test_encode_send_transfer_normalizes_hexbytes_denom(self):
+        # A hex-string address round-trips once wrapped in Address (HexBytes).
         kwargs = dict(amount=1, receiver="r", source_client="c", timeout_timestamp=1)
         ref = encode_send_transfer_calldata(denom=Address(b"\x11" * 20), **kwargs)
-        assert encode_send_transfer_calldata(denom=denom, **kwargs) == ref
+        assert encode_send_transfer_calldata(denom=Address("0x" + "11" * 20), **kwargs) == ref

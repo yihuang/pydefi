@@ -28,7 +28,7 @@ from pydefi.vm.context import Operand, Program, ValueLike
 
 def encode_send_and_compose_calldata(
     *,
-    denom: Address | str,
+    denom: Address,
     amount: int,
     receiver: str,
     source_client: str,

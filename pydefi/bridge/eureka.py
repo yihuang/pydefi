@@ -16,13 +16,10 @@ from pydefi.exceptions import BridgeError
 from pydefi.types import Address, BridgeQuote, Token, TokenAmount
 
 
-def validate_send_transfer_fields(denom: Address | str, amount: int, timeout_timestamp: int) -> bytes:
+def validate_send_transfer_fields(denom: Address, amount: int, timeout_timestamp: int) -> bytes:
     """Common validation for ``sendTransfer`` / ``sendTransferAndCompose``
     calldata encoders. Returns the 20-byte ``denom`` bytes."""
-    if isinstance(denom, str):
-        denom_bytes = bytes.fromhex(denom.removeprefix("0x"))
-    else:
-        denom_bytes = bytes(denom)
+    denom_bytes = bytes(denom)
     if len(denom_bytes) != 20:
         raise ValueError(f"denom must be a 20-byte EVM address, got {len(denom_bytes)} bytes")
     if amount < 0 or amount >> 256:
@@ -34,7 +31,7 @@ def validate_send_transfer_fields(denom: Address | str, amount: int, timeout_tim
 
 def encode_send_transfer_calldata(
     *,
-    denom: Address | str,
+    denom: Address,
     amount: int,
     receiver: str,
     source_client: str,
