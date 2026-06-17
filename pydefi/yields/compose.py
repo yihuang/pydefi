@@ -21,6 +21,7 @@ from eth_contract.erc20 import ERC20
 from vyper.venom.basicblock import IRLiteral
 from web3 import AsyncWeb3
 
+from pydefi._utils import erc20_approve_tx
 from pydefi.abi.lending import AAVE_V3_POOL, COMPOUND_V3_COMET
 from pydefi.bridge import Bridge
 from pydefi.types import Address, Token, TokenAmount
@@ -32,7 +33,6 @@ from pydefi.yields.router import (
     YieldStep,
     _sign_request_7702,
     _sign_request_permit2,
-    build_approve_tx,
     supply_contract,
 )
 
@@ -116,7 +116,7 @@ async def build_compose_supply_route(
     if build_compose_tx is None:
         raise NotImplementedError(f"{bridge.protocol_name} bridge has no compose path")
     bridge_tx = await build_compose_tx(amount_in, composer_address, program)
-    approve_tx = build_approve_tx(amount_in.token, spender, amount_in.amount)
+    approve_tx = erc20_approve_tx(amount_in.token.address, spender, amount_in.amount)
     if delegate is not None or defivm is not None:
         w3_src = w3s.get(bridge.src_chain_id)
         if w3_src is None:

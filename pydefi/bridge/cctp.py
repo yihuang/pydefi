@@ -68,7 +68,7 @@ import aiohttp
 from hexbytes import HexBytes
 from web3 import AsyncWeb3, Web3
 
-from pydefi._utils import address_to_bytes32
+from pydefi._utils import address_to_bytes32, erc20_approve_tx
 from pydefi.abi.bridge import CCTP_TOKEN_MESSENGER_V2
 from pydefi.exceptions import BridgeError
 from pydefi.types import Address, BridgeQuote, ChainId, Token, TokenAmount
@@ -588,6 +588,30 @@ class CCTP:
             "value": "0",
             "gas": str(220_000),
         }
+
+    async def build_compose_send(
+        self,
+        amount_in: TokenAmount,
+        composer: Address,
+        program: bytes,
+        *,
+        dst_domain: int | None = None,
+        max_fee: int = 0,
+        min_finality_threshold: int = FINALITY_THRESHOLD_CONFIRMED,
+        **_: Any,
+    ) -> list[dict[str, Any]]:
+        """``ComposeBridge`` legs: ``[approve(TokenMessengerV2),
+        depositForBurnWithHook]`` carrying *program* as ``hookData``."""
+        approve_tx = erc20_approve_tx(amount_in.token.address, self.token_messenger_address, amount_in.amount)
+        burn_tx = await self.build_bridge_compose_tx(
+            amount_in,
+            composer,
+            program,
+            dst_domain=dst_domain,
+            max_fee=max_fee,
+            min_finality_threshold=min_finality_threshold,
+        )
+        return [approve_tx, burn_tx]
 
     # -----------------------------------------------------------------------
     # Class-level helpers for deployment lookups

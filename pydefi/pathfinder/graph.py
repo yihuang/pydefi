@@ -379,21 +379,204 @@ class V4PoolEdge(V3PoolEdge):
             for pricing. V4 fees need not be a multiple of 100, so the
             basis-point ``fee_bps`` field alone would truncate (e.g. a 10-pip
             fee would price as free).
+        key_fee_pips: The ``fee`` field of the PoolKey (pips; equals
+            ``LPFeeLibrary.DYNAMIC_FEE_FLAG`` for dynamic-fee pools). Needed to
+            reconstruct the pool key for quoting — ``lp_fee_pips`` cannot be
+            used for that once calibration rewrites it.
+        is_dynamic_fee: True if the PoolKey carries the dynamic-fee flag; the
+            edge is then priced at the *current* ``lpFee``, which the hook may
+            change (or override per-swap) at any time.
+        hook_affects_pricing: True if the hook can change swap amounts (hook
+            fees / custom curves / dynamic-fee overrides — see
+            :func:`pydefi.amm.v4_hooks.affects_swap_pricing`). ``amount_out``
+            is then an estimate that ignores the hook's cut: still useful for
+            ranking candidate routes, but quote such pools on-chain (the V4
+            Quoter executes the real hook) before acting on the number.
+        hook_fee_calibrated: True once
+            :meth:`~pydefi.amm.uniswap_v4.UniswapV4.calibrate_hook_fee` has
+            verified the hook take is size-independent and folded it into
+            ``lp_fee_pips``, making local pricing trustworthy again.
     """
 
     tick_spacing: int = 0
     hooks: Address = ZERO_ADDRESS
     pool_id: str = ""
     lp_fee_pips: int = 0
+    key_fee_pips: int = 0
+    is_dynamic_fee: bool = False
+    hook_affects_pricing: bool = False
+    hook_fee_calibrated: bool = False
 
     def _net_amount_in(self, amount_in: int) -> int:
         """Return *amount_in* after deducting the LP fee (``lp_fee_pips``, base 1 000 000).
 
         Falls back to ``fee_bps`` when ``lp_fee_pips`` is unset (e.g. edges
-        constructed without slot0 data).
+        constructed without slot0 data) — unless calibration explicitly set
+        it (a calibrated fee of 0 is a real zero-fee pool, not "unset").
         """
-        fee_pips = self.lp_fee_pips if self.lp_fee_pips else self.fee_bps * 100
+        if self.lp_fee_pips or self.hook_fee_calibrated:
+            fee_pips = self.lp_fee_pips
+        else:
+            fee_pips = self.fee_bps * 100
         return amount_in * (1_000_000 - fee_pips) // 1_000_000
+
+
+@dataclass
+class _CurveEdgeBase(PoolEdge):
+    """Shared behaviour for Curve edges, which price by probing local math.
+
+    Curve edges carry a state snapshot instead of constant-product reserves, so
+    ``spot_price`` and ``estimate_price_impact`` are derived from
+    :meth:`amount_out` probes rather than ``reserve_in`` / ``reserve_out``.
+    """
+
+    i: int = 0
+    j: int = 0
+    balances: list[int] = field(default_factory=list)
+
+    def zero_for_one(self, token_out: Address) -> bool:
+        """Curve has no token0/token1 ordering; return ``i < j`` for callers
+        that key on direction.  Swap codegen uses ``exchange(i, j, …)``, which
+        doesn't need it.
+        """
+        return self.i < self.j
+
+    @property
+    def spot_price(self) -> Decimal:
+        """Marginal price of ``token_out`` per ``token_in`` (probe of 1 unit)."""
+        probe = 10**self.token_in.decimals
+        out = self.amount_out(probe)
+        if out <= 0:
+            return Decimal(0)
+        adj_in = Decimal(probe) / Decimal(10**self.token_in.decimals)
+        adj_out = Decimal(out) / Decimal(10**self.token_out.decimals)
+        return adj_out / adj_in
+
+    def estimate_price_impact(self, amount_in: int) -> Decimal:
+        """Price impact: 1 − (realised rate / marginal small-trade rate)."""
+        if amount_in <= 0 or not self.balances:
+            return Decimal("NaN")
+        # Probe with one whole token: a smaller probe drowns in the output
+        # coin's integer rounding (e.g. 6-dec USDC) and can read as zero impact.
+        small = 10**self.token_in.decimals
+        small_out = self.amount_out(small)
+        big_out = self.amount_out(amount_in)
+        if small_out <= 0 or big_out <= 0:
+            return Decimal("NaN")
+        marginal = Decimal(small_out) / Decimal(small)
+        realised = Decimal(big_out) / Decimal(amount_in)
+        if marginal <= 0:
+            return Decimal("NaN")
+        impact = Decimal(1) - realised / marginal
+        return impact if impact > 0 else Decimal(0)
+
+
+@dataclass
+class CurveStableEdge(_CurveEdgeBase):
+    """A directed edge representing a Curve stableswap pool direction.
+
+    Covers plain V1 pools, factory plain pools, and Stable-NG.  Prices swaps
+    locally via :mod:`pydefi.amm.curve_math` from a state snapshot rather than
+    the constant-product model used by :class:`PoolEdge`.
+
+    Attributes:
+        i: Index of ``token_in`` in the pool's ``coins`` array.
+        j: Index of ``token_out`` in the pool's ``coins`` array.
+        balances: Raw pool balances (coin units).
+        rates: Per-coin rate multipliers (see :func:`pydefi.amm.curve_math._xp_mem`).
+        amp: Amplification (precise for NG/factory, raw for legacy).
+        fee: Base swap fee (units of ``1/1e10``).
+        a_precision: ``1`` for legacy plain pools, ``100`` otherwise.
+        ng_d_form: Use the Stable-NG ``D_P`` accumulation form.
+        offpeg_fee_multiplier: Stable-NG off-peg multiplier (``0`` = flat fee).
+        legacy_fee_order: Legacy plain pools convert to coin units before fee.
+    """
+
+    rates: list[int] = field(default_factory=list)
+    amp: int = 0
+    fee: int = 0
+    a_precision: int = 100
+    ng_d_form: bool = False
+    offpeg_fee_multiplier: int = 0
+    legacy_fee_order: bool = False
+
+    def amount_out(self, amount_in: int) -> int:
+        """Estimate output using local Curve stableswap math (0 on failure)."""
+        from pydefi.amm import curve_math
+
+        if amount_in <= 0 or not self.balances:
+            return 0
+        try:
+            return curve_math.stable_get_dy(
+                self.i,
+                self.j,
+                amount_in,
+                self.balances,
+                self.rates,
+                self.amp,
+                self.fee,
+                a_precision=self.a_precision,
+                ng_d_form=self.ng_d_form,
+                offpeg_fee_multiplier=self.offpeg_fee_multiplier,
+                legacy_fee_order=self.legacy_fee_order,
+            )
+        except (curve_math.CurveConvergenceError, ZeroDivisionError, ValueError):
+            return 0
+
+
+@dataclass
+class CurveCryptoEdge(_CurveEdgeBase):
+    """A directed edge representing a Curve V2 (cryptoswap) pool direction.
+
+    Prices swaps locally via :func:`pydefi.amm.curve_math.crypto_get_dy` from a
+    state snapshot.
+
+    Attributes:
+        i: Index of ``token_in`` in the pool's ``coins`` array.
+        j: Index of ``token_out`` in the pool's ``coins`` array.
+        balances: Raw pool balances (coin units).
+        precisions: Per-coin ``10**(18 - decimals)`` multipliers.
+        price_scale: Per-coin price scale (1e18 base); index 0 must be ``1e18``.
+        amp: Pool ``A`` (as returned on-chain).
+        gamma: Pool ``gamma``.
+        mid_fee: Fee at parity (units of ``1/1e10``).
+        out_fee: Fee when fully imbalanced (units of ``1/1e10``).
+        fee_gamma: Fee curvature parameter (1e18 base).
+        d: Pool invariant ``D``. If ``None``, recompute from balances.
+    """
+
+    precisions: list[int] = field(default_factory=list)
+    price_scale: list[int] = field(default_factory=list)
+    amp: int = 0
+    gamma: int = 0
+    mid_fee: int = 0
+    out_fee: int = 0
+    fee_gamma: int = 0
+    d: int | None = None
+
+    def amount_out(self, amount_in: int) -> int:
+        """Estimate output using local Curve V2 cryptoswap math (0 on failure)."""
+        from pydefi.amm import curve_math
+
+        if amount_in <= 0 or not self.balances:
+            return 0
+        try:
+            return curve_math.crypto_get_dy(
+                self.i,
+                self.j,
+                amount_in,
+                self.balances,
+                self.precisions,
+                self.price_scale,
+                self.amp,
+                self.gamma,
+                self.mid_fee,
+                self.out_fee,
+                self.fee_gamma,
+                d=self.d,
+            )
+        except (curve_math.CurveConvergenceError, ZeroDivisionError, ValueError):
+            return 0
 
 
 class PoolGraph:
@@ -546,6 +729,79 @@ class PoolGraph:
                 extra=extra_reverse,
             )
         )
+
+    def add_curve_pool(self, pool) -> None:
+        """Add every directed coin pair of a state-loaded Curve pool as an edge.
+
+        The pool must have had :meth:`~pydefi.amm.curve.CurvePool.load_state`
+        called so the local-pricing snapshot is available.  One
+        :class:`CurveStableEdge` (or :class:`CurveCryptoEdge` for Curve V2) is
+        added for each ordered pair of coins, so the pathfinder can route
+        through the pool in any direction.
+
+        Args:
+            pool: A :class:`~pydefi.amm.curve.CurvePool` with loaded state.
+
+        Raises:
+            ValueError: If the pool's state has not been loaded.
+        """
+        from pydefi.amm.curve_math import FEE_DENOMINATOR
+
+        if getattr(pool, "_state", None) is None:
+            raise ValueError("Curve pool state not loaded; call load_state() first")
+
+        s = pool._state
+        tokens = pool.tokens
+        n = len(tokens)
+        addr = pool.router_address
+        proto = pool.protocol_name
+        is_crypto = pool.kind.is_crypto
+        # Router copies edge.fee_bps into SwapStep.fee; report the pool's real
+        # base fee (mid_fee at parity for cryptoswap) instead of the V2 default.
+        fee_bps = (s["mid_fee"] if is_crypto else s["fee"]) * 10_000 // FEE_DENOMINATOR
+
+        for i in range(n):
+            for j in range(n):
+                if i == j:
+                    continue
+                if is_crypto:
+                    edge: PoolEdge = CurveCryptoEdge(
+                        token_in=tokens[i],
+                        token_out=tokens[j],
+                        pool_address=addr,
+                        protocol=proto,
+                        fee_bps=fee_bps,
+                        i=i,
+                        j=j,
+                        balances=list(s["balances"]),
+                        precisions=list(s["precisions"]),
+                        price_scale=list(s["price_scale"]),
+                        amp=s["amp"],
+                        gamma=s["gamma"],
+                        mid_fee=s["mid_fee"],
+                        out_fee=s["out_fee"],
+                        fee_gamma=s["fee_gamma"],
+                        d=s["d"] or None,
+                    )
+                else:
+                    edge = CurveStableEdge(
+                        token_in=tokens[i],
+                        token_out=tokens[j],
+                        pool_address=addr,
+                        protocol=proto,
+                        fee_bps=fee_bps,
+                        i=i,
+                        j=j,
+                        balances=list(s["balances"]),
+                        rates=list(s["rates"]),
+                        amp=s["amp"],
+                        fee=s["fee"],
+                        a_precision=s["a_precision"],
+                        ng_d_form=s["ng_d_form"],
+                        offpeg_fee_multiplier=s["offpeg_fee_multiplier"],
+                        legacy_fee_order=s["legacy_fee_order"],
+                    )
+                self.add_pool(edge)
 
     def edges_from(self, token: Token) -> list[PoolEdge]:
         """Return all edges that depart from *token*.

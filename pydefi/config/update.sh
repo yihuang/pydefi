@@ -103,3 +103,25 @@ console.log(JSON.stringify(out));
 ' \
   | jq -S '.' \
   > uniswap.json
+
+# Polymarket neg-risk + CTF addresses (polymarket.json).
+# Source: https://github.com/Polymarket/neg-risk-ctf-adapter — addresses.json.
+# Transpose to {CONTRACT: {chain: addr}}, Polygon mainnet only; the appended
+# ConditionalTokens Amoy (80002) address isn't in the manifest.
+echo "Fetching Polymarket addresses"
+curl -s 'https://raw.githubusercontent.com/Polymarket/neg-risk-ctf-adapter/main/addresses.json' \
+  | jq -S --arg amoy "0x69308FB512518e39F9b16112fA8d994F4e2Bf8bB" '
+      {
+        ctf: "POLYMARKET_CONDITIONAL_TOKENS",
+        negRiskAdapter: "POLYMARKET_NEG_RISK_ADAPTER",
+        negRiskCtfExchange: "POLYMARKET_NEG_RISK_CTF_EXCHANGE",
+        negRiskFeeModule: "POLYMARKET_NEG_RISK_FEE_MODULE",
+        negRiskOperator: "POLYMARKET_NEG_RISK_OPERATOR",
+        negRiskVault: "POLYMARKET_NEG_RISK_VAULT",
+        negRiskUmaCtfAdapter: "POLYMARKET_NEG_RISK_UMA_CTF_ADAPTER",
+        negRiskWrappedCollateral: "POLYMARKET_NEG_RISK_WRAPPED_COLLATERAL"
+      } as $names
+      | reduce ((."137" // {}) | to_entries[]) as $e ({};
+          if $names[$e.key] then .[$names[$e.key]]["137"] = $e.value else . end)
+      | .POLYMARKET_CONDITIONAL_TOKENS["80002"] = $amoy' \
+  > polymarket.json

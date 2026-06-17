@@ -19,6 +19,7 @@ from eth_account import Account
 from web3 import Web3
 from web3.exceptions import ContractLogicError
 
+from pydefi._utils import erc20_approve_tx
 from pydefi.lending import CompoundV3
 from pydefi.types import Address, ChainId, TokenAmount
 from pydefi.vm.eip712 import sign_typed_data
@@ -31,7 +32,6 @@ from pydefi.vm.eip7702_supply import (
     is_delegated_to,
 )
 from pydefi.yields import YieldMarket, build_yield_route, sign_route
-from pydefi.yields.router import build_approve_tx
 from tests.addrs import USDC
 from tests.live.anvil_helpers import fund_usdc, impersonate, set_balance
 from tests.live.gasless_common import (
@@ -124,7 +124,7 @@ class TestEIP7702SupplyFork:
         await _gasless_deposit(fork_w3, owner_acct, owner, sponsor_acct, market("compound_v3", "compound_v3:1:USDC"))
 
         comet = CompoundV3(w3=fork_w3, chain_id=ChainId.ETHEREUM, comet_address=COMET_USDC)
-        approve = build_approve_tx(USDC, Address(COMET_USDC), AMT)
+        approve = erc20_approve_tx(USDC.address, Address(COMET_USDC), AMT)
         good = [approve, comet.build_supply_tx(TokenAmount(USDC, AMT))]
         evil = [approve, comet.build_supply_tx(TokenAmount(USDC, AMT), dst=Address("0x" + "99" * 20))]
 

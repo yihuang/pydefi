@@ -23,9 +23,13 @@ from __future__ import annotations
 from typing import Any, Literal
 
 import base58
+from eth_contract.erc20 import ERC20
 from hexbytes import HexBytes
 
 from pydefi.types import NATIVE_ADDRESSES, ZERO_HASH, Address, ChainId, Hash, Token, TokenAmount
+
+#: Generous default gas for ``approve`` — fits quirky tokens above the EIP-20 minimum.
+_APPROVE_GAS = 100_000
 
 #: ``type(uint256).max``
 UINT256_MAX: int = (1 << 256) - 1
@@ -133,4 +137,14 @@ def to_tx(to: Address, data: bytes, **kwargs: Any) -> dict[str, Any]:
         "to": to.to_0x_hex(),
         "data": "0x" + data.hex(),
         **kwargs,
+    }
+
+
+def erc20_approve_tx(token: Address, spender: Address, amount: int, gas: int = _APPROVE_GAS) -> dict[str, Any]:
+    """A standard ERC-20 ``approve(spender, amount)`` tx dict targeting *token*."""
+    return {
+        "to": token,
+        "data": "0x" + ERC20.fns.approve(bytes(spender), amount).data.hex(),
+        "value": "0",
+        "gas": str(gas),
     }

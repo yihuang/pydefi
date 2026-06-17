@@ -14,9 +14,10 @@ from pathlib import Path
 from typing import Any
 
 from eth_abi import encode as abi_encode
+from hexbytes import HexBytes
 from web3 import AsyncWeb3
 
-from pydefi._utils import address_to_bytes32
+from pydefi._utils import address_to_bytes32, erc20_approve_tx
 from pydefi.abi.bridge import CCIP_ROUTER, CCIPEVM2AnyMessage, CCIPEVMTokenAmount
 from pydefi.exceptions import BridgeError
 from pydefi.types import ZERO_ADDRESS, Address, BridgeQuote, Token, TokenAmount
@@ -304,3 +305,39 @@ class CCIP:
             allow_out_of_order_execution=allow_out_of_order_execution,
         )
         return self._encode_send_tx(message, fee, gas_budget=_DEFAULT_COMPOSE_GAS)
+
+    async def build_compose_send(
+        self,
+        amount_in: TokenAmount,
+        composer: Address,
+        program: bytes,
+        *,
+        gas_limit: int = 800_000,
+        allow_out_of_order_execution: bool = False,
+        **_: Any,
+    ) -> list[dict[str, Any]]:
+        """``ComposeBridge`` legs: approve the bridged token (and the fee token if
+        ERC-20) to the Router, then ``ccipSend`` carrying *program* as ``data``."""
+        router = Address(HexBytes(self.router_address))
+        legs = [erc20_approve_tx(amount_in.token.address, router, amount_in.amount)]
+        if self.fee_token != ZERO_ADDRESS:
+            fee = await self.quote_fee(
+                amount_in.token,
+                amount_in,
+                composer,
+                data=program,
+                gas_limit=gas_limit,
+                allow_out_of_order_execution=allow_out_of_order_execution,
+            )
+            legs.append(erc20_approve_tx(self.fee_token, router, fee))
+        legs.append(
+            await self.build_bridge_compose_tx(
+                amount_in.token,
+                amount_in,
+                composer,
+                program,
+                gas_limit=gas_limit,
+                allow_out_of_order_execution=allow_out_of_order_execution,
+            )
+        )
+        return legs
