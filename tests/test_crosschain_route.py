@@ -11,11 +11,13 @@ from pydefi.crosschain.route import (
     build_deposit_route,
     estimate_cctp_delivered,
 )
+from pydefi.exceptions import BridgeError
 from pydefi.types import BridgeQuote, ChainId, TokenAmount
 from tests.crosschain_helpers import (
     BRIDGE,
     COMPOSER,
     LINK,
+    OFT_ETH,
     SENTINEL_TEMPLATE,
     SPENDER,
     USDC_BASE,
@@ -26,6 +28,7 @@ from tests.crosschain_helpers import (
     ccip,
     cctp,
     market,
+    oft,
     supply_template,
     swap_dag,
 )
@@ -162,6 +165,69 @@ async def test_ccip_deposit_route_compiles_program_and_embeds_supply():
     assert SENTINEL_TEMPLATE in route.dest_program
     assert route.dest_market is not None and route.dest_market.protocol == "aave_v3"
     assert [leg.kind for leg in route.steps] == ["approve", "bridge_compose"]
+
+
+# ---------------------------------------------------------------------------
+# LayerZero OFT routes (same generic builders over an OFT bridge)
+# ---------------------------------------------------------------------------
+
+_OFT_AMOUNT = TokenAmount(OFT_ETH, 1_000_000_000)
+
+
+def test_compose_options_encode_lzreceive_then_lzcompose():
+    from pydefi.bridge.layerzero_oft import _compose_options
+
+    opts = _compose_options(150_000, 800_000)
+    assert opts[:2] == b"\x00\x03"  # OptionsBuilder TYPE_3
+    # lzReceive: worker=1, size=uint16(16+1), type=1, gas(uint128)
+    assert opts[2] == 1 and int.from_bytes(opts[3:5], "big") == 17 and opts[5] == 1
+    assert int.from_bytes(opts[6:22], "big") == 150_000
+    # lzCompose: worker=1, size=uint16(18+1), type=3, index(uint16)+gas(uint128)
+    assert opts[22] == 1 and int.from_bytes(opts[23:25], "big") == 19 and opts[25] == 3
+    assert int.from_bytes(opts[25 + 1 : 25 + 3], "big") == 0  # compose index
+    assert int.from_bytes(opts[25 + 3 : 25 + 19], "big") == 800_000
+
+
+@pytest.mark.asyncio
+async def test_oft_compose_route_is_single_send_leg():
+    bridge = oft()
+    program = b"\xca\xfe\x01\x02"
+    with patch.object(bridge, "_quote_native_fee", new=AsyncMock(return_value=12_345)):
+        route = await build_compose_route(bridge=bridge, amount_in=_OFT_AMOUNT, composer=COMPOSER, dest_program=program)
+
+    assert route.strategy == "layerzerooft_compose"
+    # native OFT burns from the sender -> no approve leg, just the send
+    assert [leg.kind for leg in route.steps] == ["bridge_compose"]
+    send = route.steps[0]
+    assert send.tx["to"] == bridge.oft_address
+    assert send.tx["value"] == "12345"
+    data = send.tx["data"].lower()
+    assert program.hex() in data  # program rides as composeMsg
+    assert "0003" in data  # extraOptions carry the compose gas
+
+
+@pytest.mark.asyncio
+async def test_oft_compose_send_rejects_non_oft_token():
+    bridge = oft()
+    with pytest.raises(BridgeError, match="is not the OFT"):
+        await bridge.build_compose_send(_AMOUNT, COMPOSER, b"\x00\x01")  # _AMOUNT is USDC, not the OFT
+
+
+@pytest.mark.asyncio
+async def test_oft_deposit_route_compiles_program_and_embeds_supply():
+    bridge = oft()
+    with (
+        patch(_PATCH_SUPPLY, new=AsyncMock(return_value=supply_template())),
+        patch.object(bridge, "_quote_native_fee", new=AsyncMock(return_value=999)),
+    ):
+        route = await build_deposit_route(
+            bridge=bridge, w3_dst=MagicMock(), amount_in=_OFT_AMOUNT, composer=COMPOSER, user=USER, dest_market=market()
+        )
+
+    assert route.strategy == "layerzerooft_compose"
+    assert SENTINEL_TEMPLATE in route.dest_program
+    assert route.dest_program.hex() in route.steps[0].tx["data"].lower()
+    assert [leg.kind for leg in route.steps] == ["bridge_compose"]
 
 
 # ---------------------------------------------------------------------------

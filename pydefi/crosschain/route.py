@@ -2,7 +2,7 @@
 
 ``build_deposit_route`` compiles the destination ``swap → supply`` program and
 returns the source legs (approvals + bridge send) for any :class:`ComposeBridge`
-(CCTP or CCIP), committing "bridge → swap → deposit, crediting the user" in one
+(CCTP, CCIP, or LayerZero OFT), committing "bridge → swap → deposit, crediting the user" in one
 source transaction. The destination leg isn't a transaction here — it's the
 committed ``dest_program``, run when a relayer triggers the composer after the
 bridge settles.
@@ -32,7 +32,7 @@ LegKind = Literal["approve", "bridge_compose", "swap_bridge"]
 
 class ComposeBridge(Protocol):
     """A bridge whose ``build_compose_send`` returns the source legs (approvals +
-    send carrying a DeFiVM program). Implemented by CCTP and CCIP."""
+    send carrying a DeFiVM program). Implemented by CCTP, CCIP, and LayerZero OFT."""
 
     src_chain_id: int
     dst_chain_id: int

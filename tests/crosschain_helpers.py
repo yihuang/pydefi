@@ -13,6 +13,7 @@ from hexbytes import HexBytes
 
 from pydefi.bridge.ccip import CCIP
 from pydefi.bridge.cctp import CCTP
+from pydefi.bridge.layerzero_oft import LayerZeroOFT
 from pydefi.crosschain.compose import SupplyTemplate
 from pydefi.pathfinder.dag import RouteDAG
 from pydefi.pathfinder.graph import BasePool
@@ -31,6 +32,8 @@ LINK = Address("0x" + "1a" * 20)
 USDC_ETH = Token(chain_id=ChainId.ETHEREUM, address=Address("0x" + "22" * 20), symbol="USDC", decimals=6)
 USDC_BASE = Token(chain_id=ChainId.BASE, address=Address("0x" + "33" * 20), symbol="USDC", decimals=6)
 WETH_ETH = Token(chain_id=ChainId.ETHEREUM, address=Address("0x" + "55" * 20), symbol="WETH", decimals=18)
+#: A unified-address OFT token (same contract on every chain, e.g. USDT0).
+OFT_ETH = Token(chain_id=ChainId.ETHEREUM, address=Address("0x" + "77" * 20), symbol="USDT0", decimals=6)
 
 #: A supply-calldata template carrying the runtime-amount sentinel exactly once.
 SENTINEL_TEMPLATE = b"\xde\xad\xbe\xef" + b"\x00" * 32 + AMOUNT_SENTINEL.to_bytes(32, "big")
@@ -91,4 +94,14 @@ def ccip(fee_token: Address = ZERO_ADDRESS) -> CCIP:
         dst_chain_id=ChainId.BASE,
         router_address=BRIDGE.to_0x_hex(),
         fee_token=fee_token,
+    )
+
+
+def oft() -> LayerZeroOFT:
+    """LayerZero OFT lane Ethereum -> Base; the OFT token is :data:`OFT_ETH`."""
+    return LayerZeroOFT(
+        w3=MagicMock(),
+        src_chain_id=ChainId.ETHEREUM,
+        dst_chain_id=ChainId.BASE,
+        oft_address=OFT_ETH.address.to_0x_hex(),
     )
