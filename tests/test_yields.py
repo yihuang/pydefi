@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from web3 import AsyncWeb3, Web3
 
+from pydefi._utils import erc20_approve_tx
 from pydefi.deployments import get_token
 from pydefi.exceptions import BridgeError
 from pydefi.lending.aave_v3 import ReserveData
@@ -17,7 +18,6 @@ from pydefi.types import Address, ChainId, Token, TokenAmount
 from pydefi.yields import (
     Position,
     YieldMarket,
-    build_approve_tx,
     build_yield_route,
     expected_apy_gain,
     find_best_rebalance,
@@ -327,7 +327,7 @@ def test_yield_market_is_frozen_dataclass():
 
 
 # ---------------------------------------------------------------------------
-# build_approve_tx
+# erc20_approve_tx
 # ---------------------------------------------------------------------------
 
 
@@ -343,8 +343,8 @@ async def test_compound_unsupported_symbol_raises_value_error():
         await _supply_steps(bogus_market, _USER, cast(AsyncWeb3, object()), TokenAmount(weird, 1))
 
 
-def test_build_approve_tx_shape():
-    tx = build_approve_tx(USDC_BASE, Address("0x" + "BB" * 20), 10**12)
+def test_erc20_approve_tx_shape():
+    tx = erc20_approve_tx(USDC_BASE.address, Address("0x" + "BB" * 20), 10**12)
     assert tx["to"] == USDC_BASE.address
     selector = Web3.keccak(text="approve(address,uint256)")[:4].hex()
     assert tx["data"][:10] == "0x" + selector

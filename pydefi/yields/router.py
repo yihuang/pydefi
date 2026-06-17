@@ -16,7 +16,7 @@ import aiohttp
 from eth_contract.erc20 import ERC20
 from web3 import AsyncWeb3
 
-from pydefi._utils import decode_address
+from pydefi._utils import decode_address, erc20_approve_tx
 from pydefi.bridge.lucid import LucidBridge
 from pydefi.deployments import chains_for, comet_contract_for, get_token
 from pydefi.lending.aave_v3 import AaveV3
@@ -38,9 +38,6 @@ logger = logging.getLogger(__name__)
 Protocol = Literal["aave_v3", "compound_v3", "morpho", "aave_v4"]
 Strategy = Literal["withdraw_then_supply", "supply_then_bridge", "bridge_then_supply"]
 StepKind = Literal["approve", "supply", "supply_with_permit2", "supply_with_7702", "withdraw", "bridge"]
-
-# Generous; fits quirky tokens whose approve consumes more than the EIP-20 minimum.
-_APPROVE_GAS = 100_000
 
 # Gasless signature validity window, stamped at sign time (sign_route).
 _SIGN_TTL = 3600
@@ -154,15 +151,6 @@ def _require_token(token: Token, expected: Token, what: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def build_approve_tx(token: Token, spender: Address, amount: int, gas: int = _APPROVE_GAS) -> dict[str, Any]:
-    return {
-        "to": token.address,
-        "data": "0x" + ERC20.fns.approve(bytes(spender), amount).data.hex(),
-        "value": "0",
-        "gas": str(gas),
-    }
-
-
 def morpho_id(market: YieldMarket) -> bytes:
     """Extract the bytes32 Morpho market Id from a ``morpho:<chain>:0x..`` id."""
     parts = market.market_id.split(":")
@@ -265,7 +253,7 @@ async def _supply_steps(
     if delegate is not None:
         # 7702: the EOA is msg.sender, so the plain supply_tx credits the user —
         # no supplyTo / onBehalfOf indirection. Batch a fresh approve before it.
-        approve_tx = build_approve_tx(amount.token, spender, amount.amount)
+        approve_tx = erc20_approve_tx(amount.token.address, spender, amount.amount)
         nonce, needs_auth = await delegation_status(w3, user, delegate)
         sign_req = {
             "delegate": delegate,
@@ -303,7 +291,7 @@ async def _supply_steps(
         return [YieldStep("supply_with_permit2", market.chain_id, None, sign_request=sign_req)]
 
     return [
-        YieldStep("approve", market.chain_id, build_approve_tx(amount.token, spender, amount.amount)),
+        YieldStep("approve", market.chain_id, erc20_approve_tx(amount.token.address, spender, amount.amount)),
         YieldStep("supply", market.chain_id, supply_tx),
     ]
 
@@ -359,7 +347,9 @@ async def _bridge_steps(
     bridge_tx = await bridge.build_bridge_tx(amount.token, target_token, amount, user)
     return [
         YieldStep(
-            "approve", bridge.src_chain_id, build_approve_tx(amount.token, bridge.controller_address, amount.amount)
+            "approve",
+            bridge.src_chain_id,
+            erc20_approve_tx(amount.token.address, bridge.controller_address, amount.amount),
         ),
         YieldStep("bridge", bridge.src_chain_id, bridge_tx),
     ]

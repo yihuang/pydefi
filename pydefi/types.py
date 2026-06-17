@@ -43,6 +43,7 @@ class ChainId(IntEnum):
     OPTIMISM = 10
     BSC = 56
     POLYGON = 137
+    POLYGON_AMOY = 80002
     UNICHAIN = 130
     WORLDCHAIN = 480
     BASE = 8453
