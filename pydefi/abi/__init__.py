@@ -8,8 +8,10 @@ Import Contract objects and ABIStruct classes from the sub-modules::
 """
 
 from .amm import (
+    CURVE_METAREGISTRY,
     CURVE_POOL,
     CURVE_REGISTRY,
+    CURVE_V2_POOL,
     UNISWAP_V2_FACTORY,
     UNISWAP_V2_PAIR,
     UNISWAP_V2_ROUTER,
@@ -53,7 +55,9 @@ from .vm import DeFiVM
 __all__ = [
     # amm
     "CURVE_POOL",
+    "CURVE_METAREGISTRY",
     "CURVE_REGISTRY",
+    "CURVE_V2_POOL",
     "UNISWAP_V2_FACTORY",
     "UNISWAP_V2_PAIR",
     "UNISWAP_V2_ROUTER",

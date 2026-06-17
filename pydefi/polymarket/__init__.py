@@ -9,6 +9,11 @@ market platform — the world's largest decentralized prediction market.
 * Signing utilities in :mod:`~pydefi.polymarket.signing` — EIP-712 helpers
   for CLOB L1 authentication and order signing; HMAC-SHA256 for L2 auth.
 
+* On-chain CTF actions in :mod:`~pydefi.polymarket.ctf` —
+  :class:`~pydefi.polymarket.ctf.PolymarketCTF` builds ``build_*_tx`` calldata
+  for splitting, merging, redeeming and converting outcome tokens directly
+  against the Conditional Tokens contract (no order book, no API key).
+
 Quick-start — reading market data (no credentials needed)::
 
     from pydefi.polymarket import PolymarketClient
@@ -50,10 +55,31 @@ Full trading example::
     )
     print(resp["orderID"], resp["status"])
 
+On-chain CTF actions — mint / merge / redeem outcome tokens directly::
+
+    from pydefi.polymarket import PolymarketCTF
+    from pydefi.types import ChainId
+
+    ctf = PolymarketCTF.from_chain(w3, ChainId.POLYGON)
+
+    # Split 100 USDC into 100 Yes + 100 No tokens (two txs: approve, then split)
+    amount = 100_000_000  # 100 USDC, 6 decimals
+    approve = ctf.build_approve_tx(amount)
+    split = ctf.build_split_tx(condition_id="0x...", amount=amount)
+
+    # After resolution, redeem the winning side
+    if await ctf.is_resolved(condition_id):
+        redeem = ctf.build_redeem_tx(condition_id)
+
 Polymarket: https://docs.polymarket.com/
 """
 
 from pydefi.polymarket.client import PolymarketClient
+from pydefi.polymarket.ctf import (
+    BINARY_PARTITION,
+    PolymarketCTF,
+    compute_condition_id,
+)
 from pydefi.polymarket.signing import (
     BUY,
     CLOB_AUTH_TYPES,
@@ -77,6 +103,10 @@ from pydefi.polymarket.signing import (
 __all__ = [
     # Client
     "PolymarketClient",
+    # On-chain CTF actions
+    "PolymarketCTF",
+    "compute_condition_id",
+    "BINARY_PARTITION",
     # Signing helpers
     "sign_clob_auth",
     "sign_order",

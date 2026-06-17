@@ -34,6 +34,8 @@ from typing import Any
 from eth_account import Account
 from eth_account.messages import encode_typed_data
 
+from pydefi.types import ChainId
+
 # ---------------------------------------------------------------------------
 # Protocol constants
 # ---------------------------------------------------------------------------
@@ -51,9 +53,9 @@ CLOB_AUTH_DOMAIN_NAME: str = "ClobAuthDomain"
 CLOB_AUTH_VERSION: str = "1"
 
 #: Polygon mainnet chain ID.
-POLYGON_CHAIN_ID: int = 137
+POLYGON_CHAIN_ID: int = ChainId.POLYGON
 #: Polygon Amoy testnet chain ID.
-POLYGON_AMOY_CHAIN_ID: int = 80002
+POLYGON_AMOY_CHAIN_ID: int = ChainId.POLYGON_AMOY
 
 # ---------------------------------------------------------------------------
 # Exchange contract addresses  (source: py-clob-client config.py)
