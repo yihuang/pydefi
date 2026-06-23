@@ -28,7 +28,7 @@ from eth_contract.erc20 import ERC20
 from web3.exceptions import Web3Exception
 
 from pydefi.lending import AaveV3
-from pydefi.lending.aave_v3 import UINT256_MAX
+from pydefi.lending.utils import UINT256_MAX
 from pydefi.types import Address, ChainId, TokenAmount
 from tests.addrs import AAVE_ADDRESSES_PROVIDER, ETH_WHALE, USDC, USDC_WHALE, WETH
 from tests.live.anvil_helpers import (

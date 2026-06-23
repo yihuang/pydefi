@@ -23,7 +23,8 @@ from typing import Any
 from eth_contract.erc20 import ERC20
 from web3 import AsyncWeb3
 
-from pydefi._utils import UINT256_MAX, to_tx
+from pydefi._math import MAX_BPS
+from pydefi._utils import to_tx
 from pydefi.abi.lending import (
     AAVE_V4_HUB,
     AAVE_V4_SPOKE,
@@ -32,7 +33,7 @@ from pydefi.abi.lending import (
 )
 from pydefi.deployments import get_address
 from pydefi.lending.aave_v3 import RAY, ray_rate_to_apy
-from pydefi.lending.utils import WAD
+from pydefi.lending.utils import parse_health_factor
 from pydefi.types import Address, Token, TokenAmount
 
 
@@ -47,21 +48,8 @@ def _supply_apy(drawn_rate: int, asset: AaveV4Asset) -> Decimal:
     total = asset.liquidity + asset.swept + drawn
     if total == 0:
         return Decimal(0)
-    supply_rate = drawn_rate * drawn // total * (10_000 - asset.liquidityFee) // 10_000
+    supply_rate = drawn_rate * drawn // total * (MAX_BPS - asset.liquidityFee) // MAX_BPS
     return ray_rate_to_apy(supply_rate)
-
-
-def parse_health_factor(raw: int) -> Decimal:
-    """Convert Aave V4's WAD-scaled ``uint256`` health factor to a Decimal.
-
-    ``getUserAccountData`` returns ``healthFactor`` scaled by 1e18 (so 1e18
-    is a health factor of 1.00). A user with no debt has no meaningful
-    ratio; Aave returns ``type(uint256).max`` there, surfaced here as
-    ``Decimal("Infinity")``.
-    """
-    if raw == UINT256_MAX:
-        return Decimal("Infinity")
-    return Decimal(raw) / Decimal(WAD)
 
 
 # ---------------------------------------------------------------------------

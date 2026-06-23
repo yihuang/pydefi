@@ -22,7 +22,7 @@ from typing import Any, Literal
 from eth_contract.erc20 import ERC20
 from web3 import AsyncWeb3
 
-from pydefi._utils import UINT256_MAX, resolve_amount, to_tx
+from pydefi._utils import resolve_amount, to_tx
 from pydefi.abi.lending import (
     AAVE_V3_ADDRESSES_PROVIDER,
     AAVE_V3_DATA_PROVIDER,
@@ -31,7 +31,7 @@ from pydefi.abi.lending import (
 )
 from pydefi.deployments import get_address
 from pydefi.exceptions import PydefiError
-from pydefi.lending.utils import SECONDS_PER_YEAR
+from pydefi.lending.utils import SECONDS_PER_YEAR, parse_health_factor
 from pydefi.types import Address, Token, TokenAmount
 
 #: 10**27 — Aave's fixed-point scale for rates and indices.
@@ -207,17 +207,6 @@ class UserAccountData:
     current_liquidation_threshold: int
     ltv: int
     health_factor: Decimal
-
-
-def parse_health_factor(raw: int) -> Decimal:
-    """Convert the on-chain ``uint256`` health factor to a :class:`Decimal`.
-
-    The value is 1e18-scaled on Aave. When the user has no debt, Aave
-    returns ``type(uint256).max``; we surface that as ``Decimal("Infinity")``.
-    """
-    if raw == UINT256_MAX:
-        return Decimal("Infinity")
-    return Decimal(raw) / Decimal(10**18)
 
 
 # ---------------------------------------------------------------------------

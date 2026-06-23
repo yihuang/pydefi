@@ -16,6 +16,9 @@ from typing import Callable, ClassVar, Iterator
 
 from pydefi.types import ZERO_ADDRESS, Address, SwapProtocol, Token
 
+#: Uniswap V3 ``sqrtPriceX96`` fixed-point scale (``2**96``).
+Q96 = 2**96
+
 
 class BasePool:
     """Base class for pool descriptors used by RouteDAG actions.
@@ -281,7 +284,7 @@ class V3PoolEdge(PoolEdge):
     liquidity: int = 0
     is_token0_in: bool = True
 
-    _Q96: ClassVar[int] = 2**96
+    _Q96: ClassVar[int] = Q96
 
     def zero_for_one(self, token_out: Address) -> bool:
         """Return ``True`` if this edge sends token0 into the V3 pool.

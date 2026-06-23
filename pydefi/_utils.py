@@ -31,7 +31,8 @@ from pydefi.types import NATIVE_ADDRESSES, ZERO_HASH, Address, ChainId, Hash, To
 #: Generous default gas for ``approve`` — fits quirky tokens above the EIP-20 minimum.
 _APPROVE_GAS = 100_000
 
-#: ``type(uint256).max``
+#: ``type(uint256).max`` — the "full balance" sentinel for supply / withdraw /
+#: repay (and what Aave returns as the health factor of an undebted account).
 UINT256_MAX: int = (1 << 256) - 1
 
 

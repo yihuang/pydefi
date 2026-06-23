@@ -25,7 +25,7 @@ from typing import Literal
 import networkx as nx
 from networkx.algorithms.approximation import treewidth_min_fill_in
 
-from pydefi.pathfinder.graph import PoolEdge, PoolGraph
+from pydefi.pathfinder.graph import Q96, PoolEdge, PoolGraph
 
 V = Hashable
 WeightMode = Literal["spot", "amount_out"]
@@ -73,9 +73,6 @@ def from_pool_graph(
     return g
 
 
-_Q96 = 2**96
-
-
 def _edge_weight(edge: PoolEdge, mode: WeightMode, probe_amount: int) -> float:
     """Translate one :class:`PoolEdge` to its ``-log(rate)`` weight.
 
@@ -111,7 +108,7 @@ def _spot_weight(edge: PoolEdge) -> float:
     # V3-style edge: per-wei rate from sqrtPriceX96, normalised to per-token.
     sqrtP = getattr(edge, "sqrt_price_x96", 0) or 0
     if sqrtP > 0:
-        ratio = sqrtP / _Q96
+        ratio = sqrtP / Q96
         price_t1_per_t0 = ratio * ratio  # per-wei
         is_t0_in = bool(getattr(edge, "is_token0_in", True))
         per_wei_rate = price_t1_per_t0 if is_t0_in else (1.0 / price_t1_per_t0 if price_t1_per_t0 > 0 else 0.0)

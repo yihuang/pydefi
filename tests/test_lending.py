@@ -28,9 +28,6 @@ from pydefi.deployments import chains_for, comet_contract_names
 from pydefi.lending import AaveV3, UserAccountData, aave_v4
 from pydefi.lending.aave_v3 import (
     RAY,
-    SECONDS_PER_YEAR,
-    UINT256_MAX,
-    parse_health_factor,
     ray_rate_to_apy,
 )
 from pydefi.lending.compound_v3 import (
@@ -45,6 +42,11 @@ from pydefi.lending.morpho import (
     accrue_interest,
     compute_health_factor,
     supply_apy_from_borrow,
+)
+from pydefi.lending.utils import (
+    SECONDS_PER_YEAR,
+    UINT256_MAX,
+    parse_health_factor,
 )
 from pydefi.types import Address, ChainId, TokenAmount
 from tests.addrs import ETH_WHALE, USDC, WETH
