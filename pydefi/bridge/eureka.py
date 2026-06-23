@@ -11,7 +11,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from pydefi.abi.bridge import ICS20_DEFAULT_PORT, ICS20_TRANSFER
+from pydefi.abi.bridge import ICS20_DEFAULT_PORT, ICS20_TRANSFER, ICS20SendTransferMsg
 from pydefi.exceptions import BridgeError
 from pydefi.types import Address, BridgeQuote, Token, TokenAmount
 
@@ -32,7 +32,7 @@ def encode_send_transfer_calldata(
     if isinstance(denom, str):
         denom_bytes = bytes.fromhex(denom.removeprefix("0x"))
     else:
-        denom_bytes = bytes(denom)
+        denom_bytes = denom
     if len(denom_bytes) != 20:
         raise ValueError(f"denom must be a 20-byte EVM address, got {len(denom_bytes)} bytes")
     if amount < 0 or amount >> 256:
@@ -40,11 +40,17 @@ def encode_send_transfer_calldata(
     if timeout_timestamp < 0 or timeout_timestamp >> 64:
         raise ValueError(f"timeout_timestamp {timeout_timestamp} out of uint64 range")
 
-    return bytes(
-        ICS20_TRANSFER.fns.sendTransfer(
-            (denom_bytes, amount, receiver, source_client, dest_port, timeout_timestamp, memo)
-        ).data
-    )
+    return ICS20_TRANSFER.fns.sendTransfer(
+        ICS20SendTransferMsg(
+            denom=denom_bytes,
+            amount=amount,
+            receiver=receiver,
+            sourceClient=source_client,
+            destPort=dest_port,
+            timeoutTimestamp=timeout_timestamp,
+            memo=memo,
+        )
+    ).data
 
 
 class Eureka:

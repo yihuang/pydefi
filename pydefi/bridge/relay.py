@@ -15,13 +15,13 @@ import aiohttp
 
 from pydefi._utils import encode_address
 from pydefi.exceptions import BridgeError
-from pydefi.types import NATIVE_SENTINEL, Address, BridgeQuote, Token, TokenAmount
+from pydefi.types import NATIVE_ADDRESSES, ZERO_ADDRESS, Address, BridgeQuote, Token, TokenAmount
 
 _RELAY_API_BASE = "https://api.relay.link"
 
 # Relay uses the zero address for native ETH; the common EeeE... sentinel
 # must be normalized before being sent to the API.
-_RELAY_NATIVE = "0x0000000000000000000000000000000000000000"
+_RELAY_NATIVE = ZERO_ADDRESS.to_0x_hex()
 
 
 def _relay_currency(token: Token) -> str:
@@ -31,7 +31,7 @@ def _relay_currency(token: Token) -> str:
     common ``0xEeEe...`` sentinel to the zero address so the API
     does not reject it with ``INVALID_INPUT_CURRENCY``.
     """
-    if token.address == NATIVE_SENTINEL:
+    if token.address in NATIVE_ADDRESSES:
         return _RELAY_NATIVE
     return token.encoded_address
 
@@ -123,7 +123,7 @@ class Relay:
         Raises:
             :class:`~pydefi.exceptions.BridgeError`: On API error.
         """
-        _recipient: Address = recipient or Address(b"\x00" * 20)
+        _recipient: Address = recipient or ZERO_ADDRESS
         data = await self._request_quote(token_in, token_out, amount_in, _recipient, **kwargs)
 
         details = data.get("details", {})

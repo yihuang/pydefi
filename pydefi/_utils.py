@@ -144,7 +144,7 @@ def erc20_approve_tx(token: Address, spender: Address, amount: int, gas: int = _
     """A standard ERC-20 ``approve(spender, amount)`` tx dict targeting *token*."""
     return {
         "to": token,
-        "data": "0x" + ERC20.fns.approve(bytes(spender), amount).data.hex(),
+        "data": "0x" + ERC20.fns.approve(spender, amount).data.hex(),
         "value": "0",
         "gas": str(gas),
     }

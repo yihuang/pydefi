@@ -9,6 +9,14 @@ DeFiVM = Contract.from_abi(
     ]
 )
 
+# Permit2 (https://github.com/Uniswap/permit2) — unordered-nonce bitmap reader,
+# used to pick a warm nonce word for a cheaper SSTORE on repeat deposits.
+PERMIT2 = Contract.from_abi(
+    [
+        "function nonceBitmap(address owner, uint256 wordPos) view returns (uint256)",
+    ]
+)
+
 # Uniswap Calibur (https://github.com/Uniswap/calibur) — audited EIP-7702
 # delegate singleton: the owner signs an EIP-712 ``SignedBatchedCall`` and a
 # sponsor submits ``execute`` as a plain tx targeting the EOA.

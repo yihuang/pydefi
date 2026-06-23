@@ -171,7 +171,7 @@ def encode_edge_raw_data(
     if len(pool_address) != 20:
         raise ValueError(f"pool_address must be 20 bytes, got {len(pool_address)}")
 
-    addr_int = int.from_bytes(bytes(pool_address), "big")
+    addr_int = int.from_bytes(pool_address, "big")
 
     raw = addr_int & _ADDRESS_MASK
     raw |= (weight_bps & 0xFFFF) << _WEIGHT_OFFSET
@@ -199,7 +199,7 @@ def _pack_from_token(address: Address, mode: int = _MODE_LEGACY) -> int:
     Returns:
         Packed uint256 (low 160 bits = address, high bits = mode).
     """
-    addr_int = int.from_bytes(bytes(address), "big")
+    addr_int = int.from_bytes(address, "big")
     return addr_int | mode
 
 

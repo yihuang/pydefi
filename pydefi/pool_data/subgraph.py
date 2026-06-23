@@ -238,7 +238,7 @@ class UniswapV2Subgraph(Subgraph):
         Returns:
             A list of :class:`PoolData` objects.
         """
-        addr_str = "0x" + token_address.hex()
+        addr_str = token_address.to_0x_hex()
         query = """
         query PairsForToken($token: String!, $limit: Int!) {
             pairs(
@@ -411,7 +411,7 @@ class UniswapV3Subgraph(Subgraph):
         Returns:
             A list of :class:`PoolData` objects.
         """
-        addr_str = "0x" + token_address.hex()
+        addr_str = token_address.to_0x_hex()
         query = """
         query PoolsForToken($token: String!, $limit: Int!) {
             pools(
