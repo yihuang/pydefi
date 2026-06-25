@@ -50,6 +50,7 @@ from tests.live.sol_utils import compile_interpreter_sync
 # ---------------------------------------------------------------------------
 
 ETH_RPC_URL = os.environ.get("ETH_RPC_URL") or "https://eth.drpc.org"
+SEPOLIA_RPC_URL = os.environ.get("SEPOLIA_RPC_URL") or "https://sepolia.drpc.org"
 
 # Polymarket's Conditional Tokens live on Polygon, so its fork tests fork
 # Polygon mainnet rather than Ethereum.  Override with ``POLYGON_RPC_URL``.

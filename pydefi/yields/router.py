@@ -462,7 +462,8 @@ async def _aave_market(w3: AsyncWeb3, chain_id: int, token: Token, token_symbol:
     return YieldMarket(
         protocol="aave_v3",
         chain_id=chain_id,
-        token=token,
+        # reserve.token is Aave's actual reserve asset (differs from registry on testnets).
+        token=reserve.token,
         supply_apy=reserve.supply_apy,
         utilization=reserve.utilization,
         available_liquidity=reserve.available_liquidity,
