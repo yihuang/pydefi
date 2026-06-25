@@ -257,6 +257,8 @@ class AaveV3:
         self.data_provider_address = data_provider_address
         self.oracle_address = oracle_address
         self.protocol_name = protocol_name
+        # Lazily-populated {symbol: reserve address} cache — see _resolve_reserve.
+        self._reserves: dict[str, Address] | None = None
 
     @classmethod
     async def from_chain(cls, w3: AsyncWeb3, chain_id: int, protocol_name: str = "AaveV3") -> AaveV3:
@@ -298,6 +300,25 @@ class AaveV3:
     # Reads
     # ------------------------------------------------------------------
 
+    async def _resolve_reserve(self, token: Token) -> Address:
+        """Map *token*'s symbol to Aave's listed reserve address.
+
+        Testnet markets list faucet tokens that differ from the registry
+        address (``getReserveData`` reverts on a non-reserve). The
+        ``getAllReservesTokens()`` map is cached; on mainnet this resolves to
+        ``token.address`` unchanged.
+        """
+        if self._reserves is None:
+            listed = await AAVE_V3_DATA_PROVIDER.fns.getAllReservesTokens().call(self.w3, to=self.data_provider_address)
+            self._reserves = {symbol: Address(addr) for symbol, addr in listed}
+        resolved = self._reserves.get(token.symbol)
+        if resolved is None:
+            raise PydefiError(
+                f"AaveV3: no reserve for {token.symbol!r} on chain {self.chain_id} "
+                f"(listed reserves: {sorted(self._reserves)})"
+            )
+        return resolved
+
     async def get_reserve_data(self, token: Token) -> ReserveData:
         """Return the current state of one reserve.
 
@@ -315,21 +336,20 @@ class AaveV3:
           would drift.
         * ``DataProvider.getTotalDebt`` — stable + variable debt sum.
         """
+        asset = await self._resolve_reserve(token)
         reserve, config, is_paused, total_debt = await asyncio.gather(
-            AAVE_V3_POOL.fns.getReserveData(token.address).call(self.w3, to=self.pool_address),
-            AAVE_V3_DATA_PROVIDER.fns.getReserveConfigurationData(token.address).call(
-                self.w3, to=self.data_provider_address
-            ),
-            AAVE_V3_DATA_PROVIDER.fns.getPaused(token.address).call(self.w3, to=self.data_provider_address),
-            AAVE_V3_DATA_PROVIDER.fns.getTotalDebt(token.address).call(self.w3, to=self.data_provider_address),
+            AAVE_V3_POOL.fns.getReserveData(asset).call(self.w3, to=self.pool_address),
+            AAVE_V3_DATA_PROVIDER.fns.getReserveConfigurationData(asset).call(self.w3, to=self.data_provider_address),
+            AAVE_V3_DATA_PROVIDER.fns.getPaused(asset).call(self.w3, to=self.data_provider_address),
+            AAVE_V3_DATA_PROVIDER.fns.getTotalDebt(asset).call(self.w3, to=self.data_provider_address),
         )
 
         # balanceOf needs the aToken address out of getReserveData, so it runs second.
         a_token_address = Address(reserve.aTokenAddress)
-        available_liquidity = await ERC20.fns.balanceOf(a_token_address).call(self.w3, to=token.address)
+        available_liquidity = await ERC20.fns.balanceOf(a_token_address).call(self.w3, to=asset)
 
         (
-            _decimals,
+            decimals,
             ltv,
             liquidation_threshold,
             liquidation_bonus,
@@ -341,17 +361,20 @@ class AaveV3:
             is_frozen,
         ) = config
 
+        # Aave's actual reserve asset (differs from the registry token on testnets).
+        asset_token = Token(chain_id=token.chain_id, address=asset, symbol=token.symbol, decimals=decimals)
+
         # Aave's canonical utilization: debt / (debt + liquidity in the aToken).
         denominator = total_debt + available_liquidity
         utilization = Decimal(total_debt) / Decimal(denominator) if denominator > 0 else Decimal(0)
 
         return ReserveData(
-            token=token,
+            token=asset_token,
             supply_apy=ray_rate_to_apy(reserve.currentLiquidityRate),
             variable_borrow_apy=ray_rate_to_apy(reserve.currentVariableBorrowRate),
             utilization=utilization,
-            available_liquidity=TokenAmount(token=token, amount=available_liquidity),
-            total_debt=TokenAmount(token=token, amount=total_debt),
+            available_liquidity=TokenAmount(token=asset_token, amount=available_liquidity),
+            total_debt=TokenAmount(token=asset_token, amount=total_debt),
             liquidity_index=reserve.liquidityIndex,
             variable_borrow_index=reserve.variableBorrowIndex,
             a_token_address=a_token_address,
@@ -391,8 +414,10 @@ class AaveV3:
         """Return a user's position in one reserve.
 
         Pulls balances and the collateral flag from
-        ``DataProvider.getUserReserveData``.
+        ``DataProvider.getUserReserveData``. *token* is resolved by symbol via
+        :meth:`_resolve_reserve` (a no-op on mainnet).
         """
+        asset = await self._resolve_reserve(token)
         (
             current_a_token_balance,
             current_stable_debt,
@@ -403,9 +428,7 @@ class AaveV3:
             _liquidity_rate,
             _stable_rate_last_updated,
             usage_as_collateral_enabled,
-        ) = await AAVE_V3_DATA_PROVIDER.fns.getUserReserveData(token.address, user).call(
-            self.w3, to=self.data_provider_address
-        )
+        ) = await AAVE_V3_DATA_PROVIDER.fns.getUserReserveData(asset, user).call(self.w3, to=self.data_provider_address)
 
         return UserReserveData(
             token=token,

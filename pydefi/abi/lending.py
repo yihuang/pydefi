@@ -97,6 +97,7 @@ AAVE_V3_DATA_PROVIDER = Contract.from_abi(
         "function getReserveCaps(address asset) external view returns (uint256 borrowCap, uint256 supplyCap)",
         "function getPaused(address asset) external view returns (bool isPaused)",
         "function getReserveTokensAddresses(address asset) external view returns (address aTokenAddress, address stableDebtTokenAddress, address variableDebtTokenAddress)",
+        "function getAllReservesTokens() external view returns ((string symbol, address tokenAddress)[])",
         "function getATokenTotalSupply(address asset) external view returns (uint256)",
         "function getTotalDebt(address asset) external view returns (uint256)",
     ]
