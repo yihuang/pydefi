@@ -25,8 +25,10 @@ from decimal import Decimal
 
 import pytest
 from eth_contract.erc20 import ERC20
+from web3 import AsyncWeb3
 from web3.exceptions import Web3Exception
 
+from pydefi.deployments import get_token
 from pydefi.lending import AaveV3
 from pydefi.lending.aave_v3 import UINT256_MAX
 from pydefi.types import Address, ChainId, TokenAmount
@@ -38,6 +40,7 @@ from tests.live.anvil_helpers import (
     set_balance,
     wrap_eth,
 )
+from tests.live.conftest import ETH_RPC_URL, SEPOLIA_RPC_URL
 from tests.live.sol_utils import compile_sol_source, deploy
 
 # Test parameters — small enough to keep blocks fast and price-impact negligible.
@@ -339,3 +342,35 @@ class TestAaveV3Fork:
         receipt = await send_tx(fork_w3, ETH_WHALE, aave.build_set_collateral_tx(WETH, True))
         assert receipt["status"] == 1
         assert (await aave.get_user_reserve_data(ETH_WHALE, WETH)).usage_as_collateral_enabled is True
+
+
+# ---------------------------------------------------------------------------
+# Live read tests — reserve resolution by symbol (commit a8185863)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.live
+@pytest.mark.parametrize(
+    "chain_id, rpc_url, faucet",
+    [
+        pytest.param(ChainId.ETHEREUM, ETH_RPC_URL, False, id="mainnet-noop"),
+        pytest.param(ChainId.SEPOLIA, SEPOLIA_RPC_URL, True, id="sepolia-faucet"),
+    ],
+)
+async def test_get_reserve_data_resolves_by_symbol(chain_id, rpc_url, faucet):
+    """get_reserve_data resolves the reserve by symbol, not the registry address.
+
+    Sepolia's registry USDC differs from Aave's faucet reserve (pre-fix code
+    reverted on it); mainnet's USDC is the reserve, so resolution is a no-op.
+    """
+    w3 = AsyncWeb3(AsyncWeb3.AsyncHTTPProvider(rpc_url.strip()))
+    registry_usdc = get_token("USDC", chain_id)
+    aave = await AaveV3.from_chain(w3, chain_id)
+    data = await aave.get_reserve_data(registry_usdc)
+
+    assert data.token.symbol == "USDC"
+    assert (data.token.address != registry_usdc.address) is faucet  # Sepolia differs; mainnet no-op
+    assert data.is_active is True
+    assert data.ltv > 0
+    assert len(data.a_token_address) == 20
+    assert int.from_bytes(bytes(data.a_token_address), "big") != 0
