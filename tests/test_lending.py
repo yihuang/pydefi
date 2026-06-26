@@ -11,8 +11,10 @@ Covers every protocol under the lending umbrella:
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from hexbytes import HexBytes
@@ -24,7 +26,8 @@ from pydefi.abi.lending import (
     COMPOUND_V3_COMET,
     MORPHO_BLUE,
 )
-from pydefi.deployments import chains_for, comet_contract_names
+from pydefi.deployments import chains_for, comet_contract_names, get_token
+from pydefi.exceptions import PydefiError
 from pydefi.lending import AaveV3, UserAccountData, aave_v4
 from pydefi.lending.aave_v3 import (
     RAY,
@@ -262,6 +265,65 @@ def test_aave_v3_deployment_pinned(chain: int):
 
     addr = get_address("AAVE_V3_ADDRESSES_PROVIDER", chain)
     assert len(addr) == 20, f"AAVE_V3_ADDRESSES_PROVIDER on {chain}: {addr.hex()!r}"
+
+
+# ---------------------------------------------------------------------------
+# Reserve resolution by symbol (commit a8185863)
+# ---------------------------------------------------------------------------
+
+#: Sepolia faucet-token mismatch: the registry USDC (from get_token) is NOT
+#: Aave's listed reserve — a faucet token at AAVE_USDC_RESERVE_SEPOLIA — so the
+#: lookup must resolve by symbol, not token.address.
+SEPOLIA_USDC = get_token("USDC", ChainId.SEPOLIA)
+AAVE_USDC_RESERVE_SEPOLIA = Address("0x94a9D9AC8a22534E3FaCa9F4e7F2E2cf85d5E4C8")
+
+
+@contextmanager
+def _patch_listed_reserves(listed: list[tuple[str, Address]]):
+    """Patch ``getAllReservesTokens()`` to return *listed*; yield the ``.call``
+    mock so a test can assert the map is fetched once (cached)."""
+    call_mock = AsyncMock(return_value=listed)
+    fn = MagicMock()
+    fn.call = call_mock
+    provider = MagicMock()
+    provider.fns.getAllReservesTokens.return_value = fn
+    with patch("pydefi.lending.aave_v3.AAVE_V3_DATA_PROVIDER", provider):
+        yield call_mock
+
+
+class TestAaveResolveReserve:
+    """``_resolve_reserve`` maps a token's symbol to Aave's listed reserve.
+
+    Regression for commit a8185863: testnet faucet tokens differ from the
+    registry address, and ``getReserveData`` reverts on a non-reserve.
+    """
+
+    async def test_maps_symbol_to_aave_reserve(self, aave: AaveV3):
+        """The fix resolves the symbol to Aave's faucet reserve, not token.address."""
+        listed = [("USDC", AAVE_USDC_RESERVE_SEPOLIA), ("WETH", Address("0x" + "ab" * 20))]
+        with _patch_listed_reserves(listed):
+            resolved = await aave._resolve_reserve(SEPOLIA_USDC)
+        assert resolved == AAVE_USDC_RESERVE_SEPOLIA
+        assert resolved != SEPOLIA_USDC.address  # would have been the unresolved bug value
+
+    async def test_mainnet_resolution_is_a_no_op(self, aave: AaveV3):
+        """On mainnet the registry address IS the reserve — resolution is a no-op."""
+        with _patch_listed_reserves([("USDC", USDC.address)]):
+            assert await aave._resolve_reserve(USDC) == USDC.address
+
+    async def test_unlisted_symbol_raises(self, aave: AaveV3):
+        """An unlisted symbol raises PydefiError, not a downstream revert."""
+        with _patch_listed_reserves([("USDC", AAVE_USDC_RESERVE_SEPOLIA)]):
+            with pytest.raises(PydefiError, match="no reserve for 'WETH'"):
+                await aave._resolve_reserve(WETH)
+
+    async def test_reserve_map_is_cached(self, aave: AaveV3):
+        """The ``{symbol: address}`` map is read once and reused across calls."""
+        listed = [("USDC", AAVE_USDC_RESERVE_SEPOLIA), ("WETH", WETH.address)]
+        with _patch_listed_reserves(listed) as call_mock:
+            await aave._resolve_reserve(SEPOLIA_USDC)
+            await aave._resolve_reserve(WETH)
+            assert call_mock.await_count == 1
 
 
 # ===========================================================================
