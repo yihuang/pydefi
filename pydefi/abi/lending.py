@@ -158,8 +158,7 @@ class CometAssetInfo(ABIStruct):
 # ---------------------------------------------------------------------------
 
 COMPOUND_V3_COMET = Contract.from_abi(
-    CometAssetInfo.human_readable_abi()
-    + [
+    [
         # Market metadata.
         "function baseToken() external view returns (address)",
         "function baseScale() external view returns (uint256)",
@@ -187,7 +186,8 @@ COMPOUND_V3_COMET = Contract.from_abi(
         "function transferAsset(address dst, address asset, uint256 amount) external",
         "function transfer(address dst, uint256 amount) external returns (bool)",
         "function allow(address manager, bool isAllowed) external",
-    ]
+    ],
+    structs=[CometAssetInfo],
 )
 
 

@@ -11,7 +11,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from pydefi.abi.bridge import ICS20_DEFAULT_PORT, ICS20_TRANSFER
+from pydefi.abi.bridge import ICS20_DEFAULT_PORT, ICS20_TRANSFER, ICS20SendTransferMsg
 from pydefi.exceptions import BridgeError
 from pydefi.types import Address, BridgeQuote, Token, TokenAmount
 
@@ -43,11 +43,17 @@ def encode_send_transfer_calldata(
     ``receiver`` is opaque to the EVM-side router (bech32 for Cosmos, hex for
     EVM destinations); ``memo`` carries PFM hops and middleware hooks."""
     denom_bytes = validate_send_transfer_fields(denom, amount, timeout_timestamp)
-    return bytes(
-        ICS20_TRANSFER.fns.sendTransfer(
-            (denom_bytes, amount, receiver, source_client, dest_port, timeout_timestamp, memo)
-        ).data
-    )
+    return ICS20_TRANSFER.fns.sendTransfer(
+        ICS20SendTransferMsg(
+            denom=denom_bytes,
+            amount=amount,
+            receiver=receiver,
+            sourceClient=source_client,
+            destPort=dest_port,
+            timeoutTimestamp=timeout_timestamp,
+            memo=memo,
+        )
+    ).data
 
 
 class Eureka:

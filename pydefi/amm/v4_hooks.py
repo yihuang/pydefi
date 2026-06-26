@@ -40,7 +40,7 @@ SWAP_DELTA_FLAGS = HookFlag.BEFORE_SWAP_RETURNS_DELTA | HookFlag.AFTER_SWAP_RETU
 
 def hook_flags(hooks: Address) -> HookFlag:
     """Return the permission bits encoded in *hooks*' low 14 address bits."""
-    return HookFlag(int.from_bytes(bytes(hooks), "big") & ((1 << 14) - 1))
+    return HookFlag(int.from_bytes(hooks, "big") & ((1 << 14) - 1))
 
 
 def has_swap_hook(hooks: Address) -> bool:

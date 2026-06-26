@@ -68,15 +68,15 @@ def build_deposit_program(
     ``approve_reset`` prepends a USDT-style ``approve(0)``."""
     amount_offset = find_amount_offset(supply_template)
     prog = Program()
-    prog.assert_(prog.call_contract(bytes(token), ERC20.fns.balanceOf, prog.builder.address()), "balance read failed")
+    prog.assert_(prog.call_contract(token, ERC20.fns.balanceOf, prog.builder.address()), "balance read failed")
     balance = prog.returndata_word(0)
     prog.assert_ge(balance, execution_fee + 1, "balance below fee")
     amount = prog.builder.sub(balance, execution_fee)
     if execution_fee:
         origin = prog.builder.origin()
-        prog.assert_(prog.call_contract(bytes(token), ERC20.fns.transfer, origin, execution_fee), "fee failed")
+        prog.assert_(prog.call_contract(token, ERC20.fns.transfer, origin, execution_fee), "fee failed")
     emit_approve(prog, token, protocol, amount, reset=approve_reset)
-    prog.assert_(prog.call_raw(bytes(protocol), supply_template, patches={amount_offset: amount}), "supply failed")
+    prog.assert_(prog.call_raw(protocol, supply_template, patches={amount_offset: amount}), "supply failed")
     prog.builder.stop()
     return prog.build()
 
@@ -94,11 +94,11 @@ async def deposit_address(w3, owner: Address, defivm: Address, program: bytes, s
     initializer, exactly as ``SafeProxyFactory.createProxyWithNonce`` derives it."""
     global _proxy_creation_code
     if _proxy_creation_code is None:
-        factory = to_checksum_address(bytes(SAFE_PROXY_FACTORY))
+        factory = to_checksum_address(SAFE_PROXY_FACTORY)
         _proxy_creation_code = bytes(await _FACTORY_ABI.fns.proxyCreationCode().call(w3, to=factory))
     salt = keccak(keccak(build_initializer(owner, defivm, program)) + salt_nonce.to_bytes(32, "big"))
-    init_hash = keccak(_proxy_creation_code + b"\x00" * 12 + bytes(SAFE_SINGLETON))
-    return Address(keccak(b"\xff" + bytes(SAFE_PROXY_FACTORY) + salt + init_hash)[12:])
+    init_hash = keccak(_proxy_creation_code + b"\x00" * 12 + SAFE_SINGLETON)
+    return Address(keccak(b"\xff" + SAFE_PROXY_FACTORY + salt + init_hash)[12:])
 
 
 def build_sweep_tx(

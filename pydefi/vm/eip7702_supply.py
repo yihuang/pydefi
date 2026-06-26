@@ -43,7 +43,7 @@ _REVOKE_GAS = 60_000
 
 
 def _data_bytes(call: dict[str, Any]) -> bytes:
-    return bytes(HexBytes(call["data"]))
+    return HexBytes(call["data"])
 
 
 def _to_hex(call: dict[str, Any]) -> str:

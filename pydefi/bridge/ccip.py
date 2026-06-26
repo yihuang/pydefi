@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import Any
 
 from eth_abi import encode as abi_encode
-from hexbytes import HexBytes
 from web3 import AsyncWeb3
 
 from pydefi._utils import address_to_bytes32, erc20_approve_tx
@@ -129,7 +128,7 @@ class CCIP:
             ["uint256", "bool"], [gas_limit, bool(allow_out_of_order_execution)]
         )
         return CCIPEVM2AnyMessage(
-            receiver=bytes(address_to_bytes32(recipient)),
+            receiver=address_to_bytes32(recipient),
             data=data,
             tokenAmounts=[
                 CCIPEVMTokenAmount(
@@ -318,7 +317,7 @@ class CCIP:
     ) -> list[dict[str, Any]]:
         """``ComposeBridge`` legs: approve the bridged token (and the fee token if
         ERC-20) to the Router, then ``ccipSend`` carrying *program* as ``data``."""
-        router = Address(HexBytes(self.router_address))
+        router = self.router_address
         legs = [erc20_approve_tx(amount_in.token.address, router, amount_in.amount)]
         if self.fee_token != ZERO_ADDRESS:
             fee = await self.quote_fee(
@@ -332,7 +331,6 @@ class CCIP:
             legs.append(erc20_approve_tx(self.fee_token, router, fee))
         legs.append(
             await self.build_bridge_compose_tx(
-                amount_in.token,
                 amount_in,
                 composer,
                 program,

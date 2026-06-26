@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from decimal import Decimal, getcontext
 
-#: ``type(uint256).max`` — the "full balance" sentinel for supply / withdraw /
-#: repay, and what Aave returns as the health factor of an undebted account.
-UINT256_MAX: int = (1 << 256) - 1
+# Re-exported as part of this module's documented API (lending.utils): the
+# "full balance" sentinel for supply / withdraw / repay, and what Aave returns
+# as the health factor of an undebted account. Single definition in _utils.
+from pydefi._utils import UINT256_MAX
 
 #: Seconds in a calendar year (365 days) — the constant Aave and Compound
 #: both use to annualise on-chain interest rates.
@@ -13,6 +14,18 @@ SECONDS_PER_YEAR: int = 31_536_000
 #: ``1e18`` — the WAD fixed-point scale shared by Compound III and Morpho for
 #: per-second rates and most ratios.
 WAD: int = 10**18
+
+
+def parse_health_factor(raw: int) -> Decimal:
+    """Convert an on-chain WAD-scaled ``uint256`` health factor to a Decimal.
+
+    Aave reports the health factor scaled by 1e18 (so 1e18 is exactly 1.00).
+    A user with no debt has no meaningful ratio; Aave returns
+    ``type(uint256).max`` there, surfaced here as ``Decimal("Infinity")``.
+    """
+    if raw == UINT256_MAX:
+        return Decimal("Infinity")
+    return Decimal(raw) / Decimal(WAD)
 
 
 def per_second_rate_to_apy(rate_per_second_wad: int) -> Decimal:

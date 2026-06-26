@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import os
 from decimal import Decimal
-from typing import Any, Optional
+from typing import Any
 
 import aiohttp
 from hexbytes import HexBytes
@@ -21,7 +21,7 @@ from hexbytes import HexBytes
 from pydefi._utils import address_to_bytes32, encode_address, token_to_bytes32
 from pydefi.abi.bridge import MAYAN_FORWARDER, MAYAN_SWIFT_V2, MayanSwiftOrderParams
 from pydefi.exceptions import BridgeError
-from pydefi.types import NATIVE_SENTINEL, Address, BridgeQuote, Token, TokenAmount
+from pydefi.types import NATIVE_ADDRESSES, ZERO_ADDRESS, Address, BridgeQuote, Token, TokenAmount
 
 _MAYAN_API_BASE = "https://price-api.mayan.finance/v3"
 
@@ -79,8 +79,6 @@ _CHAIN_WETH: dict[int, Address] = {
     59144: HexBytes("0xe5D7C2a44FfDDf6b295A15c148167daaAf5Cf34f"),  # Linea
 }
 
-_ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
-
 
 def _mayan_token_address(address: Address, chain_id: int) -> str:
     """Normalize a token address for the Mayan Price API.
@@ -89,8 +87,8 @@ def _mayan_token_address(address: Address, chain_id: int) -> str:
     (ETH, BNB, etc.).  Any ``EeeE...`` sentinel is canonicalized here so
     that API requests always use the representation the server expects.
     """
-    if address == NATIVE_SENTINEL:
-        return _ZERO_ADDRESS
+    if address in NATIVE_ADDRESSES:
+        return ZERO_ADDRESS.to_0x_hex()
     return encode_address(address, chain_id)
 
 
@@ -224,7 +222,7 @@ class Mayan:
         amount_in: TokenAmount,
         recipient: Address,
         slippage_bps: int = 50,
-        referrer: Optional[Address] = None,
+        referrer: Address | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
         """Build a Mayan SWIFT bridge transaction via the Mayan Forwarder contract.

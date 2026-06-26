@@ -20,6 +20,7 @@ from eth_abi import encode as abi_encode
 from web3 import AsyncWeb3, Web3
 from web3.types import FilterParams
 
+from pydefi._math import MAX_BPS
 from pydefi._utils import decode_address, encode_address
 from pydefi.abi.bridge import (
     LUCID_ASSET_CONTROLLER,
@@ -172,7 +173,7 @@ class LucidBridge:
             except Exception as exc:
                 raise BridgeError(f"Lucid: controller.token() read failed: {exc}") from exc
             self._cached_source_token = decode_address(token_str, self.src_chain_id)
-        if bytes(token_in.address) != bytes(self._cached_source_token):
+        if token_in.address != self._cached_source_token:
             raise BridgeError(
                 f"Lucid: token_in {encode_address(token_in.address, self.src_chain_id)} "
                 f"does not match controller token "
@@ -274,7 +275,7 @@ class LucidBridge:
 
         fee = await self.quote_native_fee(amount_in.amount, recipient, unwrap)
         if fee_buffer_bps:
-            fee = fee * (10_000 + fee_buffer_bps) // 10_000
+            fee = fee * (MAX_BPS + fee_buffer_bps) // MAX_BPS
 
         bridge_options = self._encode_bridge_options(_refund, self.dest_gas_limit)
         call_data = LUCID_ASSET_CONTROLLER.fns.transferTo(

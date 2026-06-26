@@ -10,14 +10,9 @@ Python instead of via an implicit EVM stack contract.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
 
-from eth_abi import encode
+from eth_abi import decode, encode
 from eth_contract.erc20 import ERC20
-from eth_utils import keccak
-
-if TYPE_CHECKING:
-    from web3 import AsyncWeb3
 
 from pydefi.abi.amm import (
     UNISWAP_V2_PAIR,
@@ -28,8 +23,9 @@ from pydefi.abi.amm import (
     V4_UNLOCK_AMOUNT_SPEC_OFFSET,
     V4UnlockData,
 )
+from pydefi.abi.vm import DeFiVM
 from pydefi.pathfinder.dag import RouteDAG, RouteSwap
-from pydefi.types import ZERO_ADDRESS, Address, SwapProtocol, SwapRoute, TokenAmount
+from pydefi.types import ZERO_ADDRESS, Address, SwapProtocol, SwapRoute
 from pydefi.vm.context import Operand, Program
 
 
@@ -293,7 +289,7 @@ def _build_v4_swap(prog: Program, amount_in: Operand, hop: SwapHop) -> Operand:
         tokenIn=hop.token_in,
         recipient=hop.recipient,
     ).encode()
-    calldata = bytes(_V4_PM_UNLOCK_FN(data_bytes).data)
+    calldata = _V4_PM_UNLOCK_FN(data_bytes).data
 
     # Patch amountSpecified with -amount_in (two's-complement negation: NOT(x) + 1).
     negated_amount = prog.add(prog.bit_not(amount_in), 1)
@@ -359,8 +355,6 @@ def _build_route_swap(prog: Program, amount_in: Operand, action: RouteSwap, reci
 # High-level transaction builder
 # ---------------------------------------------------------------------------
 
-_EXECUTE_SELECTOR: bytes = keccak(text="execute(bytes)")[:4]
-
 
 def build_swap_transaction(
     dag: RouteDAG,
@@ -388,7 +382,7 @@ def build_swap_transaction(
         recipient=recipient,
         min_final_out=min_final_out,
     )
-    calldata = _EXECUTE_SELECTOR + encode(["bytes"], [bytes(program)])
+    calldata = DeFiVM.fns.execute(bytes(program)).data
     return SwapTransaction(to=vm_address, data=calldata)
 
 
@@ -413,9 +407,6 @@ async def quote_dag(
         quoter_address: Uniswap V3-compatible quoter; required for V3 hops.
         min_final_out: Revert when ``amountOut < min_final_out`` (0 disables).
     """
-    from eth_abi import decode as abi_decode
-
-    from pydefi.abi import DeFiVM
     from pydefi.vm.dag import build_quote_program_for_dag
 
     program = build_quote_program_for_dag(
@@ -428,7 +419,7 @@ async def quote_dag(
     raw = await w3.eth.call({"to": vm_address, "data": calldata})
     if not raw:
         return 0
-    (amount_out,) = abi_decode(["uint256"], raw)
+    (amount_out,) = decode(["uint256"], raw)
     return int(amount_out)
 
 
@@ -463,34 +454,3 @@ def swap_route_to_hops(route: SwapRoute, vm_address: str, recipient: str) -> lis
             )
         )
     return hops
-
-
-async def quote_swap_transaction(
-    w3: "AsyncWeb3",
-    dag: RouteDAG,
-    *,
-    amount_in: int,
-    vm_address: Address,
-    quoter_address: Address | None = None,
-) -> TokenAmount:
-    """Simulate a swap via ``eth_call`` on the DeFiVM contract — V2 and V3 only.
-
-    Composes a DeFiVM quote program from *dag* via
-    :func:`~pydefi.vm.dag.build_quote_program_for_dag` and executes it against
-    *vm_address*.  No tokens are transferred; the program reads pool state
-    on-chain and returns the estimated output amount.
-
-    *quoter_address* (the QuoterV2 address) is required when the DAG contains V3
-    hops.  In-VM V4 quoting is not supported — ``build_quote_program_for_dag``
-    raises for V4 hops; quote a V4 leg off-chain via
-    :meth:`pydefi.amm.uniswap_v4.UniswapV4.quote_exact_input_single` instead.
-    """
-    from pydefi.vm.dag import build_quote_program_for_dag
-
-    if not dag.actions:
-        raise ValueError("quote_swap_transaction: route DAG must contain at least one action")
-
-    program = build_quote_program_for_dag(dag, amount_in=amount_in, quoter_address=quoter_address)
-    calldata = _EXECUTE_SELECTOR + encode(["bytes"], [bytes(program.build())])
-    result = await w3.eth.call({"to": vm_address, "data": calldata})
-    return TokenAmount(token=dag.actions[-1].token_out, amount=int.from_bytes(result[:32], "big"))

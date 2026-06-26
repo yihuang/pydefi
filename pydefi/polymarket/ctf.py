@@ -52,7 +52,7 @@ def _to_bytes32(value: Bytes32) -> bytes:
     b = HexBytes(value)
     if len(b) != 32:
         raise ValueError(f"expected a 32-byte value, got {len(b)} bytes: {value!r}")
-    return bytes(b)
+    return b
 
 
 def compute_condition_id(oracle: Address, question_id: Bytes32, outcome_slot_count: int = 2) -> Hash:
@@ -62,7 +62,7 @@ def compute_condition_id(oracle: Address, question_id: Bytes32, outcome_slot_cou
     math, so get outcome-token ids from the Gamma API or
     :meth:`PolymarketCTF.get_position_id`.
     """
-    packed = bytes(oracle) + _to_bytes32(question_id) + outcome_slot_count.to_bytes(32, "big")
+    packed = oracle + _to_bytes32(question_id) + outcome_slot_count.to_bytes(32, "big")
     return Hash(keccak(packed))
 
 

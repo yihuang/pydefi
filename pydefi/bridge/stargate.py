@@ -18,10 +18,20 @@ from typing import Any
 
 from web3 import AsyncWeb3
 
-from pydefi._math import apply_slippage
+from pydefi._math import MAX_BPS, apply_slippage
 from pydefi.abi.bridge import STARGATE_ROUTER
 from pydefi.exceptions import BridgeError
 from pydefi.types import Address, BridgeQuote, Token, TokenAmount
+
+#: Stargate's flat protocol fee in basis points (~6 bp).
+_PROTOCOL_FEE_BPS = 6
+
+
+def _net_of_protocol_fee(amount: int) -> tuple[int, int]:
+    """Return ``(fee, amount_after_fee)`` for Stargate's flat protocol fee."""
+    fee = amount * _PROTOCOL_FEE_BPS // MAX_BPS
+    return fee, amount - fee
+
 
 # LayerZero chain IDs differ from EVM chain IDs.
 # Solana uses the LayerZero V2 endpoint ID (30168).
@@ -139,10 +149,7 @@ class Stargate:
         Returns:
             A :class:`~pydefi.types.BridgeQuote`.
         """
-        # Stargate typically charges a 6-bp protocol fee
-        PROTOCOL_FEE_BPS = 6
-        fee_raw = amount_in.amount * PROTOCOL_FEE_BPS // 10_000
-        amount_out_raw = amount_in.amount - fee_raw
+        fee_raw, amount_out_raw = _net_of_protocol_fee(amount_in.amount)
 
         return BridgeQuote(
             token_in=token_in,
@@ -183,9 +190,7 @@ class Stargate:
         lz_fee = await self.quote_lz_fee(self.dst_chain_id, recipient, dst_gas)
 
         # Derive min_amount from post-fee output so it accounts for the protocol fee
-        PROTOCOL_FEE_BPS = 6
-        fee_raw = amount_in.amount * PROTOCOL_FEE_BPS // 10_000
-        amount_out_raw = amount_in.amount - fee_raw
+        _, amount_out_raw = _net_of_protocol_fee(amount_in.amount)
         min_amount = apply_slippage(amount_out_raw, slippage_bps)
 
         lz_tx_params = (dst_gas, 0, b"")
