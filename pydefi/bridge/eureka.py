@@ -16,6 +16,22 @@ from pydefi.exceptions import BridgeError
 from pydefi.types import Address, BridgeQuote, Token, TokenAmount
 
 
+def validate_send_transfer_fields(denom: Address | str, amount: int, timeout_timestamp: int) -> bytes:
+    """Common validation for ``sendTransfer`` / ``sendTransferAndCompose``
+    calldata encoders. Returns the 20-byte ``denom`` bytes."""
+    if isinstance(denom, str):
+        denom_bytes = bytes.fromhex(denom.removeprefix("0x"))
+    else:
+        denom_bytes = bytes(denom)
+    if len(denom_bytes) != 20:
+        raise ValueError(f"denom must be a 20-byte EVM address, got {len(denom_bytes)} bytes")
+    if amount < 0 or amount >> 256:
+        raise ValueError(f"amount {amount} out of uint256 range")
+    if timeout_timestamp < 0 or timeout_timestamp >> 64:
+        raise ValueError(f"timeout_timestamp {timeout_timestamp} out of uint64 range")
+    return denom_bytes
+
+
 def encode_send_transfer_calldata(
     *,
     denom: Address | str,
@@ -29,17 +45,7 @@ def encode_send_transfer_calldata(
     """ABI-encode a call to ``ICS20Transfer.sendTransfer(SendTransferMsg)``.
     ``receiver`` is opaque to the EVM-side router (bech32 for Cosmos, hex for
     EVM destinations); ``memo`` carries PFM hops and middleware hooks."""
-    if isinstance(denom, str):
-        denom_bytes = bytes.fromhex(denom.removeprefix("0x"))
-    else:
-        denom_bytes = bytes(denom)
-    if len(denom_bytes) != 20:
-        raise ValueError(f"denom must be a 20-byte EVM address, got {len(denom_bytes)} bytes")
-    if amount < 0 or amount >> 256:
-        raise ValueError(f"amount {amount} out of uint256 range")
-    if timeout_timestamp < 0 or timeout_timestamp >> 64:
-        raise ValueError(f"timeout_timestamp {timeout_timestamp} out of uint64 range")
-
+    denom_bytes = validate_send_transfer_fields(denom, amount, timeout_timestamp)
     return bytes(
         ICS20_TRANSFER.fns.sendTransfer(
             (denom_bytes, amount, receiver, source_client, dest_port, timeout_timestamp, memo)
@@ -96,14 +102,21 @@ class Eureka:
         amount_out_override = kwargs.get("amount_out_override")
         if amount_out_override is not None:
             amount_out_raw = int(amount_out_override)
-        elif token_in.decimals == token_out.decimals:
-            amount_out_raw = amount_in.amount
         else:
-            scale_up = token_out.decimals - token_in.decimals
-            if scale_up >= 0:
-                amount_out_raw = amount_in.amount * (10**scale_up)
+            scale = token_out.decimals - token_in.decimals
+            if scale >= 0:
+                # Covers same-decimals (scale == 0 → multiply by 1).
+                amount_out_raw = amount_in.amount * (10**scale)
             else:
-                amount_out_raw = amount_in.amount // (10**-scale_up)
+                divisor = 10**-scale
+                if amount_in.amount % divisor:
+                    raise BridgeError(
+                        f"Eureka quote would truncate: {amount_in.amount} base-units of "
+                        f"{token_in.symbol} ({token_in.decimals} dec) can't be represented "
+                        f"exactly in {token_out.decimals} dec; pre-round off-chain or pass "
+                        f"`amount_out_override`"
+                    )
+                amount_out_raw = amount_in.amount // divisor
 
         return BridgeQuote(
             token_in=token_in,

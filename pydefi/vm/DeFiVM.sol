@@ -2,6 +2,7 @@
 pragma solidity ^0.8.24;
 
 import "./DEXCallbackRouter.sol";
+import {PATCHED_INTERPRETER_ADDRESS} from "./PatchedInterpreterConstants.sol";
 
 /// @dev Minimal Permit2 SignatureTransfer surface used by ``executeWithPermit2``.
 interface ISignatureTransfer {
@@ -43,13 +44,22 @@ interface ISignatureTransfer {
  *
  * How it works
  * ------------
- *  ``execute()`` delegates execution to the pre-deployed Analog-Labs EVM interpreter
- *  (https://github.com/Analog-Labs/evm-interpreter) via ``DELEGATECALL``.  The interpreter
- *  accepts the program bytecode as calldata and executes it in DeFiVM's context:
+ *  ``execute()`` delegates execution to the pydefi-patched Analog-Labs EVM
+ *  interpreter via ``DELEGATECALL``.  The interpreter accepts the program
+ *  bytecode as calldata and executes it in DeFiVM's context:
  *  - ``address(this)`` inside the program is DeFiVM's address.
  *  - External ``CALL``s originate from DeFiVM (msg.sender to sub-calls is DeFiVM).
  *  - ETH held by DeFiVM is forwarded via ``callvalue()`` and available to ``CALL``.
- *  - No contract deployment (CREATE) required — no nonce increase.
+ *  - Running a program requires no contract deployment, so the common path
+ *    leaves DeFiVM's nonce untouched.  ``CREATE``/``CREATE2`` remain legal
+ *    *inside* programs (a child contract runs in its own context and cannot
+ *    touch DeFiVM's storage); a program that deploys does bump the nonce.
+ *
+ *  The patched interpreter (see ``PatchedInterpreterConstants.sol``)
+ *  rejects ``SLOAD`` / ``SSTORE`` / ``CALLCODE`` / ``DELEGATECALL`` /
+ *  ``SELFDESTRUCT`` at runtime — closes issue #138 with zero per-call gas
+ *  overhead.  Pass an explicit upstream Analog-Labs address to the
+ *  constructor to run against the unpatched interpreter (testing / fallback).
  *
  * Memory conventions (inside programs)
  * -------------------------------------
@@ -78,9 +88,6 @@ interface ISignatureTransfer {
  *  parameter and the supported selectors.
  */
 contract DeFiVM is DEXCallbackRouter {
-    /// @dev Well-known Analog-Labs EVM interpreter.
-    address private constant DEFAULT_INTERPRETER = 0x0000000000001e3F4F615cd5e20c681Cf7d85e8D;
-
     /// @dev Canonical Permit2 deployment (same address on every chain).
     ISignatureTransfer public constant PERMIT2 = ISignatureTransfer(0x000000000022D473030F116dDEE9F6B43aC78BA3);
 
@@ -92,13 +99,26 @@ contract DeFiVM is DEXCallbackRouter {
     /// @dev Address of the EVM interpreter used for DELEGATECALL execution.
     address private immutable INTERPRETER;
 
+    /// @dev Thrown when the resolved interpreter address has no code at
+    ///      construction time.  Without this guard, a DELEGATECALL to a
+    ///      code-less address would silently succeed (returning empty
+    ///      returndata), making ``execute`` look like it ran the program
+    ///      when nothing happened.
+    error InterpreterNotDeployed(address interpreter);
+
     /// @param interpreter Address of the EVM interpreter to use.  Pass
-    ///   ``address(0)`` to use the pre-deployed Analog-Labs interpreter at
-    ///   ``0x0000000000001e3F4F615cd5e20c681Cf7d85e8D``.  Supply a custom
-    ///   address for alternative chains or local test environments where the
-    ///   interpreter may not be pre-deployed.
+    ///   ``address(0)`` to use the pydefi-patched interpreter at
+    ///   :data:`PATCHED_INTERPRETER_ADDRESS` (storage-opcode-rejecting variant
+    ///   from ``PatchedInterpreterConstants.sol``).  Supply a custom address
+    ///   for local test environments or to fall back to the upstream
+    ///   Analog-Labs interpreter explicitly.  Construction reverts if the
+    ///   resolved address has no code.
     constructor(address interpreter) {
-        INTERPRETER = interpreter == address(0) ? DEFAULT_INTERPRETER : interpreter;
+        address resolved = interpreter == address(0) ? PATCHED_INTERPRETER_ADDRESS : interpreter;
+        uint256 size;
+        assembly { size := extcodesize(resolved) }
+        if (size == 0) revert InterpreterNotDeployed(resolved);
+        INTERPRETER = resolved;
     }
 
     /// @notice Allow the VM to receive ETH (needed for value-bearing calls).

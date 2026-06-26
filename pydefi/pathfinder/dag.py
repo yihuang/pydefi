@@ -141,11 +141,20 @@ class RouteDAG:
             raise ValueError("RouteDAG.from_token() must be called before bridge()")
         actions = self._current_actions()
         self._reject_action_after_bridge(actions, "bridge")
+        current_token = self._branch_current_token()
         if denom is None:
-            current_token = self._branch_current_token()
             if current_token is None:
                 raise ValueError("RouteDAG.bridge: cannot infer denom; supply it explicitly")
             denom = current_token.address
+        # ICS-20 preserves the base-unit amount across the relay; the quote
+        # pass threads it through unchanged, so a destination with different
+        # decimals would misreport the quote. Refuse the mismatch at build time.
+        if current_token is not None and current_token.decimals != token_out.decimals:
+            raise ValueError(
+                f"RouteDAG.bridge: decimals mismatch "
+                f"(source {current_token.decimals} != destination {token_out.decimals}); "
+                f"rescale off-chain before bridging"
+            )
         actions.append(
             RouteBridge(
                 denom=denom,
@@ -163,7 +172,9 @@ class RouteDAG:
         return self
 
     def _branch_current_token(self) -> Token | None:
-        """Return the token currently held on the active branch."""
+        """Return the token currently held on the active branch (top-level or
+        inside a split leg). Defined here so ``.bridge()`` can infer ``denom``
+        without callers having to repeat the upstream-action's token_out."""
         if self._split_stack:
             leg = self._split_stack[-1].active_leg
             return leg.current_token if leg is not None else None
@@ -179,6 +190,9 @@ class RouteDAG:
     def split(self) -> "RouteDAG":
         if self.token_in is None:
             raise ValueError("RouteDAG.from_token() must be called before split()")
+        # Mirror the swap/bridge guard: split after bridge would extend the
+        # branch past an escrowed-and-gone position, which the DAG semantics
+        # forbid.
         self._reject_action_after_bridge(self._current_actions(), "split")
         if not self._split_stack:
             origin_token = self._current_token

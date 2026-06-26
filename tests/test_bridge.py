@@ -1827,6 +1827,24 @@ class TestEureka:
             await eureka.get_quote(USDC, USDC_MANTRA, amount_in)
 
     @pytest.mark.asyncio
+    async def test_get_quote_rejects_lossy_downscale(self, eureka):
+        # 8-dec → 6-dec divides by 100; an input not divisible by 100 base-
+        # units (here 1_000_001) would silently round down. Raise instead.
+        token_in = Token(
+            chain_id=1,
+            address=USDC.address,
+            symbol="USDC",
+            decimals=8,
+        )
+        amount_in = TokenAmount(token=token_in, amount=1_000_001)
+        with pytest.raises(BridgeError, match="truncate"):
+            await eureka.get_quote(token_in, USDC_MANTRA, amount_in)
+        # Divisible inputs still pass.
+        amount_in = TokenAmount(token=token_in, amount=1_000_000)
+        quote = await eureka.get_quote(token_in, USDC_MANTRA, amount_in)
+        assert quote.amount_out.amount == 10_000
+
+    @pytest.mark.asyncio
     async def test_build_bridge_tx_calldata_decodes(self, eureka):
         amount_in = TokenAmount.from_human(USDC, "1000")
         tx = await eureka.build_bridge_tx(

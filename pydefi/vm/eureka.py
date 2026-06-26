@@ -15,7 +15,11 @@ from __future__ import annotations
 from typing import Any
 
 from pydefi.abi.bridge import EUREKA_COMPOSER
-from pydefi.bridge.eureka import ICS20_DEFAULT_PORT, encode_send_transfer_calldata
+from pydefi.bridge.eureka import (
+    ICS20_DEFAULT_PORT,
+    encode_send_transfer_calldata,
+    validate_send_transfer_fields,
+)
 from pydefi.types import Address
 from pydefi.vm.context import Operand, Program, ValueLike
 from pydefi.vm.erc20 import emit_approve
@@ -36,17 +40,7 @@ def encode_send_and_compose_calldata(
     Mirrors :func:`pydefi.bridge.encode_send_transfer_calldata` with an extra
     ``program`` argument: the DeFiVM bytecode the composer runs on
     ack/timeout."""
-    if isinstance(denom, str):
-        denom_bytes = bytes.fromhex(denom.removeprefix("0x"))
-    else:
-        denom_bytes = bytes(denom)
-    if len(denom_bytes) != 20:
-        raise ValueError(f"denom must be a 20-byte EVM address, got {len(denom_bytes)} bytes")
-    if amount < 0 or amount >> 256:
-        raise ValueError(f"amount {amount} out of uint256 range")
-    if timeout_timestamp < 0 or timeout_timestamp >> 64:
-        raise ValueError(f"timeout_timestamp {timeout_timestamp} out of uint64 range")
-
+    denom_bytes = validate_send_transfer_fields(denom, amount, timeout_timestamp)
     return bytes(
         EUREKA_COMPOSER.fns.sendTransferAndCompose(
             (denom_bytes, amount, receiver, source_client, dest_port, timeout_timestamp, memo),

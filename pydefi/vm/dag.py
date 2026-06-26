@@ -183,8 +183,9 @@ def _build_dag_quote_actions(
                 lambda p, amt, acts: _build_dag_quote_actions(p, amt, acts, quoter_address=quoter_address),
             )
         elif isinstance(action, RouteBridge):
-            # ICS-20 is amount-preserving on the source side; the quote pass
-            # never touches the chain, so just thread the running amount.
+            # ICS-20 preserves base-unit amount across the relay; the decimal-
+            # match invariant is enforced by ``RouteDAG.bridge()`` at build
+            # time, so threading the running amount is correct.
             pass
         else:
             raise ValueError(f"build_quote_program_for_dag: unsupported route action {type(action)!r}")

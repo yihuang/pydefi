@@ -31,7 +31,7 @@ def _build_call(calldata: bytes) -> bytes:
     return p.build()
 
 
-SIZES = [4, 32, 64, 128, 256, 512, 1024, 2048]
+SIZES = [4, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192]
 
 
 def run() -> None:
