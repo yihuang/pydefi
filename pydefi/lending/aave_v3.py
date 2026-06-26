@@ -300,7 +300,7 @@ class AaveV3:
         """
         # Fast path on mainnet, registry token address is already reserve
         # to avoid expensive getAllReservesTokens()
-        if self._reserves is None:
+        if self._reserves is None and self.w3 is not None:
             try:
                 reserve = await AAVE_V3_POOL.fns.getReserveData(token.address).call(self.w3, to=self.pool_address)
                 if int(reserve.aTokenAddress, 16) != 0:
