@@ -86,8 +86,8 @@ class ZeroX:
             Raw API response dict.
         """
         params: dict[str, Any] = {
-            "sellToken": amount_in.token.address,
-            "buyToken": token_out.address,
+            "sellToken": amount_in.token.encoded_address,
+            "buyToken": token_out.encoded_address,
             "sellAmount": str(amount_in.amount),
             **kwargs,
         }
@@ -113,8 +113,8 @@ class ZeroX:
             ``tx_data`` ready to broadcast.
         """
         params: dict[str, Any] = {
-            "sellToken": amount_in.token.address,
-            "buyToken": token_out.address,
+            "sellToken": amount_in.token.encoded_address,
+            "buyToken": token_out.encoded_address,
             "sellAmount": str(amount_in.amount),
             "slippagePercentage": slippage_to_fraction(slippage_bps),
             **kwargs,

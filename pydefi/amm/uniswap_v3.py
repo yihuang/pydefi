@@ -72,9 +72,6 @@ def v3_encode_path(tokens: list[Token], fees: list[int]) -> bytes:
 # Client class
 # ---------------------------------------------------------------------------
 
-# Canonical fee tiers (in hundredths of a basis point)
-FEE_TIERS: tuple[int, ...] = (100, 500, 3000, 10000)
-
 
 class UniswapV3:
     """Uniswap V3 AMM integration.

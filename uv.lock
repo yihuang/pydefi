@@ -896,8 +896,8 @@ wheels = [
 
 [[package]]
 name = "eth-contract"
-version = "0.4.0"
-source = { git = "https://github.com/yihuang/eth-contract.git?rev=main#6374f55907a562456dc2b084945c3677d312a70c" }
+version = "0.4.1"
+source = { git = "https://github.com/yihuang/eth-contract.git?rev=main#0491aa0e819a973026f5bb4ded2cd875a9a25259" }
 dependencies = [
     { name = "eth-abi" },
     { name = "web3" },

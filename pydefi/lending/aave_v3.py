@@ -21,8 +21,9 @@ from typing import Any, Literal
 
 from eth_contract.erc20 import ERC20
 from web3 import AsyncWeb3
+from web3.exceptions import Web3Exception
 
-from pydefi._utils import UINT256_MAX, resolve_amount, to_tx
+from pydefi._utils import resolve_amount, to_tx
 from pydefi.abi.lending import (
     AAVE_V3_ADDRESSES_PROVIDER,
     AAVE_V3_DATA_PROVIDER,
@@ -31,7 +32,7 @@ from pydefi.abi.lending import (
 )
 from pydefi.deployments import get_address
 from pydefi.exceptions import PydefiError
-from pydefi.lending.utils import SECONDS_PER_YEAR
+from pydefi.lending.utils import SECONDS_PER_YEAR, parse_health_factor
 from pydefi.types import Address, Token, TokenAmount
 
 #: 10**27 — Aave's fixed-point scale for rates and indices.
@@ -209,17 +210,6 @@ class UserAccountData:
     health_factor: Decimal
 
 
-def parse_health_factor(raw: int) -> Decimal:
-    """Convert the on-chain ``uint256`` health factor to a :class:`Decimal`.
-
-    The value is 1e18-scaled on Aave. When the user has no debt, Aave
-    returns ``type(uint256).max``; we surface that as ``Decimal("Infinity")``.
-    """
-    if raw == UINT256_MAX:
-        return Decimal("Infinity")
-    return Decimal(raw) / Decimal(10**18)
-
-
 # ---------------------------------------------------------------------------
 # AaveV3 client
 # ---------------------------------------------------------------------------
@@ -308,6 +298,18 @@ class AaveV3:
         ``getAllReservesTokens()`` map is cached; on mainnet this resolves to
         ``token.address`` unchanged.
         """
+        # Fast path on mainnet, registry token address is already reserve
+        # to avoid expensive getAllReservesTokens()
+        if self._reserves is None and self.w3 is not None:
+            try:
+                reserve = await AAVE_V3_POOL.fns.getReserveData(token.address).call(self.w3, to=self.pool_address)
+                if int(reserve.aTokenAddress, 16) != 0:
+                    return token.address
+            except Web3Exception:
+                # Non-reserve address (common on testnets): fall through
+                # to symbol-based resolution via DataProvider.
+                pass
+
         if self._reserves is None:
             listed = await AAVE_V3_DATA_PROVIDER.fns.getAllReservesTokens().call(self.w3, to=self.data_provider_address)
             self._reserves = {symbol: Address(addr) for symbol, addr in listed}

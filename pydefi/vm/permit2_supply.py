@@ -11,17 +11,16 @@ from __future__ import annotations
 import secrets
 from typing import Any
 
-from eth_contract import Contract
 from eth_utils import keccak
 
 from pydefi._utils import UINT256_MAX, to_tx
+from pydefi.abi.vm import PERMIT2 as PERMIT2_ABI
 from pydefi.abi.vm import DeFiVM
 from pydefi.types import Address
 from pydefi.vm.context import Program
 from pydefi.vm.erc20 import emit_approve
 
 PERMIT2 = "0x000000000022D473030F116dDEE9F6B43aC78BA3"
-_PERMIT2 = Contract.from_abi(["function nonceBitmap(address owner, uint256 wordPos) view returns (uint256)"])
 _FULL_WORD = 2**256 - 1
 # Covers the worst path: Permit2 pull + in-program approve + a first-time
 # Aave v3 supply (~280k) + interpreter overhead.
@@ -40,7 +39,7 @@ async def pick_nonce(w3, owner: Address, scan_words: int = 8) -> int:
     Picks the lowest non-full word (``nonce>>8``) and a random free bit in it; the
     owner's first deposit still hits a fresh word. Falls back to :func:`random_nonce`."""
     for word_pos in range(scan_words):
-        bitmap = await _PERMIT2.fns.nonceBitmap(bytes(owner), word_pos).call(w3, to=PERMIT2)
+        bitmap = await PERMIT2_ABI.fns.nonceBitmap(owner, word_pos).call(w3, to=PERMIT2)
         if bitmap != _FULL_WORD:
             free = [b for b in range(256) if not (bitmap >> b) & 1]
             return (word_pos << 8) | secrets.choice(free)
@@ -65,7 +64,7 @@ def build_supply_program(
         emit_approve(prog, token, protocol, UINT256_MAX, reset=reset)
     elif reset:
         emit_approve(prog, token, protocol, 0)
-    prog.assert_(prog.call_raw(bytes(protocol), supply_data), "supply failed")
+    prog.assert_(prog.call_raw(protocol, supply_data), "supply failed")
     prog.builder.stop()
     return prog.build()
 

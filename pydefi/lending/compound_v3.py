@@ -243,14 +243,14 @@ class CompoundV3:
         )
         out: list[CompoundCollateralInfo] = []
         for info in infos:
-            offset = info[0]
-            asset_addr = Address(info[1])
-            price_feed = Address(info[2])
-            scale = info[3]
-            borrow_cf = info[4]
-            liq_cf = info[5]
-            liq_factor = info[6]
-            supply_cap = info[7]
+            offset = info.offset
+            asset_addr = Address(info.asset)
+            price_feed = Address(info.priceFeed)
+            scale = info.scale
+            borrow_cf = info.borrowCollateralFactor
+            liq_cf = info.liquidateCollateralFactor
+            liq_factor = info.liquidationFactor
+            supply_cap = info.supplyCap
 
             token = tokens.get(asset_addr)
             if token is None:

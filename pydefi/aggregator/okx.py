@@ -84,8 +84,8 @@ class OKX:
         params: dict[str, Any] = {
             "chainIndex": str(self.chain_id),
             "amount": str(amount_in.amount),
-            "fromTokenAddress": amount_in.token.address,
-            "toTokenAddress": token_out.address,
+            "fromTokenAddress": amount_in.token.encoded_address,
+            "toTokenAddress": token_out.encoded_address,
             "slippagePercent": str(slippage_to_percent(slippage_bps)),
             **kwargs,
         }
@@ -131,8 +131,8 @@ class OKX:
         params: dict[str, Any] = {
             "chainIndex": str(self.chain_id),
             "amount": str(amount_in.amount),
-            "fromTokenAddress": amount_in.token.address,
-            "toTokenAddress": token_out.address,
+            "fromTokenAddress": amount_in.token.encoded_address,
+            "toTokenAddress": token_out.encoded_address,
             "slippagePercent": str(slippage_to_percent(slippage_bps)),
             "userWalletAddress": from_address,
             **kwargs,

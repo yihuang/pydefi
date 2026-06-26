@@ -17,7 +17,7 @@ from pydefi.types import Address
 
 def sort_currencies(a: Address, b: Address) -> tuple[Address, Address]:
     """Return ``(currency0, currency1)`` ordered by address value (lower first)."""
-    return (a, b) if int.from_bytes(bytes(a), "big") < int.from_bytes(bytes(b), "big") else (b, a)
+    return (a, b) if int.from_bytes(a, "big") < int.from_bytes(b, "big") else (b, a)
 
 
 def pool_id(token_a: Address, token_b: Address, fee: int, tick_spacing: int, hooks: Address) -> bytes:

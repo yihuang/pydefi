@@ -20,16 +20,9 @@ from web3.exceptions import ContractLogicError
 from pydefi.abi.amm import UNISWAP_V4_QUOTER, UNISWAP_V4_STATE_VIEW
 from pydefi.amm.v4_hooks import affects_swap_pricing
 from pydefi.amm.v4_pool_key import pool_id, sort_currencies
-from pydefi.deployments import get_address
 from pydefi.exceptions import InsufficientLiquidityError
 from pydefi.pathfinder.graph import V4PoolEdge
-from pydefi.types import ZERO_ADDRESS, Address, ChainId, SwapRoute, SwapStep, Token, TokenAmount
-
-#: Canonical Uniswap V4 deployments on Ethereum mainnet, sourced from the
-#: deployment registry.  Pass other addresses to the constructor for other chains.
-MAINNET_POOL_MANAGER: Address = get_address("UNISWAP_V4_POOL_MANAGER", ChainId.ETHEREUM)
-MAINNET_STATE_VIEW: Address = get_address("UNISWAP_V4_STATE_VIEW", ChainId.ETHEREUM)
-MAINNET_QUOTER: Address = get_address("UNISWAP_V4_QUOTER", ChainId.ETHEREUM)
+from pydefi.types import ZERO_ADDRESS, Address, SwapRoute, SwapStep, Token, TokenAmount
 
 #: PoolKey ``fee`` value marking a dynamic-fee pool; the actual fee charged is
 #: the hook-controlled ``lpFee`` returned by ``getSlot0``.

@@ -342,7 +342,7 @@ async def _sign_request_permit2(
     USDT-safe reset when it is nonzero)."""
     nonce, allowance = await asyncio.gather(
         pick_nonce(w3, user),
-        ERC20.fns.allowance(bytes(defivm), bytes(target)).call(w3, to=bytes(amount.token.address)),
+        ERC20.fns.allowance(defivm, target).call(w3, to=amount.token.address),
     )
     return {
         "defivm": defivm,
@@ -381,7 +381,7 @@ async def _sign_request_7702(
         "chain_id": chain_id,
         "calls": calls,
         "nonce": nonce,
-        "auth_nonce": await w3.eth.get_transaction_count(bytes(user)) + user_txs_before,
+        "auth_nonce": await w3.eth.get_transaction_count(user) + user_txs_before,
         "needs_auth": needs_auth,
     }
 
