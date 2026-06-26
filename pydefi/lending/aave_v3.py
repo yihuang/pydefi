@@ -21,6 +21,7 @@ from typing import Any, Literal
 
 from eth_contract.erc20 import ERC20
 from web3 import AsyncWeb3
+from web3.exceptions import Web3Exception
 
 from pydefi._utils import resolve_amount, to_tx
 from pydefi.abi.lending import (
@@ -297,6 +298,18 @@ class AaveV3:
         ``getAllReservesTokens()`` map is cached; on mainnet this resolves to
         ``token.address`` unchanged.
         """
+        # Fast path on mainnet, registry token address is already reserve
+        # to avoid expensive getAllReservesTokens()
+        if self._reserves is None:
+            try:
+                reserve = await AAVE_V3_POOL.fns.getReserveData(token.address).call(self.w3, to=self.pool_address)
+                if int(reserve.aTokenAddress, 16) != 0:
+                    return token.address
+            except Web3Exception:
+                # Non-reserve address (common on testnets): fall through
+                # to symbol-based resolution via DataProvider.
+                pass
+
         if self._reserves is None:
             listed = await AAVE_V3_DATA_PROVIDER.fns.getAllReservesTokens().call(self.w3, to=self.data_provider_address)
             self._reserves = {symbol: Address(addr) for symbol, addr in listed}
