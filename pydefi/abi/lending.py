@@ -67,6 +67,7 @@ AAVE_V3_POOL = Contract.from_abi(
         "function repay(address asset, uint256 amount, uint256 interestRateMode, address onBehalfOf) external returns (uint256)",
         "function setUserUseReserveAsCollateral(address asset, bool useAsCollateral) external",
         "function setUserEMode(uint8 categoryId) external",
+        "function liquidationCall(address collateralAsset, address debtAsset, address user, uint256 debtToCover, bool receiveAToken) external",
         # Flash loans (single-asset).
         "function flashLoanSimple(address receiverAddress, address asset, uint256 amount, bytes calldata params, uint16 referralCode) external",
         # Reads
@@ -178,6 +179,7 @@ COMPOUND_V3_COMET = Contract.from_abi(
         "function borrowBalanceOf(address account) external view returns (uint256)",
         "function collateralBalanceOf(address account, address asset) external view returns (uint128)",
         "function isLiquidatable(address account) external view returns (bool)",
+        "function quoteCollateral(address asset, uint256 baseAmount) external view returns (uint256)",
         # Writes.
         "function supply(address asset, uint256 amount) external",
         "function supplyTo(address dst, address asset, uint256 amount) external",
@@ -186,6 +188,10 @@ COMPOUND_V3_COMET = Contract.from_abi(
         "function transferAsset(address dst, address asset, uint256 amount) external",
         "function transfer(address dst, uint256 amount) external returns (bool)",
         "function allow(address manager, bool isAllowed) external",
+        # Liquidation — two-step: absorb underwater accounts, then buy the
+        # protocol-held collateral at the liquidation discount.
+        "function absorb(address absorber, address[] accounts) external",
+        "function buyCollateral(address asset, uint256 minAmount, uint256 baseAmount, address recipient) external",
     ],
     structs=[CometAssetInfo],
 )

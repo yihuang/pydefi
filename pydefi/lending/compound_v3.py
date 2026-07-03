@@ -316,6 +316,16 @@ class CompoundV3:
         """Read a Comet-internal price feed. Result is 1e8-scaled USD."""
         return await COMPOUND_V3_COMET.fns.getPrice(price_feed).call(self.w3, to=self.comet_address)
 
+    async def quote_collateral(self, asset: Token, base_amount: TokenAmount) -> TokenAmount:
+        """Return how much *asset* collateral *base_amount* of the base asset
+        buys at the current liquidation discount — size
+        :meth:`build_buy_collateral_tx`'s ``min_amount`` bound from this value.
+        """
+        raw = await COMPOUND_V3_COMET.fns.quoteCollateral(asset.address, base_amount.amount).call(
+            self.w3, to=self.comet_address
+        )
+        return TokenAmount(token=asset, amount=raw)
+
     # ------------------------------------------------------------------
     # Writes — return tx dicts {to, data, value}
     # ------------------------------------------------------------------
@@ -364,6 +374,38 @@ class CompoundV3:
     def build_allow_tx(self, manager: Address, is_allowed: bool) -> dict[str, Any]:
         """Build an ``allow`` transaction to grant or revoke manager rights."""
         call_data = COMPOUND_V3_COMET.fns.allow(manager, is_allowed).data
+        return to_tx(self.comet_address, call_data)
+
+    def build_absorb_tx(self, absorber: Address, accounts: list[Address]) -> dict[str, Any]:
+        """Build an ``absorb`` transaction — the first half of a liquidation.
+
+        Every account in *accounts* must currently be liquidatable
+        (``isLiquidatable``). Comet seizes their collateral, wipes their
+        base-asset debt, and credits *absorber* with reward points. ``absorb``
+        costs the absorber only gas — the profit comes from the second half,
+        buying the seized collateral cheaply via :meth:`build_buy_collateral_tx`.
+        """
+        if not accounts:
+            raise ValueError("accounts must list at least one account to absorb")
+        call_data = COMPOUND_V3_COMET.fns.absorb(absorber, list(accounts)).data
+        return to_tx(self.comet_address, call_data)
+
+    def build_buy_collateral_tx(
+        self,
+        base_amount: TokenAmount,
+        min_amount: TokenAmount,
+        recipient: Address,
+    ) -> dict[str, Any]:
+        """Build a ``buyCollateral`` transaction — the second half of a liquidation.
+
+        Pay *base_amount* of the base asset for protocol-held collateral (the
+        asset of *min_amount*) at the liquidation discount. *min_amount* is the
+        slippage bound — the call reverts below it; size it from
+        :meth:`quote_collateral`. Approve the Comet to pull *base_amount* first.
+        """
+        call_data = COMPOUND_V3_COMET.fns.buyCollateral(
+            min_amount.token.address, min_amount.amount, base_amount.amount, recipient
+        ).data
         return to_tx(self.comet_address, call_data)
 
 

@@ -39,16 +39,22 @@ from pydefi.lending.compound_v3 import (
     per_second_rate_to_apy,
 )
 from pydefi.lending.morpho import (
+    MAX_LIQUIDATION_INCENTIVE_FACTOR,
+    ORACLE_PRICE_SCALE,
     MarketParams,
     MarketState,
     MorphoBlue,
+    MorphoPosition,
     accrue_interest,
     compute_health_factor,
+    liquidation_incentive_factor,
+    max_liquidation,
     supply_apy_from_borrow,
 )
 from pydefi.lending.utils import (
     SECONDS_PER_YEAR,
     UINT256_MAX,
+    WAD,
     parse_health_factor,
 )
 from pydefi.types import Address, ChainId, TokenAmount
@@ -251,6 +257,33 @@ class TestAaveBuildFlashLoanSimpleTx:
         assert referral == 7
 
 
+class TestAaveBuildLiquidationCallTx:
+    def test_explicit_amount(self, aave: AaveV3):
+        debt_to_cover = TokenAmount.from_human(USDC, "500")
+        tx = aave.build_liquidation_call_tx(WETH, debt_to_cover, ETH_WHALE, receive_atoken=True)
+        assert Address(tx["to"]) == AAVE_POOL_ADDR
+        collateral, debt, user, raw_amount, receive_atoken = decode_call(tx, AAVE_V3_POOL.fns.liquidationCall)
+        assert collateral == WETH.address
+        assert debt == USDC.address
+        assert user == ETH_WHALE
+        assert raw_amount == debt_to_cover.amount
+        assert receive_atoken is True
+
+    def test_max_amount(self, aave: AaveV3):
+        collateral, debt, _user, raw_amount, receive_atoken = decode_call(
+            aave.build_liquidation_call_tx(WETH, (USDC, "max"), ETH_WHALE),
+            AAVE_V3_POOL.fns.liquidationCall,
+        )
+        assert collateral == WETH.address
+        assert debt == USDC.address
+        assert raw_amount == UINT256_MAX
+        assert receive_atoken is False
+
+    def test_rejects_invalid_amount(self, aave: AaveV3):
+        with pytest.raises(TypeError):
+            aave.build_liquidation_call_tx(WETH, "500", ETH_WHALE)  # type: ignore[arg-type]
+
+
 # ---------------------------------------------------------------------------
 # Deployment registry sanity
 # ---------------------------------------------------------------------------
@@ -435,6 +468,34 @@ class TestCompoundOtherBuilders:
         assert is_allowed is flag
 
 
+class TestCompoundLiquidation:
+    def test_absorb_encodes_accounts(self, comet: CompoundV3):
+        absorber = Address("0x" + "a1" * 20)
+        accounts = [ETH_WHALE, Address("0x" + "b2" * 20)]
+        tx = comet.build_absorb_tx(absorber, accounts)
+        assert Address(tx["to"]) == CUSDC_V3
+        decoded_absorber, decoded_accounts = decode_call(tx, COMPOUND_V3_COMET.fns.absorb)
+        assert decoded_absorber == absorber
+        assert [Address(a) for a in decoded_accounts] == accounts
+
+    def test_absorb_rejects_empty_accounts(self, comet: CompoundV3):
+        with pytest.raises(ValueError):
+            comet.build_absorb_tx(Address("0x" + "a1" * 20), [])
+
+    def test_buy_collateral(self, comet: CompoundV3):
+        base_amount = TokenAmount.from_human(USDC, "1000")
+        min_amount = TokenAmount.from_human(WETH, "0.3")
+        recipient = Address("0x" + "c3" * 20)
+        asset, decoded_min, decoded_base, decoded_recipient = decode_call(
+            comet.build_buy_collateral_tx(base_amount, min_amount, recipient),
+            COMPOUND_V3_COMET.fns.buyCollateral,
+        )
+        assert asset == WETH.address
+        assert decoded_min == min_amount.amount
+        assert decoded_base == base_amount.amount
+        assert decoded_recipient == recipient
+
+
 # ---------------------------------------------------------------------------
 # Deployment registry sanity
 # ---------------------------------------------------------------------------
@@ -573,6 +634,62 @@ class TestMorphoHealthFactor:
 
 
 # ---------------------------------------------------------------------------
+# Liquidation seize math
+# ---------------------------------------------------------------------------
+
+
+def _morpho_position(*, borrow_assets: int, collateral: int, collateral_price: int) -> MorphoPosition:
+    """A :class:`MorphoPosition` carrying just the fields ``max_liquidation``
+    reads (shares stand in for assets 1:1 — the seize decision uses assets)."""
+    return MorphoPosition(
+        market=MARKET,
+        supply_shares=0,
+        borrow_shares=borrow_assets,
+        supply_assets=TokenAmount(USDC, 0),
+        borrow_assets=TokenAmount(USDC, borrow_assets),
+        collateral=TokenAmount(WETH, collateral),
+        health_factor=Decimal("0.5"),
+        collateral_price=collateral_price,
+    )
+
+
+class TestMorphoLiquidationIncentiveFactor:
+    def test_matches_known_value_for_86_lltv(self):
+        # WAD / (WAD - 0.30*(WAD - 0.86 WAD)) = 1e36 // 0.958e18.
+        assert liquidation_incentive_factor(LLTV_86) == 10**36 // 958_000_000_000_000_000
+
+    def test_below_the_cap_for_a_high_lltv(self):
+        assert WAD < liquidation_incentive_factor(LLTV_86) < MAX_LIQUIDATION_INCENTIVE_FACTOR
+
+    def test_clamped_to_max_for_a_very_low_lltv(self):
+        # A near-zero LLTV would push the raw factor past the cap.
+        assert liquidation_incentive_factor(10**15) == MAX_LIQUIDATION_INCENTIVE_FACTOR
+
+
+class TestMorphoMaxLiquidation:
+    def test_solvent_position_repays_all_shares(self):
+        # Collateral worth far more than borrow_assets * incentive.
+        seized, repaid = max_liquidation(
+            _morpho_position(borrow_assets=5000, collateral=10**24, collateral_price=ORACLE_PRICE_SCALE)
+        )
+        assert seized is None
+        assert repaid == 5000
+
+    def test_bad_debt_position_seizes_all_collateral(self):
+        # Collateral worth less than the debt -> full repayment would over-seize.
+        seized, repaid = max_liquidation(
+            _morpho_position(borrow_assets=5000, collateral=1000, collateral_price=ORACLE_PRICE_SCALE)
+        )
+        assert repaid is None
+        assert seized == TokenAmount(WETH, 1000)
+
+    def test_no_oracle_falls_back_to_repaying_all_shares(self):
+        seized, repaid = max_liquidation(_morpho_position(borrow_assets=5000, collateral=1000, collateral_price=0))
+        assert seized is None
+        assert repaid == 5000
+
+
+# ---------------------------------------------------------------------------
 # Supply APY derivation
 # ---------------------------------------------------------------------------
 
@@ -700,6 +817,41 @@ class TestMorphoBuildOtherTxs:
         assert token == USDC.address
         assert raw_amount == amount.amount
         assert data == b""
+
+    def test_liquidate_by_seized_assets(self, morpho: MorphoBlue):
+        seized = TokenAmount.from_human(WETH, "2")
+        tx = morpho.build_liquidate_tx(MARKET, ETH_WHALE, seized_assets=seized)
+        assert Address(tx["to"]) == MORPHO_BLUE_ADDR
+        assert tx["value"] == "0"
+        struct, borrower, seized_assets, repaid_shares, data = decode_call(tx, MORPHO_BLUE.fns.liquidate)
+        _assert_market_struct(struct)
+        assert (borrower, seized_assets, repaid_shares, data) == (ETH_WHALE, seized.amount, 0, b"")
+
+    def test_liquidate_by_repaid_shares(self, morpho: MorphoBlue):
+        tx = morpho.build_liquidate_tx(MARKET, ETH_WHALE, repaid_shares=12_345)
+        _struct, _borrower, seized_assets, repaid_shares, _data = decode_call(tx, MORPHO_BLUE.fns.liquidate)
+        assert (seized_assets, repaid_shares) == (0, 12_345)
+
+    def test_liquidate_encodes_flash_callback_data(self, morpho: MorphoBlue):
+        """A non-empty data payload drives the onMorphoLiquidate callback."""
+        payload = b"\xde\xad\xbe\xef"
+        tx = morpho.build_liquidate_tx(MARKET, ETH_WHALE, repaid_shares=1, data=payload)
+        _struct, _borrower, _seized, _shares, data = decode_call(tx, MORPHO_BLUE.fns.liquidate)
+        assert data == payload
+
+    def test_liquidate_requires_exactly_one_amount(self, morpho: MorphoBlue):
+        with pytest.raises(ValueError):  # neither
+            morpho.build_liquidate_tx(MARKET, ETH_WHALE)
+        with pytest.raises(ValueError):  # both
+            morpho.build_liquidate_tx(
+                MARKET, ETH_WHALE, seized_assets=TokenAmount.from_human(WETH, "1"), repaid_shares=1
+            )
+
+    def test_liquidate_rejects_zero_amount(self, morpho: MorphoBlue):
+        with pytest.raises(ValueError):  # zero seized assets
+            morpho.build_liquidate_tx(MARKET, ETH_WHALE, seized_assets=TokenAmount(WETH, 0))
+        with pytest.raises(ValueError):  # zero repaid shares
+            morpho.build_liquidate_tx(MARKET, ETH_WHALE, repaid_shares=0)
 
 
 # ---------------------------------------------------------------------------
