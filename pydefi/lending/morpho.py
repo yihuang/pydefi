@@ -35,6 +35,14 @@ from pydefi.types import ZERO_ADDRESS, Address, Token, TokenAmount
 #: loan-token value of a collateral balance is ``collateral * price / 1e36``.
 ORACLE_PRICE_SCALE: int = 10**36
 
+#: Morpho's liquidation incentive parameters (WAD-scaled), mirroring
+#: ``MorphoBlue``: a liquidator seizes collateral worth ``repaid * LIF``, where
+#: the incentive factor grows as a market's LLTV falls and tops out at
+#: ``MAX_LIQUIDATION_INCENTIVE_FACTOR`` — see :func:`liquidation_incentive_factor`.
+# https://github.com/morpho-org/morpho-blue/blob/main/src/libraries/ConstantsLib.sol
+LIQUIDATION_CURSOR: int = 3 * 10**17  # 0.30 WAD
+MAX_LIQUIDATION_INCENTIVE_FACTOR: int = 1_150_000_000_000_000_000  # 1.15 WAD
+
 #: Virtual shares/assets added to every market's accounting. They make the
 #: initial share price well-defined and immune to the classic ERC-4626
 #: empty-vault donation attack.
@@ -174,6 +182,8 @@ class MorphoPosition:
         health_factor: ``maxBorrow / borrowed``; the position is liquidatable
             below ``1``. :attr:`decimal.Decimal('Infinity')` when there is
             no debt.
+        collateral_price: The market oracle's current price, 1e36-scaled (see
+            :data:`ORACLE_PRICE_SCALE`); ``0`` when the market has no oracle.
     """
 
     market: MarketParams
@@ -183,6 +193,7 @@ class MorphoPosition:
     borrow_assets: TokenAmount
     collateral: TokenAmount
     health_factor: Decimal
+    collateral_price: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -278,6 +289,41 @@ def compute_health_factor(collateral: int, borrowed: int, collateral_price: int,
     return Decimal(max_borrow) / Decimal(borrowed)
 
 
+def liquidation_incentive_factor(lltv: int) -> int:
+    """Return a market's liquidation incentive factor (LIF), WAD-scaled.
+
+    Mirrors ``MorphoBlue.liquidate``:
+    ``LIF = min(MAX_LIQUIDATION_INCENTIVE_FACTOR, WAD / (WAD - CURSOR * (WAD - lltv)))``.
+    A liquidator seizes collateral worth ``repaid_debt * LIF`` — the spread
+    above the repaid debt is the liquidation bonus.
+    """
+    raw = WAD * WAD // (WAD - LIQUIDATION_CURSOR * (WAD - lltv) // WAD)
+    return min(MAX_LIQUIDATION_INCENTIVE_FACTOR, raw)
+
+
+def max_liquidation(position: MorphoPosition) -> tuple[TokenAmount | None, int | None]:
+    """Return the ``(seized_assets, repaid_shares)`` pair that liquidates
+    *position* as fully as possible without reverting — exactly one side is
+    non-``None``, ready to splat into :meth:`MorphoBlue.build_liquidate_tx`.
+
+    Repaying every share seizes collateral worth ``repaid * LIF``; in bad debt
+    that exceeds the borrower's collateral and Morpho reverts, so seize the
+    whole collateral balance instead. A market with no oracle
+    (``collateral_price == 0``) falls back to a full-share repayment.
+    """
+    if position.collateral_price <= 0:
+        return None, position.borrow_shares
+    lif = liquidation_incentive_factor(position.market.lltv)
+    collateral = position.collateral.amount
+    # Collateral a full-debt repayment would seize, with Morpho's rounding
+    # (assets→seized rounds down). borrow_assets already rounds up, so this is a
+    # conservative upper bound — when it fits, the on-chain seize fits too.
+    seized_for_full = position.borrow_assets.amount * lif // WAD * ORACLE_PRICE_SCALE // position.collateral_price
+    if seized_for_full > collateral:
+        return TokenAmount(token=position.collateral.token, amount=collateral), None
+    return None, position.borrow_shares
+
+
 def supply_apy_from_borrow(borrow_rate_per_second: int, state: MarketState) -> Decimal:
     """Derive the supply APY from the borrow rate and a market's state.
 
@@ -291,24 +337,30 @@ def supply_apy_from_borrow(borrow_rate_per_second: int, state: MarketState) -> D
     return per_second_rate_to_apy(supply_rate)
 
 
-def _resolve_assets_shares(assets: TokenAmount | None, shares: int | None) -> tuple[int, int]:
-    """Validate the Morpho ``(assets, shares)`` pair — exactly one, positive.
+def _resolve_assets_shares(
+    assets: TokenAmount | None,
+    shares: int | None,
+    *,
+    assets_kw: str = "assets",
+    shares_kw: str = "shares",
+) -> tuple[int, int]:
+    """Validate a Morpho ``(assets, shares)`` pair — exactly one, positive.
 
-    Morpho's supply / withdraw / borrow / repay take both an ``assets`` and a
-    ``shares`` argument and require exactly one to be non-zero. pydefi exposes
-    that as two optional keyword arguments; this enforces that exactly one is
-    passed and that its value is positive — a zero amount would encode the
-    ``assets=0, shares=0`` payload Morpho rejects on-chain.
+    Morpho's supply / withdraw / borrow / repay / liquidate each take an
+    ``assets`` and a ``shares`` argument and require exactly one to be
+    non-zero; a zero amount would encode the ``assets=0, shares=0`` payload
+    Morpho rejects on-chain. *assets_kw* / *shares_kw* name the keywords in the
+    error messages (``liquidate`` uses ``seized_assets`` / ``repaid_shares``).
     """
     if (assets is None) == (shares is None):
-        raise ValueError("pass exactly one of assets= or shares=")
+        raise ValueError(f"pass exactly one of {assets_kw}= or {shares_kw}=")
     if assets is not None:
         if assets.amount <= 0:
-            raise ValueError("assets amount must be positive")
+            raise ValueError(f"{assets_kw} amount must be positive")
         return assets.amount, 0
     assert shares is not None  # narrowed by the XOR above
     if shares <= 0:
-        raise ValueError("shares must be positive")
+        raise ValueError(f"{shares_kw} must be positive")
     return 0, shares
 
 
@@ -470,6 +522,7 @@ class MorphoBlue:
             borrow_assets=TokenAmount(token=params.loan_token, amount=borrow_assets),
             collateral=TokenAmount(token=params.collateral_token, amount=collateral),
             health_factor=compute_health_factor(collateral, borrow_assets, price, params.lltv),
+            collateral_price=price,
         )
 
     # ------------------------------------------------------------------
@@ -562,6 +615,32 @@ class MorphoBlue:
         call_data = MORPHO_BLUE.fns.repay(_params_struct(params), amount, share_amount, on_behalf_of, data).data
         return to_tx(self.morpho_address, call_data)
 
+    def build_liquidate_tx(
+        self,
+        params: MarketParams,
+        borrower: Address,
+        *,
+        seized_assets: TokenAmount | None = None,
+        repaid_shares: int | None = None,
+        data: bytes = b"",
+    ) -> dict[str, Any]:
+        """Build a ``liquidate`` transaction for *borrower*'s unhealthy position.
+
+        Pass exactly one of *seized_assets* (collateral to seize) or
+        *repaid_shares* (borrow shares to repay) — Morpho derives the other
+        side from the market's liquidation incentive. Approve Morpho to pull
+        enough loan token to cover the repaid debt.
+
+        A non-empty *data* fires the caller's ``onMorphoLiquidate`` callback
+        before the debt is pulled, enabling flash-liquidations that source the
+        loan token mid-call.
+        """
+        seized, share_amount = _resolve_assets_shares(
+            seized_assets, repaid_shares, assets_kw="seized_assets", shares_kw="repaid_shares"
+        )
+        call_data = MORPHO_BLUE.fns.liquidate(_params_struct(params), borrower, seized, share_amount, data).data
+        return to_tx(self.morpho_address, call_data)
+
     def build_set_authorization_tx(self, authorized: Address, is_authorized: bool) -> dict[str, Any]:
         """Grant or revoke *authorized*'s right to manage the sender's positions."""
         call_data = MORPHO_BLUE.fns.setAuthorization(authorized, is_authorized).data
@@ -590,6 +669,8 @@ class MorphoBlue:
 
 
 __all__ = [
+    "LIQUIDATION_CURSOR",
+    "MAX_LIQUIDATION_INCENTIVE_FACTOR",
     "ORACLE_PRICE_SCALE",
     "VIRTUAL_ASSETS",
     "VIRTUAL_SHARES",
@@ -600,5 +681,7 @@ __all__ = [
     "MorphoPosition",
     "accrue_interest",
     "compute_health_factor",
+    "liquidation_incentive_factor",
+    "max_liquidation",
     "supply_apy_from_borrow",
 ]

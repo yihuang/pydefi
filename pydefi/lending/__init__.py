@@ -18,6 +18,10 @@ self-contained module:
 * :mod:`pydefi.lending.aave_v4` — Aave V4 client (Hub-and-Spoke), the
   ``V4Reserve`` / ``V4ReserveData`` / ``V4UserReserve`` /
   ``V4UserAccountData`` types.
+* :mod:`pydefi.lending.liquidation` — ``LiquidationRouter``: checks
+  caller-supplied positions for liquidatability across all four protocols
+  and yields ``LiquidationOpportunity`` objects carrying the prebuilt
+  liquidation transaction.
 * :mod:`pydefi.lending.utils` — shared helpers (``UINT256_MAX``,
   ``SECONDS_PER_YEAR``, ``resolve_amount``, ``to_tx``, and the per-second
   ``per_second_rate_to_apy`` used by both Compound III and Morpho).
@@ -81,6 +85,15 @@ from pydefi.lending.compound_v3 import (
     CompoundUserPosition,
     CompoundV3,
 )
+from pydefi.lending.liquidation import (
+    AaveV3Candidate,
+    AaveV4Candidate,
+    CompoundV3Candidate,
+    LiquidationCandidate,
+    LiquidationOpportunity,
+    LiquidationRouter,
+    MorphoCandidate,
+)
 from pydefi.lending.morpho import (
     MarketParams,
     MarketState,
@@ -89,22 +102,31 @@ from pydefi.lending.morpho import (
     MorphoPosition,
     accrue_interest,
     compute_health_factor,
+    liquidation_incentive_factor,
+    max_liquidation,
     supply_apy_from_borrow,
 )
 from pydefi.lending.utils import SECONDS_PER_YEAR, per_second_rate_to_apy
 
 __all__ = [
     "AaveV3",
+    "AaveV3Candidate",
     "AaveV4",
+    "AaveV4Candidate",
     "AaveV4TokenizationSpoke",
     "CompoundCollateralInfo",
     "CompoundMarketData",
     "CompoundUserPosition",
     "CompoundV3",
+    "CompoundV3Candidate",
     "EModeCategory",
+    "LiquidationCandidate",
+    "LiquidationOpportunity",
+    "LiquidationRouter",
     "MarketParams",
     "MarketState",
     "MorphoBlue",
+    "MorphoCandidate",
     "MorphoMarket",
     "MorphoPosition",
     "ReserveData",
@@ -119,6 +141,8 @@ __all__ = [
     "SECONDS_PER_YEAR",
     "accrue_interest",
     "compute_health_factor",
+    "liquidation_incentive_factor",
+    "max_liquidation",
     "per_second_rate_to_apy",
     "ray_rate_to_apy",
     "supply_apy_from_borrow",

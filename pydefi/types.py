@@ -7,7 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import ROUND_DOWN, Decimal
 from enum import Enum, IntEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from pydefi.pathfinder.dag import RouteDAG  # noqa: F401
@@ -199,6 +199,10 @@ class SwapRoute:
     def __repr__(self) -> str:
         path = " -> ".join([self.steps[0].token_in.symbol] + [s.token_out.symbol for s in self.steps])
         return f"SwapRoute({path}, in={self.amount_in.human_amount}, out={self.amount_out.human_amount})"
+
+
+#: Lending protocols shared by the yields and liquidation routers.
+LendingProtocol = Literal["aave_v3", "compound_v3", "morpho", "aave_v4"]
 
 
 class SwapProtocol(str, Enum):

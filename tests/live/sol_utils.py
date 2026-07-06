@@ -92,6 +92,37 @@ async def deploy_mock_v3_pool(
 
 
 # ---------------------------------------------------------------------------
+# Shared Morpho mock-oracle Solidity source
+# ---------------------------------------------------------------------------
+
+#: Minimal Morpho ``IOracle`` with a settable 1e36-scaled price: the public
+#: ``price`` variable's getter is the ``price()`` Morpho reads. Left untouched
+#: it acts as a constant oracle; fork tests move a position underwater via
+#: ``setPrice``.
+MUTABLE_ORACLE_SOL = """\
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+
+contract MutableOracle {
+    uint256 public price;
+
+    constructor(uint256 initialPrice) {
+        price = initialPrice;
+    }
+
+    function setPrice(uint256 newPrice) external {
+        price = newPrice;
+    }
+}
+"""
+
+
+async def deploy_mutable_oracle(w3: AsyncWeb3, deployer: Address, price: int) -> Address:
+    """Compile and deploy :data:`MUTABLE_ORACLE_SOL` returning *price*."""
+    return await deploy(w3, compile_sol_source(MUTABLE_ORACLE_SOL, "MutableOracle"), deployer, price)
+
+
+# ---------------------------------------------------------------------------
 # Shared MockToken Solidity source
 # ---------------------------------------------------------------------------
 
