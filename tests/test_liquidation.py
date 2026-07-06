@@ -7,6 +7,7 @@ error handling, not real RPC behaviour.
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import contextmanager
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -224,6 +225,34 @@ class TestCheckAaveV3:
                 [AaveV3Candidate(1, BORROWER, WETH, USDC), AaveV3Candidate(1, BORROWER, WETH, USDC)]
             )
         from_chain.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_failed_resolve_is_evicted_and_retried(self):
+        """A failed from_chain must not stay cached — the next call retries."""
+        client = MagicMock(name="AaveV3")
+        from_chain = AsyncMock(side_effect=[RuntimeError("rpc down"), client])
+        with patch.object(liquidation.AaveV3, "from_chain", new=from_chain):
+            router = LiquidationRouter(W3S, LIQUIDATOR)
+            with pytest.raises(RuntimeError, match="rpc down"):
+                await router._aave_v3_client(1)
+            assert await router._aave_v3_client(1) is client
+        assert from_chain.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_failed_resolve_evicts_only_its_own_task(self):
+        """A late awaiter of a failed resolve must not evict the fresh task a
+        concurrent retry cached in the meantime — only its own."""
+        router = LiquidationRouter(W3S, LIQUIDATOR)
+        loop = asyncio.get_running_loop()
+        failing, replacement = loop.create_future(), loop.create_future()
+        router._aave_v3[1] = failing
+        awaiter = asyncio.ensure_future(router._aave_v3_client(1))
+        await asyncio.sleep(0)  # the awaiter is now suspended on `failing`
+        router._aave_v3[1] = replacement  # a concurrent retry raced in
+        failing.set_exception(RuntimeError("resolve failed"))
+        with pytest.raises(RuntimeError, match="resolve failed"):
+            await awaiter
+        assert router._aave_v3[1] is replacement
 
     @pytest.mark.asyncio
     async def test_rejects_pair_with_no_debt(self):

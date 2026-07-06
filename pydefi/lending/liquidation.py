@@ -204,7 +204,10 @@ class LiquidationRouter:
         try:
             return await task
         except Exception:  # noqa: BLE001 — don't cache a failed resolve
-            self._aave_v3.pop(chain_id, None)
+            # Evict only our own task: a concurrent awaiter of the same failure
+            # may already have evicted it and a retry cached a fresh resolve.
+            if self._aave_v3.get(chain_id) is task:
+                del self._aave_v3[chain_id]
             raise
 
     # ------------------------------------------------------------------
