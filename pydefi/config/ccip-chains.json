@@ -952,6 +952,25 @@
     "tokenAdminRegistry": "0xf4a170A36D4C656F614d44453f73308Bdb275196",
     "tokenPoolFactory": "0xe8464c353210Cc398A45dB2454FBc5BCd25fFf20"
   },
+  "4663": {
+    "chainFamily": "evm",
+    "chainId": 4663,
+    "chainType": "evm",
+    "displayName": "Robinhood Chain",
+    "feeTokens": [
+      "LINK",
+      "WETH",
+      "ETH"
+    ],
+    "internalId": "robinhood-mainnet",
+    "registryModule": "0x3237c0D7B58BEc8Dc17F00103B784Bd6678f789E",
+    "rmn": "0xe8464c353210Cc398A45dB2454FBc5BCd25fFf20",
+    "router": "0x06fC836cf9839B1cd891C440A0a45242DA6Ae1c9",
+    "selector": "6180753054346818345",
+    "supported": true,
+    "tokenAdminRegistry": "0x1912C3cFafE8A76A32a92861d815aC2837F237Ca",
+    "tokenPoolFactory": "0x913814782144864e523C3FdB78E3ca25D2c2aeCa"
+  },
   "47763": {
     "chainFamily": "evm",
     "chainId": 47763,
