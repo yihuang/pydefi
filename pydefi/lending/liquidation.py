@@ -19,7 +19,7 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any, Literal
+from typing import Any
 
 from web3 import AsyncWeb3
 
@@ -27,11 +27,11 @@ from pydefi.lending.aave_v3 import AaveV3
 from pydefi.lending.aave_v4 import AaveV4
 from pydefi.lending.compound_v3 import CompoundV3
 from pydefi.lending.morpho import MarketParams, MorphoBlue, max_liquidation
-from pydefi.types import Address, Token, TokenAmount
+from pydefi.types import Address, LendingProtocol, Token, TokenAmount
 
 logger = logging.getLogger(__name__)
 
-Protocol = Literal["aave_v3", "compound_v3", "morpho", "aave_v4"]
+Protocol = LendingProtocol
 
 
 # ---------------------------------------------------------------------------
@@ -328,11 +328,11 @@ class LiquidationRouter:
 
     async def check_compound_v3(self, candidate: CompoundV3Candidate) -> LiquidationOpportunity | None:
         """Return an opportunity if the Compound III account is liquidatable,
-        else ``None``. The opportunity's transaction is ``absorb`` — buying
-        the absorbed collateral back at the discount is a separate step."""
+        else ``None`` — one ``isLiquidatable`` read on the healthy path, reading
+        the borrow balance only when it is. The opportunity's transaction is
+        ``absorb``; buying the collateral back at the discount is a separate step."""
         comet = CompoundV3.from_chain(self._w3(candidate.chain_id), candidate.chain_id, candidate.base_symbol)
-        position = await comet.get_user_position(candidate.account)
-        if not position.is_liquidatable:
+        if not await comet.is_liquidatable(candidate.account):
             return None
         tx = comet.build_absorb_tx(self.liquidator, [candidate.account])
         return LiquidationOpportunity(
@@ -340,7 +340,7 @@ class LiquidationRouter:
             chain_id=candidate.chain_id,
             borrower=candidate.account,
             health_factor=None,
-            debt_to_repay=position.base_borrow,
+            debt_to_repay=await comet.get_borrow_balance(candidate.account),
             collateral_to_seize=None,
             tx=tx,
         )
@@ -363,10 +363,8 @@ class LiquidationRouter:
 
     async def _safe_check(self, candidate: LiquidationCandidate) -> LiquidationOpportunity | None:
         """Run :meth:`_check`, downgrading any failure to ``None`` + a log
-        line so one bad RPC does not sink the whole batch."""
-        if candidate.chain_id not in self.w3s:
-            logger.warning("skipping %s — no RPC for chain %s", type(candidate).__name__, candidate.chain_id)
-            return None
+        line so one bad RPC does not sink the whole batch. An unconfigured
+        chain surfaces here as :meth:`_w3`'s ``ValueError``."""
         try:
             return await self._check(candidate)
         except Exception as exc:  # noqa: BLE001 — degrade gracefully per candidate

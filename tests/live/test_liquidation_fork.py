@@ -25,40 +25,10 @@ from pydefi.lending import MorphoBlue
 from pydefi.lending.liquidation import LiquidationRouter, MorphoCandidate
 from pydefi.lending.morpho import MarketParams
 from pydefi.lending.utils import UINT256_MAX
-from pydefi.types import Address, ChainId, TokenAmount
-from tests.addrs import ETH_WHALE, MORPHO_IRM, USDC, USDC_WHALE, WETH
-from tests.live.anvil_helpers import (
-    erc20_approve,
-    fund_usdc,
-    impersonate,
-    send_ok,
-    set_balance,
-    wrap_eth,
-)
-from tests.live.sol_utils import compile_sol_source, deploy
-
-#: An enabled standard LLTV (86%), WAD-scaled.
-LLTV_86 = 860_000_000_000_000_000
-
-#: Minimal Morpho ``IOracle`` whose 1e36-scaled price is settable, so the test
-#: can move a position from healthy to underwater on demand. The public
-#: ``price`` variable's auto-generated getter is the ``price()`` Morpho reads.
-MUTABLE_ORACLE_SOL = """\
-// SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
-
-contract MutableOracle {
-    uint256 public price;
-
-    constructor(uint256 initialPrice) {
-        price = initialPrice;
-    }
-
-    function setPrice(uint256 newPrice) external {
-        price = newPrice;
-    }
-}
-"""
+from pydefi.types import Address, ChainId
+from tests.addrs import ETH_WHALE, LLTV_86, MORPHO_IRM, USDC, WETH
+from tests.live.anvil_helpers import erc20_approve, fund_usdc, seed_morpho_market, send_ok
+from tests.live.sol_utils import deploy_mutable_oracle
 
 _ORACLE = Contract.from_abi(["function setPrice(uint256 newPrice) external"])
 
@@ -86,10 +56,9 @@ class TestLiquidationRouterFork:
         deployer = Address((await fork_w3.eth.accounts)[0])
         liquidator = Address((await fork_w3.eth.accounts)[1])
 
-        # Deploy a mutable-price oracle and createMarket a self-contained
-        # WETH-collateral / USDC-loan market around it.
-        compiled = compile_sol_source(MUTABLE_ORACLE_SOL, "MutableOracle")
-        oracle = await deploy(fork_w3, compiled, deployer, HEALTHY_PRICE)
+        # A self-contained WETH-collateral / USDC-loan market around a
+        # mutable-price oracle, seeded with a borrower healthy at $3000.
+        oracle = await deploy_mutable_oracle(fork_w3, deployer, HEALTHY_PRICE)
         market = MarketParams(
             loan_token=USDC,
             collateral_token=WETH,
@@ -97,37 +66,8 @@ class TestLiquidationRouterFork:
             irm=MORPHO_IRM,
             lltv=LLTV_86,
         )
-        await send_ok(fork_w3, deployer, morpho.build_create_market_tx(market), "createMarket")
-
-        # A supplier provides USDC liquidity for the borrow to draw on.
-        await impersonate(fork_w3, USDC_WHALE)
-        await set_balance(fork_w3, USDC_WHALE, 10**18)
-        await erc20_approve(fork_w3, USDC.address, USDC_WHALE, morpho.morpho_address, SUPPLY_USDC)
-        await send_ok(
-            fork_w3,
-            USDC_WHALE,
-            morpho.build_supply_tx(market, assets=TokenAmount(USDC, SUPPLY_USDC), on_behalf_of=USDC_WHALE),
-            "supply",
-        )
-
-        # The borrower posts WETH collateral and borrows USDC — healthy at $3000.
-        await impersonate(fork_w3, ETH_WHALE)
-        await set_balance(fork_w3, ETH_WHALE, 100 * 10**18)
-        await wrap_eth(fork_w3, ETH_WHALE, WETH.address, COLLATERAL_WETH)
-        await erc20_approve(fork_w3, WETH.address, ETH_WHALE, morpho.morpho_address, COLLATERAL_WETH)
-        await send_ok(
-            fork_w3,
-            ETH_WHALE,
-            morpho.build_supply_collateral_tx(market, TokenAmount(WETH, COLLATERAL_WETH), ETH_WHALE),
-            "supplyCollateral",
-        )
-        await send_ok(
-            fork_w3,
-            ETH_WHALE,
-            morpho.build_borrow_tx(
-                market, assets=TokenAmount(USDC, BORROW_USDC), on_behalf_of=ETH_WHALE, receiver=ETH_WHALE
-            ),
-            "borrow",
+        await seed_morpho_market(
+            fork_w3, morpho, market, deployer, supply=SUPPLY_USDC, collateral=COLLATERAL_WETH, borrow=BORROW_USDC
         )
 
         router = LiquidationRouter({ChainId.ETHEREUM: fork_w3}, liquidator)

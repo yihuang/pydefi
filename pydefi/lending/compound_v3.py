@@ -316,6 +316,18 @@ class CompoundV3:
         """Read a Comet-internal price feed. Result is 1e8-scaled USD."""
         return await COMPOUND_V3_COMET.fns.getPrice(price_feed).call(self.w3, to=self.comet_address)
 
+    async def is_liquidatable(self, account: Address) -> bool:
+        """Return whether Comet currently lets *account* be absorbed."""
+        return await COMPOUND_V3_COMET.fns.isLiquidatable(account).call(self.w3, to=self.comet_address)
+
+    async def get_borrow_balance(self, account: Address) -> TokenAmount:
+        """Return *account*'s current base-asset debt."""
+        base, raw = await asyncio.gather(
+            self.get_base_token(),
+            COMPOUND_V3_COMET.fns.borrowBalanceOf(account).call(self.w3, to=self.comet_address),
+        )
+        return TokenAmount(token=base, amount=raw)
+
     async def quote_collateral(self, asset: Token, base_amount: TokenAmount) -> TokenAmount:
         """Return how much *asset* collateral *base_amount* of the base asset
         buys at the current liquidation discount — size
@@ -387,7 +399,7 @@ class CompoundV3:
         """
         if not accounts:
             raise ValueError("accounts must list at least one account to absorb")
-        call_data = COMPOUND_V3_COMET.fns.absorb(absorber, list(accounts)).data
+        call_data = COMPOUND_V3_COMET.fns.absorb(absorber, accounts).data
         return to_tx(self.comet_address, call_data)
 
     def build_buy_collateral_tx(

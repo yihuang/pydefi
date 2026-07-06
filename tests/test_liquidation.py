@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import contextmanager
+from dataclasses import FrozenInstanceError
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -23,9 +24,9 @@ from pydefi.lending.liquidation import (
     LiquidationRouter,
     MorphoCandidate,
 )
-from pydefi.lending.morpho import MarketParams
+from pydefi.lending.morpho import ORACLE_PRICE_SCALE, MarketParams, MorphoPosition
 from pydefi.types import TokenAmount
-from tests.addrs import ETH_WHALE, USDC, WETH
+from tests.addrs import ETH_WHALE, LLTV_86, USDC, WETH
 
 # A WETH-collateral / USDC-loan Morpho market (params, not on-chain state).
 MARKET = MarketParams(
@@ -33,7 +34,7 @@ MARKET = MarketParams(
     collateral_token=WETH,
     oracle=ETH_WHALE,  # any address — these tests never read the oracle
     irm=ETH_WHALE,
-    lltv=860_000_000_000_000_000,
+    lltv=LLTV_86,
 )
 
 BORROWER = ETH_WHALE
@@ -56,11 +57,11 @@ def _router_for(client_cls: type, client: MagicMock):
         yield LiquidationRouter(W3S, LIQUIDATOR)
 
 
-def _opportunity(protocol: str = "morpho", chain_id: int = 1, tx: dict | None = None) -> LiquidationOpportunity:
+def _opportunity(tx: dict | None = None) -> LiquidationOpportunity:
     """A liquidation opportunity with placeholder fields, for plumbing tests."""
     return LiquidationOpportunity(
-        protocol=protocol,  # type: ignore[arg-type]
-        chain_id=chain_id,
+        protocol="morpho",
+        chain_id=1,
         borrower=BORROWER,
         health_factor=Decimal("0.5"),
         debt_to_repay=TokenAmount(USDC, 1),
@@ -73,20 +74,35 @@ def _v3_debt_reserve(amount: int = 7000) -> MagicMock:
     return MagicMock(variable_debt=TokenAmount(USDC, amount))
 
 
-def _v3_collateral_reserve(amount: int = 5 * 10**18, *, enabled: bool = True) -> MagicMock:
-    return MagicMock(a_token_balance=TokenAmount(WETH, amount), usage_as_collateral_enabled=enabled)
+def _v3_collateral_reserve(*, enabled: bool = True) -> MagicMock:
+    return MagicMock(a_token_balance=TokenAmount(WETH, 5 * 10**18), usage_as_collateral_enabled=enabled)
 
 
 def _v4_debt_reserve(amount: int = 3000) -> MagicMock:
     return MagicMock(debt=TokenAmount(USDC, amount))
 
 
-def _v4_collateral_reserve(amount: int = 5 * 10**18, *, enabled: bool = True) -> MagicMock:
-    return MagicMock(supplied=TokenAmount(WETH, amount), using_as_collateral=enabled)
+def _v4_collateral_reserve(*, enabled: bool = True) -> MagicMock:
+    return MagicMock(supplied=TokenAmount(WETH, 5 * 10**18), using_as_collateral=enabled)
 
 
-#: A unit oracle price (1e36-scaled): one collateral token is worth one loan token.
-MORPHO_UNIT_PRICE = 10**36
+def _v3_client(health_factor: Decimal, reserves: list[MagicMock] | None = None) -> MagicMock:
+    """Mock AaveV3 client: account health factor plus the (debt, collateral)
+    reserve reads the router gathers debt-first."""
+    return MagicMock(
+        get_user_account_data=AsyncMock(return_value=MagicMock(health_factor=health_factor)),
+        get_user_reserve_data=AsyncMock(side_effect=reserves),
+        build_liquidation_call_tx=MagicMock(return_value=STUB_TX),
+    )
+
+
+def _v4_client(health_factor: Decimal, reserves: list[MagicMock] | None = None) -> MagicMock:
+    """Mock AaveV4 client, shaped like :func:`_v3_client`."""
+    return MagicMock(
+        get_user_account_data=AsyncMock(return_value=MagicMock(health_factor=health_factor)),
+        get_user_reserve=AsyncMock(side_effect=reserves),
+        build_liquidation_call_tx=MagicMock(return_value=STUB_TX),
+    )
 
 
 def _morpho_position(
@@ -95,17 +111,20 @@ def _morpho_position(
     borrow_shares: int = 999,
     borrow_assets: int = 5000,
     collateral: int = 10**24,
-    collateral_price: int = MORPHO_UNIT_PRICE,
-) -> MagicMock:
-    """Stand-in MorphoPosition. Defaults are solvent-underwater (collateral far
-    exceeds ``borrow_assets * incentive``, so the full debt repays by shares);
-    shrink *collateral* to model bad debt and force a seize-all."""
-    return MagicMock(
+    collateral_price: int = ORACLE_PRICE_SCALE,
+) -> MorphoPosition:
+    """A real MorphoPosition. Defaults are solvent-underwater at a unit oracle
+    price (collateral far exceeds ``borrow_assets * incentive``, so the full
+    debt repays by shares); shrink *collateral* to model bad debt and force a
+    seize-all."""
+    return MorphoPosition(
         market=MARKET,
-        health_factor=health_factor,
+        supply_shares=0,
         borrow_shares=borrow_shares,
+        supply_assets=TokenAmount(USDC, 0),
         borrow_assets=TokenAmount(USDC, borrow_assets),
         collateral=TokenAmount(WETH, collateral),
+        health_factor=health_factor,
         collateral_price=collateral_price,
     )
 
@@ -117,7 +136,7 @@ def _morpho_position(
 
 class TestLiquidationOpportunity:
     def test_is_frozen(self):
-        with pytest.raises((AttributeError, TypeError)):
+        with pytest.raises(FrozenInstanceError):
             _opportunity().tx = {"other": "tx"}  # type: ignore[misc]
 
 
@@ -163,14 +182,14 @@ class TestCheckMorpho:
 
     @pytest.mark.asyncio
     async def test_healthy_returns_none(self):
-        morpho = MagicMock(get_position=AsyncMock(return_value=MagicMock(health_factor=Decimal("1.5"))))
+        morpho = MagicMock(get_position=AsyncMock(return_value=_morpho_position(health_factor=Decimal("1.5"))))
         with _router_for(liquidation.MorphoBlue, morpho) as router:
             assert await router.check_morpho(MorphoCandidate(1, MARKET, BORROWER)) is None
 
     @pytest.mark.asyncio
     async def test_health_factor_exactly_one_is_not_liquidatable(self):
         """HF == 1 is healthy — liquidation needs HF < 1."""
-        morpho = MagicMock(get_position=AsyncMock(return_value=MagicMock(health_factor=Decimal("1"))))
+        morpho = MagicMock(get_position=AsyncMock(return_value=_morpho_position(health_factor=Decimal("1"))))
         with _router_for(liquidation.MorphoBlue, morpho) as router:
             assert await router.check_morpho(MorphoCandidate(1, MARKET, BORROWER)) is None
 
@@ -178,12 +197,7 @@ class TestCheckMorpho:
 class TestCheckAaveV3:
     @pytest.mark.asyncio
     async def test_unhealthy_returns_opportunity(self):
-        aave = MagicMock(
-            get_user_account_data=AsyncMock(return_value=MagicMock(health_factor=Decimal("0.95"))),
-            # get_user_reserve_data is gathered debt-first, then collateral.
-            get_user_reserve_data=AsyncMock(side_effect=[_v3_debt_reserve(7000), _v3_collateral_reserve()]),
-            build_liquidation_call_tx=MagicMock(return_value=STUB_TX),
-        )
+        aave = _v3_client(Decimal("0.95"), [_v3_debt_reserve(7000), _v3_collateral_reserve()])
         with _router_for(liquidation.AaveV3, aave) as router:
             opp = await router.check_aave_v3(AaveV3Candidate(1, BORROWER, WETH, USDC))
 
@@ -197,18 +211,14 @@ class TestCheckAaveV3:
 
     @pytest.mark.asyncio
     async def test_receive_atoken_flag_is_forwarded(self):
-        aave = MagicMock(
-            get_user_account_data=AsyncMock(return_value=MagicMock(health_factor=Decimal("0.9"))),
-            get_user_reserve_data=AsyncMock(side_effect=[_v3_debt_reserve(1), _v3_collateral_reserve()]),
-            build_liquidation_call_tx=MagicMock(return_value=STUB_TX),
-        )
+        aave = _v3_client(Decimal("0.9"), [_v3_debt_reserve(1), _v3_collateral_reserve()])
         with _router_for(liquidation.AaveV3, aave) as router:
             await router.check_aave_v3(AaveV3Candidate(1, BORROWER, WETH, USDC, receive_atoken=True))
         aave.build_liquidation_call_tx.assert_called_once_with(WETH, (USDC, "max"), BORROWER, receive_atoken=True)
 
     @pytest.mark.asyncio
     async def test_healthy_returns_none(self):
-        aave = MagicMock(get_user_account_data=AsyncMock(return_value=MagicMock(health_factor=Decimal("Infinity"))))
+        aave = _v3_client(Decimal("Infinity"))
         with _router_for(liquidation.AaveV3, aave) as router:
             assert await router.check_aave_v3(AaveV3Candidate(1, BORROWER, WETH, USDC)) is None
 
@@ -217,8 +227,7 @@ class TestCheckAaveV3:
         """AaveV3.from_chain reads Pool/DataProvider/Oracle on-chain; the router
         memoizes the client so a batch of same-chain candidates resolves it once
         even when the checks run concurrently."""
-        aave = MagicMock(get_user_account_data=AsyncMock(return_value=MagicMock(health_factor=Decimal("2"))))
-        from_chain = AsyncMock(return_value=aave)
+        from_chain = AsyncMock(return_value=_v3_client(Decimal("2")))
         with patch.object(liquidation.AaveV3, "from_chain", new=from_chain):
             router = LiquidationRouter(W3S, LIQUIDATOR)
             await router.find_liquidatable_positions(
@@ -227,8 +236,12 @@ class TestCheckAaveV3:
         from_chain.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_failed_resolve_is_evicted_and_retried(self):
-        """A failed from_chain must not stay cached — the next call retries."""
+    async def test_failed_resolve_eviction(self):
+        """A failed from_chain is evicted so the next call retries, and a late
+        awaiter of that failure evicts only its own task — never a fresh one a
+        concurrent retry cached in the meantime."""
+        # Evict-and-retry: the failed resolve is not cached, so the second call
+        # re-invokes from_chain and succeeds.
         client = MagicMock(name="AaveV3")
         from_chain = AsyncMock(side_effect=[RuntimeError("rpc down"), client])
         with patch.object(liquidation.AaveV3, "from_chain", new=from_chain):
@@ -238,10 +251,8 @@ class TestCheckAaveV3:
             assert await router._aave_v3_client(1) is client
         assert from_chain.await_count == 2
 
-    @pytest.mark.asyncio
-    async def test_failed_resolve_evicts_only_its_own_task(self):
-        """A late awaiter of a failed resolve must not evict the fresh task a
-        concurrent retry cached in the meantime — only its own."""
+        # Own-task-only: a replacement a concurrent retry raced in before the
+        # failure lands must survive the late awaiter's eviction.
         router = LiquidationRouter(W3S, LIQUIDATOR)
         loop = asyncio.get_running_loop()
         failing, replacement = loop.create_future(), loop.create_future()
@@ -257,22 +268,14 @@ class TestCheckAaveV3:
     @pytest.mark.asyncio
     async def test_rejects_pair_with_no_debt(self):
         """No debt in candidate.debt → reject (liquidationCall would revert)."""
-        aave = MagicMock(
-            get_user_account_data=AsyncMock(return_value=MagicMock(health_factor=Decimal("0.9"))),
-            get_user_reserve_data=AsyncMock(side_effect=[_v3_debt_reserve(0), _v3_collateral_reserve()]),
-        )
+        aave = _v3_client(Decimal("0.9"), [_v3_debt_reserve(0), _v3_collateral_reserve()])
         with _router_for(liquidation.AaveV3, aave) as router, pytest.raises(ValueError, match="carries no .* debt"):
             await router.check_aave_v3(AaveV3Candidate(1, BORROWER, WETH, USDC))
 
     @pytest.mark.asyncio
     async def test_rejects_pair_with_disabled_collateral(self):
         """Collateral not enabled → reject (liquidationCall would seize nothing)."""
-        aave = MagicMock(
-            get_user_account_data=AsyncMock(return_value=MagicMock(health_factor=Decimal("0.9"))),
-            get_user_reserve_data=AsyncMock(
-                side_effect=[_v3_debt_reserve(7000), _v3_collateral_reserve(enabled=False)]
-            ),
-        )
+        aave = _v3_client(Decimal("0.9"), [_v3_debt_reserve(7000), _v3_collateral_reserve(enabled=False)])
         with (
             _router_for(liquidation.AaveV3, aave) as router,
             pytest.raises(ValueError, match="no .* collateral enabled"),
@@ -283,12 +286,7 @@ class TestCheckAaveV3:
 class TestCheckAaveV4:
     @pytest.mark.asyncio
     async def test_unhealthy_returns_opportunity(self):
-        v4 = MagicMock(
-            get_user_account_data=AsyncMock(return_value=MagicMock(health_factor=Decimal("0.99"))),
-            # get_user_reserve is gathered debt-first, then collateral.
-            get_user_reserve=AsyncMock(side_effect=[_v4_debt_reserve(3000), _v4_collateral_reserve()]),
-            build_liquidation_call_tx=MagicMock(return_value=STUB_TX),
-        )
+        v4 = _v4_client(Decimal("0.99"), [_v4_debt_reserve(3000), _v4_collateral_reserve()])
         with _router_for(liquidation.AaveV4, v4) as router:
             opp = await router.check_aave_v4(AaveV4Candidate(1, "MAIN_SPOKE", BORROWER, 0, 7))
 
@@ -303,17 +301,14 @@ class TestCheckAaveV4:
 
     @pytest.mark.asyncio
     async def test_healthy_returns_none(self):
-        v4 = MagicMock(get_user_account_data=AsyncMock(return_value=MagicMock(health_factor=Decimal("1.2"))))
+        v4 = _v4_client(Decimal("1.2"))
         with _router_for(liquidation.AaveV4, v4) as router:
             assert await router.check_aave_v4(AaveV4Candidate(1, "MAIN_SPOKE", BORROWER, 0, 7)) is None
 
     @pytest.mark.asyncio
     async def test_rejects_reserve_with_no_debt(self):
         """No debt in the chosen reserve → reject (liquidationCall would revert)."""
-        v4 = MagicMock(
-            get_user_account_data=AsyncMock(return_value=MagicMock(health_factor=Decimal("0.9"))),
-            get_user_reserve=AsyncMock(side_effect=[_v4_debt_reserve(0), _v4_collateral_reserve()]),
-        )
+        v4 = _v4_client(Decimal("0.9"), [_v4_debt_reserve(0), _v4_collateral_reserve()])
         with (
             _router_for(liquidation.AaveV4, v4) as router,
             pytest.raises(ValueError, match="carries no debt in reserve"),
@@ -323,10 +318,7 @@ class TestCheckAaveV4:
     @pytest.mark.asyncio
     async def test_rejects_reserve_with_disabled_collateral(self):
         """Chosen collateral reserve not enabled → reject (would seize nothing)."""
-        v4 = MagicMock(
-            get_user_account_data=AsyncMock(return_value=MagicMock(health_factor=Decimal("0.9"))),
-            get_user_reserve=AsyncMock(side_effect=[_v4_debt_reserve(3000), _v4_collateral_reserve(enabled=False)]),
-        )
+        v4 = _v4_client(Decimal("0.9"), [_v4_debt_reserve(3000), _v4_collateral_reserve(enabled=False)])
         with (
             _router_for(liquidation.AaveV4, v4) as router,
             pytest.raises(ValueError, match="no collateral enabled in reserve"),
@@ -338,9 +330,8 @@ class TestCheckCompoundV3:
     @pytest.mark.asyncio
     async def test_liquidatable_returns_opportunity(self):
         comet = MagicMock(
-            get_user_position=AsyncMock(
-                return_value=MagicMock(is_liquidatable=True, base_borrow=TokenAmount(USDC, 2500))
-            ),
+            is_liquidatable=AsyncMock(return_value=True),
+            get_borrow_balance=AsyncMock(return_value=TokenAmount(USDC, 2500)),
             build_absorb_tx=MagicMock(return_value=STUB_TX),
         )
         with _router_for(liquidation.CompoundV3, comet) as router:
@@ -357,9 +348,10 @@ class TestCheckCompoundV3:
 
     @pytest.mark.asyncio
     async def test_not_liquidatable_returns_none(self):
-        comet = MagicMock(get_user_position=AsyncMock(return_value=MagicMock(is_liquidatable=False)))
+        comet = MagicMock(is_liquidatable=AsyncMock(return_value=False))
         with _router_for(liquidation.CompoundV3, comet) as router:
             assert await router.check_compound_v3(CompoundV3Candidate(1, "USDC", BORROWER)) is None
+        comet.get_borrow_balance.assert_not_called()  # healthy path costs one read
 
 
 # ---------------------------------------------------------------------------
@@ -405,11 +397,10 @@ class TestRouterPlumbing:
 
     @pytest.mark.asyncio
     async def test_find_skips_candidate_on_unconfigured_chain(self):
+        """_w3 raises before any RPC is attempted; the batch downgrades it to a skip."""
         router = LiquidationRouter(W3S, LIQUIDATOR)  # only chain 1
-        router.check_morpho = AsyncMock(return_value=None)
         opps = await router.find_liquidatable_positions([MorphoCandidate(999, MARKET, BORROWER)])
         assert opps == []
-        router.check_morpho.assert_not_awaited()  # never dispatched
 
     @pytest.mark.asyncio
     async def test_find_downgrades_per_candidate_failure_to_skip(self):

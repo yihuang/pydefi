@@ -58,7 +58,7 @@ from pydefi.lending.utils import (
     parse_health_factor,
 )
 from pydefi.types import Address, ChainId, TokenAmount
-from tests.addrs import ETH_WHALE, USDC, WETH
+from tests.addrs import ETH_WHALE, LLTV_86, USDC, WETH
 
 if TYPE_CHECKING:
     from eth_contract.contract import ContractFunction
@@ -520,9 +520,6 @@ def test_compound_v3_market_pinned(name: str, chain: int):
 MORPHO_BLUE_ADDR = Address("0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb")
 MORPHO_IRM_ADDR = Address("0x870aC11D48B15DB9a138Cf899d20F13F79Ba00BC")
 MORPHO_ORACLE_ADDR = Address("0x2a01EB9496094dA03c4E364Def50f5aD1280AD72")
-
-#: An enabled standard LLTV (86%), WAD-scaled.
-LLTV_86 = 860_000_000_000_000_000
 
 #: ``keccak256(abi.encode(MARKET))`` computed offline (see docs/plan_morpho.md)
 #: — a fixed regression vector independent of the production code path.

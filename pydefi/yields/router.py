@@ -23,7 +23,7 @@ from pydefi.lending.aave_v3 import AaveV3
 from pydefi.lending.aave_v4 import AaveV4
 from pydefi.lending.compound_v3 import CompoundV3
 from pydefi.lending.morpho import MarketParams, MorphoBlue
-from pydefi.types import Address, ChainId, Token, TokenAmount
+from pydefi.types import Address, ChainId, LendingProtocol, Token, TokenAmount
 from pydefi.vm.eip712 import sign_typed_data
 from pydefi.vm.eip7702_supply import (
     build_batch_typed_data,
@@ -35,7 +35,7 @@ from pydefi.vm.permit2_supply import build_supply_program, build_supply_tx, buil
 
 logger = logging.getLogger(__name__)
 
-Protocol = Literal["aave_v3", "compound_v3", "morpho", "aave_v4"]
+Protocol = LendingProtocol
 # Strategies build_yield_route sequences directly into source-chain steps.
 RouteStrategy = Literal["withdraw_then_supply", "supply_then_bridge", "bridge_then_supply"]
 # Every strategy a YieldRoute can carry. "compose_supply" routes are built by
