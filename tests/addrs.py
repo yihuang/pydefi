@@ -24,6 +24,9 @@ ETH_WHALE: Address = Address("0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045")
 USDC_WHALE: Address = Address("0x40ec5B33f54e0E8A33A975908C5BA1c14e5BbbDf")
 #: Analog-Labs EVM interpreter — pre-deployed via CREATE2 on mainnet.
 INTERPRETER_ADDR: Address = Address("0x0000000000001e3F4F615cd5e20c681Cf7d85e8D")
+#: An enabled standard Morpho LLTV (86%), WAD-scaled — the canonical market
+#: parameter shared by the Morpho unit and fork tests.
+LLTV_86: int = 860_000_000_000_000_000
 
 # ── Ethereum mainnet tokens ───────────────────────────────────────────────────
 

@@ -582,3 +582,29 @@ class AaveV3:
             raise ValueError("category_id must fit in uint8 (0–255)")
         call_data = AAVE_V3_POOL.fns.setUserEMode(category_id).data
         return to_tx(self.pool_address, call_data)
+
+    def build_liquidation_call_tx(
+        self,
+        collateral_asset: Token,
+        debt_to_cover: TokenAmount | tuple[Token, Literal["max"]],
+        user: Address,
+        receive_atoken: bool = False,
+    ) -> dict[str, Any]:
+        """Build a ``liquidationCall`` transaction.
+
+        Liquidate *user*'s unhealthy position: repay up to *debt_to_cover* and
+        seize *collateral_asset* at its liquidation bonus. *debt_to_cover*'s
+        token identifies the debt asset; ``(debt_token, "max")`` repays the
+        close-factor maximum. *receive_atoken* takes the seized collateral as
+        the aToken instead of the underlying. Approve the Pool to pull the debt
+        asset first.
+        """
+        debt_asset, raw = resolve_amount(debt_to_cover)
+        call_data = AAVE_V3_POOL.fns.liquidationCall(
+            collateral_asset.address,
+            debt_asset.address,
+            user,
+            raw,
+            receive_atoken,
+        ).data
+        return to_tx(self.pool_address, call_data)

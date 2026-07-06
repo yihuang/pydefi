@@ -29,23 +29,19 @@ from pydefi.lending import MorphoBlue
 from pydefi.lending.morpho import MarketParams
 from pydefi.lending.utils import UINT256_MAX
 from pydefi.types import Address, ChainId, TokenAmount
-from tests.addrs import ETH_WHALE, MORPHO_IRM, USDC, USDC_WHALE, WETH
+from tests.addrs import ETH_WHALE, LLTV_86, MORPHO_IRM, USDC, WETH
 from tests.live.anvil_helpers import (
     erc20_approve,
     fund_usdc,
     impersonate,
+    seed_morpho_market,
     send_ok,
-    set_balance,
-    wrap_eth,
 )
-from tests.live.sol_utils import compile_sol_source, deploy
+from tests.live.sol_utils import deploy_mutable_oracle
 
 #: A real, immutable mainnet Morpho market — cbBTC collateral / USDC loan,
 #: 86% LLTV. A market Id is the hash of immutable params, so it never moves.
 CBBTC_USDC_MARKET_ID = bytes.fromhex("64d65c9a2d91c36d56fbc42d69e979335320169b3df63bf92789e2c8883fcc64")
-
-#: An enabled standard LLTV (86%), WAD-scaled.
-LLTV_86 = 860_000_000_000_000_000
 
 
 # ---------------------------------------------------------------------------
@@ -93,24 +89,6 @@ class TestMorphoLiveReads:
 # Fork tests (Anvil)
 # ---------------------------------------------------------------------------
 
-MOCK_ORACLE_SOL = """\
-// SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
-
-/// @notice Minimal Morpho IOracle returning a constant 1e36-scaled price.
-contract MockOracle {
-    uint256 public immutable PRICE;
-
-    constructor(uint256 price_) {
-        PRICE = price_;
-    }
-
-    function price() external view returns (uint256) {
-        return PRICE;
-    }
-}
-"""
-
 # WETH (18 dec) priced in USDC (6 dec) at $3000, scaled by 1e36:
 # 3000 * 10 ** (36 + 6 - 18).
 WETH_USDC_PRICE = 3_000 * 10**24
@@ -127,11 +105,10 @@ class TestMorphoFork:
         morpho = MorphoBlue.from_chain(fork_w3, ChainId.ETHEREUM)
 
         # Deploy a constant-price oracle so the test owns a self-contained
-        # market instead of depending on a live market's liquidity.
+        # market instead of depending on a live market's liquidity, then
+        # create + seed it: whale supply, borrower collateral, borrow.
         deployer = Address((await fork_w3.eth.accounts)[0])
-        compiled = compile_sol_source(MOCK_ORACLE_SOL, "MockOracle")
-        oracle = await deploy(fork_w3, compiled, deployer, WETH_USDC_PRICE)
-
+        oracle = await deploy_mutable_oracle(fork_w3, deployer, WETH_USDC_PRICE)
         market = MarketParams(
             loan_token=USDC,
             collateral_token=WETH,
@@ -139,48 +116,17 @@ class TestMorphoFork:
             irm=MORPHO_IRM,
             lltv=LLTV_86,
         )
-
-        # 1. Create the market (permissionless — IRM and LLTV are enabled).
-        await send_ok(fork_w3, deployer, morpho.build_create_market_tx(market), "createMarket")
-
-        # 2. A supplier provides USDC liquidity.
-        await impersonate(fork_w3, USDC_WHALE)
-        await set_balance(fork_w3, USDC_WHALE, 10**18)
-        await erc20_approve(fork_w3, USDC.address, USDC_WHALE, morpho.morpho_address, SUPPLY_USDC)
-        await send_ok(
-            fork_w3,
-            USDC_WHALE,
-            morpho.build_supply_tx(market, assets=TokenAmount(USDC, SUPPLY_USDC), on_behalf_of=USDC_WHALE),
-            "supply",
-        )
-        snapshot = await morpho.get_market(market)
-        assert snapshot.liquidity.amount >= SUPPLY_USDC - 10
-        assert snapshot.borrow_apy >= Decimal(0)
-
-        # 3. The borrower posts WETH collateral.
-        await impersonate(fork_w3, ETH_WHALE)
-        await set_balance(fork_w3, ETH_WHALE, 100 * 10**18)
-        await wrap_eth(fork_w3, ETH_WHALE, WETH.address, COLLATERAL_WETH)
-        await erc20_approve(fork_w3, WETH.address, ETH_WHALE, morpho.morpho_address, COLLATERAL_WETH)
-        await send_ok(
-            fork_w3,
-            ETH_WHALE,
-            morpho.build_supply_collateral_tx(market, TokenAmount(WETH, COLLATERAL_WETH), ETH_WHALE),
-            "supplyCollateral",
-        )
-
-        # 4. Borrow USDC against the collateral.
         usdc_before = await ERC20.fns.balanceOf(ETH_WHALE).call(fork_w3, to=USDC.address)
-        await send_ok(
-            fork_w3,
-            ETH_WHALE,
-            morpho.build_borrow_tx(
-                market, assets=TokenAmount(USDC, BORROW_USDC), on_behalf_of=ETH_WHALE, receiver=ETH_WHALE
-            ),
-            "borrow",
+        await seed_morpho_market(
+            fork_w3, morpho, market, deployer, supply=SUPPLY_USDC, collateral=COLLATERAL_WETH, borrow=BORROW_USDC
         )
+
+        # The borrow proceeds arrived, and the market accounts for both legs.
         usdc_after = await ERC20.fns.balanceOf(ETH_WHALE).call(fork_w3, to=USDC.address)
         assert usdc_after - usdc_before == BORROW_USDC
+        snapshot = await morpho.get_market(market)
+        assert snapshot.liquidity.amount >= SUPPLY_USDC - BORROW_USDC - 10
+        assert snapshot.borrow_apy >= Decimal(0)
 
         pos = await morpho.get_position(ETH_WHALE, market)
         assert pos.collateral.amount == COLLATERAL_WETH

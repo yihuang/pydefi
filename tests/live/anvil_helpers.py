@@ -14,9 +14,10 @@ from eth_contract.erc20 import ERC20
 from web3 import AsyncWeb3, Web3
 
 from pydefi._utils import erc20_approve_tx
-from pydefi.types import Address
+from pydefi.lending.morpho import MarketParams, MorphoBlue
+from pydefi.types import Address, TokenAmount
 from pydefi.vm.permit2_supply import PERMIT2
-from tests.addrs import USDC_WHALE
+from tests.addrs import ETH_WHALE, USDC_WHALE
 
 # WETH9 ``deposit()`` is not on the ERC-20 ABI; declare it once here.
 _WETH9 = Contract.from_abi(["function deposit() external payable"])
@@ -90,6 +91,53 @@ async def send_ok(w3: AsyncWeb3, sender: Address, tx: dict, label: str) -> dict:
     receipt = await send_tx(w3, sender, tx)
     assert receipt["status"] == 1, f"{label} reverted"
     return receipt
+
+
+async def seed_morpho_market(
+    w3: AsyncWeb3,
+    morpho: MorphoBlue,
+    market: MarketParams,
+    deployer: Address,
+    *,
+    supply: int,
+    collateral: int,
+    borrow: int,
+) -> None:
+    """Create *market* and seed it with a healthy borrower on a mainnet fork.
+
+    The USDC whale supplies *supply* of loan-token liquidity; :data:`ETH_WHALE`
+    then wraps *collateral* of ETH, posts it, and borrows *borrow*. Every step
+    asserts its receipt.
+    """
+    loan, coll = market.loan_token, market.collateral_token
+    await send_ok(w3, deployer, morpho.build_create_market_tx(market), "createMarket")
+
+    await impersonate(w3, USDC_WHALE)
+    await set_balance(w3, USDC_WHALE, 10**18)
+    await erc20_approve(w3, loan.address, USDC_WHALE, morpho.morpho_address, supply)
+    await send_ok(
+        w3,
+        USDC_WHALE,
+        morpho.build_supply_tx(market, assets=TokenAmount(loan, supply), on_behalf_of=USDC_WHALE),
+        "supply",
+    )
+
+    await impersonate(w3, ETH_WHALE)
+    await set_balance(w3, ETH_WHALE, 100 * 10**18)
+    await wrap_eth(w3, ETH_WHALE, coll.address, collateral)
+    await erc20_approve(w3, coll.address, ETH_WHALE, morpho.morpho_address, collateral)
+    await send_ok(
+        w3,
+        ETH_WHALE,
+        morpho.build_supply_collateral_tx(market, TokenAmount(coll, collateral), ETH_WHALE),
+        "supplyCollateral",
+    )
+    await send_ok(
+        w3,
+        ETH_WHALE,
+        morpho.build_borrow_tx(market, assets=TokenAmount(loan, borrow), on_behalf_of=ETH_WHALE, receiver=ETH_WHALE),
+        "borrow",
+    )
 
 
 async def fund_usdc(w3: AsyncWeb3, usdc: Address, recipient: Address, amount: int) -> None:
