@@ -444,3 +444,81 @@ AAVE_V4_TOKENIZATION_SPOKE = Contract.from_abi(
         "function assetId() external view returns (uint256)",
     ]
 )
+
+
+# ---------------------------------------------------------------------------
+# Babylon TBV — AaveAdapter (the user-facing entry point for native-BTC lending)
+# ---------------------------------------------------------------------------
+
+
+class AaveAdapterMarketPosition(ABIStruct):
+    """Babylon ``IAaveIntegrationAdapter.MarketPosition`` — a depositor's
+    native-BTC lending position behind the adapter.
+
+    ``vaultIds`` are the BTC vaults backing it, ``totalCollateralBTC`` their
+    summed collateral (sats), and ``proxyContract`` the per-user position proxy
+    that actually holds the Aave V4 Spoke position (zero until the first vault
+    is activated).
+    """
+
+    vaultIds: Annotated[list[bytes], "bytes32[]"]
+    totalCollateralBTC: Annotated[int, "uint256"]
+    proxyContract: Annotated[str, "address"]
+
+
+class BTCVaultStruct(ABIStruct):
+    """Babylon ``IBTCVaultRegistry.BTCVault`` — the on-chain record of a BTC
+    peg-in, passed to ``activateVault`` to mint ``vaultBTC`` collateral.
+
+    Its fields (signed pegin tx, BTC pubkey, WOTS pk hash, hashlock, PoP
+    signature, …) are produced by the off-chain signet peg-in / vault-provider
+    flow; this is only the EVM-side carrier for encoding the call.
+    """
+
+    depositor: Annotated[str, "address"]
+    depositorBtcPubKey: Annotated[bytes, "bytes32"]
+    depositorSignedPeginTx: Annotated[bytes, "bytes"]
+    amount: Annotated[int, "uint256"]
+    vaultProvider: Annotated[str, "address"]
+    status: Annotated[int, "uint8"]
+    applicationEntryPoint: Annotated[str, "address"]
+    universalChallengersVersion: Annotated[int, "uint16"]
+    appVaultKeepersVersion: Annotated[int, "uint16"]
+    offchainParamsVersion: Annotated[int, "uint16"]
+    createdAt: Annotated[int, "uint256"]
+    verifiedAt: Annotated[int, "uint256"]
+    depositorWotsPkHash: Annotated[bytes, "bytes32"]
+    hashlock: Annotated[bytes, "bytes32"]
+    htlcVout: Annotated[int, "uint8"]
+    depositorPopSignature: Annotated[bytes, "bytes"]
+    prePeginTxHash: Annotated[bytes, "bytes32"]
+
+
+# The adapter mirrors the Spoke's lending entry points (same
+# ``(reserveId, amount, onBehalfOf)`` shape) but routes them through the
+# caller's position proxy, and adds the vault-aware reads/ops. ``getPosition`` /
+# ``getUserAccountData`` revert for an address with no position.
+AAVE_ADAPTER = Contract.from_abi(
+    [
+        # Lending — routed through the caller's per-user position proxy.
+        "function supply(uint256 reserveId, uint256 amount, address onBehalfOf) external",
+        "function withdraw(uint256 reserveId, uint256 amount, address onBehalfOf) external",
+        "function borrow(uint256 reserveId, uint256 amount, address onBehalfOf) external",
+        "function repay(uint256 reserveId, uint256 amount, address onBehalfOf) external",
+        "function setUsingAsCollateral(uint256 reserveId, bool usingAsCollateral, address onBehalfOf) external",
+        # Vault lifecycle — activate a pegged-in BTC vault as collateral, or
+        # withdraw (redeem) BTC collateral vaults.
+        "function activateVault(bytes32 vaultId, BTCVaultStruct vault, bytes activationMetadata) external",
+        "function withdrawCollaterals(bytes32[] vaultIds) external",
+        # Reads.
+        "function getPosition(address user) external view returns (AaveAdapterMarketPosition)",
+        "function getUserAccountData(address user) external view returns (AaveV4UserAccountData)",
+        "function getReserveTotalDebt(uint256 reserveId) external view returns (uint256)",
+        "function getUserTotalDebt(uint256 reserveId, address user) external view returns (uint256)",
+        # Wiring — the contracts the adapter is bound to.
+        "function VAULT_BTC() external view returns (address)",
+        "function BTC_VAULT_CORE_SPOKE() external view returns (address)",
+        "function BTC_VAULT_REGISTRY() external view returns (address)",
+    ],
+    structs=[AaveAdapterMarketPosition, AaveV4UserAccountData, BTCVaultStruct],
+)

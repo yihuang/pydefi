@@ -46,6 +46,13 @@ deno eval 'import * as book from "npm:@aave-dao/aave-address-book"; console.log(
       | reduce .[] as $e ({}; .[$e.name][$e.cid] = $e.addr)' \
   > aave_v4.json
 
+# Babylon TBV × Aave V4 testnet addresses (babylon.json).
+# Source: the published contract-addresses doc in babylonlabs.github.io. TBV is
+# testnet-only (Sepolia); the parser maps documented contract names to registry
+# keys. Tokens (vaultBTC etc.) stay in deployments._TOKENS.
+echo "Fetching Babylon TBV addresses"
+python3 update_babylon.py
+
 # Compound III (Comet) market addresses (compound.json).
 # Source: https://github.com/compound-finance/comet
 echo "Fetching Compound III addresses"

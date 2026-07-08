@@ -79,6 +79,7 @@ from pydefi.lending.aave_v4 import (
     V4UserAccountData,
     V4UserReserve,
 )
+from pydefi.lending.babylon import BabylonAaveAdapter, BabylonFlow, FlowStep, MarketPosition
 from pydefi.lending.compound_v3 import (
     CompoundCollateralInfo,
     CompoundMarketData,
@@ -106,6 +107,7 @@ from pydefi.lending.morpho import (
     max_liquidation,
     supply_apy_from_borrow,
 )
+from pydefi.lending.tbv_signet import BTCVault, BTCVaultStatus, build_activate_vault_tx
 from pydefi.lending.utils import SECONDS_PER_YEAR, per_second_rate_to_apy
 
 __all__ = [
@@ -114,6 +116,10 @@ __all__ = [
     "AaveV4",
     "AaveV4Candidate",
     "AaveV4TokenizationSpoke",
+    "BTCVault",
+    "BTCVaultStatus",
+    "BabylonAaveAdapter",
+    "BabylonFlow",
     "CompoundCollateralInfo",
     "CompoundMarketData",
     "CompoundUserPosition",
@@ -123,7 +129,9 @@ __all__ = [
     "LiquidationCandidate",
     "LiquidationOpportunity",
     "LiquidationRouter",
+    "FlowStep",
     "MarketParams",
+    "MarketPosition",
     "MarketState",
     "MorphoBlue",
     "MorphoCandidate",
@@ -140,6 +148,7 @@ __all__ = [
     "RAY",
     "SECONDS_PER_YEAR",
     "accrue_interest",
+    "build_activate_vault_tx",
     "compute_health_factor",
     "liquidation_incentive_factor",
     "max_liquidation",
