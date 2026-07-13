@@ -235,6 +235,7 @@
     "chainType": "evm",
     "displayName": "Monad",
     "feeTokens": [
+      "GHO",
       "LINK",
       "WMON",
       "MON"
@@ -387,6 +388,7 @@
     "chainType": "evm",
     "displayName": "X Layer",
     "feeTokens": [
+      "GHO",
       "LINK",
       "WOKB",
       "OKB"
