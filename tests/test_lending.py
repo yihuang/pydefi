@@ -20,15 +20,16 @@ import pytest
 from hexbytes import HexBytes
 
 from pydefi.abi.lending import (
+    AAVE_ADAPTER,
     AAVE_V3_POOL,
     AAVE_V4_SPOKE,
     AAVE_V4_TOKENIZATION_SPOKE,
     COMPOUND_V3_COMET,
     MORPHO_BLUE,
 )
-from pydefi.deployments import chains_for, comet_contract_names, get_token
+from pydefi.deployments import chains_for, comet_contract_names, get_address, get_token
 from pydefi.exceptions import PydefiError
-from pydefi.lending import AaveV3, UserAccountData, aave_v4
+from pydefi.lending import AaveV3, BabylonAaveAdapter, UserAccountData, aave_v4
 from pydefi.lending.aave_v3 import (
     RAY,
     ray_rate_to_apy,
@@ -1055,3 +1056,269 @@ class TestAaveV4TokenizationSpoke:
         assert shares == 999
         assert receiver == ETH_WHALE
         assert owner == ETH_WHALE
+
+
+# ---------------------------------------------------------------------------
+# Babylon TBV — AaveAdapter (native-BTC lending on Aave V4)
+# ---------------------------------------------------------------------------
+
+#: Reserve ids on the BabylonCoreSpoke (stable indices) + their tokens.
+_BB_USDC_RESERVE = 0
+_BB_VAULTBTC_RESERVE = 3
+_BB_USDC = get_token("USDC", ChainId.ETHEREUM)  # decimals only; amounts are raw
+_BB_VBTC = get_token("vaultBTC", ChainId.SEPOLIA)
+_BB_AMT = TokenAmount(_BB_USDC, 100 * 10**6)
+
+
+@pytest.fixture
+def babylon_adapter() -> BabylonAaveAdapter:
+    """Adapter client with no live ``w3`` — enough to build (encode) txs."""
+    return BabylonAaveAdapter(
+        w3=None,  # type: ignore[arg-type]
+        chain_id=ChainId.SEPOLIA,
+        adapter_address=get_address("BABYLON_AAVE_ADAPTER", ChainId.SEPOLIA),
+    )
+
+
+class TestBabylonAdapterBuildTx:
+    """The adapter's lending tx builders encode ``(reserveId, amount, onBehalfOf)``."""
+
+    def test_to_and_value(self, babylon_adapter: BabylonAaveAdapter):
+        tx = babylon_adapter.build_op_tx("borrow", _BB_USDC_RESERVE, _BB_AMT, ETH_WHALE)
+        assert Address(tx["to"]) == babylon_adapter.adapter_address
+        assert tx["value"] == "0"
+
+    def test_supply_borrow_repay_withdraw_share_the_shape(self, babylon_adapter: BabylonAaveAdapter):
+        for op, fn in (
+            ("supply", AAVE_ADAPTER.fns.supply),
+            ("borrow", AAVE_ADAPTER.fns.borrow),
+            ("repay", AAVE_ADAPTER.fns.repay),
+            ("withdraw", AAVE_ADAPTER.fns.withdraw),
+        ):
+            decoded = decode_call(babylon_adapter.build_op_tx(op, _BB_VAULTBTC_RESERVE, _BB_AMT, ETH_WHALE), fn)
+            assert decoded == (_BB_VAULTBTC_RESERVE, _BB_AMT.amount, ETH_WHALE)
+
+    def test_rejects_unknown_op(self, babylon_adapter: BabylonAaveAdapter):
+        with pytest.raises(ValueError, match="unknown lending op"):
+            babylon_adapter.build_op_tx("liquidate", _BB_USDC_RESERVE, _BB_AMT, ETH_WHALE)
+
+    def test_set_collateral_args(self, babylon_adapter: BabylonAaveAdapter):
+        reserve_id, use_as_collateral, on_behalf_of = decode_call(
+            babylon_adapter.build_set_collateral_tx(_BB_VAULTBTC_RESERVE, True, ETH_WHALE),
+            AAVE_ADAPTER.fns.setUsingAsCollateral,
+        )
+        assert reserve_id == _BB_VAULTBTC_RESERVE
+        assert use_as_collateral is True
+        assert on_behalf_of == ETH_WHALE
+
+    def test_withdraw_collaterals_args(self, babylon_adapter: BabylonAaveAdapter):
+        vault_ids = [b"\x11" * 32, b"\x22" * 32]
+        tx = babylon_adapter.build_withdraw_collaterals_tx(vault_ids)
+        # The sole bytes32[] arg decodes to a tuple of its elements.
+        decoded = AAVE_ADAPTER.fns.withdrawCollaterals.decode_input(HexBytes(tx["data"]))
+        assert list(decoded) == vault_ids
+
+
+class TestBabylonFlow:
+    """The fluent flow composes ordered adapter txs and reads naturally."""
+
+    def test_repay_then_unlock_showcase(self, babylon_adapter: BabylonAaveAdapter):
+        vault_ids = [b"\x11" * 32]
+        flow = babylon_adapter.flow(ETH_WHALE).op("repay", _BB_USDC_RESERVE, _BB_AMT).unlock_btc(vault_ids)
+
+        assert [s.label for s in flow.steps()] == ["repay:0", "withdrawCollaterals"]
+        repay_tx, unlock_tx = flow.build()
+        assert decode_call(repay_tx, AAVE_ADAPTER.fns.repay) == (_BB_USDC_RESERVE, _BB_AMT.amount, ETH_WHALE)
+        assert list(AAVE_ADAPTER.fns.withdrawCollaterals.decode_input(HexBytes(unlock_tx["data"]))) == vault_ids
+
+    def test_lock_then_borrow_sequences_external_activation(self, babylon_adapter: BabylonAaveAdapter):
+        activation = {"to": babylon_adapter.adapter_address, "data": b"\xde\xad\xbe\xef", "value": "0"}
+        flow = babylon_adapter.flow(ETH_WHALE).lock_btc_to_tbv(activation).op("borrow", _BB_USDC_RESERVE, _BB_AMT)
+
+        steps = flow.steps()
+        assert [s.label for s in steps] == ["activateVault", "borrow:0"]
+        assert steps[0].tx is activation  # external activation tx passed through verbatim
+        assert decode_call(flow.build()[1], AAVE_ADAPTER.fns.borrow) == (_BB_USDC_RESERVE, _BB_AMT.amount, ETH_WHALE)
+
+    def test_build_matches_steps_order(self, babylon_adapter: BabylonAaveAdapter):
+        flow = (
+            babylon_adapter.flow(ETH_WHALE)
+            .op("supply", _BB_VAULTBTC_RESERVE, _BB_AMT)
+            .set_collateral(_BB_VAULTBTC_RESERVE, True)
+            .op("borrow", _BB_USDC_RESERVE, _BB_AMT)
+        )
+        assert [s.label for s in flow.steps()] == ["supply:3", "setCollateral:3=True", "borrow:0"]
+        assert flow.build() == [s.tx for s in flow.steps()]
+
+
+class TestTBVSignetActivateVault:
+    """The EVM-side activateVault tx encodes the BTCVault peg-in payload."""
+
+    def _vault(self):
+        from pydefi.lending import BTCVault, BTCVaultStatus
+
+        return BTCVault(
+            depositor=ETH_WHALE,
+            depositor_btc_pubkey=b"\x01" * 32,
+            depositor_signed_pegin_tx=b"raw-pegin-tx",
+            amount=50_000,  # sats
+            vault_provider=Address("0x" + "a1" * 20),
+            status=int(BTCVaultStatus.VERIFIED),
+            application_entry_point=Address("0x" + "a2" * 20),
+            universal_challengers_version=1,
+            app_vault_keepers_version=2,
+            offchain_params_version=3,
+            created_at=111,
+            verified_at=222,
+            depositor_wots_pk_hash=b"\x02" * 32,
+            hashlock=b"\x03" * 32,
+            htlc_vout=0,
+            depositor_pop_signature=b"pop-sig",
+            pre_pegin_tx_hash=b"\x04" * 32,
+        )
+
+    def test_builds_activate_vault_tx(self):
+        from pydefi.lending import build_activate_vault_tx
+
+        adapter = get_address("BABYLON_AAVE_ADAPTER", ChainId.SEPOLIA)
+        vault_id = b"\xab" * 32
+        tx = build_activate_vault_tx(adapter, vault_id, self._vault(), activation_metadata=b"meta")
+
+        assert Address(tx["to"]) == adapter
+        assert tx["value"] == "0"
+        decoded_id, decoded_vault, decoded_meta = AAVE_ADAPTER.fns.activateVault.decode_input(HexBytes(tx["data"]))
+        assert bytes(decoded_id) == vault_id
+        assert bytes(decoded_meta) == b"meta"
+        # vault tuple round-trips: depositor + amount + status land in place.
+        assert Address(decoded_vault[0]) == ETH_WHALE
+        assert decoded_vault[3] == 50_000
+
+
+def _patch_urlopen(monkeypatch, body: bytes) -> dict[str, Any]:
+    """Patch ``tbv_signet``'s ``urlopen`` to capture the request (url/data/headers)
+    and return *body*. Returns the ``captured`` dict to assert against."""
+    from pydefi.lending import tbv_signet
+
+    captured: dict[str, Any] = {}
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return body
+
+    def _fake(req, timeout=None):
+        captured["url"] = req if isinstance(req, str) else req.full_url
+        captured["data"] = getattr(req, "data", None)
+        captured["headers"] = getattr(req, "headers", {})
+        return _Resp()
+
+    monkeypatch.setattr(tbv_signet.urllib.request, "urlopen", _fake)
+    return captured
+
+
+class TestTBVVpProxy:
+    """The vault-provider JSON-RPC transport builds the right request."""
+
+    def test_rejects_bad_provider_address(self):
+        from pydefi.lending.tbv_signet import vp_rpc
+
+        with pytest.raises(ValueError, match="20-byte EVM address"):
+            vp_rpc("0x1234", "anyMethod")
+
+    def test_vp_rpc_posts_jsonrpc_with_auth(self, monkeypatch):
+        import json as _json
+
+        from pydefi.lending import tbv_signet
+
+        captured = _patch_urlopen(monkeypatch, b'{"jsonrpc":"2.0","id":1,"result":{"ok":true}}')
+        provider = "0x" + "ab" * 20
+        result = tbv_signet.vp_rpc(provider, "getVaultParams", [7], auth_token="tok", vp_proxy_url="https://vp.test")
+
+        assert result == {"ok": True}
+        assert captured["url"] == f"https://vp.test/rpc/{provider}"
+        body = _json.loads(captured["data"])
+        assert (body["jsonrpc"], body["method"], body["params"]) == ("2.0", "getVaultParams", [7])
+        assert captured["headers"].get("Authorization") == "Bearer tok"
+
+
+class TestTBVSignetMempool:
+    """The signet mempool helpers hit the right esplora endpoints."""
+
+    def test_broadcast_posts_raw_hex_and_returns_txid(self, monkeypatch):
+        from pydefi.lending import tbv_signet
+
+        captured = _patch_urlopen(monkeypatch, b"deadbeeftxid\n")
+        txid = tbv_signet.broadcast_pegin(b"\x01\x02", mempool_url="https://mp.test/signet")
+
+        assert txid == "deadbeeftxid"
+        assert captured["url"] == "https://mp.test/signet/api/tx"
+        assert captured["data"] == b"0102"
+
+    def test_fetch_utxos_gets_address_endpoint(self, monkeypatch):
+        from pydefi.lending import tbv_signet
+
+        captured = _patch_urlopen(monkeypatch, b'[{"txid":"aa","vout":0,"value":1000}]')
+        utxos = tbv_signet.fetch_signet_utxos("tb1pexample", mempool_url="https://mp.test/signet")
+
+        assert utxos == [{"txid": "aa", "vout": 0, "value": 1000}]
+        assert captured["url"] == "https://mp.test/signet/api/address/tb1pexample/utxo"
+
+
+class TestTBVVaultProviders:
+    """vp-health discovery + getPeginStatus param shaping (no network)."""
+
+    def test_vault_providers_enabled_filter(self, monkeypatch):
+        from pydefi.lending import tbv_signet
+
+        monkeypatch.setattr(
+            tbv_signet,
+            "vp_health",
+            lambda **_: [{"address": "0xaa", "disabled": True}, {"address": "0xbb", "disabled": False}],
+        )
+        assert [p["address"] for p in tbv_signet.vault_providers()] == ["0xaa", "0xbb"]
+        assert [p["address"] for p in tbv_signet.vault_providers(enabled_only=True)] == ["0xbb"]
+
+    def test_get_pegin_status_requires_an_id(self):
+        from pydefi.lending.tbv_signet import get_pegin_status
+
+        with pytest.raises(ValueError, match="pegin_txid or vault_id"):
+            get_pegin_status("0x" + "ab" * 20)
+
+    def test_get_pegin_status_wraps_struct_param(self, monkeypatch):
+        from pydefi.lending import tbv_signet
+
+        captured: dict[str, Any] = {}
+
+        def _fake_vp_rpc(provider, method, params=None, **kw):
+            captured.update(provider=provider, method=method, params=params)
+            return {"status": "PENDING"}
+
+        monkeypatch.setattr(tbv_signet, "vp_rpc", _fake_vp_rpc)
+        out = tbv_signet.get_pegin_status("0x" + "cd" * 20, pegin_txid="abcd")
+
+        assert out == {"status": "PENDING"}
+        assert captured["method"] == "vaultProvider_getPeginStatus"
+        assert captured["params"] == [{"pegin_txid": "abcd"}]
+
+
+class TestTBVAuthGating:
+    """Auth-gated VP methods fail fast with guidance (no network)."""
+
+    def test_gated_method_without_token_raises_before_network(self):
+        from pydefi.lending.tbv_signet import AUTH_GATED_METHODS, vp_rpc
+
+        method = next(iter(AUTH_GATED_METHODS))
+        with pytest.raises(RuntimeError, match="auth-gated"):
+            vp_rpc("0x" + "ab" * 20, method)  # no auth_token
+
+    def test_grpc_gated_method_also_guarded(self):
+        from pydefi.lending.tbv_signet import GRPC_AUTH_GATED_METHODS, vp_rpc
+
+        method = next(iter(GRPC_AUTH_GATED_METHODS))
+        with pytest.raises(RuntimeError, match="babylon-ts-sdk"):
+            vp_rpc("0x" + "ab" * 20, method)

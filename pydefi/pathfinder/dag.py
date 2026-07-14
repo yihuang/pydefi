@@ -68,7 +68,27 @@ class RouteBridge:
             raise ValueError("RouteBridge: supply exactly one of timeout_seconds / timeout_timestamp")
 
 
-RouteAction: TypeAlias = RouteSwap | RouteSplit | RouteBridge
+@dataclass(frozen=True)
+class RouteLend:
+    """Terminal lending deposit — approve ``token_in`` to *market* and
+    ``op`` (``supply``/``repay``) it on reserve *reserve_id* for *on_behalf_of*.
+
+    Has no ``token_out``, so it must be the last action on the top-level branch
+    and cannot appear inside a split.
+    """
+
+    op: str
+    market: Address
+    reserve_id: int
+    token_in: Token
+    on_behalf_of: Address
+
+    def __post_init__(self) -> None:
+        if self.op not in ("supply", "repay"):
+            raise ValueError(f"RouteLend.op must be 'supply' or 'repay', got {self.op!r}")
+
+
+RouteAction: TypeAlias = RouteSwap | RouteSplit | RouteBridge | RouteLend
 
 
 @dataclass
@@ -171,10 +191,40 @@ class RouteDAG:
 
     @staticmethod
     def _reject_action_after_bridge(actions: list[RouteAction], new_action: str) -> None:
-        if actions and isinstance(actions[-1], RouteBridge):
+        if actions and isinstance(actions[-1], (RouteBridge, RouteLend)):
+            terminal = "bridge" if isinstance(actions[-1], RouteBridge) else "lend"
             raise ValueError(
-                f"RouteDAG.{new_action}() cannot follow .bridge() — bridge must be the last action on its branch"
+                f"RouteDAG.{new_action}() cannot follow .{terminal}() — it must be the last action on its branch"
             )
+
+    def lend(
+        self,
+        op: str,
+        market: Address,
+        reserve_id: int,
+        *,
+        on_behalf_of: Address,
+        token_in: Token | None = None,
+    ) -> "RouteDAG":
+        """Append a terminal ``supply``/``repay`` of the routed amount into
+        *market* on the top-level branch.
+
+        Must come last and cannot appear inside a split (no token_out to merge).
+        ``token_in`` defaults to the running token (the upstream action's output).
+        """
+        if self.token_in is None:
+            raise ValueError("RouteDAG.from_token() must be called before lend()")
+        if self._split_stack:
+            raise ValueError("RouteDAG.lend() cannot be used inside a split — it has no token_out to merge")
+        self._reject_action_after_bridge(self.actions, "lend")
+        token = token_in or self._current_token
+        if token is None:
+            raise ValueError("RouteDAG.lend: cannot infer token_in; supply it explicitly")
+        self.actions.append(
+            RouteLend(op=op, market=market, reserve_id=reserve_id, token_in=token, on_behalf_of=on_behalf_of)
+        )
+        # No token_out: the routed value now lives in the lending position.
+        return self
 
     def split(self) -> "RouteDAG":
         if self.token_in is None:
@@ -264,7 +314,7 @@ class RouteDAG:
 def _freeze_actions(actions: Sequence[RouteAction]) -> tuple[RouteAction, ...]:
     frozen: list[RouteAction] = []
     for action in actions:
-        if isinstance(action, (RouteSwap, RouteBridge)):
+        if isinstance(action, (RouteSwap, RouteBridge, RouteLend)):
             frozen.append(action)
             continue
         frozen.append(

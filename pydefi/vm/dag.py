@@ -12,7 +12,10 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 
-from pydefi.pathfinder.dag import RouteAction, RouteBridge, RouteDAG, RouteSplit, RouteSwap
+from eth_contract.erc20 import ERC20
+
+from pydefi.abi.lending import AAVE_V4_SPOKE
+from pydefi.pathfinder.dag import RouteAction, RouteBridge, RouteDAG, RouteLend, RouteSplit, RouteSwap
 from pydefi.types import ZERO_ADDRESS, Address, SwapProtocol
 from pydefi.vm.context import Operand, Program
 from pydefi.vm.eureka import approve_then_send_transfer
@@ -120,9 +123,25 @@ def _build_dag_actions(
             )
         elif isinstance(action, RouteBridge):
             current = _build_route_bridge(prog, current, action)
+        elif isinstance(action, RouteLend):
+            current = _build_route_lend(prog, current, action)
         else:
             raise ValueError(f"build_program_for_dag: unsupported route action {type(action)!r}")
     return current
+
+
+def _build_route_lend(prog: Program, amount_in: Operand, action: RouteLend) -> Operand:
+    """Lower ``RouteLend`` to ``approve`` + ``Spoke.supply``/``repay``.
+
+    Approves *market* for the routed amount of ``token_in`` then deposits it,
+    asserting both calls. Amount-preserving for threading: returns ``amount_in``
+    (the value now lives in the lending position)."""
+    approve_ok = prog.call_contract(action.token_in.address, ERC20.fns.approve, action.market, amount_in)
+    prog.assert_(approve_ok, "lend: approve failed")
+    fn = AAVE_V4_SPOKE.fns.supply if action.op == "supply" else AAVE_V4_SPOKE.fns.repay
+    deposit_ok = prog.call_contract(action.market, fn, action.reserve_id, amount_in, action.on_behalf_of)
+    prog.assert_(deposit_ok, f"lend: {action.op} failed")
+    return amount_in
 
 
 def _build_route_bridge(
@@ -182,9 +201,9 @@ def _build_dag_quote_actions(
                 action,
                 lambda p, amt, acts: _build_dag_quote_actions(p, amt, acts, quoter_address=quoter_address),
             )
-        elif isinstance(action, RouteBridge):
-            # ICS-20 is amount-preserving on the source side; the quote pass
-            # never touches the chain, so just thread the running amount.
+        elif isinstance(action, (RouteBridge, RouteLend)):
+            # Amount-preserving for quoting: a bridge escrows the amount and a
+            # lend deposits it, so the routed amount threads through unchanged.
             pass
         else:
             raise ValueError(f"build_quote_program_for_dag: unsupported route action {type(action)!r}")

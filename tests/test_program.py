@@ -7,7 +7,7 @@ from eth_contract.contract import ContractFunction
 from hexbytes import HexBytes
 
 from pydefi.bridge.eureka import encode_send_transfer_calldata
-from pydefi.pathfinder.dag import RouteBridge, RouteDAG
+from pydefi.pathfinder.dag import RouteBridge, RouteDAG, RouteLend
 from pydefi.pathfinder.graph import BasePool
 from pydefi.types import Address, ChainId, SwapProtocol, Token
 from pydefi.vm import (
@@ -821,3 +821,84 @@ class TestEurekaComposer:
         # premature run or wipe a registered program.
         error_names = {e["name"] for e in out["abi"] if e.get("type") == "error"}
         assert "UnauthorizedCallback" in error_names
+
+
+# ---------------------------------------------------------------------------
+# RouteLend — terminal lending deposit in a RouteDAG
+# ---------------------------------------------------------------------------
+
+_LEND_TOKEN = Token(chain_id=1, address=HexBytes("0x" + "11" * 20), symbol="WETH", decimals=18)
+_LEND_MARKET = Address(HexBytes("0x" + "be" * 20))
+_LEND_USER = Address(HexBytes("0x" + "cd" * 20))
+
+
+def _lend_dag(*, op: str = "supply", with_upstream_swap: bool = False) -> RouteDAG:
+    dag = RouteDAG().from_token(_LEND_TOKEN)
+    if with_upstream_swap:
+        mid = Token(chain_id=1, address=HexBytes("0x" + "22" * 20), symbol="USDC", decimals=6)
+        dag = dag.swap(mid, _V2DummyPool(_LEND_TOKEN, mid))
+    return dag.lend(op, _LEND_MARKET, 3, on_behalf_of=_LEND_USER)
+
+
+class TestRouteLend:
+    def test_builder_appends_lend(self):
+        dag = RouteDAG().from_token(_LEND_TOKEN).lend("supply", _LEND_MARKET, 3, on_behalf_of=_LEND_USER)
+        assert len(dag.actions) == 1
+        action = dag.actions[0]
+        assert isinstance(action, RouteLend)
+        assert (action.op, action.market, action.reserve_id) == ("supply", _LEND_MARKET, 3)
+        assert action.token_in == _LEND_TOKEN  # inferred from the running token
+        assert action.on_behalf_of == _LEND_USER
+
+    def test_lend_repay_sets_op(self):
+        dag = RouteDAG().from_token(_LEND_TOKEN).lend("repay", _LEND_MARKET, 0, on_behalf_of=_LEND_USER)
+        assert dag.actions[0].op == "repay"
+
+    def test_route_lend_rejects_bad_op(self):
+        with pytest.raises(ValueError, match="must be 'supply' or 'repay'"):
+            RouteLend(op="borrow", market=_LEND_MARKET, reserve_id=0, token_in=_LEND_TOKEN, on_behalf_of=_LEND_USER)
+
+    @pytest.mark.parametrize("action", ["swap", "bridge", "split"])
+    def test_builder_rejects_action_after_lend(self, action):
+        dag = _lend_dag()
+        with pytest.raises(ValueError, match="must be the last action"):
+            if action == "swap":
+                dag.swap(_BRIDGE_DST, _V2DummyPool(_LEND_TOKEN, _BRIDGE_DST))
+            elif action == "bridge":
+                dag.bridge(_BRIDGE_DST, transfer_addr=_BRIDGE_ICS20, source_client="c", receiver="r", timeout_seconds=1)
+            else:
+                dag.split()
+
+    def test_builder_rejects_lend_inside_split(self):
+        dag = RouteDAG().from_token(_LEND_TOKEN).split().leg(10_000)
+        with pytest.raises(ValueError, match="inside a split"):
+            dag.lend("supply", _LEND_MARKET, 3, on_behalf_of=_LEND_USER)
+
+    @pytest.mark.parametrize("with_upstream_swap", [False, True])
+    @pytest.mark.parametrize("op", ["supply", "repay"])
+    def test_execution_program_builds(self, op, with_upstream_swap):
+        prog = build_execution_program_for_dag(
+            _lend_dag(op=op, with_upstream_swap=with_upstream_swap),
+            amount_in=10**18,
+            vm_address="0x" + "44" * 20,
+            recipient="0x" + "55" * 20,
+        )
+        assert isinstance(prog, Program)
+        assert len(prog.build()) > 100  # approve + deposit + asserts at minimum
+
+    @pytest.mark.parametrize("op", ["supply", "repay"])
+    def test_pure_lend_runs(self, op):
+        # No upstream swap: the approve + deposit lowering runs clean under
+        # mini_evm (which makes every CALL succeed). The swap path can't run on
+        # mini_evm — it has no pool reserves to read — so it is build-only above.
+        prog = build_execution_program_for_dag(
+            _lend_dag(op=op),
+            amount_in=10**18,
+            vm_address="0x" + "44" * 20,
+            recipient="0x" + "55" * 20,
+        )
+        assert not mini_evm(prog.build()).is_error
+
+    def test_quote_program_passes_amount_through_lend(self):
+        # A lend deposits the routed amount; the quote walker threads it through.
+        assert len(build_quote_program_for_dag(_lend_dag(), amount_in=10**18).build()) > 0

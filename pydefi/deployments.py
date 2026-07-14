@@ -77,6 +77,15 @@ _TOKENS: dict[str, dict] = {
             _SEP: "0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984",
         },
     },
+    # Babylon TBV internal accounting token — native BTC collateral on Aave V4.
+    # 8 decimals, transfer-restricted to protocol contracts. Sepolia testnet only.
+    "vaultBTC": {
+        "symbol": "vaultBTC",
+        "decimals": 8,
+        "addresses": {
+            _SEP: "0x5BD51C84244fA23a567970cdaC6f655866E58b07",
+        },
+    },
 }
 
 # ── Contracts ─────────────────────────────────────────────────────────────────
@@ -151,14 +160,18 @@ _CONTRACTS: dict[str, dict[int, str]] = {
     # Polymarket on-chain CTF + neg-risk contracts (POLYMARKET_*) are merged
     # from config/polymarket.json, synced from Polymarket/neg-risk-ctf-adapter
     # by config/update.sh. The USDC.e collateral lives in _TOKENS.
+    # Babylon TBV × Aave V4 (Sepolia testnet) contracts — AAVE_V4_BABYLON_SPOKE /
+    # _HUB, BABYLON_AAVE_ADAPTER[_CONFIG/_LENS], BABYLON_BTC_VAULT_SWAP and the
+    # protocol contracts — are generated into babylon.json from Babylon's docs by
+    # config/update_babylon.py (merged below). vaultBTC stays in _TOKENS.
 }
 
 
 def _merge_generated(contracts: dict[str, dict[int, str]], filename: str) -> None:
     """Merge a generated address file (config/<filename>) into *contracts*.
 
-    aave.json, aave_v4.json, compound.json, morpho.json, uniswap.json and
-    polymarket.json are produced from upstream registries by config/update.sh.
+    aave.json, aave_v4.json, compound.json, morpho.json, uniswap.json, polymarket.json
+    and babylon.json are produced from upstream registries by config/update.sh.
     Regenerate with ``bash config/update.sh`` if a file is missing/empty/corrupt."""
     path = Path(__file__).resolve().parent / "config" / filename
     hint = "run config/update.sh to (re)generate it"
@@ -177,6 +190,7 @@ def _merge_generated(contracts: dict[str, dict[int, str]], filename: str) -> Non
 
 _merge_generated(_CONTRACTS, "aave.json")
 _merge_generated(_CONTRACTS, "aave_v4.json")
+_merge_generated(_CONTRACTS, "babylon.json")
 _merge_generated(_CONTRACTS, "compound.json")
 _merge_generated(_CONTRACTS, "morpho.json")
 _merge_generated(_CONTRACTS, "uniswap.json")

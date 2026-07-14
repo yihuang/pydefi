@@ -60,6 +60,7 @@ from pydefi.exceptions import (
 from pydefi.pathfinder.dag import (
     RouteBridge,
     RouteDAG,
+    RouteLend,
     RouteSplit,
     RouteSplitLeg,
     RouteSwap,
@@ -91,6 +92,7 @@ __all__ = [
     "RouteSplitLeg",
     "RouteSplit",
     "RouteBridge",
+    "RouteLend",
     "RouteDAG",
     "SwapStep",
     "SwapRoute",
