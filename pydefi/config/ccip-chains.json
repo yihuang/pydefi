@@ -465,8 +465,6 @@
     "chainType": "evm",
     "displayName": "Corn",
     "feeTokens": [
-      "LINK",
-      "WBTCN",
       "BTCN"
     ],
     "internalId": "corn-mainnet",
