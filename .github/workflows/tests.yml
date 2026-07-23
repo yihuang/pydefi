@@ -10,6 +10,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Python >=3.13 must build coincurve from source; see .github/pip-constraints.txt.
+env:
+  PIP_CONSTRAINT: ${{ github.workspace }}/.github/pip-constraints.txt
+
 jobs:
   uv-sync:
     runs-on: ubuntu-latest

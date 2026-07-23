@@ -49,6 +49,10 @@ include = ["pydefi*"]
 [tool.setuptools.package-data]
 pydefi = ["config/*.json"]
 
+[tool.uv]
+# uv ignores PIP_CONSTRAINT; same coincurve build fix, see .github/pip-constraints.txt.
+build-constraint-dependencies = ["scikit-build-core<0.10"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "module"
