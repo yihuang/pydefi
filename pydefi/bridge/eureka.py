@@ -16,9 +16,22 @@ from pydefi.exceptions import BridgeError
 from pydefi.types import Address, BridgeQuote, Token, TokenAmount
 
 
+def validate_send_transfer_fields(denom: Address, amount: int, timeout_timestamp: int) -> bytes:
+    """Common validation for ``sendTransfer`` / ``sendTransferAndCompose``
+    calldata encoders. Returns the 20-byte ``denom`` bytes."""
+    denom_bytes = bytes(denom)
+    if len(denom_bytes) != 20:
+        raise ValueError(f"denom must be a 20-byte EVM address, got {len(denom_bytes)} bytes")
+    if amount < 0 or amount >> 256:
+        raise ValueError(f"amount {amount} out of uint256 range")
+    if timeout_timestamp < 0 or timeout_timestamp >> 64:
+        raise ValueError(f"timeout_timestamp {timeout_timestamp} out of uint64 range")
+    return denom_bytes
+
+
 def encode_send_transfer_calldata(
     *,
-    denom: Address | str,
+    denom: Address,
     amount: int,
     receiver: str,
     source_client: str,
@@ -29,17 +42,7 @@ def encode_send_transfer_calldata(
     """ABI-encode a call to ``ICS20Transfer.sendTransfer(SendTransferMsg)``.
     ``receiver`` is opaque to the EVM-side router (bech32 for Cosmos, hex for
     EVM destinations); ``memo`` carries PFM hops and middleware hooks."""
-    if isinstance(denom, str):
-        denom_bytes = bytes.fromhex(denom.removeprefix("0x"))
-    else:
-        denom_bytes = denom
-    if len(denom_bytes) != 20:
-        raise ValueError(f"denom must be a 20-byte EVM address, got {len(denom_bytes)} bytes")
-    if amount < 0 or amount >> 256:
-        raise ValueError(f"amount {amount} out of uint256 range")
-    if timeout_timestamp < 0 or timeout_timestamp >> 64:
-        raise ValueError(f"timeout_timestamp {timeout_timestamp} out of uint64 range")
-
+    denom_bytes = validate_send_transfer_fields(denom, amount, timeout_timestamp)
     return ICS20_TRANSFER.fns.sendTransfer(
         ICS20SendTransferMsg(
             denom=denom_bytes,
@@ -93,9 +96,12 @@ class Eureka:
     ) -> BridgeQuote:
         """Return a quote for an Eureka ICS-20 transfer.
 
-        ICS-20 charges no on-chain fee and preserves amount across decimals
-        (rescales when ``token_in.decimals != token_out.decimals``). Pass
-        ``amount_out_override`` for IFT-style wrapping that changes precision.
+        ICS-20 charges no on-chain fee and preserves the base-unit integer
+        amount across the relay (``build_bridge_tx`` sends ``amount_in.amount``
+        unchanged). Differing ``token_in``/``token_out`` decimals would misreport
+        the human value, so they're rejected here just as ``RouteDAG.bridge``
+        rejects them at build time. Pass ``amount_out_override`` for IFT-style
+        wrapping that genuinely changes precision.
         """
         if amount_in.token.address != token_in.address:
             raise BridgeError(f"amount_in.token ({amount_in.token}) must match token_in ({token_in})")
@@ -105,11 +111,12 @@ class Eureka:
         elif token_in.decimals == token_out.decimals:
             amount_out_raw = amount_in.amount
         else:
-            scale_up = token_out.decimals - token_in.decimals
-            if scale_up >= 0:
-                amount_out_raw = amount_in.amount * (10**scale_up)
-            else:
-                amount_out_raw = amount_in.amount // (10**-scale_up)
+            raise BridgeError(
+                f"Eureka quote decimals mismatch: {token_in.symbol} ({token_in.decimals} dec) "
+                f"!= {token_out.symbol} ({token_out.decimals} dec). ICS-20 preserves the "
+                f"base-unit amount across the relay, so differing decimals would misreport the "
+                f"quote; pass `amount_out_override` for IFT-style precision changes"
+            )
 
         return BridgeQuote(
             token_in=token_in,

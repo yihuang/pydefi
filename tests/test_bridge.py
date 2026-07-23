@@ -1808,7 +1808,9 @@ class TestEureka:
         assert quote.estimated_time_seconds == 60
 
     @pytest.mark.asyncio
-    async def test_get_quote_rescales_on_decimal_mismatch(self, eureka):
+    async def test_get_quote_rejects_decimal_upscale(self, eureka):
+        # Upscale mismatch (6 → 8 dec) is rejected too: ICS-20 preserves the
+        # base-unit integer, so the destination must share token_in's decimals.
         token_out = Token(
             chain_id=ChainId.MANTRA,
             address=Address("0x" + "AA" * 20),
@@ -1816,8 +1818,8 @@ class TestEureka:
             decimals=8,  # vs USDC's 6
         )
         amount_in = TokenAmount.from_human(USDC, "1")  # 1_000_000 base
-        quote = await eureka.get_quote(USDC, token_out, amount_in)
-        assert quote.amount_out.amount == amount_in.amount * 100
+        with pytest.raises(BridgeError, match="decimals mismatch"):
+            await eureka.get_quote(USDC, token_out, amount_in)
 
     @pytest.mark.asyncio
     async def test_get_quote_amount_in_token_must_match(self, eureka):
@@ -1825,6 +1827,24 @@ class TestEureka:
         amount_in = TokenAmount.from_human(WETH, "1")
         with pytest.raises(BridgeError, match="must match token_in"):
             await eureka.get_quote(USDC, USDC_MANTRA, amount_in)
+
+    @pytest.mark.asyncio
+    async def test_get_quote_rejects_decimal_mismatch(self, eureka):
+        # ICS-20 preserves the base-unit integer across the relay, so a
+        # destination with different decimals would misreport the quote.
+        # Rejected regardless of divisibility, matching RouteDAG.bridge().
+        token_in = Token(
+            chain_id=1,
+            address=USDC.address,
+            symbol="USDC",
+            decimals=8,
+        )
+        amount_in = TokenAmount(token=token_in, amount=1_000_000)
+        with pytest.raises(BridgeError, match="decimals mismatch"):
+            await eureka.get_quote(token_in, USDC_MANTRA, amount_in)
+        # amount_out_override bypasses the check for IFT-style precision changes.
+        quote = await eureka.get_quote(token_in, USDC_MANTRA, amount_in, amount_out_override=10_000)
+        assert quote.amount_out.amount == 10_000
 
     @pytest.mark.asyncio
     async def test_build_bridge_tx_calldata_decodes(self, eureka):
@@ -1879,9 +1899,8 @@ class TestEureka:
                 timeout_timestamp=1,
             )
 
-    @pytest.mark.parametrize("denom", [Address(b"\x11" * 20), "0x" + "11" * 20])
-    def test_encode_send_transfer_accepts_address_or_hex_string(self, denom):
-        # Both forms must encode to the same bytes.
+    def test_encode_send_transfer_normalizes_hexbytes_denom(self):
+        # A hex-string address round-trips once wrapped in Address (HexBytes).
         kwargs = dict(amount=1, receiver="r", source_client="c", timeout_timestamp=1)
         ref = encode_send_transfer_calldata(denom=Address(b"\x11" * 20), **kwargs)
-        assert encode_send_transfer_calldata(denom=denom, **kwargs) == ref
+        assert encode_send_transfer_calldata(denom=Address("0x" + "11" * 20), **kwargs) == ref

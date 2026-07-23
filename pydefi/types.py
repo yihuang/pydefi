@@ -10,7 +10,7 @@ from enum import Enum, IntEnum
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
-    from pydefi.pathfinder.dag import RouteDAG  # noqa: F401
+    from pydefi.pathfinder.dag import RouteDAG
 
 from hexbytes import HexBytes
 

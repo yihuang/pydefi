@@ -403,8 +403,11 @@ class TestSsaDagBuilder:
 # ---------------------------------------------------------------------------
 
 
+# All three share the same decimals: RouteDAG.bridge() rejects a mismatch
+# between the running token and ``token_out`` (ICS-20 is base-unit preserving,
+# so the destination must use the same decimals as what arrives at the edge).
 _BRIDGE_SRC = Token(chain_id=1, address=HexBytes("0x" + "11" * 20), symbol="USDC", decimals=6)
-_BRIDGE_MID = Token(chain_id=1, address=HexBytes("0x" + "22" * 20), symbol="WETH", decimals=18)
+_BRIDGE_MID = Token(chain_id=1, address=HexBytes("0x" + "22" * 20), symbol="USDT", decimals=6)
 _BRIDGE_DST = Token(chain_id=ChainId.MANTRA, address=HexBytes("0x" + "33" * 20), symbol="USDC", decimals=6)
 _BRIDGE_ICS20 = Address(HexBytes("0x" + "AA" * 20))
 
@@ -487,6 +490,25 @@ class TestRouteBridge:
                 )
             else:
                 dag.split()
+
+    def test_builder_rejects_decimal_mismatch(self):
+        # ICS-20 preserves base-unit amount across the relay; the quote pass
+        # threads the running amount through unchanged, so a destination with
+        # different decimals would silently misreport the quote.
+        dst_8dec = Token(
+            chain_id=ChainId.MANTRA,
+            address=HexBytes("0x" + "55" * 20),
+            symbol="USDC",
+            decimals=8,
+        )
+        with pytest.raises(ValueError, match="decimals mismatch"):
+            RouteDAG().from_token(_BRIDGE_SRC).bridge(
+                dst_8dec,
+                transfer_addr=_BRIDGE_ICS20,
+                source_client="07-tendermint-0",
+                receiver="mantra1qq",
+                timeout_seconds=600,
+            )
 
     @pytest.mark.parametrize(
         "extra, ok",
@@ -821,3 +843,12 @@ class TestEurekaComposer:
         # premature run or wipe a registered program.
         error_names = {e["name"] for e in out["abi"] if e.get("type") == "error"}
         assert "UnauthorizedCallback" in error_names
+        # Empty-program registrations would silently no-op on callback; the
+        # composer must surface that as a typed revert at send time.
+        assert "EmptyProgram" in error_names
+        # The composer requires exact token-in amount to avoid fee-on-transfer
+        # or rebasing drift across the ICS-20 send amount.
+        assert "TransferAmountMismatch" in error_names
+        # A denom without token semantics (EOA, missing balanceOf, malformed
+        # returndata) must surface a typed revert, not an ABI-decode panic.
+        assert "NotAToken" in error_names
