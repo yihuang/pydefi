@@ -11,8 +11,11 @@ concurrency:
   cancel-in-progress: true
 
 # Python >=3.13 must build coincurve from source; see .github/pip-constraints.txt.
+# pip 26.2 stopped applying PIP_CONSTRAINT to isolated build envs; PIP_BUILD_CONSTRAINT
+# replaces it. Both are set so older pip (which ignores the new var) still works.
 env:
   PIP_CONSTRAINT: ${{ github.workspace }}/.github/pip-constraints.txt
+  PIP_BUILD_CONSTRAINT: ${{ github.workspace }}/.github/pip-constraints.txt
 
 jobs:
   uv-sync:
