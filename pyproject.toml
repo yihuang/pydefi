@@ -50,7 +50,9 @@ include = ["pydefi*"]
 pydefi = ["config/*.json"]
 
 [tool.uv]
-# uv ignores PIP_CONSTRAINT; same coincurve build fix, see .github/pip-constraints.txt.
+# coincurve 20 (ethereum-execution caps <21) has no cp313/cp314 wheel, so Python >=3.13
+# builds it from sdist, and that build breaks on scikit-build-core >=0.10.
+# Drop once ethereum-execution allows coincurve 21 and coincurve ships cp314.
 build-constraint-dependencies = ["scikit-build-core<0.10"]
 
 [tool.pytest.ini_options]

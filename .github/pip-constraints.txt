@@ -1,5 +1,0 @@
-# ethereum-execution caps coincurve<21 → coincurve 20, the last release with no
-# cp313/cp314 wheel, so Python >=3.13 builds it from sdist. That build uses
-# `cmake.verbose`, which scikit-build-core >=0.10 rejects — so pin below 0.10.
-# Drop once ethereum-execution allows coincurve 21 (which ships cp313 wheels).
-scikit-build-core<0.10
