@@ -442,7 +442,10 @@ class V4PoolEdge(V3PoolEdge):
         lp_fee_pips: Current LP fee in pips (1e-6, from ``slot0.lpFee``), used
             for pricing. V4 fees need not be a multiple of 100, so the
             basis-point ``fee_bps`` field alone would truncate (e.g. a 10-pip
-            fee would price as free).
+            fee would price as free). Stays the LP fee alone — it also rebuilds
+            the PoolKey for execution.
+        protocol_fee_pips: PoolManager's cut on top of the LP fee, in pips
+            (``slot0.protocolFee``, for this edge's direction).
         key_fee_pips: The ``fee`` field of the PoolKey (pips; equals
             ``LPFeeLibrary.DYNAMIC_FEE_FLAG`` for dynamic-fee pools). Needed to
             reconstruct the pool key for quoting — ``lp_fee_pips`` cannot be
@@ -466,23 +469,29 @@ class V4PoolEdge(V3PoolEdge):
     hooks: Address = ZERO_ADDRESS
     pool_id: str = ""
     lp_fee_pips: int = 0
+    protocol_fee_pips: int = 0
     key_fee_pips: int = 0
     is_dynamic_fee: bool = False
     hook_affects_pricing: bool = False
     hook_fee_calibrated: bool = False
 
-    def _net_amount_in(self, amount_in: int) -> int:
-        """Return *amount_in* after deducting the LP fee (``lp_fee_pips``, base 1 000 000).
+    def _effective_fee_pips(self) -> int:
+        """Return the total fee charged on the input, in pips (base 1 000 000).
 
-        Falls back to ``fee_bps`` when ``lp_fee_pips`` is unset (e.g. edges
-        constructed without slot0 data) — unless calibration explicitly set
-        it (a calibrated fee of 0 is a real zero-fee pool, not "unset").
+        The protocol fee is taken first and the LP fee applies to the rest, so
+        the two compose rather than sum (``ProtocolFeeLibrary.calculateSwapFee``).
+        A calibrated fee already includes both, and a calibrated 0 is a real
+        zero-fee pool rather than "unset", so it returns as-is.
         """
-        if self.lp_fee_pips or self.hook_fee_calibrated:
-            fee_pips = self.lp_fee_pips
-        else:
-            fee_pips = self.fee_bps * 100
-        return amount_in * (1_000_000 - fee_pips) // 1_000_000
+        if self.hook_fee_calibrated:
+            return self.lp_fee_pips
+        lp = self.lp_fee_pips or self.fee_bps * 100  # fee_bps: edges built without slot0
+        protocol = self.protocol_fee_pips
+        return protocol + lp - protocol * lp // 1_000_000
+
+    def _net_amount_in(self, amount_in: int) -> int:
+        """Return *amount_in* after deducting the LP and protocol fees."""
+        return amount_in * (1_000_000 - self._effective_fee_pips()) // 1_000_000
 
 
 @dataclass

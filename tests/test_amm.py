@@ -458,6 +458,98 @@ class TestV4Hooks:
 
 
 # ---------------------------------------------------------------------------
+# V4 protocol fee (slot0.protocolFee, stacked on top of the LP fee)
+# ---------------------------------------------------------------------------
+
+
+class _StubStateViewCall:
+    def __init__(self, result):
+        self._result = result
+
+    async def call(self, _w3, to=None):
+        return self._result
+
+
+class _StubStateView:
+    """Stands in for the StateView contract, returning canned slot0/liquidity."""
+
+    def __init__(self, slot0, liquidity):
+        self.fns = self
+        self._slot0, self._liquidity = slot0, liquidity
+
+    def getSlot0(self, _pool_id):  # noqa: N802 - mirrors the on-chain ABI name
+        return _StubStateViewCall(self._slot0)
+
+    def getLiquidity(self, _pool_id):  # noqa: N802 - mirrors the on-chain ABI name
+        return _StubStateViewCall(self._liquidity)
+
+
+class TestV4ProtocolFee:
+    """slot0.protocolFee stacks on lpFee; omitting it under-prices every V4 swap."""
+
+    def _edge(self, protocol_fee_pips: int, lp_fee_pips: int = 500) -> V4PoolEdge:
+        """Hookless twin of the standard test edge, carrying a protocol fee."""
+        return replace(
+            _hooked_edge(lp_fee_pips),
+            hooks=ZERO_ADDR,
+            hook_affects_pricing=False,
+            protocol_fee_pips=protocol_fee_pips,
+        )
+
+    def test_composes_rather_than_sums(self):
+        # pf + lp - pf*lp/1e6: on a 0.3% pool that lands 3 pips under the
+        # naive 4000 sum (at 500 pips the cross term floors to 0 and they tie)
+        assert self._edge(protocol_fee_pips=1000, lp_fee_pips=3000)._effective_fee_pips() == 3997
+        assert self._edge(protocol_fee_pips=0)._effective_fee_pips() == 500
+
+    def test_mainnet_125_pip_fee_reproduces_625(self):
+        # the exact configuration that broke the live tests
+        assert self._edge(protocol_fee_pips=125)._effective_fee_pips() == 625
+
+    def test_protocol_fee_reduces_output(self):
+        charged = self._edge(protocol_fee_pips=125).amount_out(10**16)
+        assert charged < self._edge(protocol_fee_pips=0).amount_out(10**16)
+
+    def test_calibrated_edge_does_not_double_charge(self):
+        # calibration already measured the total take, protocol fee included
+        edge = self._edge(protocol_fee_pips=125)
+        edge.lp_fee_pips, edge.hook_fee_calibrated = 625, True
+        assert edge._effective_fee_pips() == 625
+
+    def test_unset_fee_falls_back_to_fee_bps(self):
+        edge = self._edge(protocol_fee_pips=125)
+        edge.lp_fee_pips = 0  # edge built without slot0 data
+        assert edge._effective_fee_pips() == 625
+
+    @pytest.mark.parametrize(
+        "token_in,token_out,expected",
+        [
+            # USDC (0xA0b8…) sorts below WETH (0xC02a…), so USDC is currency0:
+            # USDC→WETH is zeroForOne (low 12 bits), WETH→USDC is oneForZero (high).
+            pytest.param(USDC, WETH, 100, id="zero-for-one"),
+            pytest.param(WETH, USDC, 300, id="one-for-zero"),
+        ],
+    )
+    async def test_get_pool_edge_picks_direction(self, monkeypatch, token_in, token_out, expected):
+        packed = (300 << 12) | 100  # oneForZero=300, zeroForOne=100
+        monkeypatch.setattr(
+            "pydefi.amm.uniswap_v4.UNISWAP_V4_STATE_VIEW",
+            _StubStateView(slot0=(2**96, 0, packed, 500), liquidity=10**24),
+        )
+        v4 = UniswapV4(
+            w3=None,
+            pool_manager_address=UNIVERSAL_ROUTER_ADDR,
+            state_view_address=UNIVERSAL_ROUTER_ADDR,
+            quoter_address=UNIVERSAL_ROUTER_ADDR,
+        )
+
+        edge = await v4.get_pool_edge(token_in, token_out)
+
+        assert edge.protocol_fee_pips == expected
+        assert edge.lp_fee_pips == 500  # LP fee stays bare, for PoolKey rebuild
+
+
+# ---------------------------------------------------------------------------
 # V4 hook-fee calibration (faked quoter, no network)
 # ---------------------------------------------------------------------------
 
