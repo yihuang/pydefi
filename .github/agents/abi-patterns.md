@@ -45,6 +45,7 @@ struct as an `ABIStruct` subclass first, then reference it in the ABI:
 from typing import Annotated
 from eth_contract import ABIStruct, Contract
 
+
 class ExactInputSingleParams(ABIStruct):
     """Params struct for SwapRouter.exactInputSingle."""
 
@@ -54,6 +55,7 @@ class ExactInputSingleParams(ABIStruct):
     recipient: Annotated[str, "address"]
     amountIn: int
     amountOutMinimum: int
+
 
 UNISWAP_V3_ROUTER = Contract.from_abi(
     ExactInputSingleParams.human_readable_abi()

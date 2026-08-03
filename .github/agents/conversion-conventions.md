@@ -45,8 +45,8 @@ from hexbytes import HexBytes
 from pydefi.types import Address, Hash
 
 # At a periphery (public API entry point or test code):
-addr: Address = HexBytes("0xAbCd…")     # 0x-prefixed checksummed or lowercase
-topic: Hash   = HexBytes("0xdeadbeef…") # 0x-prefixed 32-byte hash
+addr: Address = HexBytes("0xAbCd…")  # 0x-prefixed checksummed or lowercase
+topic: Hash = HexBytes("0xdeadbeef…")  # 0x-prefixed 32-byte hash
 ```
 
 `HexBytes` accepts:
@@ -80,7 +80,7 @@ from pydefi.types import Address, Hash
 
 # Convert at periphery, then pass Address internally:
 addr: Address = HexBytes(some_address_str)
-padded: Hash  = address_to_bytes32(addr)   # 32-byte left-padded result
+padded: Hash = address_to_bytes32(addr)  # 32-byte left-padded result
 ```
 
 `address_to_bytes32(address: Address) -> Hash` returns a `HexBytes` value of
