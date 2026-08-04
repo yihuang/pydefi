@@ -92,17 +92,24 @@ class TestUniswapV4Live:
         assert route.amount_out.amount > 0
 
     async def test_calibration_recovers_static_fee(self, v4: UniswapV4):
-        """calibrate_hook_fee against the real quoter recovers the static 500-pip fee.
+        """calibrate_hook_fee against the real quoter recovers the pool's effective fee.
 
-        The WETH/USDC pool is hookless, so the hook-inclusive effective fee is
-        exactly the lpFee: the two probes must agree (linear) and imply ~500.
+        The WETH/USDC pool is hookless, so the effective fee is just the 500-pip
+        lpFee composed with the live protocol fee. That fee is a governance
+        parameter, so the expectation is read from slot0 rather than hardcoded.
         """
         edge = await v4.get_pool_edge(WETH, USDC)
         assert not edge.hook_affects_pricing  # hookless pool
+        assert edge.lp_fee_pips == 500  # static-fee pool: lpFee is the key fee
 
+        expected = edge._effective_fee_pips()
         result = await v4.calibrate_hook_fee(edge)
 
         assert result.linear, f"deviation {result.deviation_pips} pips between probes"
-        assert abs(result.implied_fee_pips - 500) <= 5, f"implied {result.implied_fee_pips} pips"
+        assert abs(result.implied_fee_pips - expected) <= 5, (
+            f"implied {result.implied_fee_pips} pips, expected ~{expected} "
+            f"(lpFee 500 + protocolFee {edge.protocol_fee_pips})"
+        )
         assert edge.hook_fee_calibrated
-        assert abs(edge.lp_fee_pips - 500) <= 5
+        # Calibration folds the total take into lp_fee_pips.
+        assert abs(edge.lp_fee_pips - expected) <= 5

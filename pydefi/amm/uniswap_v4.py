@@ -121,8 +121,8 @@ class UniswapV4:
         The returned edge prices ``token_in → token_out`` locally with the
         inherited V3 concentrated-liquidity math. The fee used for pricing is
         the live ``lpFee`` from ``slot0`` (in pips), so dynamic-fee pools are
-        priced at their *current* fee. The protocol fee (``slot0.protocolFee``,
-        zero on mainnet today) is not modelled.
+        priced at their *current* fee, plus the direction's ``slot0.protocolFee``
+        — non-zero on mainnet since governance enabled it.
 
         ``hook_affects_pricing`` is derived from the hook address's permission
         bits (:mod:`pydefi.amm.v4_hooks`); when set, local pricing is a
@@ -143,13 +143,17 @@ class UniswapV4:
 
         slot0 = await UNISWAP_V4_STATE_VIEW.fns.getSlot0(pool_id).call(self.w3, to=self.state_view_address)
         liquidity = await UNISWAP_V4_STATE_VIEW.fns.getLiquidity(pool_id).call(self.w3, to=self.state_view_address)
+        is_token0_in = c0 == token_in.address
         if isinstance(slot0, (list, tuple)):
-            sqrt_price_x96, lp_fee = slot0[0], slot0[3]
+            sqrt_price_x96, _tick, packed_protocol_fee, lp_fee = slot0
+            # protocolFee packs two 12-bit fees: low = zeroForOne, high = oneForZero.
+            protocol_fee = packed_protocol_fee >> (0 if is_token0_in else 12) & 0xFFF
         else:  # defensive: provider flattened the return to a single value
             sqrt_price_x96 = slot0
             if fee & DYNAMIC_FEE_FLAG:
                 raise ValueError(f"cannot price dynamic-fee V4 pool {pool_id.hex()} without lpFee from slot0")
             lp_fee = fee
+            protocol_fee = 0
 
         if not liquidity or not sqrt_price_x96:
             raise InsufficientLiquidityError(
@@ -165,11 +169,12 @@ class UniswapV4:
             fee_bps=lp_fee // 100,  # bps, display/identity only — pricing uses lp_fee_pips
             sqrt_price_x96=sqrt_price_x96,
             liquidity=liquidity,
-            is_token0_in=(c0 == token_in.address),
+            is_token0_in=is_token0_in,
             tick_spacing=tick_spacing,
             hooks=hooks,
             pool_id=pool_id.hex(),
             lp_fee_pips=lp_fee,
+            protocol_fee_pips=protocol_fee,
             key_fee_pips=fee,
             is_dynamic_fee=is_dynamic_fee,
             hook_affects_pricing=affects_swap_pricing(hooks, is_dynamic_fee=is_dynamic_fee),
@@ -206,11 +211,15 @@ class UniswapV4:
         """Back out a hooked pool's effective fee from two on-chain quotes.
 
         Quotes at 1x and 4x of a ~1 bp price move and compares against the
-        local zero-fee curve; the shortfall is the hook-inclusive effective
-        fee. If both probes agree within *tolerance_pips* (proportional hook
-        take), the implied fee is folded into ``edge.lp_fee_pips`` and
-        ``edge.hook_fee_calibrated`` is set; otherwise (custom curve, crossed
-        tick) only the flag is cleared and the edge stays an estimate.
+        local zero-fee curve; the shortfall is the effective fee, hook take and
+        protocol fee included. If both probes agree within *tolerance_pips*
+        (proportional hook take), the implied fee is folded into
+        ``edge.lp_fee_pips`` and ``edge.hook_fee_calibrated`` is set; otherwise
+        (custom curve, crossed tick) only the flag is cleared and the edge stays
+        an estimate.
+
+        Once calibrated, ``lp_fee_pips`` holds the *total* take, so
+        ``hook_fee_calibrated`` also stops the protocol fee being charged twice.
 
         Repeat-safe: the PoolKey comes from ``edge.key_fee_pips``, never the
         mutated ``lp_fee_pips``. Sender-dependent hooks may still quote
@@ -226,7 +235,9 @@ class UniswapV4:
         probe_small = self._probe_amount(edge)
         probe_large = probe_small * 4
         # Zero-fee twin of the edge: raw concentrated-liquidity curve output.
-        raw_curve = replace(edge, lp_fee_pips=0, fee_bps=0)
+        # Clearing protocol_fee_pips matters: a "raw" curve that still charged
+        # it would understate the implied fee by exactly that much.
+        raw_curve = replace(edge, lp_fee_pips=0, fee_bps=0, protocol_fee_pips=0)
 
         implied: list[int] = []
         for amount in (probe_small, probe_large):

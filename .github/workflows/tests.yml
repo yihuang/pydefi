@@ -10,9 +10,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# Python >=3.13 must build coincurve from source; see .github/pip-constraints.txt.
-env:
-  PIP_CONSTRAINT: ${{ github.workspace }}/.github/pip-constraints.txt
+# Installs go through `uv pip install` rather than pip: it resolves the same way pip does
+# (latest compatible, git deps at their branch head) but honours the coincurve build pin in
+# [tool.uv] build-constraint-dependencies. pip's own PIP_CONSTRAINT no longer reaches isolated
+# build envs as of pip 26.2, so pyproject.toml is now the single place that constraint lives.
 
 jobs:
   uv-sync:
@@ -52,10 +53,13 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
       - name: Install dev dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install ".[dev]"
+        run: uv pip install --system ".[dev]"
 
       - name: Format and lint (auto-fix)
         run: |
@@ -82,10 +86,13 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
       - name: Install dev dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install ".[dev]"
+        run: uv pip install --system ".[dev]"
 
       - name: Lint (check)
         run: ruff check .
@@ -107,10 +114,13 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install ".[dev]"
+        run: uv pip install --system ".[dev]"
 
       - name: Run unit tests
         run: pytest -m "not live and not fork"
@@ -128,10 +138,13 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install ".[dev]"
+        run: uv pip install --system ".[dev]"
 
       - name: Run live integration tests
         env:
@@ -155,10 +168,13 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install ".[dev]"
+        run: uv pip install --system ".[dev]"
 
       - name: Install Foundry (Anvil)
         uses: foundry-rs/foundry-toolchain@v1

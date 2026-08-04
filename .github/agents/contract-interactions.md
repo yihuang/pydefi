@@ -8,6 +8,7 @@ Build calldata first, bind to w3 provider and contract address later.
 ```python
 # wrong
 from web3 import Web3
+
 contract = w3.eth.contract(address=contract_address, abi=contract_abi)
 ret = await contract.functions.someFunction(...).call()
 ```
@@ -17,22 +18,22 @@ ret = await contract.functions.someFunction(...).call()
 from eth_contract import Contract
 
 # ABI definitions
-CONTRACT_ABI = Contract.from_abi([
-    "function someFunction(...) returns (...)",
-])
+CONTRACT_ABI = Contract.from_abi(
+    [
+        "function someFunction(...) returns (...)",
+    ]
+)
 
 # Contract interaction
 ret = await CONTRACT_ABI.fns.someFunction(...).call(w3, to=contract_address)
 receipt = await CONTRACT_ABI.fns.someFunction(...).transact(w3, acct, to=contract_address)
 
 # Build transaction body manually if needed
-tx = {
-    "to": contract_address,
-    "data": CONTRACT_ABI.fns.someFunction(...).data
-}
+tx = {"to": contract_address, "data": CONTRACT_ABI.fns.someFunction(...).data}
 
 # Composed in multicall
 from eth_contract.multicall3 import multicall
+
 calls = [
     (contract_address, CONTRACT_ABI.fns.someFunction(...)),
     (contract_address, CONTRACT_ABI.fns.anotherFunction(...)),
