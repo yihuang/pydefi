@@ -89,18 +89,19 @@ class TestLucidControllersLive:
 
     @pytest.mark.parametrize("case", _all_controllers(), ids=_id)
     async def test_controller_destination_active(self, case):
+        """Wiring is ours to assert and must come first, pause flags are operator's and only skip."""
         src_chain_id, controller_name = case
         w3 = await get_w3(src_chain_id)
         dst_chain_id = _LANES[src_chain_id][controller_name][1]
         ctrl = get_address(controller_name, src_chain_id)
 
-        assert await LUCID_ASSET_CONTROLLER.fns.paused().call(w3, to=ctrl) is False
-
         dest_ctrl = await LUCID_ASSET_CONTROLLER.fns.getControllerForChain(dst_chain_id).call(w3, to=ctrl)
         assert int(dest_ctrl, 16) != 0, f"{controller_name}: no destination configured for chain {dst_chain_id}"
 
-        paused = await LUCID_ASSET_CONTROLLER.fns.transfersPausedTo(dst_chain_id).call(w3, to=ctrl)
-        assert paused is False, f"{controller_name}: transfers to chain {dst_chain_id} are paused"
+        if await LUCID_ASSET_CONTROLLER.fns.paused().call(w3, to=ctrl):
+            pytest.skip(f"{controller_name} on {ChainId(src_chain_id).name} is globally paused")
+        if await LUCID_ASSET_CONTROLLER.fns.transfersPausedTo(dst_chain_id).call(w3, to=ctrl):
+            pytest.skip(f"{controller_name}: transfers to {ChainId(dst_chain_id).name} are paused")
 
 
 @pytest.mark.live
