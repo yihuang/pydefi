@@ -6,6 +6,7 @@ import pytest
 
 from pydefi.exceptions import PoolDataError
 from pydefi.pathfinder.graph import PoolEdge, V3PoolEdge
+from pydefi.pathfinder.v3_tick_math import TickLadder
 from pydefi.pool_data.base import PoolData, build_graph
 from pydefi.pool_data.geckoterminal import GeckoTerminal
 from pydefi.pool_data.subgraph import UniswapV2Subgraph, UniswapV3Subgraph
@@ -106,6 +107,36 @@ class TestPoolData:
         )
         edges = pool.to_pool_edges()
         assert all(e.fee_bps == 5 for e in edges)
+
+    def test_to_pool_edges_carries_the_tick_ladder(self):
+        """Without this the exact walk is unreachable: to_pool_edges builds every V3 edge."""
+        ladder = TickLadder([(-60, 10**20, 10**18), (60, 2 * 10**20, -(10**18))])
+        pool = PoolData(
+            pool_address=POOL_ADDR,
+            protocol="UniswapV3",
+            chain_id=ChainId.ETHEREUM,
+            token0=WETH,
+            token1=USDC,
+            fee_bps=5,
+            sqrt_price_x96=2**96,
+            liquidity=5 * 10**22,
+            tick_ladder=ladder,
+        )
+        edges = pool.to_pool_edges()
+        # Shared across directions on purpose — the ladder is direction-agnostic.
+        assert all(e.tick_ladder is ladder for e in edges)
+
+    def test_to_pool_edges_without_a_ladder_keeps_the_estimate(self):
+        pool = PoolData(
+            pool_address=POOL_ADDR,
+            protocol="UniswapV3",
+            chain_id=ChainId.ETHEREUM,
+            token0=WETH,
+            token1=USDC,
+            sqrt_price_x96=2**96,
+            liquidity=5 * 10**22,
+        )
+        assert all(e.tick_ladder is None for e in pool.to_pool_edges())
 
     def test_to_pool_edges_extra_copied(self):
         extra = {"foo": "bar"}
