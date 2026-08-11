@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Callable, ClassVar, Iterator
 
+from pydefi.pathfinder.v3_tick_math import TickLadder, walk_v3_swap
 from pydefi.types import ZERO_ADDRESS, Address, SwapProtocol, Token
 
 #: Uniswap V3 ``sqrtPriceX96`` fixed-point scale (``2**96``).
@@ -278,11 +279,15 @@ class V3PoolEdge(PoolEdge):
             in Q96 fixed-point format (i.e. ``sqrtPrice * 2^96``).
         liquidity: Current active liquidity of the pool.
         is_token0_in: ``True`` if ``token_in`` is ``token0`` of the V3 pool.
+        tick_ladder: A :class:`~pydefi.pathfinder.v3_tick_math.TickLadder`
+            makes :meth:`amount_out` walk tick boundaries exactly; ``None``
+            (the default) keeps the single-tick approximation.
     """
 
     sqrt_price_x96: int = 0
     liquidity: int = 0
     is_token0_in: bool = True
+    tick_ladder: TickLadder | None = None
 
     _Q96: ClassVar[int] = Q96
 
@@ -319,12 +324,14 @@ class V3PoolEdge(PoolEdge):
             return (Decimal(1) / price_raw) * adj
 
     def amount_out(self, amount_in: int, overlay: ReserveOverlay | None = None) -> int:
-        """Estimate output via Uniswap V3 ``sqrtPrice`` math (single-tick approximation).
+        """Estimate output via Uniswap V3 ``sqrtPrice`` math.
 
-        Tick-crossing trades are overestimated; for the definitive on-chain
-        quote use :meth:`~pydefi.amm.uniswap_v3.UniswapV3.quote_exact_input_single`.
-        *overlay*, if given, supplies the starting ``sqrtPriceX96`` (the pool
-        state left by prior in-flight swaps) instead of the edge's stored value.
+        Exact across boundaries with a :attr:`tick_ladder`; without one, a
+        single-tick approximation that overestimates tick-crossing trades —
+        for the definitive quote use
+        :meth:`~pydefi.amm.uniswap_v3.UniswapV3.quote_exact_input_single`.
+        *overlay*, if given, supplies the starting ``sqrtPriceX96`` left by
+        prior in-flight swaps instead of the edge's stored value.
         """
         if self.liquidity == 0 or amount_in <= 0:
             return 0
@@ -334,6 +341,10 @@ class V3PoolEdge(PoolEdge):
         amount_in_net = self._net_amount_in(amount_in)
         if amount_in_net <= 0:
             return 0
+        if self.tick_ladder is not None:
+            # fee_bps=0: only _net_amount_in knows whether this pool charges V3
+            # bps or V4's composed pips, and it has already deducted.
+            return walk_v3_swap(sqrtP, self.liquidity, self.tick_ladder, amount_in_net, 0, self.is_token0_in)
         new_sqrtP = self._new_sqrt_price(sqrtP, amount_in_net)
         if new_sqrtP == 0:
             return 0

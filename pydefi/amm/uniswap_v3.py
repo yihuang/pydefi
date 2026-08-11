@@ -8,7 +8,10 @@ Uniswap V3 uses concentrated liquidity with discrete fee tiers:
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from decimal import Decimal
+from typing import Sequence
 
 from eth_contract import Contract
 from web3 import AsyncWeb3
@@ -21,7 +24,16 @@ from pydefi.abi.amm import (
     QuoteExactOutputSingleParams,
 )
 from pydefi.exceptions import InsufficientLiquidityError
+from pydefi.multicall import batch_call
+from pydefi.pathfinder.v3_tick_math import TickLadder, get_sqrt_ratio_at_tick
+from pydefi.pool_data.base import PoolData
 from pydefi.types import Address, SwapRoute, SwapStep, Token, TokenAmount
+
+logger = logging.getLogger(__name__)
+
+# Ladder fetches in flight at once. Each is several calls, two of them batched,
+# and public RPCs answer a wide fan-out with a 429.
+_LADDER_CONCURRENCY = 4
 
 # ---------------------------------------------------------------------------
 # Module-level pure functions
@@ -114,6 +126,95 @@ class UniswapV3:
     # ------------------------------------------------------------------
     # Price queries (via QuoterV2)
     # ------------------------------------------------------------------
+
+    async def fetch_tick_ladder(
+        self,
+        pool_address: Address,
+        *,
+        tick_spacing: int | None = None,
+        words: int = 4,
+        max_ticks: int = 4096,
+    ) -> TickLadder:
+        """Read a pool's initialised ticks near the current price into a ladder.
+
+        One call per bitmap word plus one per tick found, batched through
+        Multicall3, so fetch once per pool and reuse the ladder.
+
+        Accuracy holds only inside the scanned window and degrades silently
+        past it: on WETH/USDC 0.05% a 20000 WETH trade is 8.85% out at
+        ``words=1`` and 0.76% at ``words=4``. Widening is nearly free once
+        batched, hence the wide default.
+
+        Args:
+            pool_address: The V3 pool.
+            tick_spacing: Pool tick spacing; read from the pool when omitted.
+            words: 256-tick bitmap words scanned either side of the current
+                one. This, not *max_ticks*, is what bounds exact pricing.
+            max_ticks: Boundaries kept nearest the price, bounding the batch.
+        """
+        pool = UNISWAP_V3_POOL.fns
+        slot0 = await pool.slot0().call(self.w3, to=pool_address)
+        current_tick = int(slot0[1])
+        if tick_spacing is None:
+            tick_spacing = int(await pool.tickSpacing().call(self.w3, to=pool_address))
+
+        # Ticks live in the bitmap at `tick // spacing`, packed 256 per word.
+        centre_word = (current_tick // tick_spacing) >> 8  # floors, matching the pool
+        scanned = range(centre_word - words, centre_word + words + 1)
+        bitmaps = await batch_call(self.w3, [(pool_address, pool.tickBitmap(word)) for word in scanned])
+
+        initialised: list[int] = []
+        for word, bitmap in zip(scanned, bitmaps):
+            bitmap = int(bitmap)
+            while bitmap:
+                bit = (bitmap & -bitmap).bit_length() - 1  # lowest set bit
+                initialised.append(((word << 8) + bit) * tick_spacing)
+                bitmap &= bitmap - 1
+        if not initialised:
+            return TickLadder([])
+        # Nearest-first, so a tight budget still covers the boundaries a swap
+        # can actually reach.
+        initialised.sort(key=lambda t: abs(t - current_tick))
+        del initialised[max_ticks:]
+
+        infos = await batch_call(self.w3, [(pool_address, pool.ticks(t)) for t in initialised])
+        return TickLadder(
+            [
+                (tick, get_sqrt_ratio_at_tick(tick), int(info[1]))  # info[1] = liquidityNet
+                for tick, info in zip(initialised, infos)
+            ]
+        )
+
+    async def attach_tick_ladders(
+        self,
+        pools: Sequence[PoolData],
+        *,
+        concurrency: int = _LADDER_CONCURRENCY,
+        **kwargs,
+    ) -> list[PoolData]:
+        """Fill ``tick_ladder`` on the V3 *pools*, in place, and return them.
+
+        Each pool costs its own round trips, so run this over the candidates a
+        search has narrowed to, not a whole pool set. Pools with no V3 price
+        state are skipped; one whose fetch fails keeps the estimate.
+
+        Args:
+            pools: Pools to enrich, mutated in place.
+            concurrency: Ladder fetches in flight at once.
+            **kwargs: Passed through to :meth:`fetch_tick_ladder`.
+        """
+        targets = [p for p in pools if p.sqrt_price_x96 > 0 and p.liquidity > 0]
+        sem = asyncio.Semaphore(concurrency)
+
+        async def _one(pool: PoolData) -> None:
+            async with sem:
+                try:
+                    pool.tick_ladder = await self.fetch_tick_ladder(Address(pool.pool_address), **kwargs)
+                except Exception as exc:
+                    logger.warning("tick ladder unavailable for %s (%s); keeping estimate", pool.pool_address, exc)
+
+        await asyncio.gather(*(_one(p) for p in targets))
+        return list(pools)
 
     async def quote_exact_input_single(
         self,

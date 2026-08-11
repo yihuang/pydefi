@@ -6,9 +6,18 @@ verify that ``quote_exact_input_single`` returns plausible values.
 
 import pytest
 
+from pydefi.abi.amm import UNISWAP_V3_POOL
 from pydefi.amm.uniswap_v3 import UniswapV3
+from pydefi.pathfinder.graph import V3PoolEdge
 from pydefi.types import TokenAmount
-from tests.addrs import DAI, UNISWAP_V3_QUOTER, UNISWAP_V3_ROUTER, USDC, WETH
+from tests.addrs import (
+    DAI,
+    POOL_WETH_USDC_500,
+    UNISWAP_V3_QUOTER,
+    UNISWAP_V3_ROUTER,
+    USDC,
+    WETH,
+)
 
 MIN_USDC = 500 * 10**6
 MAX_USDC = 10_000 * 10**6
@@ -84,3 +93,40 @@ class TestUniswapV3Live:
         assert route.token_out == USDC
         assert len(route.steps) == 1
         assert route.amount_out.amount > 0
+
+
+@pytest.mark.live
+async def test_fetch_tick_ladder_prices_better_than_the_approximation(eth_w3):
+    """An exact ladder must track the on-chain quoter where the estimate drifts.
+
+    The single-tick estimate assumes liquidity never changes, so it only errs on
+    trades large enough to cross boundaries — which is exactly what the ladder
+    exists to fix. Both are compared against the quoter, the ground truth.
+    """
+    v3 = UniswapV3(w3=eth_w3, router_address=UNISWAP_V3_ROUTER, quoter_address=UNISWAP_V3_QUOTER)
+    ladder = await v3.fetch_tick_ladder(POOL_WETH_USDC_500)
+    assert len(ladder) > 0, "pool should have initialised ticks near the price"
+    assert ladder.prices == sorted(ladder.prices)
+
+    slot0 = await UNISWAP_V3_POOL.fns.slot0().call(eth_w3, to=POOL_WETH_USDC_500)
+    liquidity = int(await UNISWAP_V3_POOL.fns.liquidity().call(eth_w3, to=POOL_WETH_USDC_500))
+    common = {
+        "token_in": WETH,
+        "token_out": USDC,
+        "pool_address": POOL_WETH_USDC_500,
+        "protocol": "UniswapV3",
+        "fee_bps": 5,
+        "sqrt_price_x96": int(slot0[0]),
+        "liquidity": liquidity,
+        "is_token0_in": bytes(WETH.address) < bytes(USDC.address),
+    }
+    approx = V3PoolEdge(**common)
+    exact = V3PoolEdge(**common, tick_ladder=ladder)
+
+    big = 2000 * 10**18
+    quoted = (await v3.quote_exact_input_single(TokenAmount(WETH, big), USDC, fee=500)).amount
+    exact_err = abs(exact.amount_out(big) - quoted) / quoted
+    approx_err = abs(approx.amount_out(big) - quoted) / quoted
+
+    assert exact_err < 1e-4, f"exact walk drifted from the quoter: {exact_err:.2%}"
+    assert exact_err <= approx_err, "the ladder must not be worse than the estimate it replaces"

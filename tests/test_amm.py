@@ -26,6 +26,8 @@ from pydefi.amm.universal_router import (
 )
 from pydefi.exceptions import InsufficientLiquidityError
 from pydefi.pathfinder.graph import V4PoolEdge
+from pydefi.pathfinder.v3_tick_math import TickLadder
+from pydefi.pool_data.base import PoolData
 from pydefi.types import Address, TokenAmount
 from pydefi.vm.swap import SwapTransaction
 from tests.addrs import (
@@ -232,6 +234,78 @@ class TestUniswapV3Instance:
     def test_custom_default_fee(self):
         v3 = UniswapV3(w3=None, router_address=ROUTER_V3, quoter_address=QUOTER_V3, default_fee=500)
         assert v3.default_fee == 500
+
+
+class TestAttachTickLadders:
+    """Enriching candidate pools with exact tick data before pricing them."""
+
+    @staticmethod
+    def _pool(addr_byte: str, **kwargs):
+        defaults = dict(
+            pool_address="0x" + addr_byte * 20,
+            protocol="UniswapV3",
+            chain_id=1,
+            token0=WETH,
+            token1=USDC,
+            fee_bps=5,
+            sqrt_price_x96=2**96,
+            liquidity=10**22,
+        )
+        return PoolData(**{**defaults, **kwargs})
+
+    @staticmethod
+    def _v3(monkeypatch, fetch):
+        v3 = UniswapV3(w3=None, router_address=ROUTER_V3, quoter_address=QUOTER_V3)
+        monkeypatch.setattr(v3, "fetch_tick_ladder", fetch)
+        return v3
+
+    async def test_fills_v3_pools_and_skips_pools_without_price_state(self, monkeypatch):
+        seen: list[str] = []
+
+        async def fetch(address, **kwargs):
+            seen.append(bytes(address).hex())
+            return TickLadder([(0, 2**96, 10**18)])
+
+        v3 = self._v3(monkeypatch, fetch)
+        v3_pool = self._pool("aa")
+        v2_pool = self._pool("bb", protocol="UniswapV2", sqrt_price_x96=0, liquidity=0)
+
+        returned = await v3.attach_tick_ladders([v3_pool, v2_pool])
+
+        assert seen == ["aa" * 20], "only the pool with V3 price state is worth a round trip"
+        assert len(v3_pool.tick_ladder) == 1
+        assert v2_pool.tick_ladder is None
+        assert returned == [v3_pool, v2_pool], "every pool comes back, enriched or not"
+
+    async def test_a_failed_fetch_leaves_that_pool_on_the_estimate(self, monkeypatch):
+        """One unreachable pool must not cost the others their ladders."""
+
+        async def fetch(address, **kwargs):
+            if bytes(address)[0] == 0xAA:
+                raise ValueError("no ticks for you")
+            return TickLadder([(0, 2**96, 10**18)])
+
+        v3 = self._v3(monkeypatch, fetch)
+        failing, ok = self._pool("aa"), self._pool("cc")
+
+        await v3.attach_tick_ladders([failing, ok])
+
+        assert failing.tick_ladder is None, "falls back to the single-tick estimate"
+        assert ok.tick_ladder is not None
+
+    async def test_ladder_reaches_the_edge_that_prices_the_swap(self, monkeypatch):
+        """The point of the whole chain: fetch -> PoolData -> V3PoolEdge.amount_out."""
+
+        async def fetch(address, **kwargs):
+            return TickLadder([(-60, 2**95, -(10**18)), (60, 2**97, 10**18)])
+
+        v3 = self._v3(monkeypatch, fetch)
+        pool = self._pool("aa")
+        await v3.attach_tick_ladders([pool])
+
+        edges = pool.to_pool_edges()
+        assert all(e.tick_ladder is pool.tick_ladder for e in edges)
+        assert edges[0].amount_out(10**18) > 0
 
 
 # ---------------------------------------------------------------------------

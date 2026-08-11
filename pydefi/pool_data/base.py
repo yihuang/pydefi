@@ -7,6 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from pydefi.pathfinder.graph import PoolEdge, PoolGraph, V3PoolEdge
+from pydefi.pathfinder.v3_tick_math import TickLadder
 from pydefi.types import Token
 
 
@@ -29,6 +30,11 @@ class PoolData:
         reserve1: Raw on-chain reserve of *token1* (V2-style pools).
         sqrt_price_x96: Current ``sqrtPriceX96`` (Uniswap V3 pools only).
         liquidity: Active liquidity (Uniswap V3 pools only).
+        tick_ladder: Initialised ticks near the price, making V3 pricing exact
+            across boundaries. Providers here are off-chain, so fill it via
+            :meth:`~pydefi.amm.uniswap_v3.UniswapV3.attach_tick_ladders`, and
+            refetch once the pool leaves :attr:`TickLadder.price_range` — past
+            it the walk extrapolates rather than raising.
         extra: Optional extra metadata (provider-specific).
     """
 
@@ -44,6 +50,7 @@ class PoolData:
     # V3-style concentrated liquidity state
     sqrt_price_x96: int = 0
     liquidity: int = 0
+    tick_ladder: TickLadder | None = None
     extra: dict = field(default_factory=dict)
 
     def to_pool_edges(self) -> list[PoolEdge]:
@@ -71,6 +78,9 @@ class PoolData:
                 sqrt_price_x96=self.sqrt_price_x96,
                 liquidity=self.liquidity,
                 is_token0_in=True,
+                # Shared: a ladder is a set of points on the price axis, and
+                # the swap direction is decided per call, not per ladder.
+                tick_ladder=self.tick_ladder,
                 extra=extra_0_to_1,
             )
             extra_1_to_0 = dict(self.extra)
@@ -84,6 +94,7 @@ class PoolData:
                 sqrt_price_x96=self.sqrt_price_x96,
                 liquidity=self.liquidity,
                 is_token0_in=False,
+                tick_ladder=self.tick_ladder,
                 extra=extra_1_to_0,
             )
         else:
