@@ -69,6 +69,7 @@ from web3.types import BlockNumber
 
 from pydefi.abi.amm import UNISWAP_V2_FACTORY, UNISWAP_V2_PAIR, UNISWAP_V3_FACTORY, UNISWAP_V3_POOL
 from pydefi.indexer.models import Factory, IndexerState, Pool, V2SyncEvent, V3SwapEvent
+from pydefi.multicall import batch_call
 
 logger = logging.getLogger(__name__)
 
@@ -842,15 +843,44 @@ class PoolIndexer:
         )
 
     async def _prefetch_token_meta(self, token_addresses: set[str]) -> None:
-        """Warm the cache for *token_addresses* concurrently (bounded; cached skipped)."""
-        sem = asyncio.Semaphore(_TOKEN_META_CONCURRENCY)
+        """Warm the cache for *token_addresses* (cached ones skipped).
 
-        async def _one(addr: str) -> None:
-            async with sem:
-                await self._fetch_token_meta(addr)
+        Batched through Multicall3: an indexer discovers tokens by the thousand
+        and two calls each is what gets a provider to start refusing them.
+        Falls back to individual calls when no Multicall3 deployment is known
+        for the chain, or when the batch itself fails.
+        """
+        missing = [a for a in token_addresses if a.lower() not in self._token_meta]
+        if not missing:
+            return
 
-        missing = (a for a in token_addresses if a.lower() not in self._token_meta)
-        await asyncio.gather(*[_one(a) for a in missing])
+        calls: list[tuple[str, Any]] = []
+        for addr in missing:
+            to = Web3.to_checksum_address(addr)
+            calls.extend(((to, ERC20.fns.symbol()), (to, ERC20.fns.decimals())))
+        try:
+            results = await batch_call(self.w3, calls, allow_failure=True)
+        except Exception as exc:  # no deployment, or the batch itself failed
+            logger.debug("token metadata multicall unavailable (%s); falling back", exc)
+            sem = asyncio.Semaphore(_TOKEN_META_CONCURRENCY)
+
+            async def _one(addr: str) -> None:
+                async with sem:
+                    await self._fetch_token_meta(addr)
+
+            await asyncio.gather(*[_one(a) for a in missing])
+            return
+
+        # Two results per token, in the order the calls were built: draw them off
+        # one shared iterator so the pairing cannot drift the way indexing into
+        # ``results[2 * i]`` can.
+        pending = iter(results)
+        for addr, symbol, decimals in zip(missing, pending, pending, strict=True):
+            # Same fallbacks as _erc20_view: non-standard tokens must not break indexing.
+            self._token_meta[addr.lower()] = (
+                symbol if symbol is not None else "",
+                decimals if decimals is not None else 18,
+            )
 
     async def _fetch_token_meta(self, token_address: str) -> tuple[str, int]:
         """Return cached ``(symbol, decimals)``, fetching the two calls concurrently once.

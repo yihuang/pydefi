@@ -15,6 +15,8 @@ import json
 import re
 from pathlib import Path
 
+from eth_contract.multicall3 import MULTICALL3_ADDRESS
+
 from pydefi._utils import decode_address
 from pydefi.types import Address, ChainId, Token
 
@@ -90,6 +92,24 @@ _CONTRACTS: dict[str, dict[int, str]] = {
     "CALIBUR": {
         chain: "0x000000009B1D0aF20D8C6d0A44e162d11F9b8f00"
         for chain in (_ETH, ChainId.OPTIMISM, ChainId.BSC, ChainId.UNICHAIN, ChainId.BASE, ChainId.ARBITRUM, _SEP)
+    },
+    # Multicall3 — deterministic-deployed, so the address is eth-contract's rather
+    # than one more copy of the hex. Still listed per chain: a chain missing from
+    # here raises before the call, which is what lets callers fall back to
+    # individual reads instead of batching into empty code.
+    "MULTICALL3": {
+        chain: MULTICALL3_ADDRESS
+        for chain in (
+            _ETH,
+            ChainId.OPTIMISM,
+            ChainId.BSC,
+            ChainId.UNICHAIN,
+            ChainId.BASE,
+            ChainId.ARBITRUM,
+            ChainId.POLYGON,
+            ChainId.AVALANCHE,
+            _SEP,
+        )
     },
     # Safe v1.4.1 canonical deployments (github.com/safe-global/safe-deployments).
     "SAFE_PROXY_FACTORY": {

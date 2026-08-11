@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+import pydefi.indexer.indexer as indexer_module
 from pydefi.indexer import PoolIndexer
 
 # Valid 20-byte hex addresses used as test fixtures
@@ -795,6 +796,62 @@ class TestTokenMetaCaching:
         b = "0x" + "2b" * 20
         await indexer._prefetch_token_meta({a, b, a.upper()})  # a cached, dupes collapse
         assert set(seen) == {a, b}, "a not refetched; only b fetched"
+
+    @pytest.mark.asyncio
+    async def test_prefetch_batches_into_one_multicall(self, monkeypatch):
+        """Two calls per token is what gets a provider to start refusing them."""
+        indexer = PoolIndexer(db_url="sqlite://")
+        batches: list[int] = []
+        a, b = "0x" + "3c" * 20, "0x" + "4d" * 20
+        meta = {a.lower(): ("AAA", 6), b.lower(): ("BBB", 18)}
+
+        async def fake_batch(w3, calls, **kwargs):
+            batches.append(len(calls))
+            assert kwargs.get("allow_failure") is True, "non-standard tokens must not fail the batch"
+            # symbol, decimals per token, in the order the calls were built — distinct
+            # per token, so metadata landing on the wrong one fails rather than matches
+            return [meta[target.lower()][i % 2] for i, (target, _fn) in enumerate(calls)]
+
+        monkeypatch.setattr(indexer_module, "batch_call", fake_batch)
+        await indexer._prefetch_token_meta({a, b})
+
+        assert batches == [4], "one batch of two calls per token, not per-token round trips"
+        assert indexer._token_meta[a.lower()] == ("AAA", 6)
+        assert indexer._token_meta[b.lower()] == ("BBB", 18)
+
+    @pytest.mark.asyncio
+    async def test_prefetch_uses_erc20_defaults_for_undecodable_tokens(self, monkeypatch):
+        """A None from the batch means the same as a failed _erc20_view."""
+        indexer = PoolIndexer(db_url="sqlite://")
+
+        async def fake_batch(w3, calls, **kwargs):
+            return [None] * len(calls)  # e.g. bytes32 symbol, or a revert
+
+        monkeypatch.setattr(indexer_module, "batch_call", fake_batch)
+        a = "0x" + "5e" * 20
+        await indexer._prefetch_token_meta({a})
+        assert indexer._token_meta[a.lower()] == ("", 18)
+
+    @pytest.mark.asyncio
+    async def test_prefetch_falls_back_when_multicall_unavailable(self, monkeypatch):
+        """Chains without a Multicall3 deployment must still index."""
+        indexer = PoolIndexer(db_url="sqlite://")
+        seen: list[str] = []
+
+        async def fake_batch(w3, calls, **kwargs):
+            raise KeyError("MULTICALL3 has no deployment on chain 1337")
+
+        async def fake_view(fn, to, default):
+            seen.append(to.lower())
+            return default
+
+        monkeypatch.setattr(indexer_module, "batch_call", fake_batch)
+        indexer._erc20_view = fake_view  # type: ignore[method-assign]
+        a = "0x" + "6f" * 20
+        await indexer._prefetch_token_meta({a})
+        # the fallback path is _fetch_token_meta: one view for symbol, one for decimals
+        assert seen == [a, a], "fallback should fetch the token individually"
+        assert indexer._token_meta[a.lower()] == ("", 18)
 
     @pytest.mark.asyncio
     async def test_shared_token_fetched_once_across_pools(self):
