@@ -181,3 +181,44 @@ def test_router_propagates_weight_mode_kwargs_to_from_pool_graph(monkeypatch, ro
     monkeypatch.setattr(router_mod, "from_pool_graph", _spy)
     Router(fix.pool_graph, candidate_solver="hermes", **router_kwargs)._ensure_hermes()
     assert captured == expected
+
+
+# ---------------------------------------------------------------------------
+# Candidate widening — must stop once a doubling stops paying
+# ---------------------------------------------------------------------------
+
+
+def test_widening_stops_when_a_doubling_adds_no_hop_valid_path():
+    """A barren doubling ends the search instead of walking ``k`` to ``max_k``.
+
+    Yen emits in increasing weight order, so hop-valid (short) paths surface
+    early; a doubling that adds none means the rest of the window is longer
+    still. Regression guard: this loop used to double to ``max_k`` regardless,
+    which measured as zero extra hop-valid paths for ~10x the search cost.
+    """
+    weth, t1, dst = (make_token(s, 18, i) for i, s in enumerate(["WETH", "T1", "DST"], 1))
+    g = PoolGraph()
+    for i, (a, b) in enumerate([(weth, t1), (t1, dst)], 1):
+        g.add_bidirectional_pool(a, b, Address("0x" + format(i, "040x")), "UniswapV2", 10**22, 10**22)
+
+    router = Router(g, max_hops=2, candidate_solver="hermes")
+    hermes = router._ensure_hermes()
+    short_path = hermes.shortest_path(weth.address, dst.address)
+    assert short_path is not None and len(short_path) - 1 <= 2
+    # Revisits nodes, so it is both over the hop cap and non-simple.
+    long_path = [weth.address, t1.address, dst.address, t1.address, weth.address]
+
+    ks: list[int] = []
+
+    def stub(source, target, k):
+        # Always returns a full window, but the hop-valid count never grows.
+        ks.append(k)
+        return [short_path] + [long_path] * (k - 1)
+
+    hermes.top_k_paths = stub
+    with pytest.warns(RuntimeWarning, match="widening stopped"):
+        routes = router._find_top_routes_hermes(TokenAmount(weth, 10**18), dst, top_n=5)
+
+    # Without the early bail this walks 10 -> 20 -> 40 -> 80.
+    assert ks == [10, 20], f"expected one barren doubling then stop, got {ks}"
+    assert len(routes) == 1  # the lone hop-valid path still yields a route
