@@ -1381,6 +1381,7 @@
     "displayName": "Stable",
     "feeTokens": [
       "LINK",
+      "WgUSDT",
       "WUSDT0",
       "gUSDT"
     ],
