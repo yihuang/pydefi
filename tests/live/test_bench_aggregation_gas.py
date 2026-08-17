@@ -86,9 +86,9 @@ _DEADLINE: int = 2**63 - 1
 _TEST_USER: Address = ETH_WHALE
 _MAX_UINT: int = 2**256 - 1
 
-# Must be past 25_195_294: the registry's >= 2.1.1 UniversalRouter doesn't exist
-# before that, and calls to a codeless address no-op with status 1.
-_FORK_BLOCK: int = 25_250_000
+# Must be past 25_737_888: the registry's newest (2.2.0) UniversalRouter doesn't
+# exist before that, and calls to a codeless address no-op with status 1.
+_FORK_BLOCK: int = 25_760_000
 
 POOL_WETH_USDC_10000: Address = Address("0x7BeA39867e4169DBe237d55C8242a8f2fcDcc387")
 POOL_WETH_DAI_3000: Address = Address("0xC2e9F25Be6257c210d7Adf0D4Cd6E3E881ba25f8")
@@ -204,6 +204,11 @@ async def bench_ctx(bench_fork_w3: AsyncWeb3) -> dict:
     await erc20_approve(w3, WETH.address, _TEST_USER, OKX_TOKEN_APPROVE, _MAX_UINT)
     await erc20_approve(w3, WETH.address, _TEST_USER, UNISWAP_V3_ROUTER, _MAX_UINT)
     await permit2_approve(w3, _TEST_USER, WETH.address, UNIVERSAL_ROUTER)
+
+    # Enforce the _FORK_BLOCK pin: a codeless router yields zero-output rows, not failures.
+    assert await w3.eth.get_code(UNIVERSAL_ROUTER), (
+        f"no code at UNIVERSAL_ROUTER {UNIVERSAL_ROUTER.hex()} at block {_FORK_BLOCK} — bump _FORK_BLOCK"
+    )
 
     # USDC for cross-protocol V3+V2 split (USDC→DAI). 6 decimals.
     await fund_usdc(w3, USDC.address, _TEST_USER, 10_000 * 10**6)
