@@ -6,6 +6,9 @@ Docs: https://apis.openocean.finance/developer/apis/swap-api/api-v4
 
 from __future__ import annotations
 
+import asyncio
+import json
+import time
 from decimal import Decimal
 from typing import Any
 
@@ -46,16 +49,39 @@ def _parse_price_impact(value: Any) -> Decimal:
         return Decimal("0")
 
 
+def _unwrap(url: str, status: int, body: str) -> dict[str, Any]:
+    """Return the JSON envelope of a response, or raise :class:`AggregatorError`."""
+    try:
+        data = json.loads(body)
+    except ValueError:
+        data = None
+    if not isinstance(data, dict):
+        raise AggregatorError(
+            f"OpenOcean returned a non-JSON response from {url}: HTTP {status} {body[:200].strip()}",
+            status_code=status,
+        )
+    if status != 200 or str(data.get("code", "")) not in ("200", ""):
+        msg = data.get("error") or data.get("message", data)
+        raise AggregatorError(f"OpenOcean API error: {msg}", status_code=status)
+    return data
+
+
 class OpenOcean:
     """OpenOcean DEX aggregator API client.
 
     Args:
         chain_id: EVM chain ID (e.g. ``1`` for Ethereum mainnet).
-        api_key: Optional OpenOcean API key sent as ``apikey`` query parameter.
+        api_key: OpenOcean API key sent as ``apikey``; ``/quote`` and ``/swap`` require one.
         base_url: Override the default API base URL.
     """
 
-    _DEFAULT_BASE_URL = "https://open-api.openocean.finance/v4"
+    _DEFAULT_BASE_URL = "https://open-api-pro.openocean.finance/v4"
+
+    # The API allows ~1 request/second and a quote costs two (/gasPrice, /quote),
+    # so retry on 429 and reuse the gas price for a block.
+    _RATE_LIMIT_RETRIES = 3
+    _RATE_LIMIT_BACKOFF = 1.1
+    _GAS_PRICE_TTL = 12.0
 
     def __init__(
         self,
@@ -66,6 +92,8 @@ class OpenOcean:
         self.chain_id = chain_id
         self.api_key = api_key
         self._base_url = base_url or self._DEFAULT_BASE_URL
+        self._gas_price: str | None = None
+        self._gas_price_at = 0.0
 
     @property
     def base_url(self) -> str:
@@ -88,26 +116,25 @@ class OpenOcean:
         url = self._chain_url(endpoint)
         if self.api_key:
             params = {**params, "apikey": self.api_key}
+        attempt = 0
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, params=params, headers=self._headers()) as resp:
-                data = await resp.json(content_type=None)
-                code = str(data.get("code", ""))
-                if resp.status != 200 or code not in ("200", ""):
-                    msg = data.get("error") or data.get("message", data)
-                    raise AggregatorError(
-                        f"OpenOcean API error: {msg}",
-                        status_code=resp.status,
-                    )
-                return data  # type: ignore[return-value]
+            while True:
+                async with session.get(url, params=params, headers=self._headers()) as resp:
+                    status, body = resp.status, await resp.text()
+                if status != 429 or attempt >= self._RATE_LIMIT_RETRIES:
+                    return _unwrap(url, status, body)
+                attempt += 1
+                await asyncio.sleep(self._RATE_LIMIT_BACKOFF * attempt)
 
     async def _get_gas_price(self) -> str:
-        """Fetch the current gas price (in Wei) from the OpenOcean ``/gasPrice`` endpoint.
-
-        Returns:
-            The standard legacy gas price as a string (in Wei).
-        """
+        """Return the standard legacy gas price in Wei, cached for ``_GAS_PRICE_TTL``."""
+        now = time.monotonic()
+        if self._gas_price is not None and now - self._gas_price_at < self._GAS_PRICE_TTL:
+            return self._gas_price
         data = await self._get("gasPrice", {})
-        return str(data["data"]["standard"]["legacyGasPrice"])
+        self._gas_price = str(data["data"]["standard"]["legacyGasPrice"])
+        self._gas_price_at = now
+        return self._gas_price
 
     async def get_quote(
         self,
