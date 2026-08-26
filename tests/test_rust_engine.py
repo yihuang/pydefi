@@ -1,6 +1,6 @@
 """Tests for pydefi.pathfinder.rust_engine — Rust engine route -> pydefi calldata.
 
-Driven from example messages, so no built extension is needed; ``TestLiveEngine`` re-derives them from the real one when it is built and keeps them honest.
+The engine runs as a service and Python is its client, so these tests drive the adapter from example messages — what the engine emits for the pool sets described beside them. Pricing is the engine's own concern and is tested there.
 """
 
 from __future__ import annotations
@@ -24,25 +24,12 @@ from pydefi.pathfinder.rust_engine import (
 from pydefi.types import Token
 from tests.addrs import DAI, ETH_WHALE, UNIVERSAL_ROUTER, USDC, WETH
 
-try:
-    import amm_aggregator
-except ImportError:  # the extension is optional — the messages below stand in for it
-    amm_aggregator = None
-
-requires_engine = pytest.mark.skipif(
-    amm_aggregator is None,
-    reason="amm-aggregator not built; run `maturin develop --release` in aggregator-rs/crates/py",
-)
-
 DEADLINE_SELECTOR = bytes.fromhex("3593564c")
 NO_DEADLINE_SELECTOR = bytes.fromhex("24856bc3")
 
 POOL_V2 = "0x" + "a1" * 20
 POOL_V3 = "0x" + "b2" * 20
 POOL_CURVE = "0x" + "c3" * 20
-
-#: Full tick range, so no test swap crosses out of it.
-MIN_TICK, MAX_TICK = -887_220, 887_220
 
 USDC_3K = 3_000 * 10**6
 
@@ -55,10 +42,10 @@ def engine_id(token: Token) -> str:
 TOKENS: dict[str, Token] = {engine_id(t): t for t in (WETH, USDC, DAI)}
 
 # ---------------------------------------------------------------------------
-# Example messages — what the engine emits for TestLiveEngine's pools
+# Example messages, as the engine emits them
 # ---------------------------------------------------------------------------
 
-#: USDC -> WETH over V2, then WETH -> DAI over V3.
+#: 3000 USDC -> WETH -> DAI, max_hops=2, over a V2 pool of 10_000 WETH / 30_000_000 USDC and a full-range V3 pool at price 1.0 with liquidity 10**24, fee 3000, spacing 60.
 ROUTE_MESSAGE: dict = {
     "hops": [
         {
@@ -87,7 +74,7 @@ ROUTE_MESSAGE: dict = {
     "gas_used": 167396,
 }
 
-#: A kind the Universal Router has no command for.
+#: 1 USDC -> DAI over a Curve pool (balances 10**9 each, A=100, fee 400) — a kind the Universal Router has no command for.
 CURVE_MESSAGE: dict = {
     "hops": [
         {
@@ -157,7 +144,7 @@ class TestRouteFromMessage:
         assert route_to_message(decoded) == ROUTE_MESSAGE
 
     def test_accepts_int_amounts(self, route):
-        """msgpack and the in-process extension carry u256 as ints, not strings."""
+        """A codec like msgpack carries u256 as ints, not strings."""
         assert route_from_message({**ROUTE_MESSAGE, "hops": [asdict(hop) for hop in route.hops]}) == route
 
     def test_route_amounts_are_optional(self, route):
@@ -269,62 +256,3 @@ class TestBuildExactInTransaction:
     def test_defaults_to_msg_sender(self, route, router):
         recipient = decode_v3_input(build_exact_in_transaction(route, TOKENS, router))[0]
         assert bytes.fromhex(recipient[2:]) == MSG_SENDER
-
-
-# ---------------------------------------------------------------------------
-# The example messages, checked against the real engine
-# ---------------------------------------------------------------------------
-
-
-@requires_engine
-class TestLiveEngine:
-    """Pins the messages above to what the extension actually emits."""
-
-    @staticmethod
-    def v2_v3_graph():
-        g = amm_aggregator.PoolGraph()
-        g.add_v2_pool(
-            POOL_V2,
-            engine_id(WETH),
-            engine_id(USDC),
-            reserve0=10_000 * 10**18,
-            reserve1=30_000_000 * 10**6,
-        )
-        liquidity = 10**24
-        g.add_v3_pool(
-            POOL_V3,
-            engine_id(WETH),
-            engine_id(DAI),
-            fee_pips=3_000,
-            sqrt_price_x96=2**96,  # price 1.0; both tokens have 18 decimals
-            liquidity=liquidity,
-            tick_current=0,
-            tick_spacing=60,
-            ticks=[(MIN_TICK, liquidity, liquidity), (MAX_TICK, -liquidity, liquidity)],
-        )
-        return g
-
-    def test_emits_the_example_route_message(self):
-        route = self.v2_v3_graph().best_route(engine_id(USDC), engine_id(DAI), USDC_3K, max_hops=2)
-        assert route is not None, "fixture pools must admit a USDC -> WETH -> DAI route"
-        assert route_to_message(route) == ROUTE_MESSAGE
-
-    def test_emits_the_example_curve_message(self):
-        g = amm_aggregator.PoolGraph()
-        g.add_curve_pool(
-            POOL_CURVE,
-            engine_id(USDC),
-            engine_id(DAI),
-            balances=[10**9, 10**9],
-            amplification=100,
-            fee_pips=400,
-        )
-        route = g.best_route(engine_id(USDC), engine_id(DAI), 10**6, max_hops=1)
-        assert route is not None
-        assert route_to_message(route) == CURVE_MESSAGE
-
-    def test_in_process_route_needs_no_decoding(self, router):
-        """A PyO3 Route has the same fields as Route, so the adapter takes it directly."""
-        route = self.v2_v3_graph().best_route(engine_id(USDC), engine_id(DAI), USDC_3K, max_hops=2)
-        tx = build_exact_in_transaction(route, TOKENS, router, ETH_WHALE)
-        assert tx.data == build_exact_in_transaction(route_from_message(ROUTE_MESSAGE), TOKENS, router, ETH_WHALE).data

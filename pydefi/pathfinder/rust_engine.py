@@ -11,7 +11,7 @@ Message format::
                "amount_in": "3000000000", "amount_out": "996006981", "fee_pips": 3000, "tick_spacing": 0}],
      "amount_in": "3000000000", "amount_out": "996006981", "gas_used": 116000}
 
-u256 amounts cross as decimal strings (ints work too); route-level fields are optional. An in-process ``amm_aggregator.Route`` needs no decoding.
+u256 amounts cross as decimal strings (ints work too); route-level fields are optional.
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ __all__ = [
 
 @dataclass(frozen=True)
 class RouteHop:
-    """One hop of an engine route; the same fields as ``amm_aggregator.RouteHop``."""
+    """One hop of an engine route, as the engine's ``RouteHop`` serializes."""
 
     address: str
     kind: str
@@ -52,7 +52,7 @@ class RouteHop:
 
 @dataclass(frozen=True)
 class Route:
-    """An engine route; the same fields as ``amm_aggregator.Route``."""
+    """An engine route, as the engine's ``Route`` serializes."""
 
     hops: Sequence[RouteHop]
     amount_in: int
