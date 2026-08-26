@@ -1,19 +1,24 @@
 """Adapter for routes from the Rust engine (``amm-aggregator``).
 
-The engine simulates AMMs and searches routes purely in memory; pydefi turns the winning route into calldata. Engine hops describe themselves (pool address, kind, tokens, per-hop amounts, fee), so this module never looks a pool up again — it only converts units and builds hop descriptors::
+The engine runs as a service, so a route arrives as a message. Hops describe themselves, so this module never looks a pool up — it decodes, converts units, and packs calldata::
 
-    graph = amm_aggregator.PoolGraph()
-    graph.add_v2_pool(pool_addr, weth_addr, usdc_addr, reserve0, reserve1)
-    route = graph.best_route(weth_addr, usdc_addr, 10**18, max_hops=3)
+    route = route_from_message(client.best_route(...))
     tx = build_exact_in_transaction(route, {weth_addr: WETH, usdc_addr: USDC}, router)
 
-The engine is not on PyPI: ``cd aggregator-rs/crates/py && maturin develop --release``.
+Message format::
+
+    {"hops": [{"address": "0x…", "kind": "uniswap_v2", "token_in": "0x…", "token_out": "0x…",
+               "amount_in": "3000000000", "amount_out": "996006981", "fee_pips": 3000, "tick_spacing": 0}],
+     "amount_in": "3000000000", "amount_out": "996006981", "gas_used": 116000}
+
+u256 amounts cross as decimal strings (ints work too); route-level fields are optional. An in-process ``amm_aggregator.Route`` needs no decoding.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from decimal import Decimal
-from typing import Mapping, Protocol, Sequence
+from typing import Any, Mapping, Sequence
 
 from pydefi._math import apply_slippage
 from pydefi.amm.universal_router import MSG_SENDER, PoolHop, UniversalRouter, V2Hop, V3Hop
@@ -21,16 +26,19 @@ from pydefi.types import Address, SwapRoute, SwapStep, Token, TokenAmount
 from pydefi.vm.swap import SwapTransaction
 
 __all__ = [
-    "RouteHopLike",
-    "RouteLike",
+    "Route",
+    "RouteHop",
     "build_exact_in_transaction",
+    "route_from_message",
     "route_to_hops",
+    "route_to_message",
     "route_to_swap_route",
 ]
 
 
-class RouteHopLike(Protocol):
-    """Structural type of one ``amm_aggregator.RouteHop``."""
+@dataclass(frozen=True)
+class RouteHop:
+    """One hop of an engine route; the same fields as ``amm_aggregator.RouteHop``."""
 
     address: str
     kind: str
@@ -39,16 +47,83 @@ class RouteHopLike(Protocol):
     amount_in: int
     amount_out: int
     fee_pips: int
-    tick_spacing: int
+    tick_spacing: int = 0
 
 
-class RouteLike(Protocol):
-    """Structural type of one ``amm_aggregator.Route``."""
+@dataclass(frozen=True)
+class Route:
+    """An engine route; the same fields as ``amm_aggregator.Route``."""
 
-    hops: Sequence[RouteHopLike]
+    hops: Sequence[RouteHop]
     amount_in: int
     amount_out: int
-    gas_used: int
+    gas_used: int = 0
+
+
+def _amount(value: Any, field: str) -> int:
+    """A u256 sent as a decimal string or an int. Floats are refused: ``int()`` would truncate them."""
+    if isinstance(value, float):
+        raise ValueError(f"{field}: {value!r} is a float")
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field}: {value!r} is not an integer") from exc
+
+
+def _hop_from_message(message: Mapping[str, Any], at: str) -> RouteHop:
+    try:
+        return RouteHop(
+            address=message["address"],
+            kind=message["kind"],
+            token_in=message["token_in"],
+            token_out=message["token_out"],
+            amount_in=_amount(message["amount_in"], f"{at}.amount_in"),
+            amount_out=_amount(message["amount_out"], f"{at}.amount_out"),
+            fee_pips=int(message["fee_pips"]),
+            tick_spacing=int(message.get("tick_spacing", 0)),
+        )
+    except KeyError as exc:
+        raise ValueError(f"{at}: missing field {exc.args[0]!r}") from exc
+
+
+def route_from_message(message: Mapping[str, Any]) -> Route:
+    """Decode a route message. Hops must chain and route-level amounts must match them, so a bad hop list fails here, not in the calldata."""
+    hops = tuple(_hop_from_message(hop, f"hops[{i}]") for i, hop in enumerate(message.get("hops", ())))
+    if not hops:
+        raise ValueError("route message has no hops")
+    for i in range(1, len(hops)):
+        prev, hop = hops[i - 1], hops[i]
+        if (hop.token_in, hop.amount_in) != (prev.token_out, prev.amount_out):
+            raise ValueError(
+                f"hops[{i}] takes {hop.amount_in} {hop.token_in} but hops[{i - 1}] gives {prev.amount_out} {prev.token_out}"
+            )
+    route = Route(hops, hops[0].amount_in, hops[-1].amount_out, int(message.get("gas_used", 0)))
+    for field in ("amount_in", "amount_out"):
+        if field in message and _amount(message[field], field) != getattr(route, field):
+            raise ValueError(f"{field} is {message[field]} but the hops give {getattr(route, field)}")
+    return route
+
+
+def route_to_message(route: Route) -> dict[str, Any]:
+    """The inverse of :func:`route_from_message`; amounts become decimal strings."""
+    return {
+        "hops": [
+            {
+                "address": hop.address,
+                "kind": hop.kind,
+                "token_in": hop.token_in,
+                "token_out": hop.token_out,
+                "amount_in": str(hop.amount_in),
+                "amount_out": str(hop.amount_out),
+                "fee_pips": hop.fee_pips,
+                "tick_spacing": hop.tick_spacing,
+            }
+            for hop in route.hops
+        ],
+        "amount_in": str(route.amount_in),
+        "amount_out": str(route.amount_out),
+        "gas_used": route.gas_used,
+    }
 
 
 #: The engine and the Universal Router use pips (1_000_000 = 100%), :class:`SwapStep` uses basis points — 100x apart, same name. Convert here and nowhere else.
@@ -58,7 +133,7 @@ _PIPS_PER_BPS = 100
 _V3_KINDS = frozenset({"uniswap_v3", "pancakeswap_v3", "camelot_v3"})
 
 
-def _hop_to_descriptor(hop: RouteHopLike, tokens: Mapping[str, Token]) -> PoolHop:
+def _hop_to_descriptor(hop: RouteHop, tokens: Mapping[str, Token]) -> PoolHop:
     token_in, token_out = tokens[hop.token_in], tokens[hop.token_out]
     if hop.kind == "uniswap_v2":
         return V2Hop(token_in=token_in, token_out=token_out)
@@ -67,7 +142,7 @@ def _hop_to_descriptor(hop: RouteHopLike, tokens: Mapping[str, Token]) -> PoolHo
     raise ValueError(f"pool {hop.address}: the Universal Router has no command for {hop.kind!r} pools")
 
 
-def route_to_hops(route: RouteLike, tokens: Mapping[str, Token]) -> list[PoolHop]:
+def route_to_hops(route: Route, tokens: Mapping[str, Token]) -> list[PoolHop]:
     """Convert an engine route into Universal Router hop descriptors.
 
     *tokens* maps the engine's token identifiers (the strings the pool graph was built with) to :class:`Token`; a missing one raises ``KeyError``. A hop the Universal Router cannot encode (Curve, Balancer) raises ``ValueError``.
@@ -77,7 +152,7 @@ def route_to_hops(route: RouteLike, tokens: Mapping[str, Token]) -> list[PoolHop
     return [_hop_to_descriptor(hop, tokens) for hop in route.hops]
 
 
-def route_to_swap_route(route: RouteLike, tokens: Mapping[str, Token]) -> SwapRoute:
+def route_to_swap_route(route: Route, tokens: Mapping[str, Token]) -> SwapRoute:
     """Convert an engine route into pydefi's protocol-neutral :class:`SwapRoute`.
 
     Accepts every engine AMM kind, unlike :func:`route_to_hops` — a ``SwapRoute`` only describes the route. ``price_impact`` stays zero: the engine reports realised output, not a spot reference.
@@ -104,7 +179,7 @@ def route_to_swap_route(route: RouteLike, tokens: Mapping[str, Token]) -> SwapRo
 
 
 def build_exact_in_transaction(
-    route: RouteLike,
+    route: Route,
     tokens: Mapping[str, Token],
     router: UniversalRouter,
     recipient: Address = MSG_SENDER,
