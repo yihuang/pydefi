@@ -6,15 +6,20 @@ The engine runs as a service and Python is its client, so these tests drive the 
 from __future__ import annotations
 
 import json
+import os
+import threading
 from dataclasses import asdict, replace
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
+import requests
 from eth_abi import decode as abi_decode
 
 from pydefi._math import apply_slippage
 from pydefi._utils import encode_address
 from pydefi.amm.universal_router import MSG_SENDER, RouterCommand, UniversalRouter, V2Hop, V3Hop
 from pydefi.pathfinder.rust_engine import (
+    EngineClient,
     build_exact_in_transaction,
     route_from_message,
     route_to_hops,
@@ -72,6 +77,7 @@ ROUTE_MESSAGE: dict = {
     "amount_in": "3000000000",
     "amount_out": "993908919326332172",
     "gas_used": 167396,
+    "block_number": 21_000_000,
 }
 
 #: 1 USDC -> DAI over a Curve pool (balances 10**9 each, A=100, fee 400) — a kind the Universal Router has no command for.
@@ -91,6 +97,7 @@ CURVE_MESSAGE: dict = {
     "amount_in": "1000000",
     "amount_out": "999591",
     "gas_used": 70000,
+    "block_number": 21_000_000,
 }
 
 
@@ -138,6 +145,7 @@ class TestRouteFromMessage:
     def test_decodes_hops_and_amounts(self, route):
         assert [hop.kind for hop in route.hops] == ["uniswap_v2", "uniswap_v3"]
         assert (route.amount_in, route.amount_out, route.gas_used) == (USDC_3K, 993908919326332172, 167396)
+        assert route.block_number == 21_000_000
 
     def test_survives_a_json_round_trip(self):
         decoded = route_from_message(json.loads(json.dumps(ROUTE_MESSAGE)))
@@ -148,7 +156,7 @@ class TestRouteFromMessage:
         assert route_from_message({**ROUTE_MESSAGE, "hops": [asdict(hop) for hop in route.hops]}) == route
 
     def test_route_amounts_are_optional(self, route):
-        assert route_from_message({"hops": ROUTE_MESSAGE["hops"]}) == replace(route, gas_used=0)
+        assert route_from_message({"hops": ROUTE_MESSAGE["hops"]}) == replace(route, gas_used=0, block_number=0)
 
     @pytest.mark.parametrize(
         ("message", "match"),
@@ -256,3 +264,77 @@ class TestBuildExactInTransaction:
     def test_defaults_to_msg_sender(self, route, router):
         recipient = decode_v3_input(build_exact_in_transaction(route, TOKENS, router))[0]
         assert bytes.fromhex(recipient[2:]) == MSG_SENDER
+
+
+# ---------------------------------------------------------------------------
+# Engine service client
+# ---------------------------------------------------------------------------
+
+
+class _EngineStub(BaseHTTPRequestHandler):
+    """Answers like ``serve``: ROUTE_MESSAGE for a route to DAI, "no route" otherwise."""
+
+    seen: list[dict] = []
+
+    def do_GET(self):
+        if self.path == "/health":
+            self._reply(200, {"chain_id": 1, "block_number": 21_000_000, "pools": 2})
+        else:
+            self._reply(404, {"error": "not found"})
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        self.seen.append(body)
+        if self.path != "/route":
+            self._reply(404, {"error": "not found"})
+        elif body["token_out"] != engine_id(DAI):
+            self._reply(404, {"error": "no route"})
+        else:
+            self._reply(200, ROUTE_MESSAGE)
+
+    def _reply(self, status: int, payload: dict) -> None:
+        data = json.dumps(payload).encode()
+        self.send_response(status)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def log_message(self, *_):
+        pass
+
+
+@pytest.fixture
+def engine():
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _EngineStub)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    _EngineStub.seen.clear()
+    try:
+        yield EngineClient(f"http://127.0.0.1:{server.server_port}")
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+class TestEngineClient:
+    def test_best_route_sends_a_decimal_string_and_decodes_the_reply(self, engine, route):
+        assert engine.best_route(engine_id(USDC), engine_id(DAI), USDC_3K, max_hops=2) == route
+        assert _EngineStub.seen == [
+            {"token_in": engine_id(USDC), "token_out": engine_id(DAI), "amount_in": str(USDC_3K), "max_hops": 2}
+        ]
+
+    def test_no_route_is_none(self, engine):
+        assert engine.best_route(engine_id(USDC), engine_id(WETH), USDC_3K) is None
+
+    def test_health(self, engine):
+        assert engine.health()["block_number"] == 21_000_000
+
+    def test_only_the_engines_no_route_is_none(self, engine):
+        engine.url += "/nope"
+        with pytest.raises(requests.HTTPError):
+            engine.best_route(engine_id(USDC), engine_id(DAI), USDC_3K)
+
+
+@pytest.mark.skipif(not os.environ.get("ENGINE_URL"), reason="set ENGINE_URL to test against a running engine")
+def test_live_engine_is_reachable():
+    health = EngineClient(os.environ["ENGINE_URL"]).health()
+    assert health["block_number"] > 0

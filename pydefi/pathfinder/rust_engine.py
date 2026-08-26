@@ -1,17 +1,17 @@
 """Adapter for routes from the Rust engine (``amm-aggregator``).
 
-The engine runs as a service, so a route arrives as a message. Hops describe themselves, so this module never looks a pool up — it decodes, converts units, and packs calldata::
+The engine runs as a service (``serve`` in aggregator-rs); this module is its client. Hops describe themselves, so nothing here looks a pool up — it decodes, converts units, and packs calldata::
 
-    route = route_from_message(client.best_route(...))
+    route = EngineClient("http://127.0.0.1:8080").best_route(weth_addr, usdc_addr, 10**18)
     tx = build_exact_in_transaction(route, {weth_addr: WETH, usdc_addr: USDC}, router)
 
 Message format::
 
     {"hops": [{"address": "0x…", "kind": "uniswap_v2", "token_in": "0x…", "token_out": "0x…",
                "amount_in": "3000000000", "amount_out": "996006981", "fee_pips": 3000, "tick_spacing": 0}],
-     "amount_in": "3000000000", "amount_out": "996006981", "gas_used": 116000}
+     "amount_in": "3000000000", "amount_out": "996006981", "gas_used": 116000, "block_number": 21000000}
 
-u256 amounts cross as decimal strings (ints work too); route-level fields are optional.
+u256 amounts are decimal strings (ints work too); route-level fields are optional. ``block_number`` is the chain head the search reflected.
 """
 
 from __future__ import annotations
@@ -20,12 +20,15 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Mapping, Sequence
 
+import requests
+
 from pydefi._math import apply_slippage
 from pydefi.amm.universal_router import MSG_SENDER, PoolHop, UniversalRouter, V2Hop, V3Hop
 from pydefi.types import Address, SwapRoute, SwapStep, Token, TokenAmount
 from pydefi.vm.swap import SwapTransaction
 
 __all__ = [
+    "EngineClient",
     "Route",
     "RouteHop",
     "build_exact_in_transaction",
@@ -58,6 +61,8 @@ class Route:
     amount_in: int
     amount_out: int
     gas_used: int = 0
+    #: The chain head the search reflected; 0 when unknown.
+    block_number: int = 0
 
 
 def _amount(value: Any, field: str) -> int:
@@ -97,7 +102,13 @@ def route_from_message(message: Mapping[str, Any]) -> Route:
             raise ValueError(
                 f"hops[{i}] takes {hop.amount_in} {hop.token_in} but hops[{i - 1}] gives {prev.amount_out} {prev.token_out}"
             )
-    route = Route(hops, hops[0].amount_in, hops[-1].amount_out, int(message.get("gas_used", 0)))
+    route = Route(
+        hops,
+        hops[0].amount_in,
+        hops[-1].amount_out,
+        int(message.get("gas_used", 0)),
+        int(message.get("block_number", 0)),
+    )
     for field in ("amount_in", "amount_out"):
         if field in message and _amount(message[field], field) != getattr(route, field):
             raise ValueError(f"{field} is {message[field]} but the hops give {getattr(route, field)}")
@@ -123,6 +134,7 @@ def route_to_message(route: Route) -> dict[str, Any]:
         "amount_in": str(route.amount_in),
         "amount_out": str(route.amount_out),
         "gas_used": route.gas_used,
+        "block_number": route.block_number,
     }
 
 
@@ -202,3 +214,26 @@ def build_exact_in_transaction(
         amount_out_minimum=amount_out_minimum,
         deadline=deadline,
     )
+
+
+class EngineClient:
+    """Client for the engine service."""
+
+    def __init__(self, url: str = "http://127.0.0.1:8080", *, timeout: float = 5.0) -> None:
+        self.url = url.rstrip("/")
+        self.timeout = timeout
+
+    def health(self) -> dict[str, Any]:
+        """``{"chain_id", "block_number", "pools"}``."""
+        response = requests.get(f"{self.url}/health", timeout=self.timeout)
+        response.raise_for_status()
+        return response.json()
+
+    def best_route(self, token_in: str, token_out: str, amount_in: int, max_hops: int = 3) -> Route | None:
+        """Best exact-in route, or ``None`` when no path exists within *max_hops*."""
+        body = {"token_in": token_in, "token_out": token_out, "amount_in": str(amount_in), "max_hops": max_hops}
+        response = requests.post(f"{self.url}/route", json=body, timeout=self.timeout)
+        if response.status_code == 404 and response.json().get("error") == "no route":
+            return None
+        response.raise_for_status()
+        return route_from_message(response.json())
