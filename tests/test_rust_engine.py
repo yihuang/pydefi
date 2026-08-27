@@ -18,15 +18,20 @@ from eth_abi import decode as abi_decode
 from pydefi._math import apply_slippage
 from pydefi._utils import encode_address
 from pydefi.amm.universal_router import MSG_SENDER, RouterCommand, UniversalRouter, V2Hop, V3Hop
+from pydefi.deployments import get_token
 from pydefi.pathfinder.rust_engine import (
     EngineClient,
+    Route,
+    SplitQuote,
     build_exact_in_transaction,
+    quote_from_message,
     route_from_message,
     route_to_hops,
     route_to_message,
     route_to_swap_route,
+    split_from_message,
 )
-from pydefi.types import Token
+from pydefi.types import ChainId, Token, TokenAmount
 from tests.addrs import DAI, ETH_WHALE, UNIVERSAL_ROUTER, USDC, WETH
 
 DEADLINE_SELECTOR = bytes.fromhex("3593564c")
@@ -35,6 +40,7 @@ NO_DEADLINE_SELECTOR = bytes.fromhex("24856bc3")
 POOL_V2 = "0x" + "a1" * 20
 POOL_V3 = "0x" + "b2" * 20
 POOL_CURVE = "0x" + "c3" * 20
+POOL_V2_DIRECT = "0x" + "d4" * 20
 
 USDC_3K = 3_000 * 10**6
 
@@ -52,6 +58,7 @@ TOKENS: dict[str, Token] = {engine_id(t): t for t in (WETH, USDC, DAI)}
 
 #: 3000 USDC -> WETH -> DAI, max_hops=2, over a V2 pool of 10_000 WETH / 30_000_000 USDC and a full-range V3 pool at price 1.0 with liquidity 10**24, fee 3000, spacing 60.
 ROUTE_MESSAGE: dict = {
+    "mode": "single",
     "hops": [
         {
             "address": POOL_V2,
@@ -78,10 +85,13 @@ ROUTE_MESSAGE: dict = {
     "amount_out": "993908919326332172",
     "gas_used": 167396,
     "block_number": 21_000_000,
+    "state_version": 12,
+    "stale": False,
 }
 
 #: 1 USDC -> DAI over a Curve pool (balances 10**9 each, A=100, fee 400) — a kind the Universal Router has no command for.
 CURVE_MESSAGE: dict = {
+    "mode": "single",
     "hops": [
         {
             "address": POOL_CURVE,
@@ -98,6 +108,66 @@ CURVE_MESSAGE: dict = {
     "amount_out": "999591",
     "gas_used": 70000,
     "block_number": 21_000_000,
+    "state_version": 12,
+    "stale": False,
+}
+
+
+#: The same 3000 USDC -> DAI, split because two shallower paths beat one: 2000 through the V2/V3 pair above and 1000 direct.
+SPLIT_MESSAGE: dict = {
+    "mode": "split",
+    "legs": [
+        {
+            "hops": [
+                {
+                    "address": POOL_V2,
+                    "kind": "uniswap_v2",
+                    "token_in": engine_id(USDC),
+                    "token_out": engine_id(WETH),
+                    "amount_in": "2000000000",
+                    "amount_out": "664600406006187849",
+                    "fee_pips": 3000,
+                    "tick_spacing": 0,
+                },
+                {
+                    "address": POOL_V3,
+                    "kind": "uniswap_v3",
+                    "token_in": engine_id(WETH),
+                    "token_out": engine_id(DAI),
+                    "amount_in": "664600406006187849",
+                    "amount_out": "662605946217554781",
+                    "fee_pips": 3000,
+                    "tick_spacing": 60,
+                },
+            ],
+            "amount_in": "2000000000",
+            "amount_out": "662605946217554781",
+            "gas_used": 167396,
+        },
+        {
+            "hops": [
+                {
+                    "address": POOL_V2_DIRECT,
+                    "kind": "uniswap_v2",
+                    "token_in": engine_id(USDC),
+                    "token_out": engine_id(DAI),
+                    "amount_in": "1000000000",
+                    "amount_out": "996006981039903216",
+                    "fee_pips": 3000,
+                    "tick_spacing": 0,
+                }
+            ],
+            "amount_in": "1000000000",
+            "amount_out": "996006981039903216",
+            "gas_used": 116000,
+        },
+    ],
+    "amount_in": "3000000000",
+    "amount_out": "1658612927257457997",
+    "gas_used": 283396,
+    "block_number": 21_000_000,
+    "state_version": 12,
+    "stale": False,
 }
 
 
@@ -145,7 +215,7 @@ class TestRouteFromMessage:
     def test_decodes_hops_and_amounts(self, route):
         assert [hop.kind for hop in route.hops] == ["uniswap_v2", "uniswap_v3"]
         assert (route.amount_in, route.amount_out, route.gas_used) == (USDC_3K, 993908919326332172, 167396)
-        assert route.block_number == 21_000_000
+        assert (route.block_number, route.state_version, route.stale) == (21_000_000, 12, False)
 
     def test_survives_a_json_round_trip(self):
         decoded = route_from_message(json.loads(json.dumps(ROUTE_MESSAGE)))
@@ -156,7 +226,11 @@ class TestRouteFromMessage:
         assert route_from_message({**ROUTE_MESSAGE, "hops": [asdict(hop) for hop in route.hops]}) == route
 
     def test_route_amounts_are_optional(self, route):
-        assert route_from_message({"hops": ROUTE_MESSAGE["hops"]}) == replace(route, gas_used=0, block_number=0)
+        bare = replace(route, gas_used=0, block_number=0, state_version=0)
+        assert route_from_message({"hops": ROUTE_MESSAGE["hops"]}) == bare
+
+    def test_stale_flag_survives_decoding(self):
+        assert route_from_message({**ROUTE_MESSAGE, "stale": True}).stale
 
     @pytest.mark.parametrize(
         ("message", "match"),
@@ -175,6 +249,103 @@ class TestRouteFromMessage:
         """Bad hop lists fail at the boundary, not as short or mis-sized calldata."""
         with pytest.raises(ValueError, match=match):
             route_from_message(message)
+
+
+class TestSplitFromMessage:
+    def test_decodes_legs_and_totals(self):
+        split = split_from_message(SPLIT_MESSAGE)
+        assert [len(leg.hops) for leg in split.legs] == [2, 1]
+        assert (split.amount_in, split.amount_out, split.gas_used) == (USDC_3K, 1658612927257457997, 283396)
+        assert (split.block_number, split.state_version, split.stale) == (21_000_000, 12, False)
+
+    def test_legs_spend_what_was_asked(self):
+        """The point of a split: the legs together are the trade, so their inputs must sum to it."""
+        split = split_from_message(SPLIT_MESSAGE)
+        assert sum(leg.amount_in for leg in split.legs) == split.amount_in
+
+    def test_each_leg_is_a_route_in_its_own_right(self):
+        legs = split_from_message(SPLIT_MESSAGE).legs
+        assert legs[1].hops[0].address == POOL_V2_DIRECT
+        assert legs[0].amount_in == 2_000 * 10**6
+
+    def test_legs_inherit_the_quotes_freshness(self):
+        """A leg is what gets packed, so a stale split must not hand out legs that look fresh."""
+        split = split_from_message({**SPLIT_MESSAGE, "stale": True})
+        assert all(leg.stale and leg.block_number == 21_000_000 for leg in split.legs)
+
+    def test_legs_must_be_the_same_trade(self):
+        """Summing outputs across legs is only meaningful if they all end in the same token."""
+        elsewhere = json.loads(json.dumps(SPLIT_MESSAGE))
+        elsewhere["legs"][1]["hops"][0]["token_out"] = engine_id(WETH)
+        with pytest.raises(ValueError, match=r"legs\[1\] swaps"):
+            split_from_message(elsewhere)
+
+    def test_gas_total_is_cross_checked_like_the_amounts(self):
+        with pytest.raises(ValueError, match="gas_used is"):
+            split_from_message({**SPLIT_MESSAGE, "gas_used": 1})
+
+    @pytest.mark.parametrize(
+        ("message", "match"),
+        [
+            pytest.param({"mode": "split", "legs": []}, "no legs", id="empty"),
+            pytest.param({**SPLIT_MESSAGE, "legs": SPLIT_MESSAGE["legs"][:1]}, "amount_in is", id="dropped-leg"),
+            pytest.param({**SPLIT_MESSAGE, "amount_out": "1"}, "amount_out is", id="total-disagrees"),
+            pytest.param(
+                {**SPLIT_MESSAGE, "legs": [{"hops": []}, *SPLIT_MESSAGE["legs"][1:]]},
+                "legs\\[0\\]: route message has no hops",
+                id="bad-leg-says-which",
+            ),
+        ],
+    )
+    def test_malformed_split_raises(self, message, match):
+        with pytest.raises(ValueError, match=match):
+            split_from_message(message)
+
+
+class TestQuoteFromMessage:
+    def test_mode_picks_the_shape(self):
+        assert quote_from_message(SPLIT_MESSAGE) == split_from_message(SPLIT_MESSAGE)
+        assert quote_from_message(ROUTE_MESSAGE) == route_from_message(ROUTE_MESSAGE)
+
+    def test_a_message_without_a_mode_is_a_route(self):
+        """Older engines, and route_from_message's own docs, omit it."""
+        assert quote_from_message({"hops": ROUTE_MESSAGE["hops"]}).hops
+
+    def test_unknown_mode_raises(self):
+        with pytest.raises(ValueError, match="unknown route mode"):
+            quote_from_message({**ROUTE_MESSAGE, "mode": "batch"})
+
+
+class TestBoundaryErrors:
+    """Everything this module refuses, it refuses as a ValueError naming the field."""
+
+    @pytest.mark.parametrize(
+        ("message", "match"),
+        [
+            pytest.param({"hops": None}, "not a list of hops", id="null-hops"),
+            pytest.param({"hops": ["nope"]}, r"hops\[0\]: .* is not a hop", id="hop-not-a-mapping"),
+            pytest.param({**ROUTE_MESSAGE, "gas_used": None}, "gas_used", id="null-gas"),
+            pytest.param(_with_hop(0, fee_pips=2999.9), "is a float", id="float-fee"),
+        ],
+    )
+    def test_malformed_route_raises_value_error(self, message, match):
+        with pytest.raises(ValueError, match=match):
+            route_from_message(message)
+
+    def test_a_route_always_has_hops(self):
+        """One invariant, enforced where the route is made, so the packers never re-check."""
+        with pytest.raises(ValueError, match="route has no hops"):
+            Route((), 0, 0)
+
+    def test_a_split_cannot_be_packed_as_one_swap(self):
+        split = split_from_message(SPLIT_MESSAGE)
+        with pytest.raises(ValueError, match="pack one leg at a time"):
+            build_exact_in_transaction(split, TOKENS, UniversalRouter(UNIVERSAL_ROUTER))
+
+    def test_a_v2_hop_quoted_off_the_uniswap_fee_is_refused(self):
+        """The V2 command has no pool address: the router would execute on the 0.3% Uniswap pair, not the one quoted."""
+        with pytest.raises(ValueError, match="3000-pip Uniswap pair"):
+            route_to_hops(route_from_message(_with_hop(0, fee_pips=2500)), TOKENS)
 
 
 # ---------------------------------------------------------------------------
@@ -272,13 +443,13 @@ class TestBuildExactInTransaction:
 
 
 class _EngineStub(BaseHTTPRequestHandler):
-    """Answers like ``serve``: ROUTE_MESSAGE for a route to DAI, "no route" otherwise."""
+    """Answers like ``serve``: SPLIT_MESSAGE when asked to split, ROUTE_MESSAGE for a route to DAI, "no route" otherwise."""
 
     seen: list[dict] = []
 
     def do_GET(self):
         if self.path == "/health":
-            self._reply(200, {"chain_id": 1, "block_number": 21_000_000, "pools": 2})
+            self._reply(200, {"chain_id": 1, "block_number": 21_000_000, "state_version": 12, "pools": 2})
         else:
             self._reply(404, {"error": "not found"})
 
@@ -289,6 +460,8 @@ class _EngineStub(BaseHTTPRequestHandler):
             self._reply(404, {"error": "not found"})
         elif body["token_out"] != engine_id(DAI):
             self._reply(404, {"error": "no route"})
+        elif body.get("split"):
+            self._reply(200, SPLIT_MESSAGE)
         else:
             self._reply(200, ROUTE_MESSAGE)
 
@@ -334,7 +507,107 @@ class TestEngineClient:
             engine.best_route(engine_id(USDC), engine_id(DAI), USDC_3K)
 
 
+class TestEngineClientQuote:
+    def test_split_request_decodes_into_legs(self, engine):
+        quote = engine.quote(engine_id(USDC), engine_id(DAI), USDC_3K, split=True)
+        assert isinstance(quote, SplitQuote)
+        assert [len(leg.hops) for leg in quote.legs] == [2, 1]
+        assert _EngineStub.seen[-1]["split"] is True
+
+    def test_a_plain_quote_is_a_single_route(self, engine, route):
+        assert engine.quote(engine_id(USDC), engine_id(DAI), USDC_3K, max_hops=2) == route
+        assert "split" not in _EngineStub.seen[-1]
+
+    def test_k_and_gas_price_only_travel_when_asked_for(self, engine):
+        engine.quote(engine_id(USDC), engine_id(DAI), USDC_3K)
+        assert {"k", "gas_price_out"}.isdisjoint(_EngineStub.seen[-1])
+        engine.quote(engine_id(USDC), engine_id(DAI), USDC_3K, k=8, gas_price_out=10**9)
+        assert (_EngineStub.seen[-1]["k"], _EngineStub.seen[-1]["gas_price_out"]) == (8, "1000000000")
+
+    def test_no_route_is_none_not_an_error(self, engine):
+        assert engine.quote(engine_id(USDC), engine_id(WETH), USDC_3K, split=True) is None
+
+    def test_best_route_never_asks_for_a_split(self, engine, route):
+        assert engine.best_route(engine_id(USDC), engine_id(DAI), USDC_3K, max_hops=2) == route
+        assert "split" not in _EngineStub.seen[-1]
+
+
+# ---------------------------------------------------------------------------
+# Against a running engine
+# ---------------------------------------------------------------------------
+
+#: What to route per chain: names in pydefi.deployments, plus a human amount.
+#: The stub fixes the message shape; only a real engine shows the keys we send
+#: are the ones its graph was indexed with.
+LIVE_PAIRS: dict[int, tuple[str, str, int]] = {
+    # The Sepolia Uniswap V2 USDC/WETH pair is the only one there with depth on
+    # both sides; 100 USDC is small against ~758k USDC / ~35 WETH of reserves.
+    ChainId.SEPOLIA: ("USDC", "WETH", 100),
+    ChainId.ETHEREUM: ("USDC", "WETH", 100),
+}
+
+
+@pytest.fixture
+def live_engine():
+    return EngineClient(os.environ["ENGINE_URL"])
+
+
+@pytest.fixture
+def health(live_engine):
+    """One /health per test: the engine moves, so compare against a single read."""
+    return live_engine.health()
+
+
+@pytest.fixture
+def pair(health) -> tuple[Token, Token, int]:
+    """The pair for whichever chain the engine turns out to serve."""
+    chain_id = health["chain_id"]
+    if chain_id not in LIVE_PAIRS:
+        pytest.skip(f"no known routable pair for chain {chain_id}; add one to LIVE_PAIRS")
+    name_in, name_out, amount = LIVE_PAIRS[chain_id]
+    token_in = get_token(name_in, chain_id)
+    return token_in, get_token(name_out, chain_id), amount * 10**token_in.decimals
+
+
 @pytest.mark.skipif(not os.environ.get("ENGINE_URL"), reason="set ENGINE_URL to test against a running engine")
-def test_live_engine_is_reachable():
-    health = EngineClient(os.environ["ENGINE_URL"]).health()
-    assert health["block_number"] > 0
+class TestLiveEngine:
+    """What a stub cannot check: real keys, a real graph, a real answer."""
+
+    def test_engine_has_a_graph_to_route_on(self, health):
+        assert health["block_number"] > 0
+        assert health["pools"] > 0, "engine loaded no pools: seed its --db and restart"
+
+    def test_route_is_the_trade_that_was_asked_for(self, live_engine, health, pair):
+        """Decoding checks hops chain, not that the chain is the trade asked for."""
+        token_in, token_out, amount_in = pair
+        route = live_engine.best_route(engine_id(token_in), engine_id(token_out), amount_in)
+        assert route is not None, "seeded engine returned no route for its own pair"
+        assert (route.hops[0].token_in, route.hops[-1].token_out) == (engine_id(token_in), engine_id(token_out))
+        assert (route.amount_in, route.hops[0].amount_in) == (amount_in, amount_in)
+        assert route.amount_out > 0
+        # The engine only moves forward, so a refresh landing mid-test cannot fail this.
+        assert route.block_number >= health["block_number"]
+
+    def test_token_keys_map_back_to_tokens(self, live_engine, pair):
+        """Nothing downstream can pack a route whose keys do not resolve."""
+        token_in, token_out, amount_in = pair
+        route = live_engine.best_route(engine_id(token_in), engine_id(token_out), amount_in)
+        swap_route = route_to_swap_route(route, {engine_id(t): t for t in (token_in, token_out)})
+        assert len(swap_route.steps) == len(route.hops)
+        assert swap_route.steps[0].pool_address.hex() == route.hops[0].address[2:]
+        assert swap_route.amount_out == TokenAmount(token_out, route.amount_out)
+
+    def test_split_answers_one_shape_or_the_other(self, live_engine, pair):
+        """A split is kept only when it beats every single route, so one pool answers "single"."""
+        token_in, token_out, amount_in = pair
+        quote = live_engine.quote(engine_id(token_in), engine_id(token_out), amount_in, split=True, gas_price_out=10**9)
+        if isinstance(quote, SplitQuote):
+            assert sum(leg.amount_in for leg in quote.legs) == amount_in
+            assert all(leg.hops[-1].token_out == engine_id(token_out) for leg in quote.legs)
+        else:
+            assert quote.amount_in == amount_in
+
+    def test_unknown_token_is_no_route_not_an_error(self, live_engine):
+        """The engine's own 404; anything else 404ing would raise instead."""
+        absent_in, absent_out = "0x" + "ee" * 20, "0x" + "dd" * 20
+        assert live_engine.best_route(absent_in, absent_out, 10**18) is None
