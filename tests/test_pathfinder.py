@@ -1375,6 +1375,21 @@ class TestFindOptimalSplit:
         )
         return g
 
+    def test_edge_index_cache_sees_pools_added_later(self):
+        """The edge index is cached per graph shape, so a new pool must invalidate it.
+
+        A stale index raises KeyError mapping the new route's steps back to
+        edges, so this fails loudly rather than quietly routing around them.
+        """
+        g = self._two_pool_graph()
+        router = Router(g, max_hops=2)
+        router.find_optimal_split(TokenAmount(WETH, 10**18), USDC)  # populates the cache
+
+        g.add_bidirectional_pool(WETH, DAI, POOL_C, "UniswapV2", reserve_a=10**21, reserve_b=2 * 10**21, fee_bps=30)
+        g.add_bidirectional_pool(DAI, USDC, POOL_D, "UniswapV2", reserve_a=2 * 10**21, reserve_b=2 * 10**9, fee_bps=30)
+        dag = router.find_optimal_split(TokenAmount(WETH, 10**18), USDC)
+        assert dag.to_dict()["actions"], "the route through the new pools must resolve"
+
     def test_single_path_returns_linear_dag(self):
         """When only one route exists, find_optimal_split returns a linear DAG."""
         g = PoolGraph()

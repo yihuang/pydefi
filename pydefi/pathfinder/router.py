@@ -62,7 +62,7 @@ CandidateSolver = Literal["hop_dp", "hermes"]
 # Cost: Yen scales O(k²·|E|·|V|), so 2× ≈ 4× candidate-fetch time.
 _HERMES_OVERSAMPLE = 2
 _HERMES_CAP_WARNING_TEXT = (
-    "Hermes candidate widening hit max_k before gathering top_n hop-valid paths; "
+    "Hermes candidate widening stopped before gathering top_n hop-valid paths; "
     "results may be conservative under the current search budget"
 )
 
@@ -84,10 +84,14 @@ class Router:
         candidate_solver: Which top-K candidate-discovery strategy
             :meth:`find_optimal_split` uses. ``"hop_dp"`` (default) is the
             hop-bounded DP; ``"hermes"`` is the treewidth-parameterized SSSP
-            from :mod:`pydefi.pathfinder.hermes` — recommended for large
-            graphs (≥ 1k tokens) where Yen's K-shortest-paths over a
-            collapsed-best-spot graph scales better than DP over the full
-            edge set.
+            from :mod:`pydefi.pathfinder.hermes`.
+
+            ``"hermes"`` was once recommended for large graphs, on the theory
+            that Yen's K-shortest-paths scales better than DP over the full
+            edge set. Measurement says otherwise: ``hop_dp`` wins at every size
+            tried up to 20k tokens / 36k pools, by 6–17x on query and 578x on
+            setup, where Hermes' chordal completion dominates. Prefer the
+            default unless you want Yen's path diversity specifically.
         weight_mode: Hermes edge weights. ``"spot"`` (default) uses
             post-fee marginal rate; ``"amount_out"`` bakes finite-input
             slippage into the seed via ``edge.amount_out(probe_amount)`` —
@@ -116,6 +120,30 @@ class Router:
         # (we don't track that yet — callers must build a new Router after
         # mutating PoolGraph).
         self._hermes: HermesRouter | None = None
+        self._edge_index: dict[EdgeKey, PoolEdge] = {}
+        self._edge_index_stamp: tuple[int, int] | None = None
+
+    def _graph_stamp(self) -> tuple[int, int]:
+        """Shape signature the edge-index cache keys off, at ~38 µs.
+
+        Edges mutated **in place** go undetected, as does removing one pool
+        and adding another — same limitation as :meth:`_ensure_hermes`.
+        """
+        return (len(self.graph._tokens), sum(len(v) for v in self.graph._adj.values()))
+
+    def _ensure_edge_index(self) -> dict[EdgeKey, PoolEdge]:
+        """Map every edge by :data:`EdgeKey`, rebuilt only when the graph changes.
+
+        :meth:`find_optimal_split` maps a route's steps back to edge objects
+        through this. Rebuilt per call it was O(|E|) work for O(hops) lookups
+        — half the query at 2005 tokens. Caching is safe even under in-place
+        edge mutation, since the values are the edge objects themselves.
+        """
+        stamp = self._graph_stamp()
+        if self._edge_index_stamp != stamp:
+            self._edge_index = {_edge_key(edge): edge for edge in self.graph}
+            self._edge_index_stamp = stamp
+        return self._edge_index
 
     def _ensure_hermes(self) -> HermesRouter:
         if self._hermes is None:
@@ -459,7 +487,7 @@ class Router:
         if candidates < 1:
             raise ValueError("candidates must be >= 1")
         routes = self._find_top_routes(amount_in, token_out, top_n=candidates, max_hops=max_hops)
-        edge_index: dict[EdgeKey, PoolEdge] = {_edge_key(edge): edge for edge in self.graph}
+        edge_index = self._ensure_edge_index()
         candidate_edges: list[list[PoolEdge]] = [
             [edge_index[_step_key(s)] for s in r.steps if s.pool_address is not None] for r in routes
         ]
@@ -647,19 +675,15 @@ class Router:
     ) -> list[SwapRoute]:
         """Hermes-backed candidate discovery: oversample by spot rank, re-rank by realized output.
 
-        Returns :class:`SwapRoute` objects whose ``amount_out`` is computed by
-        actually walking each path's edges with ``edge.amount_out`` — Hermes
-        only ranks by ``-log(spot rate)``, so we fetch
-        :data:`_HERMES_OVERSAMPLE`× *top_n* paths, re-quote at the requested
-        input size, sort by realized output, dedupe by first-hop pool (same
-        diversity contract as ``hop_dp``), and trim to *top_n* before ASGM
-        consumes the candidates. Paths exceeding *max_hops* edges are dropped
-        before re-ranking — keeps hermes' candidate hop-depth aligned with
-        hop_dp so ASGM doesn't dilute weight onto longer alternatives that
-        wouldn't be considered under the same cap. Widens ``k`` iteratively
-        when the initial sample contains too few hop-valid paths, greatly
-        reducing false ``NoRouteFoundError`` outcomes caused by an initial Yen
-        window that surfaces long alternatives before shorter hop-valid paths.
+        Hermes ranks by ``-log(spot rate)``, so this fetches
+        :data:`_HERMES_OVERSAMPLE`× *top_n* paths, re-quotes each by walking
+        its edges at the requested size, then sorts, dedupes by first-hop pool
+        (``hop_dp``'s diversity contract) and trims to *top_n*.
+
+        Paths longer than *max_hops* are dropped before re-ranking, so ASGM
+        cannot dilute weight onto alternatives ``hop_dp`` would never see. ``k``
+        widens when too few survive, which is what stops an initial Yen window
+        full of long paths from reading as ``NoRouteFoundError``.
         """
         src = amount_in.token
         dst_addr: Address = token_out.address
@@ -675,6 +699,7 @@ class Router:
         max_k = top_n * _HERMES_OVERSAMPLE * 8
         node_paths: list = []
         hit_sampling_cap = False
+        prev_valid = -1
         while True:
             candidates = hermes.top_k_paths(src.address, dst_addr, k)
             # ``len(path) - 1`` is hop count (path is a node sequence; edge
@@ -682,10 +707,17 @@ class Router:
             node_paths = [p for p in candidates if len(p) - 1 <= effective_max_hops]
             if len(node_paths) >= top_n:
                 break
-            if len(candidates) < k or k >= max_k:
-                # Yen exhausted (fewer returned than asked) or hit the cap.
-                hit_sampling_cap = k >= max_k and len(candidates) >= k
+            exhausted = len(candidates) < k  # Yen returned fewer than asked
+            # Yen emits in increasing weight order, so hop-valid paths — being
+            # short — surface early: a doubling that added none is evidence the
+            # rest of the window is longer still, and doubling again only buys
+            # worse-ranked paths at 4x the cost.
+            barren = len(node_paths) == prev_valid
+            if exhausted or barren or k >= max_k:
+                # Exhaustion is the graph's answer, not a shortfall to warn on.
+                hit_sampling_cap = not exhausted
                 break
+            prev_valid = len(node_paths)
             k *= 2
         if hit_sampling_cap:
             # Python's default filter de-dups per call site, so warn freely:

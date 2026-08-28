@@ -419,16 +419,14 @@ class HermesRouter:
                     if len(p) > i and list(p[: i + 1]) == list(root_path):
                         forbidden_edges.add((p[i], p[i + 1]))
 
-                # Build a subgraph view that hides:
-                #   • forbidden_edges (so spur cannot retrace a confirmed step)
-                #   • root nodes other than spur_node (loopless: a simple path
-                #     can't revisit a node already on its prefix).
+                # Hide forbidden_edges (so the spur cannot retrace a confirmed
+                # step) and the root nodes before spur_node (loopless: a simple
+                # path cannot revisit its own prefix). ``restricted_view`` wraps
+                # the graph in filters at O(1); materialising the subgraph here
+                # instead cost a full copy per spur node, which dominated the
+                # whole search.
                 forbidden_nodes = set(root_path[:-1])
-                sub = self.graph.edge_subgraph(
-                    (u, v)
-                    for u, v in self.graph.edges()
-                    if (u, v) not in forbidden_edges and u not in forbidden_nodes and v not in forbidden_nodes
-                ).copy()
+                sub = nx.restricted_view(self.graph, forbidden_nodes, forbidden_edges)
 
                 if spur_node not in sub or target not in sub:
                     continue
