@@ -20,13 +20,18 @@ from web3.exceptions import ContractLogicError, Web3RPCError
 from pydefi.abi.amm import UNISWAP_V4_QUOTER, UNISWAP_V4_STATE_VIEW
 from pydefi.amm.v4_hooks import affects_swap_pricing
 from pydefi.amm.v4_pool_key import pool_id, sort_currencies
-from pydefi.exceptions import InsufficientLiquidityError
+from pydefi.exceptions import InsufficientLiquidityError, PoolFeeTooHighError
 from pydefi.pathfinder.graph import V4PoolEdge
 from pydefi.types import ZERO_ADDRESS, Address, SwapRoute, SwapStep, Token, TokenAmount
 
 #: PoolKey ``fee`` value marking a dynamic-fee pool; the actual fee charged is
 #: the hook-controlled ``lpFee`` returned by ``getSlot0``.
 DYNAMIC_FEE_FLAG = 0x800000
+
+#: Total fee (pips) above which a pool is not routable. Uniswap's top tier is
+#: 1% and the protocol fee composes on top, so past 2% it is not a fee tier but
+#: a hook taking a cut.
+MAX_FEE_PIPS = 20_000
 
 #: Gas budget of a realistic swap. An ``eth_call`` sent without ``gas`` runs at
 #: the node's cap (30-50M), which a hook can read via ``gasleft()`` to tell a
@@ -90,6 +95,8 @@ class UniswapV4:
         default_fee: Default fee tier in **pips** (1e-6), e.g. ``500`` = 0.05%.
         default_tick_spacing: Default tick spacing (e.g. ``10`` for the 0.05% tier).
         default_hooks: Default hooks address (``ZERO_ADDRESS`` = no hooks).
+        max_fee_pips: Total fee a pool may charge and still be routable
+            (:data:`MAX_FEE_PIPS`).
     """
 
     def __init__(
@@ -102,6 +109,7 @@ class UniswapV4:
         default_fee: int = 500,
         default_tick_spacing: int = 10,
         default_hooks: Address = ZERO_ADDRESS,
+        max_fee_pips: int = MAX_FEE_PIPS,
     ) -> None:
         self.w3 = w3
         self.router_address = pool_manager_address  # router_address := PoolManager singleton
@@ -111,6 +119,7 @@ class UniswapV4:
         self.default_fee = default_fee
         self.default_tick_spacing = default_tick_spacing
         self.default_hooks = default_hooks
+        self.max_fee_pips = max_fee_pips
 
     @property
     def protocol_name(self) -> str:
@@ -175,6 +184,8 @@ class UniswapV4:
         Raises:
             :class:`~pydefi.exceptions.InsufficientLiquidityError`: If the pool
                 has no liquidity (uninitialised key).
+            :class:`~pydefi.exceptions.PoolFeeTooHighError`: If the total fee,
+                measured after calibration, exceeds ``max_fee_pips``.
         """
         fee = fee if fee is not None else self.default_fee
         tick_spacing = tick_spacing if tick_spacing is not None else self.default_tick_spacing
@@ -223,6 +234,13 @@ class UniswapV4:
         )
         if calibrate_hooks and edge.hook_affects_pricing:
             await self.calibrate_hook_fee(edge)
+
+        fee_pips = edge.effective_fee_pips()
+        if fee_pips > self.max_fee_pips:
+            raise PoolFeeTooHighError(
+                f"V4 pool {pool_id.hex()} ({token_in.symbol}/{token_out.symbol}) charges "
+                f"{fee_pips} pips, over the {self.max_fee_pips} cap"
+            )
         return edge
 
     # ------------------------------------------------------------------

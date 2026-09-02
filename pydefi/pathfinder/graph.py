@@ -493,7 +493,7 @@ class V4PoolEdge(V3PoolEdge):
     hook_fee_calibrated: bool = False
     hook_gas_dependent: bool = False
 
-    def _effective_fee_pips(self) -> int:
+    def effective_fee_pips(self) -> int:
         """Return the total fee charged on the input, in pips (base 1 000 000).
 
         The protocol fee is taken first and the LP fee applies to the rest, so
@@ -509,7 +509,7 @@ class V4PoolEdge(V3PoolEdge):
 
     def _net_amount_in(self, amount_in: int) -> int:
         """Return *amount_in* after deducting the LP and protocol fees."""
-        return amount_in * (1_000_000 - self._effective_fee_pips()) // 1_000_000
+        return amount_in * (1_000_000 - self.effective_fee_pips()) // 1_000_000
 
 
 @dataclass

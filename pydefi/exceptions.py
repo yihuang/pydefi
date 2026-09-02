@@ -17,6 +17,14 @@ class NoRouteFoundError(PydefiError):
     """Raised when the pathfinder cannot find a route between two tokens."""
 
 
+class PoolFeeTooHighError(PydefiError):
+    """Raised when a pool's total fee exceeds the caller's cap.
+
+    Unlike :class:`InsufficientLiquidityError` the pool can fill the swap; it
+    just takes a cut no fee tier explains, the signature of a hook skimming.
+    """
+
+
 class AggregatorError(PydefiError):
     """Raised when a DEX aggregator API returns an error."""
 
