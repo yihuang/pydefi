@@ -1340,6 +1340,81 @@ class TestGenericMultihopBuilder:
         assert tx.data[:4] == DEADLINE_SELECTOR
 
 
+V2_SWAP_ABI = ["address", "uint256", "uint256", "address[]", "bool", "uint256[]"]
+V3_SWAP_ABI = ["address", "uint256", "uint256", "bytes", "bool", "uint256[]"]
+
+
+def _segment_amount_out_min(command: int, input_data: bytes) -> int:
+    """Pull the amountOutMinimum a segment was encoded with, whatever its type."""
+    if command == RouterCommand.V2_SWAP_EXACT_IN:
+        return abi_decode(V2_SWAP_ABI, input_data)[2]
+    if command == RouterCommand.V3_SWAP_EXACT_IN:
+        return abi_decode(V3_SWAP_ABI, input_data)[2]
+    assert command == RouterCommand.V4_SWAP
+    actions, params = abi_decode(["bytes", "bytes[]"], input_data)
+    swap_params = params[list(actions).index(V4Action.SWAP_EXACT_IN)]
+    return abi_decode([EXACT_MULTI_ABI], swap_params)[0][4]
+
+
+class TestPerHopMinimums:
+    """An intermediate hop encoded with min 0 lets a mid-route pool skim what
+    the route's final bound absorbs."""
+
+    HOPS = [V2_WETH_USDC, V4_USDC_DAI, V3Hop(token_in=DAI, token_out=WETH, fee=500)]
+    FINAL_MIN = 9 * 10**17
+
+    def _minimums(self, router, **kwargs) -> list[int]:
+        tx = router.build_multihop_exact_in_transaction(
+            amount_in=WETH_1,
+            hops=self.HOPS,
+            recipient=RECIPIENT,
+            amount_out_minimum=self.FINAL_MIN,
+            **kwargs,
+        )
+        commands, inputs = decode_execute(tx)
+        return [_segment_amount_out_min(c, i) for c, i in zip(commands, inputs)]
+
+    def test_intermediate_segments_are_unbounded_by_default(self, router):
+        assert self._minimums(router) == [0, 0, self.FINAL_MIN]
+
+    def test_each_segment_takes_its_hop_minimum(self, router):
+        hop_minimums = [1_900 * 10**6, 1_800 * 10**18, self.FINAL_MIN]
+
+        assert self._minimums(router, hop_amount_out_minimums=hop_minimums) == hop_minimums
+
+    def test_merged_segment_takes_the_hop_it_ends_on(self, router):
+        # two V2 hops merge into one command, which lands on the second hop's token
+        tx = router.build_multihop_exact_in_transaction(
+            amount_in=WETH_1,
+            hops=[V2_WETH_USDC, V2_USDC_DAI, V3Hop(token_in=DAI, token_out=WETH, fee=500)],
+            recipient=RECIPIENT,
+            amount_out_minimum=self.FINAL_MIN,
+            hop_amount_out_minimums=[1_900 * 10**6, 1_800 * 10**18, self.FINAL_MIN],
+        )
+        commands, inputs = decode_execute(tx)
+
+        assert len(commands) == 2
+        assert _segment_amount_out_min(commands[0], inputs[0]) == 1_800 * 10**18
+
+    def test_wrap_variant_takes_them_too(self, router):
+        tx = router.build_wrap_and_multihop_exact_in_transaction(
+            eth_amount=ETH_AMOUNT,
+            weth_token=WETH,
+            hops=[V2_WETH_USDC, V3_USDC_DAI],
+            recipient=RECIPIENT,
+            amount_out_minimum=self.FINAL_MIN,
+            hop_amount_out_minimums=[1_900 * 10**6, self.FINAL_MIN],
+        )
+        commands, inputs = decode_execute(tx)
+
+        # commands[0] is WRAP_ETH; the V2 segment follows
+        assert _segment_amount_out_min(commands[1], inputs[1]) == 1_900 * 10**6
+
+    def test_length_mismatch_raises(self, router):
+        with pytest.raises(ValueError, match="must equal hops"):
+            self._minimums(router, hop_amount_out_minimums=[0, 0])
+
+
 # (builder invoked with hops=[]) — every multi-hop builder rejects empty hops
 EMPTY_HOPS_CASES = [
     pytest.param(
