@@ -102,7 +102,7 @@ class TestUniswapV4Live:
         assert not edge.hook_affects_pricing  # hookless pool
         assert edge.lp_fee_pips == 500  # static-fee pool: lpFee is the key fee
 
-        expected = edge._effective_fee_pips()
+        expected = edge.effective_fee_pips()
         result = await v4.calibrate_hook_fee(edge)
 
         assert result.linear, f"deviation {result.deviation_pips} pips between probes"

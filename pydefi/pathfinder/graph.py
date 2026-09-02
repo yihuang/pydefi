@@ -472,8 +472,14 @@ class V4PoolEdge(V3PoolEdge):
             Quoter executes the real hook) before acting on the number.
         hook_fee_calibrated: True once
             :meth:`~pydefi.amm.uniswap_v4.UniswapV4.calibrate_hook_fee` has
-            verified the hook take is size-independent and folded it into
-            ``lp_fee_pips``, making local pricing trustworthy again.
+            verified the hook take is size-independent, holds at execution gas,
+            and folded it into ``lp_fee_pips``, making local pricing trustworthy
+            again.
+        hook_gas_dependent: True if the pool quoted differently at the node's
+            ``eth_call`` gas cap than at a real gas budget (see
+            :meth:`~pydefi.amm.uniswap_v4.UniswapV4.probe_gas_dependence`): the
+            hook tells simulations from trades, so no quote of it is binding.
+            Drop such pools rather than routing through them.
     """
 
     tick_spacing: int = 0
@@ -485,8 +491,9 @@ class V4PoolEdge(V3PoolEdge):
     is_dynamic_fee: bool = False
     hook_affects_pricing: bool = False
     hook_fee_calibrated: bool = False
+    hook_gas_dependent: bool = False
 
-    def _effective_fee_pips(self) -> int:
+    def effective_fee_pips(self) -> int:
         """Return the total fee charged on the input, in pips (base 1 000 000).
 
         The protocol fee is taken first and the LP fee applies to the rest, so
@@ -502,7 +509,7 @@ class V4PoolEdge(V3PoolEdge):
 
     def _net_amount_in(self, amount_in: int) -> int:
         """Return *amount_in* after deducting the LP and protocol fees."""
-        return amount_in * (1_000_000 - self._effective_fee_pips()) // 1_000_000
+        return amount_in * (1_000_000 - self.effective_fee_pips()) // 1_000_000
 
 
 @dataclass
