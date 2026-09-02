@@ -5,12 +5,13 @@ from decimal import Decimal
 
 import pytest
 from eth_abi import decode as abi_decode
+from web3.exceptions import ProviderConnectionError
 
 from pydefi._math import apply_slippage
 from pydefi.amm import v4_hooks
 from pydefi.amm.uniswap_v2 import UniswapV2
 from pydefi.amm.uniswap_v3 import UniswapV3
-from pydefi.amm.uniswap_v4 import UniswapV4
+from pydefi.amm.uniswap_v4 import EXECUTION_GAS, UniswapV4
 from pydefi.amm.universal_router import (
     ADDRESS_THIS,
     CONTRACT_BALANCE,
@@ -489,6 +490,17 @@ def _hooked_edge(lp_fee_pips: int = 500) -> V4PoolEdge:
     )
 
 
+def _v4(**kwargs) -> UniswapV4:
+    """Offline V4 client: every on-chain call is stubbed or patched by the test."""
+    return UniswapV4(
+        w3=None,
+        pool_manager_address=UNIVERSAL_ROUTER_ADDR,
+        state_view_address=UNIVERSAL_ROUTER_ADDR,
+        quoter_address=UNIVERSAL_ROUTER_ADDR,
+        **kwargs,
+    )
+
+
 class TestV4Hooks:
     def test_flags_read_low_14_address_bits(self):
         assert v4_hooks.hook_flags(ZERO_ADDR) == 0
@@ -610,17 +622,71 @@ class TestV4ProtocolFee:
             "pydefi.amm.uniswap_v4.UNISWAP_V4_STATE_VIEW",
             _StubStateView(slot0=(2**96, 0, packed, 500), liquidity=10**24),
         )
-        v4 = UniswapV4(
-            w3=None,
-            pool_manager_address=UNIVERSAL_ROUTER_ADDR,
-            state_view_address=UNIVERSAL_ROUTER_ADDR,
-            quoter_address=UNIVERSAL_ROUTER_ADDR,
-        )
 
-        edge = await v4.get_pool_edge(token_in, token_out)
+        edge = await _v4().get_pool_edge(token_in, token_out)
 
         assert edge.protocol_fee_pips == expected
         assert edge.lp_fee_pips == 500  # LP fee stays bare, for PoolKey rebuild
+
+
+# ---------------------------------------------------------------------------
+# V4 quote environment (gas / sender a hook can read)
+# ---------------------------------------------------------------------------
+
+
+class _StubQuoterCall:
+    def __init__(self, recorder: list[dict], result):
+        self._recorder, self._result = recorder, result
+
+    async def call(self, _w3, to=None, **tx):
+        self._recorder.append(tx)
+        return self._result
+
+
+class _StubQuoter:
+    """Stands in for the V4 Quoter, recording the eth_call fields it was sent."""
+
+    def __init__(self, result=(1_000, 0)):
+        self.fns = self
+        self.calls: list[dict] = []
+        self._result = result
+
+    def quoteExactInputSingle(self, _params):  # noqa: N802 - mirrors the on-chain ABI name
+        return _StubQuoterCall(self.calls, self._result)
+
+    def quoteExactOutputSingle(self, _params):  # noqa: N802 - mirrors the on-chain ABI name
+        return _StubQuoterCall(self.calls, self._result)
+
+
+class TestV4QuoteEnvironment:
+    """gasleft() and msg.sender are readable from a hook, so a quote that leaves
+    them at eth_call defaults is a quote the hook can tell apart from the trade."""
+
+    @pytest.fixture
+    def quoter(self, monkeypatch) -> _StubQuoter:
+        quoter = _StubQuoter()
+        monkeypatch.setattr("pydefi.amm.uniswap_v4.UNISWAP_V4_QUOTER", quoter)
+        return quoter
+
+    async def test_default_quote_leaves_the_environment_unset(self, quoter):
+        await _v4().quote_exact_input_single(WETH_1, USDC)
+
+        assert quoter.calls == [{}]  # node gas cap, zero-address sender
+
+    async def test_gas_and_sender_reach_the_call(self, quoter):
+        await _v4().quote_exact_input_single(WETH_1, USDC, gas=EXECUTION_GAS, sender=RECIPIENT)
+
+        assert quoter.calls == [{"gas": EXECUTION_GAS, "from": RECIPIENT}]
+
+    async def test_every_hop_quotes_in_the_same_environment(self, quoter):
+        await _v4().get_amounts_out(WETH_1, [WETH, USDC, DAI], gas=EXECUTION_GAS, sender=RECIPIENT)
+
+        assert quoter.calls == [{"gas": EXECUTION_GAS, "from": RECIPIENT}] * 2
+
+    async def test_exact_output_quote_takes_the_environment(self, quoter):
+        await _v4().get_amounts_in(USDC_2K, [WETH, USDC], gas=EXECUTION_GAS, sender=RECIPIENT)
+
+        assert quoter.calls == [{"gas": EXECUTION_GAS, "from": RECIPIENT}]
 
 
 # ---------------------------------------------------------------------------
@@ -628,17 +694,24 @@ class TestV4ProtocolFee:
 # ---------------------------------------------------------------------------
 
 
-def _fake_quoter(v4: UniswapV4, edge: V4PoolEdge, fee_pips_for_amount):
+def _fake_quoter(v4: UniswapV4, edge: V4PoolEdge, fee_pips_for_amount, *, execution_fee_pips=None):
     """Patch v4.quote_exact_input_single to apply fee_pips_for_amount(amount) to the raw curve.
 
     Records every ``fee`` kwarg passed by the caller in ``v4.quoted_key_fees``.
+    *execution_fee_pips* is charged instead whenever the caller pins ``gas``,
+    modelling a hook that branches on ``gasleft()``; an exception is raised there.
     """
     raw_curve = replace(edge, lp_fee_pips=0, fee_bps=0, hook_fee_calibrated=False)
     v4.quoted_key_fees = []
 
     async def fake(amount_in, token_out, **kwargs):
         v4.quoted_key_fees.append(kwargs.get("fee"))
-        out = raw_curve.amount_out(amount_in.amount) * (1_000_000 - fee_pips_for_amount(amount_in.amount))
+        fee = fee_pips_for_amount(amount_in.amount)
+        if kwargs.get("gas") is not None and execution_fee_pips is not None:
+            if isinstance(execution_fee_pips, Exception):
+                raise execution_fee_pips
+            fee = execution_fee_pips
+        out = raw_curve.amount_out(amount_in.amount) * (1_000_000 - fee)
         return TokenAmount(token=token_out, amount=out // 1_000_000)
 
     v4.quote_exact_input_single = fake
@@ -646,18 +719,10 @@ def _fake_quoter(v4: UniswapV4, edge: V4PoolEdge, fee_pips_for_amount):
 
 
 class TestHookFeeCalibration:
-    def _v4(self) -> UniswapV4:
-        return UniswapV4(
-            w3=None,
-            pool_manager_address=UNIVERSAL_ROUTER_ADDR,
-            state_view_address=UNIVERSAL_ROUTER_ADDR,
-            quoter_address=UNIVERSAL_ROUTER_ADDR,
-        )
-
     @pytest.mark.parametrize("lp_fee,effective", [(500, 700), (0, 10_000)], ids=["hook-take", "zero-fee-key"])
     async def test_linear_hook_fee_folded_into_edge(self, lp_fee, effective):
         edge = _hooked_edge(lp_fee_pips=lp_fee)
-        v4 = _fake_quoter(self._v4(), edge, lambda _amount: effective)
+        v4 = _fake_quoter(_v4(), edge, lambda _amount: effective)
 
         result = await v4.calibrate_hook_fee(edge)
 
@@ -667,11 +732,12 @@ class TestHookFeeCalibration:
         assert abs(edge.lp_fee_pips - effective) <= 1
         # repeat call re-quotes the same pool key, never the mutated lp_fee_pips
         assert (await v4.calibrate_hook_fee(edge)).linear
-        assert v4.quoted_key_fees == [lp_fee] * 4
+        # per calibration: gas probe (cap + execution legs) + the 4x probe
+        assert v4.quoted_key_fees == [lp_fee] * 6
 
     async def test_nonlinear_hook_stays_estimate_only(self):
         edge = _hooked_edge(lp_fee_pips=500)
-        v4 = _fake_quoter(self._v4(), edge, _nonlinear_fee)
+        v4 = _fake_quoter(_v4(), edge, _nonlinear_fee)
 
         result = await v4.calibrate_hook_fee(edge)
 
@@ -685,16 +751,16 @@ class TestHookFeeCalibration:
         # so recalibration keys the same pool after lp_fee_pips is mutated
         edge = _hooked_edge(lp_fee_pips=500)
         edge.key_fee_pips = 0
-        v4 = _fake_quoter(self._v4(), edge, lambda _amount: 700)
+        v4 = _fake_quoter(_v4(), edge, lambda _amount: 700)
 
         await v4.calibrate_hook_fee(edge)
         assert edge.key_fee_pips == 500
         await v4.calibrate_hook_fee(edge)
-        assert v4.quoted_key_fees == [500] * 4
+        assert v4.quoted_key_fees == [500] * 6
 
     async def test_nonlinear_recalibration_revokes_stale_trust(self):
         edge = _hooked_edge(lp_fee_pips=500)
-        v4 = _fake_quoter(self._v4(), edge, lambda _amount: 700)
+        v4 = _fake_quoter(_v4(), edge, lambda _amount: 700)
         await v4.calibrate_hook_fee(edge)
         assert edge.hook_fee_calibrated
 
@@ -704,7 +770,7 @@ class TestHookFeeCalibration:
 
     async def test_calibrated_zero_fee_is_not_treated_as_unset(self):
         edge = _hooked_edge(lp_fee_pips=500)
-        v4 = _fake_quoter(self._v4(), edge, lambda _amount: 0)  # hook refunds the lpFee
+        v4 = _fake_quoter(_v4(), edge, lambda _amount: 0)  # hook refunds the lpFee
 
         assert (await v4.calibrate_hook_fee(edge)).linear
         assert edge.lp_fee_pips == 0
@@ -717,6 +783,92 @@ class TestHookFeeCalibration:
         assert UniswapV4._probe_amount(edge) == edge.liquidity // 10_000
         edge.is_token0_in = False
         assert UniswapV4._probe_amount(edge) == edge.liquidity // 10_000
+
+
+class TestGasDependentHook:
+    """A hook reading gasleft() quotes free to an eth_call and taxes the trade."""
+
+    async def test_honest_pool_prices_the_same_either_way(self):
+        edge = _hooked_edge(lp_fee_pips=500)
+        v4 = _fake_quoter(_v4(), edge, lambda _amount: 700)
+
+        probe = await v4.probe_gas_dependence(edge)
+
+        assert not probe.divergent
+        assert probe.deviation_bps == 0
+        assert probe.execution_gas_amount_out == probe.quote_gas_amount_out
+
+    async def test_gas_dependent_take_is_divergent(self):
+        edge = _hooked_edge(lp_fee_pips=500)
+        # 0% to the gas-capped quote, 12.8% to the trade (the BSC WBNB/USDC pattern)
+        v4 = _fake_quoter(_v4(), edge, lambda _amount: 0, execution_fee_pips=128_000)
+
+        probe = await v4.probe_gas_dependence(edge)
+
+        assert probe.divergent
+        assert probe.deviation_bps == pytest.approx(1_280, abs=1)
+
+    async def test_execution_leg_revert_fails_closed(self):
+        edge = _hooked_edge(lp_fee_pips=500)
+        out_of_gas = InsufficientLiquidityError("V4 quoteExactInputSingle reverted: out of gas")
+        v4 = _fake_quoter(_v4(), edge, lambda _amount: 0, execution_fee_pips=out_of_gas)
+
+        probe = await v4.probe_gas_dependence(edge)
+
+        # unquotable at execution gas = unpriceable, not "quoted at the cap price"
+        assert probe.divergent
+        assert probe.execution_gas_amount_out is None
+        assert probe.deviation_bps is None
+
+    async def test_transport_error_on_the_execution_leg_propagates(self):
+        # only the node's verdict on the swap counts as a failed leg
+        edge = _hooked_edge(lp_fee_pips=500)
+        v4 = _fake_quoter(_v4(), edge, lambda _amount: 0, execution_fee_pips=ProviderConnectionError("rpc down"))
+
+        with pytest.raises(ProviderConnectionError):
+            await v4.probe_gas_dependence(edge)
+
+    async def test_calibration_refuses_a_gas_dependent_zero(self):
+        edge = _hooked_edge(lp_fee_pips=500)
+        v4 = _fake_quoter(_v4(), edge, lambda _amount: 0, execution_fee_pips=128_000)
+
+        result = await v4.calibrate_hook_fee(edge)
+
+        assert result.linear  # the fake 0% take is perfectly proportional...
+        assert not result.trusted  # ...and still must not be believed
+        assert edge.hook_gas_dependent
+        assert not edge.hook_fee_calibrated
+        assert edge.lp_fee_pips == 500  # pricing fee untouched
+
+    async def test_uncalibrated_edge_keeps_charging_the_protocol_fee(self):
+        # the amplification: a calibrated 0 would zero the protocol fee too,
+        # pricing the poisoned pool below every honest one in the graph
+        edge = replace(_hooked_edge(lp_fee_pips=500), protocol_fee_pips=125)
+        v4 = _fake_quoter(_v4(), edge, lambda _amount: 0, execution_fee_pips=128_000)
+
+        await v4.calibrate_hook_fee(edge)
+
+        assert edge._effective_fee_pips() == 625
+
+    async def test_gas_dependence_revokes_an_earlier_calibration(self):
+        edge = _hooked_edge(lp_fee_pips=500)
+        v4 = _fake_quoter(_v4(), edge, lambda _amount: 700)
+        await v4.calibrate_hook_fee(edge)
+        assert edge.hook_fee_calibrated
+
+        _fake_quoter(v4, edge, lambda _amount: 0, execution_fee_pips=128_000)
+        assert not (await v4.calibrate_hook_fee(edge)).trusted
+        assert not edge.hook_fee_calibrated
+
+    async def test_probe_can_be_skipped(self):
+        edge = _hooked_edge(lp_fee_pips=500)
+        v4 = _fake_quoter(_v4(), edge, lambda _amount: 700)
+
+        result = await v4.calibrate_hook_fee(edge, gas_probe=False)
+
+        assert result.gas_probe is None
+        assert result.trusted and edge.hook_fee_calibrated
+        assert v4.quoted_key_fees == [500] * 2  # 1x and 4x only
 
 
 # ---------------------------------------------------------------------------
