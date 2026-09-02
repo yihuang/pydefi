@@ -25,6 +25,10 @@ class PoolFeeTooHighError(PydefiError):
     """
 
 
+class HookedPoolError(PydefiError):
+    """Raised when a V4 pool has a hook and ``allow_hooks`` is off."""
+
+
 class AggregatorError(PydefiError):
     """Raised when a DEX aggregator API returns an error."""
 

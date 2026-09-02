@@ -20,7 +20,7 @@ from web3.exceptions import ContractLogicError, Web3RPCError
 from pydefi.abi.amm import UNISWAP_V4_QUOTER, UNISWAP_V4_STATE_VIEW
 from pydefi.amm.v4_hooks import affects_swap_pricing
 from pydefi.amm.v4_pool_key import pool_id, sort_currencies
-from pydefi.exceptions import InsufficientLiquidityError, PoolFeeTooHighError
+from pydefi.exceptions import HookedPoolError, InsufficientLiquidityError, PoolFeeTooHighError
 from pydefi.pathfinder.graph import V4PoolEdge
 from pydefi.types import ZERO_ADDRESS, Address, SwapRoute, SwapStep, Token, TokenAmount
 
@@ -97,6 +97,8 @@ class UniswapV4:
         default_hooks: Default hooks address (``ZERO_ADDRESS`` = no hooks).
         max_fee_pips: Total fee a pool may charge and still be routable
             (:data:`MAX_FEE_PIPS`).
+        allow_hooks: Route pools that have a hook. Off by default: a hook can
+            re-price, veto or re-enter a swap.
     """
 
     def __init__(
@@ -110,6 +112,7 @@ class UniswapV4:
         default_tick_spacing: int = 10,
         default_hooks: Address = ZERO_ADDRESS,
         max_fee_pips: int = MAX_FEE_PIPS,
+        allow_hooks: bool = False,
     ) -> None:
         self.w3 = w3
         self.router_address = pool_manager_address  # router_address := PoolManager singleton
@@ -120,6 +123,8 @@ class UniswapV4:
         self.default_tick_spacing = default_tick_spacing
         self.default_hooks = default_hooks
         self.max_fee_pips = max_fee_pips
+        self.allow_hooks = allow_hooks
+        self._check_hooks(default_hooks)
 
     @property
     def protocol_name(self) -> str:
@@ -153,6 +158,11 @@ class UniswapV4:
             env["from"] = sender
         return env
 
+    def _check_hooks(self, hooks: Address) -> None:
+        """Refuse a hooked pool unless ``allow_hooks``; runs before any RPC."""
+        if hooks != ZERO_ADDRESS and not self.allow_hooks:
+            raise HookedPoolError(f"V4 pool has hook {hooks.to_0x_hex()}; pass allow_hooks=True to route it")
+
     # ------------------------------------------------------------------
     # Pool state → local pricing edge
     # ------------------------------------------------------------------
@@ -182,6 +192,8 @@ class UniswapV4:
         pools.
 
         Raises:
+            :class:`~pydefi.exceptions.HookedPoolError`: If the pool has a hook
+                and ``allow_hooks`` is off.
             :class:`~pydefi.exceptions.InsufficientLiquidityError`: If the pool
                 has no liquidity (uninitialised key).
             :class:`~pydefi.exceptions.PoolFeeTooHighError`: If the total fee,
@@ -190,6 +202,7 @@ class UniswapV4:
         fee = fee if fee is not None else self.default_fee
         tick_spacing = tick_spacing if tick_spacing is not None else self.default_tick_spacing
         hooks = hooks if hooks is not None else self.default_hooks
+        self._check_hooks(hooks)
 
         c0, _c1 = self.sort_currencies(token_in.address, token_out.address)
         pool_id = self.pool_id(token_in.address, token_out.address, fee, tick_spacing, hooks)
@@ -522,10 +535,15 @@ class UniswapV4:
 
         The ``SwapStep`` carries ``tick_spacing`` / ``hooks`` and the singleton
         PoolManager address; execution is left to the Universal Router.
+
+        Raises:
+            :class:`~pydefi.exceptions.HookedPoolError`: If the pool has a hook
+                and ``allow_hooks`` is off.
         """
         fee = fee if fee is not None else self.default_fee
         tick_spacing = tick_spacing if tick_spacing is not None else self.default_tick_spacing
         hooks = hooks if hooks is not None else self.default_hooks
+        self._check_hooks(hooks)
 
         amount_out = await self.quote_exact_input_single(
             amount_in, token_out, fee=fee, tick_spacing=tick_spacing, hooks=hooks

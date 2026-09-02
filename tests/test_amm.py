@@ -25,7 +25,7 @@ from pydefi.amm.universal_router import (
     V4Action,
     V4Hop,
 )
-from pydefi.exceptions import InsufficientLiquidityError, PoolFeeTooHighError
+from pydefi.exceptions import HookedPoolError, InsufficientLiquidityError, PoolFeeTooHighError
 from pydefi.pathfinder.graph import V4PoolEdge
 from pydefi.pathfinder.v3_tick_math import TickLadder
 from pydefi.pool_data.base import PoolData
@@ -460,12 +460,6 @@ class TestCommandEncoders:
 HookFlag = v4_hooks.HookFlag
 
 
-def _nonlinear_fee(amount: int) -> int:
-    """Size-dependent fake-quoter fee: jumps between the 1x probe (1e20 at the
-    standard test edge) and the 4x probe, so calibration must reject it."""
-    return 700 if amount <= 10**20 else 1_500
-
-
 def _hook_addr(flags: int) -> Address:
     """Synthetic hook address with the given permission bits."""
     return Address(int(flags).to_bytes(20, "big"))
@@ -570,6 +564,19 @@ class _StubStateView:
         return _StubStateViewCall(self._liquidity)
 
 
+@pytest.fixture
+def state_view(monkeypatch):
+    """Install a StateView stub at price 1.0; *protocol_fee* is the packed slot0 field."""
+
+    def _install(lp_fee_pips: int, protocol_fee: int = 0):
+        monkeypatch.setattr(
+            "pydefi.amm.uniswap_v4.UNISWAP_V4_STATE_VIEW",
+            _StubStateView(slot0=(2**96, 0, protocol_fee, lp_fee_pips), liquidity=10**24),
+        )
+
+    return _install
+
+
 class TestV4ProtocolFee:
     """slot0.protocolFee stacks on lpFee; omitting it under-prices every V4 swap."""
 
@@ -616,17 +623,91 @@ class TestV4ProtocolFee:
             pytest.param(WETH, USDC, 300, id="one-for-zero"),
         ],
     )
-    async def test_get_pool_edge_picks_direction(self, monkeypatch, token_in, token_out, expected):
-        packed = (300 << 12) | 100  # oneForZero=300, zeroForOne=100
-        monkeypatch.setattr(
-            "pydefi.amm.uniswap_v4.UNISWAP_V4_STATE_VIEW",
-            _StubStateView(slot0=(2**96, 0, packed, 500), liquidity=10**24),
-        )
+    async def test_get_pool_edge_picks_direction(self, state_view, token_in, token_out, expected):
+        state_view(lp_fee_pips=500, protocol_fee=(300 << 12) | 100)  # oneForZero=300, zeroForOne=100
 
         edge = await _v4().get_pool_edge(token_in, token_out)
 
         assert edge.protocol_fee_pips == expected
         assert edge.lp_fee_pips == 500  # LP fee stays bare, for PoolKey rebuild
+
+
+# ---------------------------------------------------------------------------
+# V4 routing gates: hooked pools are opt-in, fees are capped
+# ---------------------------------------------------------------------------
+
+HOOK = _hook_addr(HookFlag.BEFORE_SWAP)
+
+
+class TestHookPolicy:
+    """A hook can re-price, veto or re-enter a swap, so hooked pools are opt-in."""
+
+    @pytest.mark.parametrize(
+        "route",
+        [
+            pytest.param(lambda v4: v4.get_pool_edge(USDC, WETH, hooks=HOOK), id="pool-edge"),
+            pytest.param(lambda v4: v4.build_swap_route(WETH_1, USDC, hooks=HOOK), id="swap-route"),
+        ],
+    )
+    async def test_hooked_pool_is_refused_before_any_rpc(self, route):
+        # no StateView / Quoter stub installed: the refusal must come first
+        with pytest.raises(HookedPoolError, match="allow_hooks=True"):
+            await route(_v4())
+
+    def test_default_hooks_are_refused_too(self):
+        with pytest.raises(HookedPoolError):
+            _v4(default_hooks=HOOK)
+
+    async def test_allow_hooks_admits_it(self, state_view):
+        state_view(lp_fee_pips=500)
+        v4 = _v4(default_hooks=HOOK, allow_hooks=True)
+
+        assert (await v4.get_pool_edge(USDC, WETH)).hooks == HOOK
+
+    async def test_hookless_pool_is_unaffected(self, state_view):
+        state_view(lp_fee_pips=500)
+
+        assert (await _v4().get_pool_edge(USDC, WETH)).hooks == ZERO_ADDR
+
+
+class TestFeeCap:
+    """A pool charging past every real fee tier is a hook skimming, not a tier."""
+
+    async def test_top_fee_tier_stays_routable(self, state_view):
+        # Uniswap's own 1% tier plus the mainnet protocol fee composes to 10 124
+        state_view(lp_fee_pips=10_000, protocol_fee=125)
+
+        edge = await _v4().get_pool_edge(USDC, WETH)
+
+        assert edge.effective_fee_pips() == 10_124
+
+    async def test_pool_over_the_cap_is_rejected(self, state_view):
+        state_view(lp_fee_pips=128_000)  # 12.8%, the toxic-pool take
+
+        with pytest.raises(PoolFeeTooHighError, match="128000 pips"):
+            await _v4().get_pool_edge(USDC, WETH)
+
+    async def test_cap_is_configurable(self, state_view):
+        state_view(lp_fee_pips=30_000)  # 3%
+
+        assert await _v4(max_fee_pips=30_000).get_pool_edge(USDC, WETH)
+        with pytest.raises(PoolFeeTooHighError):
+            await _v4(max_fee_pips=29_999).get_pool_edge(USDC, WETH)
+
+    async def test_cap_sees_the_calibrated_hook_take(self, state_view, monkeypatch):
+        # a cheap stored fee says nothing: the hook's cut only shows up once
+        # calibration has measured it, so the cap has to be applied after
+        state_view(lp_fee_pips=500)
+        v4 = _v4(allow_hooks=True)
+
+        async def fake_calibrate(edge, **_kwargs):
+            edge.lp_fee_pips, edge.hook_fee_calibrated = 128_000, True
+
+        monkeypatch.setattr(v4, "calibrate_hook_fee", fake_calibrate)
+
+        hooks = _hook_addr(HookFlag.BEFORE_SWAP_RETURNS_DELTA)
+        with pytest.raises(PoolFeeTooHighError):
+            await v4.get_pool_edge(USDC, WETH, hooks=hooks, calibrate_hooks=True)
 
 
 # ---------------------------------------------------------------------------
@@ -692,6 +773,12 @@ class TestV4QuoteEnvironment:
 # ---------------------------------------------------------------------------
 # V4 hook-fee calibration (faked quoter, no network)
 # ---------------------------------------------------------------------------
+
+
+def _nonlinear_fee(amount: int) -> int:
+    """Size-dependent fake-quoter fee: jumps between the 1x probe (1e20 at the
+    standard test edge) and the 4x probe, so calibration must reject it."""
+    return 700 if amount <= 10**20 else 1_500
 
 
 def _fake_quoter(v4: UniswapV4, edge: V4PoolEdge, fee_pips_for_amount, *, execution_fee_pips=None):
@@ -783,56 +870,6 @@ class TestHookFeeCalibration:
         assert UniswapV4._probe_amount(edge) == edge.liquidity // 10_000
         edge.is_token0_in = False
         assert UniswapV4._probe_amount(edge) == edge.liquidity // 10_000
-
-
-class TestFeeCap:
-    """A pool charging past every real fee tier is a hook skimming, not a tier."""
-
-    @pytest.fixture
-    def state_view(self, monkeypatch):
-        def _install(lp_fee_pips: int, protocol_fee_pips: int = 0):
-            monkeypatch.setattr(
-                "pydefi.amm.uniswap_v4.UNISWAP_V4_STATE_VIEW",
-                _StubStateView(slot0=(2**96, 0, protocol_fee_pips, lp_fee_pips), liquidity=10**24),
-            )
-
-        return _install
-
-    async def test_top_fee_tier_stays_routable(self, state_view):
-        # Uniswap's own 1% tier plus the mainnet protocol fee composes to 10 124
-        state_view(lp_fee_pips=10_000, protocol_fee_pips=125)
-
-        edge = await _v4().get_pool_edge(USDC, WETH)
-
-        assert edge.effective_fee_pips() == 10_124
-
-    async def test_pool_over_the_cap_is_rejected(self, state_view):
-        state_view(lp_fee_pips=128_000)  # 12.8%, the toxic-pool take
-
-        with pytest.raises(PoolFeeTooHighError, match="128000 pips"):
-            await _v4().get_pool_edge(USDC, WETH)
-
-    async def test_cap_is_configurable(self, state_view):
-        state_view(lp_fee_pips=30_000)  # 3%
-
-        assert await _v4(max_fee_pips=30_000).get_pool_edge(USDC, WETH)
-        with pytest.raises(PoolFeeTooHighError):
-            await _v4(max_fee_pips=29_999).get_pool_edge(USDC, WETH)
-
-    async def test_cap_sees_the_calibrated_hook_take(self, state_view, monkeypatch):
-        # a cheap stored fee says nothing: the hook's cut only shows up once
-        # calibration has measured it, so the cap has to be applied after
-        state_view(lp_fee_pips=500)
-        v4 = _v4()
-
-        async def fake_calibrate(edge, **_kwargs):
-            edge.lp_fee_pips, edge.hook_fee_calibrated = 128_000, True
-
-        monkeypatch.setattr(v4, "calibrate_hook_fee", fake_calibrate)
-
-        hooks = _hook_addr(HookFlag.BEFORE_SWAP_RETURNS_DELTA)
-        with pytest.raises(PoolFeeTooHighError):
-            await v4.get_pool_edge(USDC, WETH, hooks=hooks, calibrate_hooks=True)
 
 
 class TestGasDependentHook:
