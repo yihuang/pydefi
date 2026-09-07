@@ -514,25 +514,6 @@
     "tokenAdminRegistry": "0xdD98482Ec0cfEFfe14EAb750A9c484F9D5d07380",
     "tokenPoolFactory": "0x200a3874970F6078B6D85Fb356Df4e72C24821a6"
   },
-  "239": {
-    "chainFamily": "evm",
-    "chainId": 239,
-    "chainType": "evm",
-    "displayName": "Tac",
-    "feeTokens": [
-      "LINK",
-      "WTAC",
-      "TAC"
-    ],
-    "internalId": "tac-mainnet",
-    "registryModule": "0x313F663E79ef202251a28F0252c254842D5ABC6a",
-    "rmn": "0xbDCb06538A5f4F5aCC69bb0B7548d314d3c1A8Fd",
-    "router": "0x966519C334D895121B61584CAdeBc15571b62983",
-    "selector": "5936861837188149645",
-    "supported": true,
-    "tokenAdminRegistry": "0xd31dB306E5D79F0018Ac92e08492284201493EA1",
-    "tokenPoolFactory": "0x150869eac5C58d3655f860C4316107fB626244d0"
-  },
   "25": {
     "chainFamily": "evm",
     "chainId": 25,
@@ -1219,6 +1200,25 @@
     "supported": true,
     "tokenAdminRegistry": "0xa57d04119AFf4884F8602213E58d8AaAD18229cb",
     "tokenPoolFactory": "0xD4D2841Ac332075833AE86eb49ce7aF9f353cd21"
+  },
+  "61901": {
+    "chainFamily": "evm",
+    "chainId": 61901,
+    "chainType": "evm",
+    "displayName": "Mova Mainnet",
+    "feeTokens": [
+      "LINK",
+      "WMOVA",
+      "MOVA"
+    ],
+    "internalId": "mova-mainnet-2",
+    "registryModule": "0xf4a170A36D4C656F614d44453f73308Bdb275196",
+    "rmn": "0xf09AFe78d3c7d359b334d7cB88995751F7eC5E13",
+    "router": "0x492641F648a4986844848E0beFE66D14817bCE34",
+    "selector": "4215185756725900654",
+    "supported": true,
+    "tokenAdminRegistry": "0xA27056438FfA1f286AB197488808692F0db93F8B",
+    "tokenPoolFactory": "0xfa546248C54939AA6C48279CdC1EAf9A1125c411"
   },
   "68414": {
     "chainFamily": "evm",
