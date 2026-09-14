@@ -1480,6 +1480,7 @@ class UniversalRouter:
         recipient: Address,
         amount_out_minimum: int,
         payer_is_user: bool = True,
+        hop_amount_out_minimums: list[int] | None = None,
     ) -> tuple[list[RouterCommand | int], list[bytes]]:
         """Build and return ``(commands, inputs)`` for a multi-hop exact-input swap.
 
@@ -1495,16 +1496,23 @@ class UniversalRouter:
                 input tokens from the caller via Permit2.  If ``False``,
                 the first segment uses tokens the router already holds
                 (e.g. after a preceding ``WRAP_ETH`` command).
+            hop_amount_out_minimums: Optional per-hop minimum outputs, one per
+                hop (raw units).
 
         Returns:
             A ``(commands, inputs)`` tuple ready to pass to
             :meth:`build_execute_calldata`.
 
         Raises:
-            ValueError: If *hops* is empty.
+            ValueError: If *hops* is empty, or *hop_amount_out_minimums* is
+                given with a different length.
         """
         if not hops:
             raise ValueError("hops must not be empty")
+        # without per-hop minima only the route's final output is bounded
+        hop_minimums = hop_amount_out_minimums if hop_amount_out_minimums is not None else [0] * len(hops)
+        if len(hop_minimums) != len(hops):
+            raise ValueError(f"hop_amount_out_minimums length ({len(hop_minimums)}) must equal hops ({len(hops)})")
 
         # Group consecutive hops of the same pool type into segments.
         segments: list[list[PoolHop]] = []
@@ -1520,11 +1528,14 @@ class UniversalRouter:
         commands: list[RouterCommand | int] = []
         inputs: list[bytes] = []
 
+        hops_done = 0
         for seg_idx, segment in enumerate(segments):
             is_first = seg_idx == 0
             is_last = seg_idx == len(segments) - 1
+            hops_done += len(segment)
             seg_recipient = recipient if is_last else ADDRESS_THIS
-            seg_amount_out_min = amount_out_minimum if is_last else 0
+            # a segment is bounded by the hop it ends on; the last by the route's own bound
+            seg_amount_out_min = amount_out_minimum if is_last else hop_minimums[hops_done - 1]
             # The first segment honours the caller-supplied payer_is_user flag;
             # all subsequent segments always draw from the router's own balance.
             seg_payer_is_user = payer_is_user if is_first else False
@@ -1611,6 +1622,7 @@ class UniversalRouter:
         recipient: Address,
         amount_out_minimum: int,
         deadline: int | None = None,
+        hop_amount_out_minimums: list[int] | None = None,
     ) -> SwapTransaction:
         """Build a multi-hop exact-input swap transaction across different pool types.
 
@@ -1644,15 +1656,26 @@ class UniversalRouter:
             amount_out_minimum: Minimum acceptable final output amount
                 (raw units).
             deadline: Unix timestamp after which the transaction reverts.
+            hop_amount_out_minimums: Optional minimum output per hop (raw
+                units, one per entry in *hops*); each segment takes the
+                minimum of the hop it ends on.  Without them only the final
+                output is bounded, so a mid-route pool can take a cut the
+                route's total absorbs.
 
         Returns:
             A :class:`~pydefi.types.SwapTransaction`.
 
         Raises:
-            ValueError: If *hops* is empty.
+            ValueError: If *hops* is empty, or *hop_amount_out_minimums* is
+                given with a different length.
         """
         commands, inputs = self._build_multihop_commands(
-            amount_in, hops, recipient, amount_out_minimum, payer_is_user=True
+            amount_in,
+            hops,
+            recipient,
+            amount_out_minimum,
+            payer_is_user=True,
+            hop_amount_out_minimums=hop_amount_out_minimums,
         )
         calldata = self.build_execute_calldata(commands, inputs, deadline)
         return SwapTransaction(to=self.router_address, data=calldata)
@@ -1665,6 +1688,7 @@ class UniversalRouter:
         recipient: Address,
         amount_out_minimum: int,
         deadline: int | None = None,
+        hop_amount_out_minimums: list[int] | None = None,
     ) -> SwapTransaction:
         """Build a ``WRAP_ETH`` + multi-hop exact-input swap transaction.
 
@@ -1686,13 +1710,16 @@ class UniversalRouter:
             amount_out_minimum: Minimum acceptable final output amount
                 (raw units).
             deadline: Unix timestamp after which the transaction reverts.
+            hop_amount_out_minimums: Optional minimum output per hop, as in
+                :meth:`build_multihop_exact_in_transaction`.
 
         Returns:
             A :class:`~pydefi.types.SwapTransaction` with ``value`` set to
             *eth_amount* so the caller knows how much ETH to attach.
 
         Raises:
-            ValueError: If *hops* is empty.
+            ValueError: If *hops* is empty, or *hop_amount_out_minimums* is
+                given with a different length.
         """
         # Command 1: wrap ETH → WETH inside the router
         wrap_commands: list[RouterCommand | int] = [RouterCommand.WRAP_ETH]
@@ -1705,6 +1732,7 @@ class UniversalRouter:
             recipient,
             amount_out_minimum,
             payer_is_user=False,
+            hop_amount_out_minimums=hop_amount_out_minimums,
         )
         calldata = self.build_execute_calldata(
             wrap_commands + swap_commands,
