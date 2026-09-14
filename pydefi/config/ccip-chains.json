@@ -17,7 +17,7 @@
     "selector": "5009297550715157269",
     "supported": true,
     "tokenAdminRegistry": "0xb22764f98dD05c789929716D677382Df22C05Cb6",
-    "tokenPoolFactory": "0x17D8a409fE2ceF2d3808bcB61F14aBEFfc28876e"
+    "tokenPoolFactory": "0x3d8E30F9d31316C2870d93FAc6bDBF5deE23A274"
   },
   "10": {
     "chainFamily": "evm",
@@ -36,7 +36,7 @@
     "selector": "3734403246176062136",
     "supported": true,
     "tokenAdminRegistry": "0x657c42abE4CD8aa731Aec322f871B5b90cf6274F",
-    "tokenPoolFactory": "0xBF38331E34ef7f248020611bB31Be0576D06413D"
+    "tokenPoolFactory": "0x22c728125dba77774260B9c4968608513CD19112"
   },
   "100": {
     "chainFamily": "evm",
@@ -56,7 +56,7 @@
     "selector": "465200170687744372",
     "supported": true,
     "tokenAdminRegistry": "0x73BC11423CBF14914998C23B0aFC9BE0cb5B2229",
-    "tokenPoolFactory": "0x76159c2b43ff6F630193e37EC68452169914C1Bb"
+    "tokenPoolFactory": "0xd072940492b5cbE546EedDb17481b256E0B6A21a"
   },
   "102030": {
     "chainFamily": "evm",
@@ -75,7 +75,7 @@
     "selector": "18240105181246962294",
     "supported": true,
     "tokenAdminRegistry": "0xD941fBEcD2b971d0F54b4C34286C95faB52B60B8",
-    "tokenPoolFactory": "0x61b7492A40AE4c403629703a38d24851CAA1e7E4"
+    "tokenPoolFactory": "0x30E23e9F786294c543251F06915b18d17e0f9Dfd"
   },
   "1088": {
     "chainFamily": "evm",
@@ -94,7 +94,7 @@
     "selector": "8805746078405598895",
     "supported": true,
     "tokenAdminRegistry": "0x3af897541eB03927c7431bF68884A6C2C23b683f",
-    "tokenPoolFactory": "0xD3F31950e5Ec340b021D0d27454F44Edb7304C18"
+    "tokenPoolFactory": "0x45B95826abba0dB0324D4969E94863ab1c818257"
   },
   "109": {
     "chainFamily": "evm",
@@ -113,7 +113,7 @@
     "selector": "3993510008929295315",
     "supported": true,
     "tokenAdminRegistry": "0x995d2Aa233aBeaCA2a64Edf898AE9F4e01bE15B9",
-    "tokenPoolFactory": "0x051665f2455116e929b9972c36d23070F5054Ce0"
+    "tokenPoolFactory": "0xbf22058C8cd5a9fd426aa5176424d41027F14545"
   },
   "1111": {
     "chainFamily": "evm",
@@ -132,7 +132,7 @@
     "selector": "5142893604156789321",
     "supported": true,
     "tokenAdminRegistry": "0xE993e046AC50659800a91Bab0bd2daBF59CbD171",
-    "tokenPoolFactory": "0xc2e3A3C18ccb634622B57fF119a1C8C7f12e8C0c"
+    "tokenPoolFactory": "0x7aE4DF30486Ab6A64af4dcC60bb683c2147C2bDF"
   },
   "1116": {
     "chainFamily": "evm",
@@ -151,7 +151,7 @@
     "selector": "1224752112135636129",
     "supported": true,
     "tokenAdminRegistry": "0x4D2B43c60f3e476Ee94637C4e3be844FC9a70012",
-    "tokenPoolFactory": "0x51e2A24742Db77604B881d6781Ee16B5b8fcBE29"
+    "tokenPoolFactory": "0x4705837B05E0A98F933FC70efD39D009343b2492"
   },
   "1135": {
     "chainFamily": "evm",
@@ -170,7 +170,7 @@
     "selector": "15293031020466096408",
     "supported": true,
     "tokenAdminRegistry": "0x98acD723D0E9C13d09Df4619Abec729F3434a10a",
-    "tokenPoolFactory": "0x85A422d0F2584E15C331b5DE225c4cAe32F9182B"
+    "tokenPoolFactory": "0x7c4708c0188f57F658851f0B71e54F8226C9a957"
   },
   "130": {
     "chainFamily": "evm",
@@ -189,7 +189,7 @@
     "selector": "1923510103922296319",
     "supported": true,
     "tokenAdminRegistry": "0xAB3Ee2e897cf23c10e76d26aB4674fEFA376bc0d",
-    "tokenPoolFactory": "0xB79791184973589c38e114D43Eb8E4588C283A18"
+    "tokenPoolFactory": "0xd1611e6e93ec512bfBD2b6428a26c463C1dcE6F9"
   },
   "1329": {
     "chainFamily": "evm",
@@ -208,7 +208,7 @@
     "selector": "9027416829622342829",
     "supported": true,
     "tokenAdminRegistry": "0x910a46cA93E8086BF1d7D65190eE6AEe5256Bd61",
-    "tokenPoolFactory": "0xE67E30B1b4F80A35852488757C3efc093903651A"
+    "tokenPoolFactory": "0x8A190770E914a8121CA45fB225e18AA4198c39F9"
   },
   "137": {
     "chainFamily": "evm",
@@ -227,7 +227,7 @@
     "selector": "4051577828743386545",
     "supported": true,
     "tokenAdminRegistry": "0x00F027eA6D0fb03256A15E9182B2B9227A4931d8",
-    "tokenPoolFactory": "0x6378c36C44B28f4d1513e7a5510A8481a23eecda"
+    "tokenPoolFactory": "0x170dC4442624D564D357B9F8f2B0f67e6308ef3e"
   },
   "143": {
     "chainFamily": "evm",
@@ -247,7 +247,7 @@
     "selector": "8481857512324358265",
     "supported": true,
     "tokenAdminRegistry": "0x11ACd984DD680363117B310f6ebdf78fD6c0195f",
-    "tokenPoolFactory": "0x26d3681DfC9E4c8C79cfbf461adec8A21d5d73C5"
+    "tokenPoolFactory": "0x9599B09Dd34Fe4d73fdbd2DD2d86bc23D60F7302"
   },
   "146": {
     "chainFamily": "evm",
@@ -266,7 +266,7 @@
     "selector": "1673871237479749969",
     "supported": true,
     "tokenAdminRegistry": "0x2961Cb47b5111F38d75f415c21ceB4120ddd1b69",
-    "tokenPoolFactory": "0x5931822f394baBC2AACF4588E98FC77a9f5aa8C9"
+    "tokenPoolFactory": "0xf25e1c8006Da4433084cCB7087bbAac815207374"
   },
   "16661": {
     "chainFamily": "evm",
@@ -304,7 +304,7 @@
     "selector": "16468599424800719238",
     "supported": true,
     "tokenAdminRegistry": "0x308a2A7d13B12ba26649F381C53F7e7C60d0D9c6",
-    "tokenPoolFactory": "0x43DB2E5d6A83399e0530DC652286F655B18a2b07"
+    "tokenPoolFactory": "0x7c4708c0188f57F658851f0B71e54F8226C9a957"
   },
   "1672": {
     "chainFamily": "evm",
@@ -323,7 +323,7 @@
     "selector": "7801139999541420232",
     "supported": true,
     "tokenAdminRegistry": "0xB79791184973589c38e114D43Eb8E4588C283A18",
-    "tokenPoolFactory": "0xEC1276CA704c612A28cb2C873dEdCEba97F65cED"
+    "tokenPoolFactory": "0xD1725675A610cBe6b55DDC108e36a1EBedBb68DF"
   },
   "1750": {
     "chainFamily": "evm",
@@ -361,7 +361,7 @@
     "selector": "7613811247471741961",
     "supported": true,
     "tokenAdminRegistry": "0x4b238f757f842280FeA88A1c2B4186b71eF8BC5E",
-    "tokenPoolFactory": "0x9A82E768C885DEF7C4b47451Fd4Db53d8B21ed07"
+    "tokenPoolFactory": "0x48bc5Ab224B818300041956f0da2e675bf676D27"
   },
   "1868": {
     "chainFamily": "evm",
@@ -380,7 +380,7 @@
     "selector": "12505351618335765396",
     "supported": true,
     "tokenAdminRegistry": "0x5ba21F6824400B91F232952CA6d7c8875C1755a4",
-    "tokenPoolFactory": "0xD3F31950e5Ec340b021D0d27454F44Edb7304C18"
+    "tokenPoolFactory": "0xd99AB709C099D63E6A401f61DDCD6Fd44626D704"
   },
   "196": {
     "chainFamily": "evm",
@@ -400,7 +400,7 @@
     "selector": "3016212468291539606",
     "supported": true,
     "tokenAdminRegistry": "0xeCf1eAEE01E82F3388dECD7f4C3792374f3f72F3",
-    "tokenPoolFactory": "0x5931822f394baBC2AACF4588E98FC77a9f5aa8C9"
+    "tokenPoolFactory": "0x32f69aF9C27ab81819bcf112718b872Af1dea522"
   },
   "200901": {
     "chainFamily": "evm",
@@ -419,7 +419,7 @@
     "selector": "7937294810946806131",
     "supported": true,
     "tokenAdminRegistry": "0xd999758aEB04BDa755Ae78344FFF5534947620CD",
-    "tokenPoolFactory": "0x5931822f394baBC2AACF4588E98FC77a9f5aa8C9"
+    "tokenPoolFactory": "0xe71C0473f07C288D3F96DC0E9893c33417deafc9"
   },
   "2020": {
     "chainFamily": "evm",
@@ -438,7 +438,7 @@
     "selector": "6916147374840168594",
     "supported": true,
     "tokenAdminRegistry": "0x90e83d532A4aD13940139c8ACE0B93b0DdbD323a",
-    "tokenPoolFactory": "0xEfd5fEFEdE55B5C41B8fa0d171a79ba5BeadD2Aa"
+    "tokenPoolFactory": "0x62736F8D80B32900124370c449ED2FA692500437"
   },
   "204": {
     "chainFamily": "evm",
@@ -457,7 +457,7 @@
     "selector": "465944652040885897",
     "supported": true,
     "tokenAdminRegistry": "0xEfF5D2147F9cAcdedF80C2ee1F5320B01C664bE5",
-    "tokenPoolFactory": "0x9A82E768C885DEF7C4b47451Fd4Db53d8B21ed07"
+    "tokenPoolFactory": "0xA87EFFB6231C546A8c0bfB0FF1f4C4b1C3f0E60d"
   },
   "21000000": {
     "chainFamily": "evm",
@@ -493,7 +493,7 @@
     "selector": "5406759801798337480",
     "supported": true,
     "tokenAdminRegistry": "0x2e1543255119CfB9D3501E32d7f5B244E59A06F4",
-    "tokenPoolFactory": "0x5931822f394baBC2AACF4588E98FC77a9f5aa8C9"
+    "tokenPoolFactory": "0x4d7349905F0b5cDcE08CdA59cB53Db59B5C06808"
   },
   "232": {
     "chainFamily": "evm",
@@ -512,7 +512,7 @@
     "selector": "5608378062013572713",
     "supported": true,
     "tokenAdminRegistry": "0xdD98482Ec0cfEFfe14EAb750A9c484F9D5d07380",
-    "tokenPoolFactory": "0x200a3874970F6078B6D85Fb356Df4e72C24821a6"
+    "tokenPoolFactory": "0x6e5e9b22E461c2F9786e6d8069d47adA1Ef58aDc"
   },
   "25": {
     "chainFamily": "evm",
@@ -531,7 +531,7 @@
     "selector": "1456215246176062136",
     "supported": true,
     "tokenAdminRegistry": "0x32c4634338f1386fdD18E0bD6dF51Ca2Fa56f762",
-    "tokenPoolFactory": "0xABF586910586b8dcbdF92f1C5e2Ae14106f3DD16"
+    "tokenPoolFactory": "0x48bc5Ab224B818300041956f0da2e675bf676D27"
   },
   "252": {
     "chainFamily": "evm",
@@ -550,7 +550,7 @@
     "selector": "1462016016387883143",
     "supported": true,
     "tokenAdminRegistry": "0x6724621d8A560A84E4B6012c4bAA0eA6fF47B9DF",
-    "tokenPoolFactory": "0x6170Dd67f0Bd9a371870D8e27F3E3f64Cf4F394c"
+    "tokenPoolFactory": "0xe4590E340c51303074874ddb80883b31E72f7de7"
   },
   "2741": {
     "chainFamily": "evm",
@@ -568,7 +568,8 @@
     "router": "0x09521B0B5BB2d4406124c0207Cf551829B45f84d",
     "selector": "3577778157919314504",
     "supported": true,
-    "tokenAdminRegistry": "0x7EEdf2DBC74924Cb1f23fC8845CD35bF18b697de"
+    "tokenAdminRegistry": "0x7EEdf2DBC74924Cb1f23fC8845CD35bF18b697de",
+    "tokenPoolFactory": "0x647e26A8D4aE569691C6D48d7b2D98a65fCB4281"
   },
   "2818": {
     "chainFamily": "evm",
@@ -587,7 +588,7 @@
     "selector": "18164309074156128038",
     "supported": true,
     "tokenAdminRegistry": "0xEfd5fEFEdE55B5C41B8fa0d171a79ba5BeadD2Aa",
-    "tokenPoolFactory": "0x150869eac5C58d3655f860C4316107fB626244d0"
+    "tokenPoolFactory": "0x05a45C51C7bB0a61DE35CaFD3aCb6076f98FBe78"
   },
   "295": {
     "chainFamily": "evm",
@@ -606,7 +607,7 @@
     "selector": "3229138320728879060",
     "supported": true,
     "tokenAdminRegistry": "0xC9efBD4f73C37aE1573806030A4146e1E72EADc1",
-    "tokenPoolFactory": "0x02A4D69cFfeC00Fbf7F3B60c93e3529Dfc58894d"
+    "tokenPoolFactory": "0x170dC4442624D564D357B9F8f2B0f67e6308ef3e"
   },
   "30": {
     "chainFamily": "evm",
@@ -625,7 +626,7 @@
     "selector": "11964252391146578476",
     "supported": true,
     "tokenAdminRegistry": "0xad71ac82aCFCbDD27BBd3F3eD2fA24E26E49CBE2",
-    "tokenPoolFactory": "0xcDca5D374e46A6DDDab50bD2D9acB8c796eC35C3"
+    "tokenPoolFactory": "0xb7fEabf544d8eE041645148C8FbaE782b2557aeF"
   },
   "324": {
     "chainFamily": "evm",
@@ -644,7 +645,7 @@
     "selector": "1562403441176082196",
     "supported": true,
     "tokenAdminRegistry": "0x100a47C9DB342884E3314B91cec076BbAC8e619c",
-    "tokenPoolFactory": "0xF1CEb7680819A1F5436e5deAC2737EB1f4EaeE35"
+    "tokenPoolFactory": "0x5Ad69372a0DFA94188191aB13dF0034cb4454ee1"
   },
   "33139": {
     "chainFamily": "evm",
@@ -663,7 +664,7 @@
     "selector": "14894068710063348487",
     "supported": true,
     "tokenAdminRegistry": "0xD3ED6fC9fd22412764ac2Ef64fB664b9393dF9F2",
-    "tokenPoolFactory": "0xABF586910586b8dcbdF92f1C5e2Ae14106f3DD16"
+    "tokenPoolFactory": "0xA0351f828e2bcA73cF1717b3067425eA094d8482"
   },
   "3343": {
     "chainFamily": "evm",
@@ -701,7 +702,7 @@
     "selector": "7264351850409363825",
     "supported": true,
     "tokenAdminRegistry": "0xB4b40c010A547dff6A22d94bC2C1c1e745b62aB2",
-    "tokenPoolFactory": "0xEfd5fEFEdE55B5C41B8fa0d171a79ba5BeadD2Aa"
+    "tokenPoolFactory": "0xA0351f828e2bcA73cF1717b3067425eA094d8482"
   },
   "3637": {
     "chainFamily": "evm",
@@ -739,7 +740,7 @@
     "selector": "4829375610284793157",
     "supported": true,
     "tokenAdminRegistry": "0xA27056438FfA1f286AB197488808692F0db93F8B",
-    "tokenPoolFactory": "0xfa546248C54939AA6C48279CdC1EAf9A1125c411"
+    "tokenPoolFactory": "0x5Ad69372a0DFA94188191aB13dF0034cb4454ee1"
   },
   "36900": {
     "chainFamily": "evm",
@@ -758,7 +759,7 @@
     "selector": "4059281736450291836",
     "supported": true,
     "tokenAdminRegistry": "0x5fA6f142EAC511DF12325776386AB92B0F4D1eba",
-    "tokenPoolFactory": "0x38C41225f530a60cB358F08b19B935534858a06c"
+    "tokenPoolFactory": "0x63D678c01E1017c37250D735B30F6909ffc52d21"
   },
   "388": {
     "chainFamily": "evm",
@@ -815,7 +816,7 @@
     "selector": "4949039107694359620",
     "supported": true,
     "tokenAdminRegistry": "0x39AE1032cF4B334a1Ed41cdD0833bdD7c7E7751E",
-    "tokenPoolFactory": "0x8A76fe7fA6da27f85a626c5C53730B38D13603d7"
+    "tokenPoolFactory": "0x5c4b24A9c8B840399611f707bAaF1B1343054dE9"
   },
   "4217": {
     "chainFamily": "evm",
@@ -835,7 +836,7 @@
     "selector": "7281642695469137430",
     "supported": true,
     "tokenAdminRegistry": "0x60A97bd9ACf755954Ff0fE85837224f2920a57F3",
-    "tokenPoolFactory": "0xb0B4b5847E35033766d5B49CD9C0fC40F459321F"
+    "tokenPoolFactory": "0x7227d723D07800700DA21Fa9e1a0107C78e76d74"
   },
   "42220": {
     "chainFamily": "evm",
@@ -854,7 +855,7 @@
     "selector": "1346049177634351622",
     "supported": true,
     "tokenAdminRegistry": "0xf19e0555fAA9051e277eeD5A0DcdB13CDaca39a9",
-    "tokenPoolFactory": "0x9fCd83bC7F67ADa1fB51a4caBEa333c72B641bd1"
+    "tokenPoolFactory": "0x3fca88541D9bebe3600Ec03193FfC9D9c4d4Bb49"
   },
   "42793": {
     "chainFamily": "evm",
@@ -873,7 +874,7 @@
     "selector": "13624601974233774587",
     "supported": true,
     "tokenAdminRegistry": "0x492641F648a4986844848E0beFE66D14817bCE34",
-    "tokenPoolFactory": "0x69c3619326d5DF0d5abB752f2AE629413811ccD1"
+    "tokenPoolFactory": "0x3b54B8c2BCbb673a42C98Db9F6Ec95128d46c71E"
   },
   "43111": {
     "chainFamily": "evm",
@@ -892,7 +893,7 @@
     "selector": "1804312132722180201",
     "supported": true,
     "tokenAdminRegistry": "0x81e81F9B2C0B79C00F38357068AE049090F2DaDE",
-    "tokenPoolFactory": "0x3A704ad3E4784b935AE029171AdCF57ee7988198"
+    "tokenPoolFactory": "0xaF35bef911A5e0be90987cE5070d7c9CbF5cFd3c"
   },
   "43114": {
     "chainFamily": "evm",
@@ -912,7 +913,7 @@
     "selector": "6433500567565415381",
     "supported": true,
     "tokenAdminRegistry": "0xc8df5D618c6a59Cc6A311E96a39450381001464F",
-    "tokenPoolFactory": "0x6378c36C44B28f4d1513e7a5510A8481a23eecda"
+    "tokenPoolFactory": "0x172f94f347c6762C9bf21ABb90eA6683CB90fc96"
   },
   "4326": {
     "chainFamily": "evm",
@@ -931,7 +932,7 @@
     "selector": "6093540873831549674",
     "supported": true,
     "tokenAdminRegistry": "0xf4a170A36D4C656F614d44453f73308Bdb275196",
-    "tokenPoolFactory": "0xe8464c353210Cc398A45dB2454FBc5BCd25fFf20"
+    "tokenPoolFactory": "0xf25e1c8006Da4433084cCB7087bbAac815207374"
   },
   "4663": {
     "chainFamily": "evm",
@@ -950,7 +951,7 @@
     "selector": "6180753054346818345",
     "supported": true,
     "tokenAdminRegistry": "0x1912C3cFafE8A76A32a92861d815aC2837F237Ca",
-    "tokenPoolFactory": "0x913814782144864e523C3FdB78E3ca25D2c2aeCa"
+    "tokenPoolFactory": "0x614B367841ec854994706f06AAB4aA2C80Fe06D9"
   },
   "47763": {
     "chainFamily": "evm",
@@ -969,7 +970,7 @@
     "selector": "7222032299962346917",
     "supported": true,
     "tokenAdminRegistry": "0x344FCBb30EC9ECf58c8399EDe0430592E6703BC1",
-    "tokenPoolFactory": "0x684bBDaD7Eabc58596DF0c0Ba59Df05FD6a519Bf"
+    "tokenPoolFactory": "0x6813892f022D1778054072979CC9e646213425A2"
   },
   "480": {
     "chainFamily": "evm",
@@ -988,7 +989,7 @@
     "selector": "2049429975587534727",
     "supported": true,
     "tokenAdminRegistry": "0x02Fe6ab4fb0943F58D9D925d1d2cbA9474997Ed0",
-    "tokenPoolFactory": "0x0aA145a62153190B8f0D3cA00c441e451529f755"
+    "tokenPoolFactory": "0x63D678c01E1017c37250D735B30F6909ffc52d21"
   },
   "48900": {
     "chainFamily": "evm",
@@ -1007,7 +1008,7 @@
     "selector": "17198166215261833993",
     "supported": true,
     "tokenAdminRegistry": "0x47d2D93EEDb694bf445E7F6458f17669459612c7",
-    "tokenPoolFactory": "0x518DD3D8a38ea4FB5f8c06c33b6a32F34F6C3712"
+    "tokenPoolFactory": "0xa3361ff0d9cA1cBA31335a3280eECe47f1a08F43"
   },
   "50": {
     "chainFamily": "evm",
@@ -1026,7 +1027,7 @@
     "selector": "17673274061779414707",
     "supported": true,
     "tokenAdminRegistry": "0xEC1276CA704c612A28cb2C873dEdCEba97F65cED",
-    "tokenPoolFactory": "0x150869eac5C58d3655f860C4316107fB626244d0"
+    "tokenPoolFactory": "0x62736F8D80B32900124370c449ED2FA692500437"
   },
   "5000": {
     "chainFamily": "evm",
@@ -1046,7 +1047,7 @@
     "selector": "1556008542357238666",
     "supported": true,
     "tokenAdminRegistry": "0x000A744940eB5D857c0d61d97015DFc83107404F",
-    "tokenPoolFactory": "0xc2e3A3C18ccb634622B57fF119a1C8C7f12e8C0c"
+    "tokenPoolFactory": "0xe3657564C57c81E19466c2Dd4397F1b61e98b87B"
   },
   "5330": {
     "chainFamily": "evm",
@@ -1084,7 +1085,7 @@
     "selector": "13204309965629103672",
     "supported": true,
     "tokenAdminRegistry": "0x846dEA1c1706FC35b4aa78B32d31F1599DAA47b4",
-    "tokenPoolFactory": "0xB79791184973589c38e114D43Eb8E4588C283A18"
+    "tokenPoolFactory": "0xe4Bc2eccd4C904b5919D68dA50c944B7aa927A81"
   },
   "56": {
     "chainFamily": "evm",
@@ -1103,7 +1104,7 @@
     "selector": "11344663589394136015",
     "supported": true,
     "tokenAdminRegistry": "0x736Fd8660c443547a85e4Eaf70A49C1b7Bb008fc",
-    "tokenPoolFactory": "0xa5b1FF748Eba9eBE7c9051817CaB9cb94fe14B90"
+    "tokenPoolFactory": "0xa0c6066147a30348102A582D8D2513fEdB8B0a91"
   },
   "57073": {
     "chainFamily": "evm",
@@ -1123,7 +1124,7 @@
     "selector": "3461204551265785888",
     "supported": true,
     "tokenAdminRegistry": "0xEb062d21c713A3d940BB0FaECFdC387d6Ea23697",
-    "tokenPoolFactory": "0x2D5d6b0e3160A54c3cb84C64B7d320789fB747dB"
+    "tokenPoolFactory": "0x891F30e80B0809800BbaB14633F9eCe8Fc210024"
   },
   "5734951": {
     "chainFamily": "evm",
@@ -1142,7 +1143,7 @@
     "selector": "1523760397290643893",
     "supported": true,
     "tokenAdminRegistry": "0xA27056438FfA1f286AB197488808692F0db93F8B",
-    "tokenPoolFactory": "0xfa546248C54939AA6C48279CdC1EAf9A1125c411"
+    "tokenPoolFactory": "0xa5b1FF748Eba9eBE7c9051817CaB9cb94fe14B90"
   },
   "59144": {
     "chainFamily": "evm",
@@ -1161,7 +1162,7 @@
     "selector": "4627098889531055414",
     "supported": true,
     "tokenAdminRegistry": "0xBc933cEE67d2b1c08490ee8C51E2dF653a713534",
-    "tokenPoolFactory": "0xb0B4b5847E35033766d5B49CD9C0fC40F459321F"
+    "tokenPoolFactory": "0x3fca88541D9bebe3600Ec03193FfC9D9c4d4Bb49"
   },
   "592": {
     "chainFamily": "evm",
@@ -1180,7 +1181,7 @@
     "selector": "6422105447186081193",
     "supported": true,
     "tokenAdminRegistry": "0xB98eEd70e3cE8E342B0f770589769E3A6bc20A09",
-    "tokenPoolFactory": "0x77FDbd20ED582794b1d9F1a8a94e4a60494D677e"
+    "tokenPoolFactory": "0xc33af712B68B2BdFD79B241C1de190706C651ef2"
   },
   "60808": {
     "chainFamily": "evm",
@@ -1199,7 +1200,7 @@
     "selector": "3849287863852499584",
     "supported": true,
     "tokenAdminRegistry": "0xa57d04119AFf4884F8602213E58d8AaAD18229cb",
-    "tokenPoolFactory": "0xD4D2841Ac332075833AE86eb49ce7aF9f353cd21"
+    "tokenPoolFactory": "0xc33af712B68B2BdFD79B241C1de190706C651ef2"
   },
   "61901": {
     "chainFamily": "evm",
@@ -1237,7 +1238,7 @@
     "selector": "12657445206920369324",
     "supported": true,
     "tokenAdminRegistry": "0xA27056438FfA1f286AB197488808692F0db93F8B",
-    "tokenPoolFactory": "0xfa546248C54939AA6C48279CdC1EAf9A1125c411"
+    "tokenPoolFactory": "0xC46DAbf4F30Ce20259Ca9f9b90E18e71883D6442"
   },
   "747474": {
     "chainFamily": "evm",
@@ -1256,7 +1257,7 @@
     "selector": "2459028469735686113",
     "supported": true,
     "tokenAdminRegistry": "0x048B911A1AE5dD4f0aEE5241A30d3DEDa3501D54",
-    "tokenPoolFactory": "0x3201a20D2a33820C0DaC8Bc93C4819755C2a8c7F"
+    "tokenPoolFactory": "0x7A86630cB0e82C5650B5EE56c531E8aE0dBB8FA4"
   },
   "7777777": {
     "chainFamily": "evm",
@@ -1294,7 +1295,7 @@
     "selector": "1294465214383781161",
     "supported": true,
     "tokenAdminRegistry": "0x0944C3Fb1dB7D165336569221995B31cBE6c8A55",
-    "tokenPoolFactory": "0x76159c2b43ff6F630193e37EC68452169914C1Bb"
+    "tokenPoolFactory": "0x961971D9Ef1D61e2EEAC94c50De96D600797DFE9"
   },
   "8217": {
     "chainFamily": "evm",
@@ -1333,7 +1334,7 @@
     "selector": "15971525489660198786",
     "supported": true,
     "tokenAdminRegistry": "0x6f6C373d09C07425BaAE72317863d7F6bb731e37",
-    "tokenPoolFactory": "0xcD66e8e103D05BC3a5059746283949A45C594D16"
+    "tokenPoolFactory": "0x8cE19F73e85a68490e08c89b510215Ca71B0F2B8"
   },
   "964": {
     "chainFamily": "evm",
@@ -1352,7 +1353,7 @@
     "selector": "2135107236357186872",
     "supported": true,
     "tokenAdminRegistry": "0xe72d25aDd538E8ef9CeF85622eA8912a6CB98Be6",
-    "tokenPoolFactory": "0x8FE3B17E6B0863aeEA3D38DF063AEa39D4Ab1602"
+    "tokenPoolFactory": "0xd072940492b5cbE546EedDb17481b256E0B6A21a"
   },
   "9745": {
     "chainFamily": "evm",
@@ -1372,7 +1373,7 @@
     "selector": "9335212494177455608",
     "supported": true,
     "tokenAdminRegistry": "0xc23071a8AE83671f37bdA1DaDBC745a9780f632A",
-    "tokenPoolFactory": "0xD6e3c0089f6c260109A2a54D2441D5D4743801CD"
+    "tokenPoolFactory": "0x9814E66c6241065BB04a95cDbd3D51539E17768C"
   },
   "988": {
     "chainFamily": "evm",
@@ -1392,7 +1393,7 @@
     "selector": "16978377838628290997",
     "supported": true,
     "tokenAdminRegistry": "0x3c23e6FB09064e9A64829Fa8FEe27Ad19A27Bfa9",
-    "tokenPoolFactory": "0xb7fEabf544d8eE041645148C8FbaE782b2557aeF"
+    "tokenPoolFactory": "0x3377B1C21821E9Ef37eEf3d3F42d5dDfe3A4a311"
   },
   "98866": {
     "chainFamily": "evm",
@@ -1430,6 +1431,6 @@
     "selector": "2442541497099098535",
     "supported": true,
     "tokenAdminRegistry": "0xcE44363496ABc3a9e53B3F404a740F992D977bDF",
-    "tokenPoolFactory": "0xeD32cc1e63Da138734b64e67E54c3aaBF8f5b96C"
+    "tokenPoolFactory": "0x2fa2FbAfb31e7618Aa7B0a7913F34A2960E9a716"
   }
 }

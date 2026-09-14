@@ -30,6 +30,7 @@ from pydefi.lending.utils import UINT256_MAX
 from pydefi.types import Address, ChainId, TokenAmount
 from tests.addrs import ETH_WHALE, USDC, WETH
 from tests.live.anvil_helpers import erc20_approve, fund_usdc, impersonate, send_ok, set_balance, wrap_eth
+from tests.live.conftest import ETH_RPC_URL, _anvil_node
 
 #: On the Aave V4 ``MAIN_SPOKE``, reserve 0 is WETH and reserve 7 is USDC.
 #: Reserve ids are immutable indices, so these are stable.
@@ -38,6 +39,9 @@ USDC_RESERVE = 7
 
 WETH_SUPPLY_AMOUNT = 10 * 10**18
 USDC_BORROW_AMOUNT = 5_000 * 10**6
+
+#: Shares floor both ways, so a position reads back a wei or two short.
+_SHARE_ROUNDING_WEI = 10
 
 
 # ---------------------------------------------------------------------------
@@ -80,6 +84,19 @@ class TestAaveV4LiveReads:
 # Fork tests (Anvil)
 # ---------------------------------------------------------------------------
 
+#: MAIN_SPOKE's USDC draw cap is full at chain head, where every borrow reverts
+#: with ``DrawCapExceeded`` (``0x3ad30dd0``); this block still has headroom.
+_FORK_BLOCK = 25_920_000
+
+
+@pytest.fixture
+async def fork_w3():
+    """Pinned fork, shadowing conftest's head fork (see :data:`_FORK_BLOCK`)."""
+    args = ["--fork-url", ETH_RPC_URL, "--fork-block-number", str(_FORK_BLOCK)]
+    args += ["--compute-units-per-second", "150", "--retries", "10"]  # free-tier RPCs 408 on bursts
+    async with _anvil_node(args, startup_timeout=120) as w3:
+        yield w3
+
 
 @pytest.mark.fork
 class TestAaveV4Fork:
@@ -102,7 +119,7 @@ class TestAaveV4Fork:
             "supply",
         )
         supplied = (await spoke.get_user_reserve(WETH_RESERVE, ETH_WHALE)).supplied.amount
-        assert supplied >= WETH_SUPPLY_AMOUNT - 10
+        assert supplied >= WETH_SUPPLY_AMOUNT - _SHARE_ROUNDING_WEI
 
         # 2. Enable WETH as collateral.
         await send_ok(
@@ -139,11 +156,11 @@ class TestAaveV4Fork:
         )
         assert (await spoke.get_user_reserve(USDC_RESERVE, ETH_WHALE)).debt.amount == 0
 
-        # 5. Withdraw the full WETH balance — principal plus the interest
+        # 5. Withdraw the full WETH balance — principal plus whatever interest
         #    accrued over the lifecycle — now that the debt is cleared.
         weth_before = await ERC20.fns.balanceOf(ETH_WHALE).call(fork_w3, to=WETH.address)
         supplied_now = (await spoke.get_user_reserve(WETH_RESERVE, ETH_WHALE)).supplied.amount
-        assert supplied_now >= WETH_SUPPLY_AMOUNT
+        assert supplied_now >= WETH_SUPPLY_AMOUNT - _SHARE_ROUNDING_WEI
         await send_ok(
             fork_w3,
             ETH_WHALE,
