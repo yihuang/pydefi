@@ -154,14 +154,15 @@ def _terminate(proc: subprocess.Popen) -> None:
 
 
 @contextlib.asynccontextmanager
-async def _anvil_node(extra_args: list[str]):
+async def _anvil_node(extra_args: list[str], startup_timeout: float = 30):
     """Spawn an Anvil node with *extra_args*, yield a connected AsyncWeb3, tear down.
 
     Finds a free port, launches ``anvil`` with *extra_args* (a ``--fork-url``
     for the mainnet forks, nothing for a plain second chain), polls the
-    JSON-RPC endpoint until the node is ready (up to 30 s), then terminates the
-    process on exit.  The connection actively fails until anvil is fully
-    started, so startup exceptions are intentionally swallowed.
+    JSON-RPC endpoint until the node is ready (up to *startup_timeout* — a pinned
+    fork needs longer, it fetches archive state), then terminates the process on
+    exit.  The connection actively fails until anvil is fully started, so startup
+    exceptions are intentionally swallowed.
 
     Skips the test when the ``anvil`` binary is not on ``$PATH`` so the suite
     still runs where Foundry is not installed.
@@ -178,7 +179,7 @@ async def _anvil_node(extra_args: list[str]):
     )
     try:
         w3 = AsyncWeb3(AsyncWeb3.AsyncHTTPProvider(url))
-        deadline = time.monotonic() + 30
+        deadline = time.monotonic() + startup_timeout
         while time.monotonic() < deadline:
             try:
                 await w3.eth.chain_id
@@ -186,7 +187,7 @@ async def _anvil_node(extra_args: list[str]):
             except Exception:  # noqa: BLE001 — expected during startup
                 await asyncio.sleep(0.25)
         else:
-            pytest.fail("Anvil did not start within 30 seconds")
+            pytest.fail(f"Anvil did not start within {startup_timeout:.0f} seconds")
         w3.codec = codec
         yield w3
     finally:
