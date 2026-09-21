@@ -274,6 +274,7 @@ CURVE_V2_POOL = Contract.from_abi(
         "function mid_fee() external view returns (uint256)",
         "function out_fee() external view returns (uint256)",
         "function fee_gamma() external view returns (uint256)",
+        "function future_A_gamma_time() external view returns (uint256)",
         "function price_scale() external view returns (uint256)",
         "function price_scale(uint256 k) external view returns (uint256)",
     ]

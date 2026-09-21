@@ -301,7 +301,7 @@ class CurvePool:
             else [await self._call(c.fns.price_scale(k)) for k in range(n - 1)]
         )
 
-        return {
+        state = {
             "balances": balances,
             "precisions": [10 ** (18 - t.decimals) for t in self._tokens],
             "price_scale": [curve_math.PRECISION, *scales],
@@ -312,6 +312,10 @@ class CurvePool:
             "out_fee": await self._call(c.fns.out_fee()),
             "fee_gamma": await self._call(c.fns.fee_gamma()),
         }
+        ramp_end = await self._call(c.fns.future_A_gamma_time())
+        if ramp_end > (await self.w3.eth.get_block("latest"))["timestamp"]:
+            state["d"] = None  # stored D goes stale mid-ramp, as it does for the pool's own views
+        return state
 
     # ------------------------------------------------------------------
     # Price queries

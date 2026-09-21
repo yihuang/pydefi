@@ -115,6 +115,7 @@ CRYPTO_ABI = json.dumps(
         _view("fee_gamma", [], ["uint256"]),
         _view("price_scale", ["uint256"], ["uint256"]),
         _view("fee_calc", ["uint256[3]"], ["uint256"]),
+        _view("future_A_gamma_time", [], ["uint256"]),
     ]
 )
 
@@ -171,7 +172,7 @@ def read_stable_state(pool: Any, decimals: list[int], *, legacy: bool = False, n
 
 
 def read_crypto_state(pool: Any, decimals: list[int]) -> dict:
-    return {
+    state = {
         "balances": [pool.balances(k) for k in range(len(decimals))],
         "precisions": [10 ** (18 - d) for d in decimals],
         "price_scale": [m.PRECISION, pool.price_scale(0), pool.price_scale(1)],
@@ -182,6 +183,10 @@ def read_crypto_state(pool: Any, decimals: list[int]) -> dict:
         "out_fee": pool.out_fee(),
         "fee_gamma": pool.fee_gamma(),
     }
+    # Mirrors CurvePool._load_crypto_state, but resolved: callers here read state["d"].
+    if pool.future_A_gamma_time() > boa.env.evm.patch.timestamp:
+        state["d"] = m.newton_D(state["amp"], state["gamma"], crypto_xp(state))
+    return state
 
 
 def crypto_xp(state: dict, balances: list[int] | None = None) -> list[int]:

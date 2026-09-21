@@ -1049,6 +1049,24 @@
     "tokenAdminRegistry": "0x000A744940eB5D857c0d61d97015DFc83107404F",
     "tokenPoolFactory": "0xe3657564C57c81E19466c2Dd4397F1b61e98b87B"
   },
+  "5042": {
+    "chainFamily": "evm",
+    "chainId": 5042,
+    "chainType": "evm",
+    "displayName": "Arc Network Mainnet",
+    "feeTokens": [
+      "LINK",
+      "USDC"
+    ],
+    "internalId": "arc-mainnet",
+    "registryModule": "0x3201a20D2a33820C0DaC8Bc93C4819755C2a8c7F",
+    "rmn": "0x9A82E768C885DEF7C4b47451Fd4Db53d8B21ed07",
+    "router": "0xB79791184973589c38e114D43Eb8E4588C283A18",
+    "selector": "6370580034781731079",
+    "supported": true,
+    "tokenAdminRegistry": "0x51e2A24742Db77604B881d6781Ee16B5b8fcBE29",
+    "tokenPoolFactory": "0x7CcFb2Fa43637b4858Cb1269CF0d64a99e8C668a"
+  },
   "5330": {
     "chainFamily": "evm",
     "chainId": 5330,
