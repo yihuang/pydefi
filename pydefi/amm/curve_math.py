@@ -679,8 +679,8 @@ def crypto_get_dy(
         mid_fee: Fee at parity (units of ``1/1e10``).
         out_fee: Fee when fully imbalanced (units of ``1/1e10``).
         fee_gamma: Fee curvature parameter (1e18 base).
-        d: Pool invariant ``D``. If ``None``, it is recomputed from *balances*
-            via :func:`newton_D` (matches a non-ramping pool).
+        d: Pool invariant ``D`` as stored on-chain, or ``None`` to recompute it
+            from *balances* — what the pool does while A/gamma ramp.
 
     Returns:
         Raw output amount in coin *j*'s units.
