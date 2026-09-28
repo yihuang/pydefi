@@ -70,12 +70,13 @@ deno eval 'import { addressesRegistry } from "npm:@morpho-org/blue-sdk"; import 
 # Uniswap V3 factory + V4 PoolManager / StateView / Quoter + UniversalRouter, per chain (uniswap.json).
 # Source: @uniswap/sdk-core's CHAIN_TO_ADDRESSES_MAP, plus
 # @uniswap/universal-router-sdk for the UniversalRouter (not in sdk-core).
-# Only routers >= 2.1.1 are emitted (newest per chain) — older V2_0 routers
-# use the pre-minHopPriceX36 V4 structs and would misdecode pydefi's calldata.
+# Routers: newest generation per chain from ROUTER_VERSIONS. 2.0 and 2.1.1 are
+# sunset 2026-10-21 and 2.0 predates the minHopPriceX36 V4 structs, so neither
+# is emitted. The SDK is pinned: esm.sh's @5 alias lags and would drop V2_1_2.
 echo "Fetching Uniswap V3/V4 addresses"
 deno eval '
 import { CHAIN_TO_ADDRESSES_MAP as M } from "https://esm.sh/@uniswap/sdk-core@7";
-import { UNIVERSAL_ROUTER_ADDRESS, UniversalRouterVersion } from "https://esm.sh/@uniswap/universal-router-sdk@5";
+import { UNIVERSAL_ROUTER_ADDRESS, UniversalRouterVersion } from "https://esm.sh/@uniswap/universal-router-sdk@5.14.0";
 const FIELDS = {
   UNISWAP_V3_FACTORY: "v3CoreFactoryAddress",
   UNISWAP_V4_POOL_MANAGER: "v4PoolManagerAddress",
@@ -88,9 +89,14 @@ for (const [name, field] of Object.entries(FIELDS)) {
   for (const [cid, a] of Object.entries(M)) if (a[field]) m[cid] = a[field];
   out[name] = m;
 }
+const ROUTER_VERSIONS = ["V2_2_0", "V2_1_2"].map((k) => {
+  const v = UniversalRouterVersion[k];
+  if (!v) throw new Error(`universal-router-sdk has no ${k} — check the pinned version`);
+  return v;
+});
 out.UNIVERSAL_ROUTER = {};
 for (const cid of Object.keys(M)) {
-  for (const v of [UniversalRouterVersion.V2_2_0, UniversalRouterVersion.V2_1_1]) {
+  for (const v of ROUTER_VERSIONS) {
     try {
       out.UNIVERSAL_ROUTER[cid] = UNIVERSAL_ROUTER_ADDRESS(v, Number(cid));
       break;
