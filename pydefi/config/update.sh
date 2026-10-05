@@ -56,12 +56,13 @@ python3 update_compound.py
 # Blue is immutable, but only its Ethereum/Base deployment got the vanity
 # 0xBBBB… address — later chains were deployed at distinct addresses — so the
 # registry is the canonical per-chain source. blue-sdk needs viem as a peer
-# dependency, hence the extra import.
+# dependency, hence the extra import. The core contract is keyed `blue`;
+# blue-sdk 7 dropped the older `morpho` alias.
 echo "Fetching Morpho Blue addresses"
 deno eval 'import { addressesRegistry } from "npm:@morpho-org/blue-sdk"; import "npm:viem@2"; console.log(JSON.stringify(addressesRegistry))' \
   | jq -S '{
-      MORPHO_BLUE: (to_entries | map(select(.value.morpho != null))
-                    | map({(.key): .value.morpho}) | add),
+      MORPHO_BLUE: (to_entries | map(select(.value.blue != null))
+                    | map({(.key): .value.blue}) | add),
       MORPHO_ADAPTIVE_CURVE_IRM: (to_entries | map(select(.value.adaptiveCurveIrm != null))
                                   | map({(.key): .value.adaptiveCurveIrm}) | add)
     }' \
@@ -131,3 +132,10 @@ curl -s 'https://raw.githubusercontent.com/Polymarket/neg-risk-ctf-adapter/main/
           if $names[$e.key] then .[$names[$e.key]]["137"] = $e.value else . end)
       | .POLYMARKET_CONDITIONAL_TOKENS["80002"] = $amoy' \
   > polymarket.json
+
+# A renamed upstream field makes jq emit null/{} instead of failing, and
+# deployments.py can't load that — stop before the snapshot gets committed.
+for f in aave.json aave_v4.json compound.json morpho.json uniswap.json polymarket.json; do
+  jq -e 'all(.[]; type == "object" and length > 0)' "$f" > /dev/null \
+    || { echo "$f has a null or empty entry — upstream schema changed?" >&2; exit 1; }
+done
