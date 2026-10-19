@@ -172,6 +172,25 @@
     "tokenAdminRegistry": "0x98acD723D0E9C13d09Df4619Abec729F3434a10a",
     "tokenPoolFactory": "0x7c4708c0188f57F658851f0B71e54F8226C9a957"
   },
+  "127001": {
+    "chainFamily": "evm",
+    "chainId": 127001,
+    "chainType": "evm",
+    "displayName": "Gravity Mainnet",
+    "feeTokens": [
+      "LINK",
+      "wG",
+      "G"
+    ],
+    "internalId": "gravity-mainnet",
+    "registryModule": "0xf4a170A36D4C656F614d44453f73308Bdb275196",
+    "rmn": "0xf09AFe78d3c7d359b334d7cB88995751F7eC5E13",
+    "router": "0x492641F648a4986844848E0beFE66D14817bCE34",
+    "selector": "2988178761202034333",
+    "supported": true,
+    "tokenAdminRegistry": "0xA27056438FfA1f286AB197488808692F0db93F8B",
+    "tokenPoolFactory": "0x647e26A8D4aE569691C6D48d7b2D98a65fCB4281"
+  },
   "130": {
     "chainFamily": "evm",
     "chainId": 130,
