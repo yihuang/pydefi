@@ -78,8 +78,9 @@ class TestAaveV3LiveReads:
             f"implausible borrow APY: {data.variable_borrow_apy}"
         )
         assert data.supply_apy <= data.variable_borrow_apy
-        assert 0 < data.ltv <= 10_000
-        assert data.liquidation_threshold >= data.ltv
+        # Governance sets LTV per reserve; mainnet USDC is 0 (no new borrowing power).
+        assert 0 <= data.ltv <= data.liquidation_threshold <= 10_000
+        assert data.liquidation_threshold > 0
         assert len(data.a_token_address) == 20
         assert len(data.variable_debt_token_address) == 20
 
@@ -371,6 +372,6 @@ async def test_get_reserve_data_resolves_by_symbol(chain_id, rpc_url, faucet):
     assert data.token.symbol == "USDC"
     assert (data.token.address != registry_usdc.address) is faucet  # Sepolia differs; mainnet no-op
     assert data.is_active is True
-    assert data.ltv > 0
+    assert data.liquidation_threshold > 0
     assert len(data.a_token_address) == 20
     assert int.from_bytes(bytes(data.a_token_address), "big") != 0
