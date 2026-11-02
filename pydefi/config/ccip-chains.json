@@ -1398,9 +1398,8 @@
     "displayName": "Stable",
     "feeTokens": [
       "LINK",
-      "WgUSDT",
       "WUSDT0",
-      "gUSDT"
+      "USDT0"
     ],
     "internalId": "stable-mainnet",
     "registryModule": "0x7CcFb2Fa43637b4858Cb1269CF0d64a99e8C668a",
