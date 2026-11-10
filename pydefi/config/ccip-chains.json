@@ -842,9 +842,7 @@
     "displayName": "Tempo Mainnet",
     "feeTokens": [
       "LINK",
-      "pathUSD",
-      "WTEMP",
-      "USD"
+      "pathUSD"
     ],
     "internalId": "tempo-mainnet",
     "registryModule": "0x09AC52380E6Ede653E122773734fDc8b4B716422",
